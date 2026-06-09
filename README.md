@@ -1,3 +1,5 @@
+<img src="docs/assets/logo.png" alt="Bear Metal" width="160" />
+
 # bear-metal
 
 Background coding agent. Takes tickets from Linear, hands them to a worker that
