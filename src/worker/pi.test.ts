@@ -101,6 +101,7 @@ function makeContext(): WorkerInputContext {
 
 function makeGithub() {
   return {
+    getInstallationToken: vi.fn().mockResolvedValue("test-token"),
     getPullRequestContext: vi.fn(),
     resolveReviewThread: vi.fn(),
     replyToReviewThread: vi.fn(),

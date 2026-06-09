@@ -8,12 +8,14 @@ import type { CloneScriptResult } from "./types.js";
 export async function runCloneScript(input: {
   packageRoot: string;
   workspaceDir: string;
+  githubToken: string;
 }): Promise<CloneScriptResult> {
   const scriptPath = resolve(input.packageRoot, "scripts", "clone-target-repos.sh");
   await rm(resolve(input.workspaceDir, "blueden"), { recursive: true, force: true });
   const result = await runCommand("bash", [scriptPath], {
     cwd: input.workspaceDir,
     timeoutMs: 10 * 60 * 1000,
+    env: { ...process.env, GH_TOKEN: input.githubToken },
   });
 
   return {

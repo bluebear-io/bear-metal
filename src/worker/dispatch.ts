@@ -34,6 +34,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   logger.info({ ticketId, state, hasPr: pr !== null, workspaceDir }, "dispatch starting");
 
+  const githubToken = await github.getInstallationToken();
+
   const [ticket, pullRequest, cloneScript] = await Promise.all([
     linear.getTicketContext(ticketId).then((t) => {
       logger.info({ ticketId }, "linear ticket fetched");
@@ -45,7 +47,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
           return p;
         })
       : Promise.resolve(null),
-    runCloneScript({ packageRoot, workspaceDir }).then((r) => {
+    runCloneScript({ packageRoot, workspaceDir, githubToken }).then((r) => {
       logger.info({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
       return r;
     }),

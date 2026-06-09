@@ -60,6 +60,11 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
   }
 
+  async getInstallationToken(): Promise<string> {
+    const auth = (await this.octokit.auth({ type: "installation" })) as { token: string };
+    return auth.token;
+  }
+
   /**
    * Find the open PR whose head branch refers to the ticket, across every repo the
    * App installation can access. Returns null if none. (GitHub is queried only for

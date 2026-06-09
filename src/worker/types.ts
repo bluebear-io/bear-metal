@@ -10,6 +10,7 @@ export type DispatchResult = {
 export type { PullRequestRef };
 
 export interface WorkerGitHub {
+  getInstallationToken(): Promise<string>;
   getPullRequestContext(pr: PullRequestRef): Promise<PullRequestContext>;
   resolveReviewThread(threadId: string): Promise<void>;
   replyToReviewThread(pr: PullRequestRef, threadId: string, body: string, threads: ReviewThread[]): Promise<void>;

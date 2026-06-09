@@ -101,6 +101,7 @@ class FakeTaskQueue implements TaskQueue {
 function makeIntegrations() {
   return {
     github: {
+      getInstallationToken: vi.fn().mockResolvedValue("test-token"),
       getPullRequestContext: vi.fn(),
       resolveReviewThread: vi.fn(),
       replyToReviewThread: vi.fn(),
