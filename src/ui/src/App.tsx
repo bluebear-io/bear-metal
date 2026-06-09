@@ -3,6 +3,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import { ThemeToggle } from "./components/ThemeToggle.js";
 import TicketDetailPage from "./pages/TicketDetailPage.js";
 import TicketsListPage from "./pages/TicketsListPage.js";
+import TimeSavedPage from "./pages/TimeSavedPage.js";
 import WorkersPage from "./pages/WorkersPage.js";
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
@@ -23,6 +24,9 @@ export default function App() {
           <NavLink to="/workers" className={navClass}>
             Workers
           </NavLink>
+          <NavLink to="/time-saved" className={navClass}>
+            Time Saved
+          </NavLink>
           <span className="ml-auto">
             <ThemeToggle />
           </span>
@@ -34,6 +38,7 @@ export default function App() {
         <Route path="/tickets" element={<TicketsListPage />} />
         <Route path="/tickets/:id" element={<TicketDetailPage />} />
         <Route path="/workers" element={<WorkersPage />} />
+        <Route path="/time-saved" element={<TimeSavedPage />} />
       </Routes>
     </div>
   );

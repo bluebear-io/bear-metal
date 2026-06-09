@@ -2,6 +2,7 @@ import { Router, type RequestHandler } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
 import { upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent } from "../db/writer.js";
+import type { HoursPerComplexity } from "../config.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 
@@ -49,7 +50,7 @@ function asObject(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-export function createIngestRouter(db: Db, token: string): Router {
+export function createIngestRouter(db: Db, token: string, hoursPerComplexity: HoursPerComplexity): Router {
   const router = Router();
 
   const requireToken: RequestHandler = (req, res, next) => {
@@ -84,7 +85,7 @@ export function createIngestRouter(db: Db, token: string): Router {
       labels: strArray(b, "labels"), bmStatus: enumVal(b, "bmStatus", schema.tickets.bmStatus.enumValues),
       attemptCount: num(b, "attemptCount"), maxAttempts: num(b, "maxAttempts"),
       createdAt: num(b, "createdAt"), updatedAt: num(b, "updatedAt"), completedAt: numOrNull(b, "completedAt"),
-    });
+    }, hoursPerComplexity);
   }));
 
   router.put("/workers/:id", requireToken, handle((b, id) => {

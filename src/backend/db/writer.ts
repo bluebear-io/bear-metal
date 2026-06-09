@@ -4,17 +4,34 @@ import * as schema from "./schema.js";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
 } from "../../shared/dashboard/types.js";
+import { DEFAULT_HOURS_PER_COMPLEXITY, type HoursPerComplexity } from "../config.js";
+import { estimateCompletion } from "../complexity.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 const d = (ms: number | null): Date | null => (ms === null ? null : new Date(ms));
 
-export function upsertTicket(db: Db, p: TicketPayload): void {
+/**
+ * Upsert a ticket row. When a ticket transitions to bmStatus === "completed", the
+ * complexity score and estimated human hours are computed and persisted; otherwise both
+ * columns are left null (and, via onConflictDoUpdate, reset to null on any non-completed
+ * upsert so partial-progress rows never carry a stale estimate).
+ */
+export function upsertTicket(
+  db: Db,
+  p: TicketPayload,
+  hoursPerComplexity: HoursPerComplexity = DEFAULT_HOURS_PER_COMPLEXITY,
+): void {
+  const estimate = p.bmStatus === "completed"
+    ? estimateCompletion(p.description, p.attemptCount, hoursPerComplexity)
+    : null;
   const row = {
     id: p.id, identifier: p.identifier, title: p.title, description: p.description,
     url: p.url, branchName: p.branchName, linearStatusName: p.linearStatusName,
     linearStatusType: p.linearStatusType, labelsJson: JSON.stringify(p.labels),
     bmStatus: p.bmStatus, attemptCount: p.attemptCount, maxAttempts: p.maxAttempts,
     createdAt: new Date(p.createdAt), updatedAt: new Date(p.updatedAt), completedAt: d(p.completedAt),
+    complexityScore: estimate?.complexityScore ?? null,
+    estimatedHumanHours: estimate?.estimatedHumanHours ?? null,
   };
   db.insert(schema.tickets).values(row).onConflictDoUpdate({ target: schema.tickets.id, set: row }).run();
 }

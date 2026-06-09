@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, and, isNotNull } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
@@ -69,6 +69,89 @@ function toLatestRunSummary(run: Run): LatestRunSummary {
 function elapsedSince(now: Date, then: Date | null): number | null {
   if (!then) return null;
   return Math.max(0, now.getTime() - then.getTime());
+}
+
+export interface TicketTimeSaving {
+  ticketId: string;
+  ticketIdentifier: string;
+  ticketTitle: string;
+  complexityScore: number | null;
+  estimatedHumanHours: number | null;
+  /** Actual wall-clock hours bear-metal spent (sum of run durations). */
+  actualBmHours: number | null;
+  /** estimatedHumanHours - actualBmHours, or null if either is missing. */
+  savedHours: number | null;
+  completedAt: Date | null;
+}
+
+export interface TimeSavedSummary {
+  totalEstimatedHumanHours: number;
+  totalActualBmHours: number;
+  totalSavedHours: number;
+  ticketCount: number;
+  byTicket: TicketTimeSaving[];
+}
+
+const MS_PER_HOUR = 60 * 60 * 1000;
+
+/**
+ * Build the time-saved summary across all completed tickets.
+ *
+ * actualBmHours sums (endedAt - startedAt) over the ticket's runs that have both
+ * timestamps set; runs missing either are skipped. If no run has measurable duration
+ * actualBmHours is null and savedHours is null — we never silently treat "no run data"
+ * as zero hours saved, because that would inflate the aggregate.
+ */
+export function getTimeSavedSummary(db: Db): TimeSavedSummary {
+  const completedTickets = db
+    .select()
+    .from(schema.tickets)
+    .where(eq(schema.tickets.bmStatus, "completed"))
+    .orderBy(desc(schema.tickets.completedAt))
+    .all();
+
+  const byTicket: TicketTimeSaving[] = completedTickets.map((ticket) => {
+    const runRows = db
+      .select()
+      .from(schema.runs)
+      .where(and(eq(schema.runs.ticketId, ticket.id), isNotNull(schema.runs.startedAt), isNotNull(schema.runs.endedAt)))
+      .all();
+    let totalMs = 0;
+    let measured = 0;
+    for (const r of runRows) {
+      if (r.startedAt && r.endedAt) {
+        totalMs += Math.max(0, r.endedAt.getTime() - r.startedAt.getTime());
+        measured += 1;
+      }
+    }
+    const actualBmHours = measured > 0 ? totalMs / MS_PER_HOUR : null;
+    const estimated = ticket.estimatedHumanHours;
+    const savedHours = estimated !== null && actualBmHours !== null ? estimated - actualBmHours : null;
+    return {
+      ticketId: ticket.id,
+      ticketIdentifier: ticket.identifier,
+      ticketTitle: ticket.title,
+      complexityScore: ticket.complexityScore,
+      estimatedHumanHours: estimated,
+      actualBmHours,
+      savedHours,
+      completedAt: ticket.completedAt,
+    };
+  });
+
+  const totalEstimatedHumanHours = byTicket.reduce((s, t) => s + (t.estimatedHumanHours ?? 0), 0);
+  const totalActualBmHours = byTicket.reduce((s, t) => s + (t.actualBmHours ?? 0), 0);
+  const totalSavedHours = byTicket.reduce((s, t) => s + (t.savedHours ?? 0), 0);
+
+  byTicket.sort((a, b) => (b.savedHours ?? -Infinity) - (a.savedHours ?? -Infinity));
+
+  return {
+    totalEstimatedHumanHours,
+    totalActualBmHours,
+    totalSavedHours,
+    ticketCount: byTicket.length,
+    byTicket,
+  };
 }
 
 export function listTickets(db: Db, filter?: { bmStatus?: Ticket["bmStatus"] }): TicketListItem[] {

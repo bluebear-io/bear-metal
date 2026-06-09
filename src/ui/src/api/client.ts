@@ -1,4 +1,4 @@
-import type { BmStatus, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import type { BmStatus, TicketDetail, TicketListItem, TimeSavedSummary, WorkerListItem } from "./types.js";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -25,4 +25,8 @@ export async function fetchWorkers(): Promise<WorkerListItem[]> {
   const body = await getJson<{ workers: WorkerListItem[] }>("/api/workers");
 
   return body.workers;
+}
+
+export async function getTimeSaved(): Promise<TimeSavedSummary> {
+  return getJson<TimeSavedSummary>("/api/time-saved");
 }

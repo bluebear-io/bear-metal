@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 
 const ts = (name: string) => integer(name, { mode: "timestamp_ms" });
 
@@ -20,6 +20,11 @@ export const tickets = sqliteTable("tickets", {
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),
   completedAt: ts("completed_at"),
+  // Nullable: set only when the ticket reaches bmStatus = "completed". Historical and
+  // in-progress rows remain null. Derived from description word count and attemptCount.
+  complexityScore: integer("complexity_score"),
+  // Nullable: derived from complexityScore × HOURS_PER_COMPLEXITY at completion time.
+  estimatedHumanHours: real("estimated_human_hours"),
 });
 
 export const workers = sqliteTable("workers", {

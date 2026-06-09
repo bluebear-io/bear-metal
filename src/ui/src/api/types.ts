@@ -29,6 +29,27 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  complexityScore: number | null;
+  estimatedHumanHours: number | null;
+}
+
+export interface TicketTimeSaving {
+  ticketId: string;
+  ticketIdentifier: string;
+  ticketTitle: string;
+  complexityScore: number | null;
+  estimatedHumanHours: number | null;
+  actualBmHours: number | null;
+  savedHours: number | null;
+  completedAt: string | null;
+}
+
+export interface TimeSavedSummary {
+  totalEstimatedHumanHours: number;
+  totalActualBmHours: number;
+  totalSavedHours: number;
+  ticketCount: number;
+  byTicket: TicketTimeSaving[];
 }
 
 export interface LatestRunSummary {
