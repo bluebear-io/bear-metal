@@ -8,24 +8,23 @@ import { makeContext } from "./test-helpers.js";
 const logger = createLogger({ level: "silent", name: "test" });
 
 describe("ManagerTicketHandler", () => {
-  it("delegates to the worker with the full context and keeps the ticket on noop", async () => {
-    const worker = vi.fn(async (): Promise<WorkerResponse> => ({ status: "noop" }));
+  it("reports a pending dispatch as pending (not as done)", async () => {
+    const worker = vi.fn(async (): Promise<WorkerResponse> => ({ status: "pending" }));
     const handler = new ManagerTicketHandler({ logger, worker });
     const ctx = makeContext("den-1");
 
     const outcome = await handler.handle(ctx);
 
     expect(worker).toHaveBeenCalledWith(ctx);
-    expect(outcome.done).toBe(false);
+    expect(outcome.status).toBe("pending");
   });
 
-  it("frees the ticket when the worker reports a non-noop status", async () => {
-    // The only WorkerStatus today is "noop"; simulate a future terminal status.
-    const worker = vi.fn(async (): Promise<WorkerResponse> => ({ status: "done" } as unknown as WorkerResponse));
+  it("reports a done dispatch as done", async () => {
+    const worker = vi.fn(async (): Promise<WorkerResponse> => ({ status: "done" }));
     const handler = new ManagerTicketHandler({ logger, worker });
 
     const outcome = await handler.handle(makeContext("den-2"));
 
-    expect(outcome.done).toBe(true);
+    expect(outcome.status).toBe("done");
   });
 });

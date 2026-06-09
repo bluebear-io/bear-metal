@@ -11,8 +11,7 @@ export interface ManagerTicketHandlerDeps {
 /**
  * Decision owner for a single ticket. Given the full merged Linear + GitHub data,
  * it decides what to do and which metadata to use, then delegates solving to the
- * worker. Today it only forwards to the no-op worker stub; the future state machine
- * grows here.
+ * worker and reports the worker's dispatch status back to the scheduler.
  */
 export class ManagerTicketHandler {
   private readonly logger: Logger;
@@ -29,7 +28,6 @@ export class ManagerTicketHandler {
       "handling ticket",
     );
     const response = await this.worker(ctx);
-    // A non-noop status means the ticket is finished and its slot can be released.
-    return { done: response.status !== "noop" };
+    return { status: response.status };
   }
 }

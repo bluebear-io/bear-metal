@@ -14,7 +14,7 @@ const logger = createLogger({ level: config.logLevel, name: "manager", pretty: c
 
 logger.info(
   {
-    label: config.linearLabel,
+    assigneeId: config.linearAssigneeId,
     githubAppId: config.githubAppId,
     githubInstallationId: config.githubAppInstallationId,
     concurrency: config.workerConcurrency,
@@ -39,7 +39,7 @@ const scheduler = new Scheduler({
   github,
   store,
   handler,
-  label: config.linearLabel,
+  assigneeId: config.linearAssigneeId,
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });

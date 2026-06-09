@@ -16,14 +16,17 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     this.client = new LinearClient({ apiKey: options.token });
   }
 
-  async findTicketsByLabel(label: string, options: FindTicketsOptions = {}): Promise<Ticket[]> {
+  async findTicketsByAssignee(
+    assigneeId: string,
+    options: FindTicketsOptions = {},
+  ): Promise<Ticket[]> {
     const filter =
       options.status !== undefined
         ? {
-            labels: { some: { name: { eq: label } } },
+            assignee: { id: { eq: assigneeId } },
             state: { name: { eq: options.status } },
           }
-        : { labels: { some: { name: { eq: label } } } };
+        : { assignee: { id: { eq: assigneeId } } };
     const page = await this.client.issues({ filter });
     return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
   }

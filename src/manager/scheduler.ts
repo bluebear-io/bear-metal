@@ -13,7 +13,7 @@ import type { TicketStore } from "./state.js";
 
 /** The Linear capabilities the scheduler needs (subset of LinearIntegration). */
 export interface LinearSource {
-  findTicketsByLabel(label: string, options?: FindTicketsOptions): Promise<Ticket[]>;
+  findTicketsByAssignee(assigneeId: string, options?: FindTicketsOptions): Promise<Ticket[]>;
   getTicket(id: string): Promise<Ticket>;
 }
 
@@ -33,7 +33,8 @@ export interface SchedulerDeps {
   github: GitHubSource;
   store: TicketStore;
   handler: TicketHandler;
-  label: string;
+  /** Linear user id whose tickets the manager works. */
+  assigneeId: string;
   concurrency: number;
   pollIntervalMs: number;
   /** Linear workflow-state name new tickets are admitted from. */
@@ -82,24 +83,24 @@ export class Scheduler {
 
   /** One poll cycle: refresh active tickets, admit new work, dispatch decisions. */
   async tick(): Promise<void> {
-    const { store, linear, github, handler, logger, label, concurrency } = this.deps;
+    const { store, linear, github, handler, logger, assigneeId, concurrency } = this.deps;
 
-    logger.info({ active: store.activeCount() }, "poll tick started");
+    logger.info({ active: store.count() }, "poll tick started");
 
     await refreshActiveTickets(store, linear, github, logger);
 
     const admitted = await admitNewTickets(
       store,
       linear,
-      label,
+      assigneeId,
       this.todoStatus,
-      freeSlots(concurrency, store.activeCount()),
+      freeSlots(concurrency, store.count()),
       logger,
     );
 
     dispatchActiveTickets(store, handler, this.queue, this.inFlight, logger);
 
-    logger.info({ active: store.activeCount(), admitted }, "poll tick complete");
+    logger.info({ active: store.count(), admitted }, "poll tick complete");
   }
 }
 
@@ -112,16 +113,16 @@ export function freeSlots(concurrency: number, activeCount: number): number {
   return Math.max(0, concurrency - activeCount);
 }
 
-/** Pick which candidate tickets to admit: not already active, capped at free slots. */
+/** Pick which candidate tickets to admit: not already tracked, capped at free slots. */
 export function selectAdmissions(
   candidates: Ticket[],
-  isActive: (id: string) => boolean,
+  isTracked: (id: string) => boolean,
   free: number,
 ): Ticket[] {
   if (free <= 0) {
     return [];
   }
-  return candidates.filter((ticket) => !isActive(ticket.id)).slice(0, free);
+  return candidates.filter((ticket) => !isTracked(ticket.id)).slice(0, free);
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +163,7 @@ async function refreshActiveTickets(
 async function admitNewTickets(
   store: TicketStore,
   linear: LinearSource,
-  label: string,
+  assigneeId: string,
   todoStatus: string,
   free: number,
   logger: Logger,
@@ -170,8 +171,8 @@ async function admitNewTickets(
   if (free <= 0) {
     return 0;
   }
-  const candidates = await linear.findTicketsByLabel(label, { status: todoStatus });
-  const admitted = selectAdmissions(candidates, (id) => store.isActive(id), free);
+  const candidates = await linear.findTicketsByAssignee(assigneeId, { status: todoStatus });
+  const admitted = selectAdmissions(candidates, (id) => store.has(id), free);
   for (const ticket of admitted) {
     store.upsert(ticket.id, { ticket, pr: null });
     logger.info({ ticket: ticket.identifier }, "picked up ticket");
@@ -207,7 +208,9 @@ async function runHandler(
   const id = context.ticket.id;
   try {
     const outcome = await handler.handle(context);
-    if (outcome.done) {
+    const updated = store.setStatus(id, outcome.status);
+    // A finished iteration (its PR is done) leaves memory and frees the slot.
+    if (updated.status === "done" && updated.state === "iteration") {
       store.remove(id);
     }
   } catch (err) {
