@@ -54,6 +54,12 @@ export interface RunPayload {
   endedAt: number | null;
   stopReason: StopReason | null;
   error: string | null;
+  // LLM usage stats from the pi agent session (DEN-2313). Nullable: unknown for older runs
+  // and for runs that crashed before any model call.
+  promptTokens: number | null;
+  completionTokens: number | null;
+  modelName: string | null;
+  provider: string | null;
   createdAt: number;
 }
 

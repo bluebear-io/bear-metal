@@ -1,6 +1,14 @@
 import type { DashboardClient, Logger, PullRequest, Ticket } from "../shared/index.js";
 import type { BmStatus, RunTrigger } from "../shared/index.js";
 
+/** LLM usage stats captured at run completion, used by the runs read model (DEN-2313). */
+export interface RunUsage {
+  promptTokens: number;
+  completionTokens: number;
+  modelName: string;
+  provider: string;
+}
+
 export interface DashboardReporterDeps {
   client: DashboardClient;
   logger: Logger;
@@ -71,7 +79,7 @@ export class DashboardReporter {
 
   async runDispatched(ref: RunRef): Promise<void> {
     const t = this.ms();
-    await this.client.upsertRun({ id: ref.runId, ticketId: ref.ticket.id, attemptNumber: ref.attemptNumber, workerId: null, trigger: ref.trigger, status: "dispatched", contextJson: null, startedAt: null, endedAt: null, stopReason: null, error: null, createdAt: t });
+    await this.client.upsertRun({ id: ref.runId, ticketId: ref.ticket.id, attemptNumber: ref.attemptNumber, workerId: null, trigger: ref.trigger, status: "dispatched", contextJson: null, startedAt: null, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: t });
     await this.client.upsertTicket(this.ticketPayload(ref.ticket, "dispatched", ref.attemptNumber, null));
     await this.client.recordEvent({ ticketId: ref.ticket.id, runId: ref.runId, workerId: null, source: "manager", type: "dispatched", summary: `Dispatched attempt ${ref.attemptNumber}`, payloadJson: null, createdAt: t });
   }
@@ -112,17 +120,25 @@ export class DashboardReporter {
 
   async runStartedById(runId: string, ticketId: string, workerId: string, attemptNumber: number, trigger: RunTrigger): Promise<void> {
     const t = this.ms();
-    await this.client.upsertRun({ id: runId, ticketId, attemptNumber, workerId, trigger, status: "running", contextJson: null, startedAt: t, endedAt: null, stopReason: null, error: null, createdAt: t });
+    await this.client.upsertRun({ id: runId, ticketId, attemptNumber, workerId, trigger, status: "running", contextJson: null, startedAt: t, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: t });
   }
 
-  async runSucceededById(runId: string, ticketId: string, workerId: string, attemptNumber: number, trigger: RunTrigger): Promise<void> {
+  async runSucceededById(runId: string, ticketId: string, workerId: string, attemptNumber: number, trigger: RunTrigger, usage?: RunUsage | null): Promise<void> {
     const t = this.ms();
-    await this.client.upsertRun({ id: runId, ticketId, attemptNumber, workerId, trigger, status: "succeeded", contextJson: null, startedAt: null, endedAt: t, stopReason: "completed", error: null, createdAt: t });
+    await this.client.upsertRun({
+      id: runId, ticketId, attemptNumber, workerId, trigger, status: "succeeded",
+      contextJson: null, startedAt: null, endedAt: t, stopReason: "completed", error: null,
+      promptTokens: usage?.promptTokens ?? null,
+      completionTokens: usage?.completionTokens ?? null,
+      modelName: usage?.modelName ?? null,
+      provider: usage?.provider ?? null,
+      createdAt: t,
+    });
   }
 
   async runCrashedById(runId: string, ticketId: string, workerId: string, attemptNumber: number, trigger: RunTrigger, error: string): Promise<void> {
     const t = this.ms();
-    await this.client.upsertRun({ id: runId, ticketId, attemptNumber, workerId, trigger, status: "crashed", contextJson: null, startedAt: null, endedAt: t, stopReason: "crash", error, createdAt: t });
+    await this.client.upsertRun({ id: runId, ticketId, attemptNumber, workerId, trigger, status: "crashed", contextJson: null, startedAt: null, endedAt: t, stopReason: "crash", error, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: t });
     await this.client.recordEvent({ ticketId, runId, workerId, source: "worker", type: "worker_crashed", summary: error, payloadJson: null, createdAt: t });
   }
 

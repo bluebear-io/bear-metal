@@ -87,8 +87,28 @@ export interface Run {
   endedAt: string | null;
   stopReason: "completed" | "timeout" | "crash" | "error" | null;
   error: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  modelName: string | null;
+  provider: string | null;
+  /** Estimated USD cost from the backend pricing table; null when pricing or tokens are missing. */
+  estimatedCostUsd: number | null;
   createdAt: string;
   worker: Worker | null;
+}
+
+export interface ModelComparisonRow {
+  family: "claude" | "gpt" | "gemini" | "other";
+  provider: string;
+  modelName: string;
+  totalRuns: number;
+  succeededRuns: number;
+  successRate: number;
+  avgDurationSeconds: number | null;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalCostUsd: number;
+  avgCostUsd: number;
 }
 
 export interface PullRequest {

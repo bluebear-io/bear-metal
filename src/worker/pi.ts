@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
-import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
+import type { DispatchResult, DispatchUsage, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
@@ -128,6 +128,7 @@ export async function runPiWorker(input: {
   ]);
   logger.info({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
 
+  let usage: DispatchUsage | null = null;
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
@@ -164,6 +165,21 @@ export async function runPiWorker(input: {
 
   try {
     await session.prompt(prompt);
+    try {
+      const stats = session.getSessionStats();
+      const model = session.model;
+      if (model && (stats.tokens.input > 0 || stats.tokens.output > 0)) {
+        usage = {
+          promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
+          completionTokens: stats.tokens.output,
+          modelName: model.name,
+          provider: model.provider,
+        };
+        logger.info({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
+      }
+    } catch (statsError) {
+      logger.warn({ statsError }, "failed to capture pi session usage");
+    }
   } catch (error) {
     logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
     throw error;
@@ -183,7 +199,8 @@ export async function runPiWorker(input: {
   if (!decision) {
     throw new Error("Pi finished without calling respond_to_ticket_reporter or wrote_code");
   }
-  return decision;
+  // Attach LLM usage stats captured during the just-finished session (DEN-2313).
+  return usage ? { ...decision, usage } : decision;
 }
 
 async function createPullRequestForRepo(

@@ -2,9 +2,18 @@ import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThr
 
 export type DispatchState = "new" | "iteration";
 
+/** LLM usage stats from the pi agent session, surfaced for cost/efficacy analytics (DEN-2313). */
+export interface DispatchUsage {
+  promptTokens: number;
+  completionTokens: number;
+  modelName: string;
+  provider: string;
+}
+
 export type DispatchResult = {
   status: "pending" | "done";
   pr: PullRequestRef | null;
+  usage?: DispatchUsage;
 };
 
 export type { PullRequestRef };

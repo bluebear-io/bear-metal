@@ -46,6 +46,12 @@ export const runs = sqliteTable("runs", {
   endedAt: ts("ended_at"),
   stopReason: text("stop_reason", { enum: ["completed", "timeout", "crash", "error"] }),
   error: text("error"),
+  // LLM usage stats captured from the pi agent session when the run completes (DEN-2313).
+  // Nullable: older runs and runs that crashed before any model call won't have them.
+  promptTokens: integer("prompt_tokens"),
+  completionTokens: integer("completion_tokens"),
+  modelName: text("model_name"),
+  provider: text("provider"),
   createdAt: ts("created_at").notNull(),
 });
 

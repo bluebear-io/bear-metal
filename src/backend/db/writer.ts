@@ -32,6 +32,8 @@ export function upsertRun(db: Db, p: RunPayload): void {
     id: p.id, ticketId: p.ticketId, attemptNumber: p.attemptNumber, workerId: p.workerId,
     trigger: p.trigger, status: p.status, contextJson: p.contextJson,
     startedAt: d(p.startedAt), endedAt: d(p.endedAt), stopReason: p.stopReason, error: p.error,
+    promptTokens: p.promptTokens, completionTokens: p.completionTokens,
+    modelName: p.modelName, provider: p.provider,
     createdAt: new Date(p.createdAt),
   };
   db.insert(schema.runs).values(row).onConflictDoUpdate({

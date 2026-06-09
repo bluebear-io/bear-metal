@@ -52,6 +52,29 @@ export const formatDurationMs = (ms: number | null): string => {
   return formatWholeMinutes(ms / 60_000);
 };
 
+export const formatTokens = (tokens: number | null): string => {
+  if (tokens === null) return "—";
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return tokens.toString();
+};
+
+export const formatCostUsd = (cost: number | null): string => {
+  if (cost === null) return "—";
+  if (cost === 0) return "$0";
+  if (cost < 0.01) return "<$0.01";
+  if (cost < 1) return `$${cost.toFixed(3)}`;
+  return `$${cost.toFixed(2)}`;
+};
+
+export const formatPercent = (ratio: number): string => `${(ratio * 100).toFixed(0)}%`;
+
+export const formatSeconds = (seconds: number | null): string => {
+  if (seconds === null) return "—";
+  if (seconds < 60) return `${seconds.toFixed(0)}s`;
+  return formatDurationMs(seconds * 1000);
+};
+
 export const parseLabels = (labelsJson: string): string[] => {
   try {
     const labels: unknown = JSON.parse(labelsJson);

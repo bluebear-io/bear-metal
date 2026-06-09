@@ -106,7 +106,12 @@ export function createIngestRouter(db: Db, token: string): Router {
       status: enumVal(b, "status", schema.runs.status.enumValues), contextJson: strOrNull(b, "contextJson"),
       startedAt: numOrNull(b, "startedAt"), endedAt: numOrNull(b, "endedAt"),
       stopReason: b.stopReason === null ? null : enumVal(b, "stopReason", schema.runs.stopReason.enumValues),
-      error: strOrNull(b, "error"), createdAt: num(b, "createdAt"),
+      error: strOrNull(b, "error"),
+      promptTokens: numOrNull(b, "promptTokens"),
+      completionTokens: numOrNull(b, "completionTokens"),
+      modelName: strOrNull(b, "modelName"),
+      provider: strOrNull(b, "provider"),
+      createdAt: num(b, "createdAt"),
     });
   }));
 
