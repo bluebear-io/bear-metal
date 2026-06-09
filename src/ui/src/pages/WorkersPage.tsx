@@ -1,10 +1,16 @@
-import { useWorkers } from "../api/queries.js";
+import { useState } from "react";
+
+import { useWorkers, useWorkerTimeline } from "../api/queries.js";
 import type { WorkerListItem } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
+import { WorkerTimelineChart } from "../components/WorkerTimelineChart.js";
 import { formatDateTime, formatDurationMs } from "../lib/format.js";
+
+const TIMELINE_HOUR_OPTIONS = [24, 48, 72] as const;
+type TimelineHours = (typeof TIMELINE_HOUR_OPTIONS)[number];
 
 const dash = "—";
 
@@ -27,12 +33,52 @@ const workerHealth = (worker: WorkerListItem): "dead" | "timed_out" | "heartbeat
 export default function WorkersPage() {
   const workersQuery = useWorkers();
   const workers = workersQuery.data ?? [];
+  const [timelineHours, setTimelineHours] = useState<TimelineHours>(24);
+  const timelineQuery = useWorkerTimeline(timelineHours);
+
+  const refreshAll = () => {
+    void workersQuery.refetch();
+    void timelineQuery.refetch();
+  };
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 sm:px-8">
       <PageHeader title="Workers">
-        <RefreshButton busy={workersQuery.isFetching} onClick={() => void workersQuery.refetch()} />
+        <RefreshButton busy={workersQuery.isFetching || timelineQuery.isFetching} onClick={refreshAll} />
       </PageHeader>
+
+      <section className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="font-medium text-text-primary">Timeline window:</span>
+          {TIMELINE_HOUR_OPTIONS.map((option) => {
+            const isActive = option === timelineHours;
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setTimelineHours(option)}
+                aria-pressed={isActive}
+                className={[
+                  "rounded-md border px-2.5 py-1 text-xs font-medium transition",
+                  isActive
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border-default text-text-secondary hover:text-text-primary",
+                ].join(" ")}
+              >
+                {option}h
+              </button>
+            );
+          })}
+        </div>
+        <QueryBoundary
+          isLoading={timelineQuery.isLoading}
+          error={timelineQuery.error}
+          isEmpty={(timelineQuery.data?.workers.length ?? 0) === 0}
+          emptyLabel="No timeline data."
+        >
+          {timelineQuery.data ? <WorkerTimelineChart data={timelineQuery.data} /> : null}
+        </QueryBoundary>
+      </section>
 
       <QueryBoundary
         isLoading={workersQuery.isLoading}

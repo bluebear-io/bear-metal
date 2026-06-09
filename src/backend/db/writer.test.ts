@@ -31,6 +31,21 @@ describe("upsertTicket", () => {
   });
 });
 
+describe("upsertWorker status transitions", () => {
+  it("records an initial transition on insert and one per status change", () => {
+    upsertWorker(db, { id: "wk_a", name: "a", status: "idle", currentRunId: null, lastHeartbeatAt: null, startedAt: 1000, updatedAt: 1000 });
+    // Same status, no new transition.
+    upsertWorker(db, { id: "wk_a", name: "a", status: "idle", currentRunId: null, lastHeartbeatAt: 1500, startedAt: 1000, updatedAt: 1500 });
+    upsertWorker(db, { id: "wk_a", name: "a", status: "busy", currentRunId: null, lastHeartbeatAt: 2000, startedAt: 1000, updatedAt: 2000 });
+    upsertWorker(db, { id: "wk_a", name: "a", status: "dead", currentRunId: null, lastHeartbeatAt: 3000, startedAt: 1000, updatedAt: 3000 });
+
+    const rows = db.select().from(schema.workerStatusTransitions)
+      .where(eq(schema.workerStatusTransitions.workerId, "wk_a")).all();
+    expect(rows.map((r) => r.status)).toEqual(["idle", "busy", "dead"]);
+    expect(rows.map((r) => r.changedAt.getTime())).toEqual([1000, 2000, 3000]);
+  });
+});
+
 describe("upsertRun + insertEvent", () => {
   it("persists a run and appends an event", () => {
     upsertTicket(db, ticket);

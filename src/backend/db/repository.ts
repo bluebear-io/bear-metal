@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
@@ -50,6 +50,37 @@ export interface WorkerListItem extends Worker {
 }
 
 interface ListWorkerOptions {
+  now?: Date;
+}
+
+export type WorkerStatusValue = Worker["status"];
+
+export interface WorkerTimelineSegment {
+  status: WorkerStatusValue;
+  startAt: Date;
+  endAt: Date;
+}
+
+export interface WorkerTimeline {
+  id: string;
+  name: string;
+  status: WorkerStatusValue;
+  segments: WorkerTimelineSegment[];
+}
+
+export interface WorkerTimelineResponse {
+  windowStart: Date;
+  windowEnd: Date;
+  hours: number;
+  workers: WorkerTimeline[];
+}
+
+export const WORKER_TIMELINE_MIN_HOURS = 1;
+export const WORKER_TIMELINE_MAX_HOURS = 72;
+export const WORKER_TIMELINE_DEFAULT_HOURS = 24;
+
+interface ListWorkerTimelineOptions {
+  hours?: number;
   now?: Date;
 }
 
@@ -143,4 +174,70 @@ export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerList
       isTimedOut,
     };
   });
+}
+
+/**
+ * Build a per-worker Gantt timeline of status segments inside the [now - hours, now] window.
+ *
+ * The transitions table is append-only. To render a segment that crosses the window's left
+ * edge we also need the most recent transition strictly before `windowStart` (the worker's
+ * status as the window opens). Each segment ends at the next transition's timestamp or, for
+ * the last segment, at `now`.
+ */
+export function listWorkerTimeline(db: Db, options: ListWorkerTimelineOptions = {}): WorkerTimelineResponse {
+  const now = options.now ?? new Date();
+  const hours = clampTimelineHours(options.hours ?? WORKER_TIMELINE_DEFAULT_HOURS);
+  const windowStart = new Date(now.getTime() - hours * 60 * 60 * 1000);
+
+  const workers = db.select().from(schema.workers).all();
+  const result: WorkerTimeline[] = workers.map((w) => {
+    // Most recent transition strictly before the window — gives us the status at windowStart.
+    const prior = db.select()
+      .from(schema.workerStatusTransitions)
+      .where(and(eq(schema.workerStatusTransitions.workerId, w.id), lt(schema.workerStatusTransitions.changedAt, windowStart)))
+      .orderBy(desc(schema.workerStatusTransitions.changedAt))
+      .limit(1)
+      .get();
+
+    const inside = db.select()
+      .from(schema.workerStatusTransitions)
+      .where(and(eq(schema.workerStatusTransitions.workerId, w.id), gte(schema.workerStatusTransitions.changedAt, windowStart)))
+      .orderBy(asc(schema.workerStatusTransitions.changedAt))
+      .all();
+
+    const points: { status: WorkerStatusValue; at: Date }[] = [];
+    if (prior) {
+      points.push({ status: prior.status, at: windowStart });
+    }
+    for (const t of inside) {
+      const at = t.changedAt < windowStart ? windowStart : t.changedAt;
+      points.push({ status: t.status, at });
+    }
+
+    // No transitions ever recorded for this worker — fall back to the live status so the
+    // chart still shows something. This only happens for workers seeded before transition
+    // recording was introduced.
+    if (points.length === 0) {
+      points.push({ status: w.status, at: windowStart });
+    }
+
+    const segments: WorkerTimelineSegment[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const point = points[i]!;
+      const next = points[i + 1];
+      const startAt = point.at < windowStart ? windowStart : point.at;
+      const endAt = next ? next.at : now;
+      if (endAt.getTime() <= startAt.getTime()) continue;
+      segments.push({ status: point.status, startAt, endAt });
+    }
+
+    return { id: w.id, name: w.name, status: w.status, segments };
+  });
+
+  return { windowStart, windowEnd: now, hours, workers: result };
+}
+
+export function clampTimelineHours(hours: number): number {
+  if (!Number.isFinite(hours)) return WORKER_TIMELINE_DEFAULT_HOURS;
+  return Math.max(WORKER_TIMELINE_MIN_HOURS, Math.min(WORKER_TIMELINE_MAX_HOURS, Math.floor(hours)));
 }

@@ -66,6 +66,28 @@ describe("GET /api/tickets/:id", () => {
   });
 });
 
+describe("GET /api/workers/timeline", () => {
+  it("returns per-worker segments for the requested window", async () => {
+    const res = await request(app).get("/api/workers/timeline?hours=24");
+    expect(res.status).toBe(200);
+    expect(res.body.hours).toBe(24);
+    expect(res.body.workers.length).toBe(3);
+    const wk1 = res.body.workers.find((w: { id: string }) => w.id === "wk_1");
+    expect(Array.isArray(wk1.segments)).toBe(true);
+    expect(wk1.segments.length).toBeGreaterThan(0);
+    expect(wk1.segments[0]).toMatchObject({
+      status: expect.any(String),
+      startAt: expect.any(String),
+      endAt: expect.any(String),
+    });
+  });
+
+  it("rejects an out-of-range hours param", async () => {
+    const res = await request(app).get("/api/workers/timeline?hours=999");
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("GET /api/workers", () => {
   it("lists workers with current ticket", async () => {
     const res = await request(app).get("/api/workers");

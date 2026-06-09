@@ -17,12 +17,28 @@ export function seedMockData(db: Db): void {
   db.delete(schema.pullRequests).run();
   db.delete(schema.runs).run();
   db.delete(schema.tickets).run();
+  db.delete(schema.workerStatusTransitions).run();
   db.delete(schema.workers).run();
 
   db.insert(schema.workers).values([
     { id: "wk_1", name: "worker-1", status: "busy", currentRunId: "run_in_1", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T09:00:00Z") },
     { id: "wk_2", name: "worker-2", status: "busy", currentRunId: "run_3", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T09:00:00Z") },
     { id: "wk_3", name: "worker-3", status: "dead", currentRunId: null, lastHeartbeatAt: t("2026-06-09T08:10:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T08:40:00Z") },
+  ]).run();
+
+  // Deterministic worker status history so the Gantt timeline has something to render.
+  db.insert(schema.workerStatusTransitions).values([
+    { id: "wst_1_a", workerId: "wk_1", status: "idle", changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wst_1_b", workerId: "wk_1", status: "busy", changedAt: t("2026-06-09T07:05:00Z") },
+    { id: "wst_1_c", workerId: "wk_1", status: "idle", changedAt: t("2026-06-09T07:50:00Z") },
+    { id: "wst_1_d", workerId: "wk_1", status: "busy", changedAt: t("2026-06-09T08:00:00Z") },
+    { id: "wst_1_e", workerId: "wk_1", status: "idle", changedAt: t("2026-06-09T08:20:00Z") },
+    { id: "wst_1_f", workerId: "wk_1", status: "busy", changedAt: t("2026-06-09T08:55:00Z") },
+    { id: "wst_2_a", workerId: "wk_2", status: "idle", changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wst_2_b", workerId: "wk_2", status: "busy", changedAt: t("2026-06-09T08:45:00Z") },
+    { id: "wst_3_a", workerId: "wk_3", status: "busy", changedAt: t("2026-06-09T05:30:00Z") },
+    { id: "wst_3_b", workerId: "wk_3", status: "idle", changedAt: t("2026-06-09T06:00:00Z") },
+    { id: "wst_3_c", workerId: "wk_3", status: "dead", changedAt: t("2026-06-09T08:40:00Z") },
   ]).run();
 
   db.insert(schema.tickets).values([

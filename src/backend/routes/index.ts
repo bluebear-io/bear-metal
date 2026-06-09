@@ -1,7 +1,10 @@
 import { Router } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import { listTickets, getTicketDetail, listWorkers } from "../db/repository.js";
+import {
+  listTickets, getTicketDetail, listWorkers, listWorkerTimeline,
+  WORKER_TIMELINE_DEFAULT_HOURS, WORKER_TIMELINE_MIN_HOURS, WORKER_TIMELINE_MAX_HOURS,
+} from "../db/repository.js";
 
 const BM_STATUSES = schema.tickets.bmStatus.enumValues;
 type BmStatus = (typeof BM_STATUSES)[number];
@@ -37,6 +40,22 @@ export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
 
   router.get("/workers", (_req, res) => {
     res.json({ workers: listWorkers(db) });
+  });
+
+  router.get("/workers/timeline", (req, res) => {
+    const raw = req.query.hours;
+    let hours = WORKER_TIMELINE_DEFAULT_HOURS;
+    if (raw !== undefined) {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed < WORKER_TIMELINE_MIN_HOURS || parsed > WORKER_TIMELINE_MAX_HOURS) {
+        res.status(400).json({
+          error: `hours must be an integer between ${WORKER_TIMELINE_MIN_HOURS} and ${WORKER_TIMELINE_MAX_HOURS}`,
+        });
+        return;
+      }
+      hours = parsed;
+    }
+    res.json(listWorkerTimeline(db, { hours }));
   });
 
   return router;

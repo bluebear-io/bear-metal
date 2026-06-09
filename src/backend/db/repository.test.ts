@@ -4,7 +4,7 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 import { seedMockData } from "../mock/seed.js";
-import { listTickets, getTicketDetail, listWorkers } from "./repository.js";
+import { listTickets, getTicketDetail, listWorkers, listWorkerTimeline, clampTimelineHours } from "./repository.js";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -89,5 +89,43 @@ describe("listWorkers", () => {
     const dead = rows.find((w) => w.id === "wk_3")!;
     expect(dead.isDead).toBe(true);
     expect(dead.isHeartbeatStale).toBe(true);
+  });
+});
+
+describe("listWorkerTimeline", () => {
+  const now = new Date("2026-06-09T09:00:00Z");
+
+  it("returns one timeline per worker with contiguous segments inside the window", () => {
+    const result = listWorkerTimeline(db, { hours: 24, now });
+    expect(result.hours).toBe(24);
+    expect(result.windowEnd.toISOString()).toBe(now.toISOString());
+    expect(result.workers.map((w) => w.id).sort()).toEqual(["wk_1", "wk_2", "wk_3"]);
+
+    const wk1 = result.workers.find((w) => w.id === "wk_1")!;
+    // Segments must form a non-overlapping forward chain whose union covers the window.
+    for (let i = 0; i < wk1.segments.length; i++) {
+      const seg = wk1.segments[i]!;
+      expect(seg.endAt.getTime()).toBeGreaterThan(seg.startAt.getTime());
+      if (i > 0) expect(seg.startAt.getTime()).toBe(wk1.segments[i - 1]!.endAt.getTime());
+    }
+    expect(wk1.segments.at(-1)!.endAt.getTime()).toBe(now.getTime());
+    expect(wk1.segments.some((s) => s.status === "busy")).toBe(true);
+    expect(wk1.segments.some((s) => s.status === "idle")).toBe(true);
+  });
+
+  it("clips segments to windowStart when the prior transition predates the window", () => {
+    const result = listWorkerTimeline(db, { hours: 1, now });
+    const wk3 = result.workers.find((w) => w.id === "wk_3")!;
+    expect(wk3.segments.length).toBeGreaterThan(0);
+    expect(wk3.segments[0]!.startAt.getTime()).toBe(result.windowStart.getTime());
+  });
+});
+
+describe("clampTimelineHours", () => {
+  it("clamps to [1, 72]", () => {
+    expect(clampTimelineHours(0)).toBe(1);
+    expect(clampTimelineHours(100)).toBe(72);
+    expect(clampTimelineHours(48)).toBe(48);
+    expect(clampTimelineHours(Number.NaN)).toBe(24);
   });
 });

@@ -1,14 +1,33 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { WorkerListItem } from "../api/types.js";
+import type { WorkerListItem, WorkerTimelineResponse } from "../api/types.js";
 import WorkersPage from "./WorkersPage.js";
 
 const useWorkers = vi.fn();
+const useWorkerTimeline = vi.fn();
 
 vi.mock("../api/queries.js", () => ({
   useWorkers: () => useWorkers(),
+  useWorkerTimeline: (hours: number) => useWorkerTimeline(hours),
 }));
+
+const timeline: WorkerTimelineResponse = {
+  windowStart: "2026-06-09T08:00:00.000Z",
+  windowEnd: "2026-06-09T10:06:00.000Z",
+  hours: 24,
+  workers: [
+    {
+      id: "worker-1",
+      name: "worker-1",
+      status: "busy",
+      segments: [
+        { status: "idle", startAt: "2026-06-09T08:00:00.000Z", endAt: "2026-06-09T09:00:00.000Z" },
+        { status: "busy", startAt: "2026-06-09T09:00:00.000Z", endAt: "2026-06-09T10:06:00.000Z" },
+      ],
+    },
+  ],
+};
 
 const workers: WorkerListItem[] = [
   {
@@ -67,6 +86,13 @@ describe("WorkersPage", () => {
       isLoading: false,
       refetch: vi.fn(),
     });
+    useWorkerTimeline.mockReturnValue({
+      data: timeline,
+      error: null,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    });
   });
 
   it("renders workers with ticket, run, runtime, and health status", () => {
@@ -80,5 +106,15 @@ describe("WorkersPage", () => {
     expect(screen.getByText("6m")).toBeVisible();
     expect(screen.getByText("healthy")).toBeVisible();
     expect(screen.getAllByText("dead")).toHaveLength(2);
+  });
+
+  it("renders the worker timeline Gantt chart", () => {
+    render(<WorkersPage />);
+
+    expect(screen.getByText("Worker timeline")).toBeVisible();
+    expect(screen.getByText("last 24h")).toBeVisible();
+    expect(screen.getByTestId("worker-timeline-row-worker-1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "48h" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "72h" })).toBeVisible();
   });
 });
