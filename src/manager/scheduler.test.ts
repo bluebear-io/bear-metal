@@ -1,15 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createLogger,
   type PullRequest,
   type PullRequestRef,
   type PullRequestStatus,
+  type RunTrigger,
   type Ticket,
   type TicketContext,
   type WorkOutcome,
 } from "../shared/index.js";
 
+import type { DashboardReporter } from "./dashboardReporter.js";
 import { Scheduler, type GitHubSource, type LinearSource, type TicketHandler } from "./scheduler.js";
 import { TicketStore } from "./state.js";
 import { makeContext, makeTicket } from "./test-helpers.js";
@@ -87,9 +89,11 @@ class FakeGitHub implements GitHubSource {
 
 class FakeHandler implements TicketHandler {
   handled: TicketContext[] = [];
+  triggers: RunTrigger[] = [];
   constructor(private readonly outcome: WorkOutcome = { status: "pending" }) {}
-  async handle(ctx: TicketContext): Promise<WorkOutcome> {
+  async handle(ctx: TicketContext, trigger: RunTrigger): Promise<WorkOutcome> {
     this.handled.push(ctx);
+    this.triggers.push(trigger);
     return this.outcome;
   }
 }
@@ -124,6 +128,7 @@ function buildScheduler(deps: {
   tasks?: TaskQueue;
   handler: TicketHandler;
   concurrency: number;
+  reporter?: DashboardReporter;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -135,6 +140,7 @@ function buildScheduler(deps: {
     agentId: "user-1",
     concurrency: deps.concurrency,
     pollIntervalMs: 60_000,
+    reporter: deps.reporter,
   });
 }
 
@@ -150,6 +156,27 @@ describe("Scheduler.tick", () => {
 
     expect(store.count()).toBe(2);
     expect(handler.handled).toHaveLength(2);
+  });
+
+  it("reports newly admitted tickets to the dashboard reporter", async () => {
+    const store = new TicketStore();
+    const linear = new FakeLinear([makeTicket("a")]);
+    const ticketDiscovered = vi.fn();
+    const reporter = { ticketDiscovered } as unknown as DashboardReporter;
+    const scheduler = buildScheduler({
+      linear,
+      github: new FakeGitHub(),
+      store,
+      handler: new FakeHandler(),
+      concurrency: 1,
+      reporter,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(ticketDiscovered).toHaveBeenCalledTimes(1);
+    expect(ticketDiscovered).toHaveBeenCalledWith(makeTicket("a"));
   });
 
   it("records completed SQL task results for tracked task ids", async () => {
