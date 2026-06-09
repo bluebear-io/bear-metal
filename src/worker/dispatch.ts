@@ -18,8 +18,6 @@ export interface DispatchInput {
   pr?: PullRequestRef | null;
   integrations: WorkerIntegrations;
   packageRoot?: string;
-  /** Delete and re-clone if the workspace already exists. Useful for re-running the same ticket. */
-  force?: boolean;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -46,7 +44,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
           return p;
         })
       : Promise.resolve(null),
-    runCloneScript({ packageRoot, workspaceDir, force: input.force }).then((r) => {
+    runCloneScript({ packageRoot, workspaceDir }).then((r) => {
       logger.info({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
       return r;
     }),

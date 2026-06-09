@@ -37,7 +37,6 @@ describe("dispatch", () => {
     const result = await dispatch({
       state: "new",
       ticketId: "DEN-1",
-      force: true,
       integrations: {
         github: makeGithub(),
         linear: {
@@ -51,11 +50,13 @@ describe("dispatch", () => {
               branchName: "feature/den-1-build-thing",
               status: { name: "Todo", type: "unstarted" },
               labels: ["bear-metal"],
+              assignee: { id: "creator" },
+              delegate: { id: "agent" },
             },
             comments: [],
           })),
           moveTicketToInProgress,
-          commentAndAssignToCreator: vi.fn(),
+          commentAndHandBack: vi.fn(),
         },
       },
     });

@@ -18,7 +18,6 @@ const result = await dispatch({
     }),
     linear: new LinearIntegration({ token: managerConfig.linearApiToken }),
   },
-  force: true,
 });
 
 console.log("dispatch result:", result);

@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { access, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { runCommand } from "../shared/command.js";
 import type { CloneScriptResult } from "./types.js";
@@ -8,15 +8,9 @@ import type { CloneScriptResult } from "./types.js";
 export async function runCloneScript(input: {
   packageRoot: string;
   workspaceDir: string;
-  /** Delete and re-clone if the target already exists. Useful for re-running the same ticket. */
-  force?: boolean;
 }): Promise<CloneScriptResult> {
   const scriptPath = resolve(input.packageRoot, "scripts", "clone-target-repos.sh");
-  if (input.force) {
-    await rm(resolve(input.workspaceDir, "blueden"), { recursive: true, force: true });
-  } else {
-    await ensureCloneTargetDoesNotExist(input.workspaceDir);
-  }
+  await rm(resolve(input.workspaceDir, "blueden"), { recursive: true, force: true });
   const result = await runCommand("bash", [scriptPath], {
     cwd: input.workspaceDir,
     timeoutMs: 10 * 60 * 1000,
@@ -38,17 +32,4 @@ export function workspaceForTicket(_packageRoot: string, ticketId: string): stri
   const safeTicketId = ticketId.replace(/[^a-zA-Z0-9_-]/g, "-");
   const base = process.env.BEAR_METAL_WORKSPACE_DIR ?? resolve(homedir(), ".bear-metal", "workspace");
   return resolve(base, safeTicketId);
-}
-
-async function ensureCloneTargetDoesNotExist(workspaceDir: string): Promise<void> {
-  const target = resolve(workspaceDir, "blueden");
-  try {
-    await access(target);
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return;
-    }
-    throw error;
-  }
-  throw new Error(`Clone target already exists: ${target}`);
 }
