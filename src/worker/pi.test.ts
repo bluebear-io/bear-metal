@@ -298,6 +298,91 @@ describe("runPiWorker", () => {
     expect(result).toEqual({ status: "done", pr: { owner: "acme", repo: "widgets", number: 7 } });
   });
 
+  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const github = makeGithub();
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "feat: ship",
+        prTitle: "feat: ship",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
+      kind: "opened",
+      pr: { owner: "acme", repo: "widgets", number: 42 },
+      title: "feat: ship",
+      url: "https://github.com/acme/widgets/pull/42",
+      ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
+    });
+  });
+
+  it("sends a slack 'updated' notification when wrote_code runs on an existing PR", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix",
+        prTitle: "fix typo",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({
+      context: makeContext({
+        state: "iteration",
+        pr: { owner: "acme", repo: "widgets", number: 7 },
+        pullRequest: makePullRequestContext(),
+      }),
+      github: makeGithub(),
+      linear,
+      slack,
+      gitEnv: {},
+    });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "updated",
+        pr: { owner: "acme", repo: "widgets", number: 7 },
+        url: "https://github.com/acme/widgets/pull/7",
+        ticketId: "DEN-1",
+      }),
+    );
+  });
+
+  it("does not require a slack integration to be provided", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix",
+        prTitle: "fix",
+        prBody: "body",
+      });
+    });
+
+    const result = await runPiWorker({
+      context: makeContext({ pr: { owner: "acme", repo: "widgets", number: 7 } }),
+      github: makeGithub(),
+      linear,
+      gitEnv: {},
+    });
+
+    expect(result).toEqual({ status: "done", pr: { owner: "acme", repo: "widgets", number: 7 } });
+  });
+
   it("comments and hands the ticket back to its human owner when pending human response", async () => {
     const { runPiWorker } = await import("./pi.js");
     const commentAndHandBack = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
