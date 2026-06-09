@@ -19,8 +19,13 @@ export interface Ticket {
   branchName: string;
   status: TicketStatus;
   labels: string[];
-  /** Current assignee, or null if unassigned. The manager parks tickets not assigned to it. */
+  /** Human owner of the ticket (stays the creator even when an agent is delegated to it). */
   assignee: { id: string } | null;
+  /**
+   * Agent the ticket is delegated to, or null. The manager works tickets delegated to it and
+   * parks those that are not — Linear assigns agent work via delegation, not assignment.
+   */
+  delegate: { id: string } | null;
 }
 
 export interface TicketCommentUser {

@@ -42,7 +42,7 @@ class FakeLinear implements LinearSource {
     /** Override what getTicket returns per id (refresh sees a possibly-reassigned ticket). */
     private readonly refreshed: Record<string, Ticket> = {},
   ) {}
-  async findTicketsByAssignee(_assigneeId: string, _options?: FindTicketsOptions): Promise<Ticket[]> {
+  async findDelegatedTickets(_agentId: string, _options?: FindTicketsOptions): Promise<Ticket[]> {
     return this.todo;
   }
   async getTicket(id: string): Promise<Ticket> {
@@ -86,7 +86,7 @@ function buildScheduler(deps: {
     github: deps.github,
     store: deps.store,
     handler: deps.handler,
-    assigneeId: "user-1",
+    agentId: "user-1",
     concurrency: deps.concurrency,
     pollIntervalMs: 60_000,
   });
@@ -214,10 +214,10 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(1);
   });
 
-  it("parks a tracked ticket reassigned away from the manager without dispatching or hitting GitHub", async () => {
+  it("parks a tracked ticket whose delegation was relinquished, without dispatching or hitting GitHub", async () => {
     const store = new TicketStore();
-    store.upsert("a", makeContext("a")); // mine, no PR, phase active
-    const reassigned = makeTicket("a", { assignee: { id: "creator" } });
+    store.upsert("a", makeContext("a")); // delegated to me, no PR, phase active
+    const reassigned = makeTicket("a", { delegate: { id: "someone-else" } });
     const github = new FakeGitHub();
     const handler = new FakeHandler();
     const scheduler = buildScheduler({
@@ -236,6 +236,28 @@ describe("Scheduler.tick", () => {
     expect(store.get("a")?.phase).toBe("parked");
     expect(github.findCalls).toHaveLength(0);
     expect(github.statusCalls).toHaveLength(0);
+  });
+
+  it("keys on delegate, not assignee: parks a ticket assigned to the agent but delegated elsewhere", async () => {
+    const store = new TicketStore();
+    store.upsert("a", makeContext("a")); // delegated to me, phase active
+    // assignee is the agent id, but delegate is someone else — a buggy assignee-keyed gate
+    // would treat this as "mine" and dispatch; the correct delegate-keyed gate parks it.
+    const refreshed = makeTicket("a", { assignee: { id: "user-1" }, delegate: { id: "someone-else" } });
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { a: refreshed }),
+      github: new FakeGitHub(),
+      store,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(store.get("a")?.phase).toBe("parked");
   });
 
   it("resumes a parked ticket when it is reassigned back to the manager", async () => {

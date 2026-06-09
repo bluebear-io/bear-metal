@@ -39,7 +39,7 @@ const scheduler = new Scheduler({
   github,
   store,
   handler,
-  assigneeId: config.linearAssigneeId,
+  agentId: config.linearAssigneeId,
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });

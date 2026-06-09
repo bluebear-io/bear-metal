@@ -15,7 +15,7 @@ import type { TicketPhase, TicketStore } from "./state.js";
 
 /** The Linear capabilities the scheduler needs (subset of LinearIntegration). */
 export interface LinearSource {
-  findTicketsByAssignee(assigneeId: string, options?: FindTicketsOptions): Promise<Ticket[]>;
+  findDelegatedTickets(agentId: string, options?: FindTicketsOptions): Promise<Ticket[]>;
   getTicket(id: string): Promise<Ticket>;
 }
 
@@ -38,8 +38,8 @@ export interface SchedulerDeps {
   github: GitHubSource;
   store: TicketStore;
   handler: TicketHandler;
-  /** Linear user id whose tickets the manager works. */
-  assigneeId: string;
+  /** Linear user id of the agent the manager runs as; it works tickets delegated to this id. */
+  agentId: string;
   concurrency: number;
   pollIntervalMs: number;
   /** Linear workflow-state name new tickets are admitted from. */
@@ -91,15 +91,15 @@ export class Scheduler {
    * that need work), admit new tickets into free slots, then dispatch the eligible set.
    */
   async tick(): Promise<void> {
-    const { store, linear, github, handler, logger, assigneeId, concurrency } = this.deps;
+    const { store, linear, github, handler, logger, agentId, concurrency } = this.deps;
 
     logger.info({ active: store.count() }, "poll tick started");
 
-    const refreshed = await refreshTrackedTickets(store, linear, github, assigneeId, logger);
+    const refreshed = await refreshTrackedTickets(store, linear, github, agentId, logger);
     const admitted = await admitNewTickets(
       store,
       linear,
-      assigneeId,
+      agentId,
       this.todoStatus,
       freeSlots(concurrency, store.count()),
       logger,
@@ -156,9 +156,9 @@ function refToContext(pr: PullRequest): PullRequestRef {
 
 /**
  * Refresh one tracked ticket and decide what to do with it. GitHub is queried only here.
- * - Not assigned to the manager → parked: held in its slot, not dispatched, GitHub left alone
- *   (it is waiting on the assignee, e.g. the creator answering the worker's question).
- * - Assigned to the manager, just back from parked → resume: re-dispatched (unless its PR is
+ * - Not delegated to the manager → parked: held in its slot, not dispatched, GitHub left alone
+ *   (it is waiting on its human owner, e.g. the creator answering the worker's question).
+ * - Delegated to the manager, just back from parked → resume: re-dispatched (unless its PR is
  *   already merged/closed, which releases it).
  * - Known PR → look it up by ref; merged/closed releases it, otherwise dispatch iff it has
  *   failed tests or unresolved review comments.
@@ -169,21 +169,21 @@ async function evaluateTicket(
   ticket: Ticket,
   knownPr: PullRequest | null,
   prevPhase: TicketPhase,
-  assigneeId: string,
+  agentId: string,
   github: GitHubSource,
   logger: Logger,
 ): Promise<TicketDecision> {
-  if (ticket.assignee?.id !== assigneeId) {
+  if (ticket.delegate?.id !== agentId) {
     logger.debug(
-      { ticket: ticket.identifier, assignee: ticket.assignee?.id ?? null },
-      "ticket not assigned to manager; parking",
+      { ticket: ticket.identifier, delegate: ticket.delegate?.id ?? null },
+      "ticket not delegated to manager; parking",
     );
     return { remove: false, context: { ticket, pr: knownPr }, dispatch: false, phase: "parked" };
   }
 
   const resuming = prevPhase === "parked";
   if (resuming) {
-    logger.info({ ticket: ticket.identifier }, "ticket reassigned back to manager; resuming");
+    logger.info({ ticket: ticket.identifier }, "ticket re-delegated to manager; resuming");
   }
 
   if (knownPr) {
@@ -236,13 +236,13 @@ async function refreshTrackedTickets(
   store: TicketStore,
   linear: LinearSource,
   github: GitHubSource,
-  assigneeId: string,
+  agentId: string,
   logger: Logger,
 ): Promise<TicketContext[]> {
   const toDispatch: TicketContext[] = [];
   for (const { context, phase } of store.all()) {
     const ticket = await linear.getTicket(context.ticket.id);
-    const decision = await evaluateTicket(ticket, context.pr, phase, assigneeId, github, logger);
+    const decision = await evaluateTicket(ticket, context.pr, phase, agentId, github, logger);
     if (decision.remove) {
       store.remove(ticket.id);
       continue;
@@ -259,7 +259,7 @@ async function refreshTrackedTickets(
 async function admitNewTickets(
   store: TicketStore,
   linear: LinearSource,
-  assigneeId: string,
+  agentId: string,
   todoStatus: string,
   free: number,
   logger: Logger,
@@ -267,7 +267,7 @@ async function admitNewTickets(
   if (free <= 0) {
     return [];
   }
-  const candidates = await linear.findTicketsByAssignee(assigneeId, { status: todoStatus });
+  const candidates = await linear.findDelegatedTickets(agentId, { status: todoStatus });
   const admitted = selectAdmissions(candidates, (id) => store.has(id), free);
   const contexts: TicketContext[] = [];
   for (const ticket of admitted) {
