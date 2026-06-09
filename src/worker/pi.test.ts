@@ -58,6 +58,7 @@ describe("runPiWorker", () => {
       github: makeGithub(),
       linear: {
         getTicketContext: vi.fn(),
+        moveTicketToInProgress: vi.fn(),
         commentAndHandBack,
       },
     });

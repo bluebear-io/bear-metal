@@ -49,6 +49,28 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     await this.client.createComment({ issueId: ticketId, body });
   }
 
+  async moveTicketToInProgress(ticketId: string): Promise<void> {
+    const issue = await this.client.issue(ticketId);
+    const team = await issue.team;
+    if (!team) {
+      throw new Error(`Linear issue ${issue.identifier} has no team`);
+    }
+
+    const states = await this.client.workflowStates({
+      filter: {
+        name: { eq: "In Progress" },
+        team: { id: { eq: team.id } },
+      },
+      first: 10,
+    });
+    const inProgressState = states.nodes.find((state) => state.name === "In Progress" && state.teamId === team.id);
+    if (!inProgressState) {
+      throw new Error(`Linear team ${team.name} has no In Progress workflow state`);
+    }
+
+    await issue.update({ stateId: inProgressState.id });
+  }
+
   /**
    * Hand the ticket back to its human owner: comment, then relinquish the agent's delegation.
    * Clearing `delegateId` is what un-parks the manager's hold — the human re-delegates to resume.

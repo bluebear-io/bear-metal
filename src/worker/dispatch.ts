@@ -61,6 +61,9 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     cloneScript,
   };
 
+  await linear.moveTicketToInProgress(ticketId);
+  logger.info({ ticketId }, "linear ticket moved to in progress");
+
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
   const result = await runPiWorker({ context, github, linear });
   logger.info({ ticketId, status: result.status }, "pi worker session completed");
