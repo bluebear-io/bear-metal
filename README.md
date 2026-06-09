@@ -5,12 +5,11 @@ solves them with an LLM, and opens a GitHub PR.
 
 ## Scope (current)
 
-This repository currently contains the **manager** half: a service that, once a
-minute, fetches Linear tickets tagged `bear-metal`, looks up the GitHub PR for the
-tickets it is actively working, and maintains an in-memory record of in-progress
-tickets up to a concurrency cap. Per active ticket it invokes a `ManagerTicketHandler`
-that delegates to a no-op `worker` stub. Real worker/LLM logic and the ticket state
-machine are not implemented yet.
+This repository currently contains one process with a **manager** and **worker**.
+The manager polls Linear tickets tagged `bear-metal`, looks up the GitHub PR for
+active tickets, and maintains an in-memory concurrency cap. The worker gathers
+Linear/GitHub context, runs the repository clone hook, invokes Pi, and records
+either `pending` or `done`.
 
 ## Layout
 
@@ -20,7 +19,7 @@ folders under `src/`, each with a barrel `index.ts`:
 ```
 src/
   shared/   logger, Linear + GitHub integrations, shared types
-  worker/   solver stub (no-op), called in-process by the manager
+  worker/   Pi solver, called in-process by the manager
   manager/  config, in-memory state, ticket handler, scheduler, health server
             └─ index.ts  ← entrypoint (dist/manager/index.js)
 ```
@@ -41,6 +40,15 @@ Copy `.env.example` to `.env` and fill in the required values:
 | `PORT` | no | `3000` | health server port |
 | `LOG_LEVEL` | no | `info` | pino log level |
 | `LOG_PRETTY` | no | `false` | colorized, human-readable logs (dev); JSON when false |
+
+The worker also needs Pi model credentials supported by
+`@earendil-works/pi-coding-agent`, such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+or `GOOGLE_API_KEY`.
+
+## Clone Hook
+
+The worker runs `scripts/clone-target-repos.sh` inside a per-ticket workspace
+before invoking Pi. Keep target-repository setup logic in that script.
 
 ## Develop
 

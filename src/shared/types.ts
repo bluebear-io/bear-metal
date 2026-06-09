@@ -12,8 +12,7 @@ export interface WorkOutcome {
   done: boolean;
 }
 
-/** Minimal now; the future worker/state machine widens this. */
-export type WorkerStatus = "noop";
+export type WorkerStatus = "noop" | "pending" | "done";
 
 /** The worker's response to the handler. */
 export interface WorkerResponse {
