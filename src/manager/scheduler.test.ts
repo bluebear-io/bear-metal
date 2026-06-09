@@ -197,19 +197,20 @@ describe("Scheduler.tick", () => {
     expect(store.count()).toBe(2);
   });
 
-  it("does not query GitHub during admission, only when refreshing tracked tickets", async () => {
+  it("looks for an existing PR before dispatching an admitted ticket", async () => {
     const store = new TicketStore();
     const linear = new FakeLinear([makeTicket("a")]);
-    const github = new FakeGitHub();
-    const scheduler = buildScheduler({ linear, github, store, handler: new FakeHandler(), concurrency: 1 });
+    const github = new FakeGitHub({ found: openPr(15) });
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({ linear, github, store, handler, concurrency: 1 });
 
-    await scheduler.tick(); // admit "a" (new) — no GitHub call
+    await scheduler.tick();
     await scheduler.stop();
-    expect(github.findCalls).toHaveLength(0);
 
-    await scheduler.tick(); // refresh tracked "a" (still no PR) — searches for a PR
-    await scheduler.stop();
     expect(github.findCalls).toEqual(["a"]);
+    expect(handler.handled).toHaveLength(1);
+    expect(handler.handled[0]?.pr?.number).toBe(15);
+    expect(store.get("a")?.context.pr?.number).toBe(15);
   });
 
   it("releases a ticket when its PR is merged and hands it back to the assignee", async () => {

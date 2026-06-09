@@ -99,6 +99,7 @@ export class Scheduler {
     const admitted = await admitNewTickets(
       store,
       linear,
+      github,
       agentId,
       freeSlots(concurrency, store.count()),
       logger,
@@ -156,7 +157,7 @@ function refToContext(pr: PullRequest): PullRequestRef {
 }
 
 /**
- * Refresh one tracked ticket and decide what to do with it. GitHub is queried only here.
+ * Refresh one tracked ticket and decide what to do with it.
  * - Not delegated to the manager → parked: held in its slot, not dispatched, GitHub left alone
  *   (it is waiting on its human owner, e.g. the creator answering the worker's question).
  * - Delegated to the manager, just back from parked → resume: re-dispatched (unless its PR is
@@ -262,10 +263,11 @@ async function refreshTrackedTickets(
   return toDispatch;
 }
 
-/** Step 2 — admit newly delegated (non-done) tickets into free slots; returns the admitted contexts. */
+/** Step 2 — admit newly delegated tickets after checking whether they already have a PR. */
 async function admitNewTickets(
   store: TicketStore,
   linear: LinearSource,
+  github: GitHubSource,
   agentId: string,
   free: number,
   logger: Logger,
@@ -277,7 +279,11 @@ async function admitNewTickets(
   const admitted = selectAdmissions(candidates, (id) => store.has(id), free);
   const contexts: TicketContext[] = [];
   for (const ticket of admitted) {
-    const context: TicketContext = { ticket, pr: null };
+    const pr = await github.findPullRequestForTicket(ticket);
+    if (pr) {
+      logger.info({ ticket: ticket.identifier, pr: pr.number, headRef: pr.headRef }, "found pull request for admitted ticket");
+    }
+    const context: TicketContext = { ticket, pr };
     store.upsert(ticket.id, context);
     logger.info({ ticket: ticket.identifier }, "picked up ticket");
     contexts.push(context);
