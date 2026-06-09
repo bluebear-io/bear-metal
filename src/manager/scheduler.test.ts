@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createLogger,
@@ -11,11 +11,11 @@ import {
 } from "../shared/index.js";
 
 import { Scheduler, type GitHubSource, type LinearSource, type TicketHandler } from "./scheduler.js";
-import { TicketStore } from "./state.js";
-import { makeContext, makeTicket } from "./test-helpers.js";
-import type { DispatchTaskInput, TaskQueue, TaskRecord } from "./tasks.js";
+import { makeTicket } from "./test-helpers.js";
+import { createTaskQueueFromDatabaseUrl, type DispatchTaskInput, type TaskQueue } from "./tasks.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
+const queues: TaskQueue[] = [];
 
 function openPr(number = 7, overrides: Partial<PullRequest> = {}): PullRequest {
   return {
@@ -32,38 +32,54 @@ function openPr(number = 7, overrides: Partial<PullRequest> = {}): PullRequest {
   };
 }
 
+function prRef(number = 7): PullRequestRef {
+  return { owner: "acme", repo: "widgets", number };
+}
+
 function status(pr: PullRequest, testsFailed = false, hasUnresolvedComments = false): PullRequestStatus {
   return { pr, testsFailed, hasUnresolvedComments };
 }
 
-function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
-  return {
-    id: "task-1",
-    ticketId: "DEN-1",
-    dispatchState: "new",
-    input: { state: "new", ticketId: "DEN-1", pr: null },
-    workerId: "worker-1",
-    resultStatus: null,
-    result: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    completedAt: null,
-    ...overrides,
-  };
+async function makeQueue(): Promise<TaskQueue> {
+  const queue = createTaskQueueFromDatabaseUrl("sqlite::memory:");
+  await queue.initialize();
+  queues.push(queue);
+  return queue;
 }
+
+async function seedCompletedTask(
+  tasks: TaskQueue,
+  input: DispatchTaskInput,
+  result: { status: "pending" | "done"; pr: PullRequestRef | null },
+): Promise<void> {
+  const task = await tasks.enqueue(input);
+  const acquired = await tasks.acquireNext("worker-1");
+  expect(acquired?.id).toBe(task.id);
+  await tasks.complete(task.id, result);
+}
+
+afterEach(async () => {
+  await Promise.all(queues.splice(0).map((queue) => queue.close()));
+});
 
 class FakeLinear implements LinearSource {
   handBackCalls: string[] = [];
   constructor(
     private readonly todo: Ticket[],
-    /** Override what getTicket returns per id (refresh sees a possibly-reassigned ticket). */
+    /** Override what getTicket returns per id or identifier. */
     private readonly refreshed: Record<string, Ticket> = {},
   ) {}
   async findDelegatedTickets(_agentId: string): Promise<Ticket[]> {
     return this.todo;
   }
   async getTicket(id: string): Promise<Ticket> {
-    return this.refreshed[id] ?? this.todo.find((t) => t.id === id) ?? makeTicket(id);
+    return (
+      this.refreshed[id] ??
+      this.refreshed[id.toLowerCase()] ??
+      this.refreshed[id.toUpperCase()] ??
+      this.todo.find((ticket) => ticket.id === id || ticket.identifier === id) ??
+      makeTicket(id.toLowerCase())
+    );
   }
   async handBack(ticketId: string): Promise<void> {
     this.handBackCalls.push(ticketId);
@@ -71,56 +87,32 @@ class FakeLinear implements LinearSource {
 }
 
 class FakeGitHub implements GitHubSource {
-  findCalls: string[] = [];
   statusCalls: number[] = [];
-  constructor(private readonly opts: { found?: PullRequest | null; status?: PullRequestStatus } = {}) {}
-  async findPullRequestForTicket(ticket: Ticket): Promise<PullRequest | null> {
-    this.findCalls.push(ticket.id);
-    return this.opts.found ?? null;
-  }
+  constructor(private readonly opts: { status?: PullRequestStatus } = {}) {}
   async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
     this.statusCalls.push(ref.number);
     return this.opts.status ?? status(openPr(ref.number));
   }
 }
 
-class FakeHandler implements TicketHandler {
+class RecordingHandler implements TicketHandler {
   handled: TicketContext[] = [];
-  constructor(private readonly outcome: WorkOutcome = { status: "pending" }) {}
+  constructor(private readonly tasks: TaskQueue) {}
   async handle(ctx: TicketContext): Promise<WorkOutcome> {
     this.handled.push(ctx);
-    return this.outcome;
+    const task = await this.tasks.enqueue({
+      state: ctx.pr === null ? "new" : "iteration",
+      ticketId: ctx.ticket.identifier,
+      pr: ctx.pr ? { owner: ctx.pr.owner, repo: ctx.pr.repo, number: ctx.pr.number } : null,
+    });
+    return { status: "pending", taskId: task.id };
   }
-}
-
-class FakeTasks implements TaskQueue {
-  constructor(private readonly completed: TaskRecord[] = []) {}
-
-  async initialize(): Promise<void> {}
-
-  async enqueue(_input: DispatchTaskInput): Promise<TaskRecord> {
-    throw new Error("FakeTasks.enqueue is not used by scheduler tests");
-  }
-
-  async acquireNext(): Promise<TaskRecord | null> {
-    return null;
-  }
-
-  async complete(): Promise<void> {}
-
-  async getCompleted(taskIds: string[]): Promise<TaskRecord[]> {
-    const allowed = new Set(taskIds);
-    return this.completed.filter((task) => allowed.has(task.id));
-  }
-
-  async close(): Promise<void> {}
 }
 
 function buildScheduler(deps: {
   linear: LinearSource;
   github: GitHubSource;
-  store: TicketStore;
-  tasks?: TaskQueue;
+  tasks: TaskQueue;
   handler: TicketHandler;
   concurrency: number;
 }): Scheduler {
@@ -128,8 +120,7 @@ function buildScheduler(deps: {
     logger,
     linear: deps.linear,
     github: deps.github,
-    store: deps.store,
-    tasks: deps.tasks ?? new FakeTasks(),
+    tasks: deps.tasks,
     handler: deps.handler,
     agentId: "user-1",
     concurrency: deps.concurrency,
@@ -138,54 +129,48 @@ function buildScheduler(deps: {
 }
 
 describe("Scheduler.tick", () => {
-  it("admits at most `concurrency` tickets and dispatches new ones", async () => {
-    const store = new TicketStore();
+  it("admits at most `concurrency` tickets and dispatches new ones into SQL tasks", async () => {
+    const tasks = await makeQueue();
     const linear = new FakeLinear([makeTicket("a"), makeTicket("b"), makeTicket("c")]);
-    const handler = new FakeHandler();
-    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), store, handler, concurrency: 2 });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), tasks, handler, concurrency: 2 });
 
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(store.count()).toBe(2);
+    expect(await tasks.countTracked()).toBe(2);
     expect(handler.handled).toHaveLength(2);
   });
 
-  it("records completed SQL task results for tracked task ids", async () => {
-    const store = new TicketStore();
-    store.upsert("a", makeContext("a"));
-    store.setActiveTask("a", "task-1");
+  it("uses the worker-returned PR as the only known PR source for later iterations", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([], { a: makeTicket("a") }),
-      github: new FakeGitHub(),
-      store,
-      tasks: new FakeTasks([
-        taskRecord({
-          id: "task-1",
-          ticketId: "DEN-A",
-          resultStatus: "done",
-          result: { status: "done", pr: null },
-        }),
-      ]),
-      handler: new FakeHandler(),
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      github: new FakeGitHub({ status: status(openPr(7), true, false) }),
+      tasks,
+      handler,
       concurrency: 1,
     });
 
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(store.get("a")?.status).toBe("done");
-    expect(store.get("a")?.activeTaskId).toBeNull();
+    expect(handler.handled).toHaveLength(1);
+    expect(handler.handled[0]?.pr).toEqual(openPr(7));
+    const [slot] = await tasks.listTracked();
+    expect(slot?.latestTask.input).toEqual({ state: "iteration", ticketId: "A", pr: prRef(7) });
   });
 
-  it("admits nothing new when slots are full", async () => {
-    const store = new TicketStore();
+  it("admits nothing new when SQL slots are full", async () => {
+    const tasks = await makeQueue();
     const linear = new FakeLinear([makeTicket("a"), makeTicket("b"), makeTicket("c")]);
     const scheduler = buildScheduler({
       linear,
       github: new FakeGitHub(),
-      store,
-      handler: new FakeHandler(),
+      tasks,
+      handler: new RecordingHandler(tasks),
       concurrency: 2,
     });
 
@@ -194,73 +179,71 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(store.count()).toBe(2);
+    expect(await tasks.countTracked()).toBe(2);
   });
 
-  it("looks for an existing PR before dispatching an admitted ticket", async () => {
-    const store = new TicketStore();
-    const linear = new FakeLinear([makeTicket("a")]);
-    const github = new FakeGitHub({ found: openPr(15) });
-    const handler = new FakeHandler();
-    const scheduler = buildScheduler({ linear, github, store, handler, concurrency: 1 });
+  it("does not query GitHub for no-PR tickets after admission", async () => {
+    const tasks = await makeQueue();
+    const linear = new FakeLinear([makeTicket("a")], { A: makeTicket("a") });
+    const github = new FakeGitHub();
+    const scheduler = buildScheduler({ linear, github, tasks, handler: new RecordingHandler(tasks), concurrency: 1 });
 
     await scheduler.tick();
     await scheduler.stop();
+    await scheduler.tick();
+    await scheduler.stop();
 
-    expect(github.findCalls).toEqual(["a"]);
-    expect(handler.handled).toHaveLength(1);
-    expect(handler.handled[0]?.pr?.number).toBe(15);
-    expect(store.get("a")?.context.pr?.number).toBe(15);
+    expect(github.statusCalls).toHaveLength(0);
   });
 
-  it("releases a ticket when its PR is merged and hands it back to the assignee", async () => {
-    const store = new TicketStore();
-    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
+  it("releases a ticket when its known PR is merged and hands it back to the assignee", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
     const github = new FakeGitHub({ status: status(openPr(7, { merged: true, state: "closed" })) });
-    const linear = new FakeLinear([]); // ticket is no longer Todo, so it won't be re-admitted
+    const linear = new FakeLinear([], { A: makeTicket("a") });
     const scheduler = buildScheduler({
       linear,
       github,
-      store,
-      handler: new FakeHandler(),
+      tasks,
+      handler: new RecordingHandler(tasks),
       concurrency: 1,
     });
 
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(store.count()).toBe(0);
+    expect(await tasks.countTracked()).toBe(0);
     expect(linear.handBackCalls).toEqual(["a"]);
   });
 
-  it("releases a ticket when its PR is closed unmerged without handing it back", async () => {
-    const store = new TicketStore();
-    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
+  it("releases a ticket when its known PR is closed unmerged without handing it back", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
     const github = new FakeGitHub({ status: status(openPr(7, { state: "closed" })) });
-    const linear = new FakeLinear([]); // ticket is no longer Todo, so it won't be re-admitted
+    const linear = new FakeLinear([], { A: makeTicket("a") });
     const scheduler = buildScheduler({
       linear,
       github,
-      store,
-      handler: new FakeHandler(),
+      tasks,
+      handler: new RecordingHandler(tasks),
       concurrency: 1,
     });
 
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(store.count()).toBe(0);
+    expect(await tasks.countTracked()).toBe(0);
     expect(linear.handBackCalls).toEqual([]);
   });
 
-  it("re-dispatches an iteration whose PR has failed tests", async () => {
-    const store = new TicketStore();
-    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
-    const handler = new FakeHandler();
+  it("re-dispatches an iteration whose known PR has failed tests", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([makeTicket("a")]),
+      linear: new FakeLinear([], { A: makeTicket("a") }),
       github: new FakeGitHub({ status: status(openPr(), true, false) }),
-      store,
+      tasks,
       handler,
       concurrency: 1,
     });
@@ -268,19 +251,19 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(store.count()).toBe(1);
+    expect(await tasks.countTracked()).toBe(1);
     expect(handler.handled.at(-1)?.ticket.id).toBe("a");
     expect(handler.handled.at(-1)?.pr?.number).toBe(7);
   });
 
   it("re-dispatches an iteration with unresolved review comments", async () => {
-    const store = new TicketStore();
-    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
-    const handler = new FakeHandler();
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([makeTicket("a")]),
+      linear: new FakeLinear([], { A: makeTicket("a") }),
       github: new FakeGitHub({ status: status(openPr(), false, true) }),
-      store,
+      tasks,
       handler,
       concurrency: 1,
     });
@@ -292,15 +275,15 @@ describe("Scheduler.tick", () => {
   });
 
   it("parks a tracked ticket whose delegation was relinquished, without dispatching or hitting GitHub", async () => {
-    const store = new TicketStore();
-    store.upsert("a", makeContext("a")); // delegated to me, no PR, phase active
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
     const reassigned = makeTicket("a", { delegate: { id: "someone-else" } });
     const github = new FakeGitHub();
-    const handler = new FakeHandler();
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([], { a: reassigned }),
+      linear: new FakeLinear([], { A: reassigned }),
       github,
-      store,
+      tasks,
       handler,
       concurrency: 1,
     });
@@ -308,24 +291,22 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
+    const [slot] = await tasks.listTracked();
     expect(handler.handled).toHaveLength(0);
-    expect(store.count()).toBe(1);
-    expect(store.get("a")?.phase).toBe("parked");
-    expect(github.findCalls).toHaveLength(0);
+    expect(await tasks.countTracked()).toBe(1);
+    expect(slot?.slotStatus).toBe("parked");
     expect(github.statusCalls).toHaveLength(0);
   });
 
   it("keys on delegate, not assignee: parks a ticket assigned to the agent but delegated elsewhere", async () => {
-    const store = new TicketStore();
-    store.upsert("a", makeContext("a")); // delegated to me, phase active
-    // assignee is the agent id, but delegate is someone else — a buggy assignee-keyed gate
-    // would treat this as "mine" and dispatch; the correct delegate-keyed gate parks it.
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
     const refreshed = makeTicket("a", { assignee: { id: "user-1" }, delegate: { id: "someone-else" } });
-    const handler = new FakeHandler();
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([], { a: refreshed }),
+      linear: new FakeLinear([], { A: refreshed }),
       github: new FakeGitHub(),
-      store,
+      tasks,
       handler,
       concurrency: 1,
     });
@@ -333,18 +314,20 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
+    const [slot] = await tasks.listTracked();
     expect(handler.handled).toHaveLength(0);
-    expect(store.get("a")?.phase).toBe("parked");
+    expect(slot?.slotStatus).toBe("parked");
   });
 
   it("resumes a parked ticket when it is reassigned back to the manager", async () => {
-    const store = new TicketStore();
-    store.upsert("a", makeContext("a"), "parked"); // was parked, no PR
-    const handler = new FakeHandler();
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    await tasks.setSlotStatus("A", "parked");
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([], { a: makeTicket("a") }), // back to me (default assignee user-1)
-      github: new FakeGitHub({ found: null }),
-      store,
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      github: new FakeGitHub(),
+      tasks,
       handler,
       concurrency: 1,
     });
@@ -352,19 +335,20 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
+    const [slot] = await tasks.listTracked();
     expect(handler.handled.map((c) => c.ticket.id)).toEqual(["a"]);
-    expect(store.get("a")?.phase).toBe("active");
-    expect(store.count()).toBe(1);
+    expect(slot?.slotStatus).toBe("active");
+    expect(await tasks.countTracked()).toBe(1);
   });
 
-  it("does not re-dispatch a no-PR active ticket on refresh (dispatch is edge-triggered)", async () => {
-    const store = new TicketStore();
-    store.upsert("a", makeContext("a")); // mine, no PR, phase active
-    const handler = new FakeHandler();
+  it("does not re-dispatch a no-PR active ticket on refresh", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([], { a: makeTicket("a") }),
-      github: new FakeGitHub({ found: null }),
-      store,
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      github: new FakeGitHub(),
+      tasks,
       handler,
       concurrency: 1,
     });
@@ -372,19 +356,20 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
+    const [slot] = await tasks.listTracked();
     expect(handler.handled).toHaveLength(0);
-    expect(store.count()).toBe(1);
-    expect(store.get("a")?.phase).toBe("active");
+    expect(await tasks.countTracked()).toBe(1);
+    expect(slot?.slotStatus).toBe("active");
   });
 
   it("does not re-dispatch a clean, open, unmerged iteration", async () => {
-    const store = new TicketStore();
-    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
-    const handler = new FakeHandler();
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([makeTicket("a")]),
+      linear: new FakeLinear([], { A: makeTicket("a") }),
       github: new FakeGitHub({ status: status(openPr(), false, false) }),
-      store,
+      tasks,
       handler,
       concurrency: 1,
     });
@@ -392,7 +377,40 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(store.count()).toBe(1);
+    expect(await tasks.countTracked()).toBe(1);
     expect(handler.handled).toHaveLength(0);
+  });
+
+  it("releases terminal Linear tickets even when no PR is known", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    const terminal = makeTicket("a", { status: { name: "Done", type: "completed" } });
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: terminal }),
+      github: new FakeGitHub(),
+      tasks,
+      handler: new RecordingHandler(tasks),
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await tasks.countTracked()).toBe(0);
+  });
+
+  it("fails loudly when a completed done task has no PR in result or input", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: null });
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      github: new FakeGitHub(),
+      tasks,
+      handler: new RecordingHandler(tasks),
+      concurrency: 1,
+    });
+
+    await expect(scheduler.tick()).rejects.toThrow(/completed with status done but has no pull request/);
+    await scheduler.stop();
   });
 });

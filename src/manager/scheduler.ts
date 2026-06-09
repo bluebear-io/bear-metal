@@ -2,7 +2,6 @@ import PQueue from "p-queue";
 
 import type {
   Logger,
-  PullRequest,
   PullRequestRef,
   PullRequestStatus,
   Ticket,
@@ -10,8 +9,12 @@ import type {
   WorkOutcome,
 } from "../shared/index.js";
 
-import type { TicketPhase, TicketStore } from "./state.js";
-import type { TaskQueue } from "./tasks.js";
+import type { TaskQueue, TaskSlot } from "./tasks.js";
+
+type TicketPhase = "active" | "parked";
+
+const TERMINAL_STATE_TYPES = ["completed", "canceled"];
+const TERMINAL_STATE_NAMES = ["Merged"];
 
 /** The Linear capabilities the scheduler needs (subset of LinearIntegration). */
 export interface LinearSource {
@@ -23,8 +26,6 @@ export interface LinearSource {
 
 /** The GitHub capabilities the scheduler needs (subset of GitHubIntegration). */
 export interface GitHubSource {
-  /** Find the open PR for a ticket without a known PR yet (returns null if none). */
-  findPullRequestForTicket(ticket: Ticket): Promise<PullRequest | null>;
   /** Look up a known PR by ref for its merge/close state and work signals. */
   getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus>;
 }
@@ -38,7 +39,6 @@ export interface SchedulerDeps {
   logger: Logger;
   linear: LinearSource;
   github: GitHubSource;
-  store: TicketStore;
   tasks: TaskQueue;
   handler: TicketHandler;
   /** Linear user id of the agent the manager runs as; it works tickets delegated to this id. */
@@ -86,30 +86,28 @@ export class Scheduler {
   }
 
   /**
-   * One poll cycle: refresh tracked tickets (releasing merged/closed PRs and collecting those
-   * that need work), admit new tickets into free slots, then dispatch the eligible set.
+   * One poll cycle: refresh tracked SQL slots, admit newly delegated tickets into
+   * free SQL slots, then enqueue one worker task per eligible dispatch.
    */
   async tick(): Promise<void> {
-    const { store, tasks, linear, github, handler, logger, agentId, concurrency } = this.deps;
+    const { tasks, linear, github, handler, logger, agentId, concurrency } = this.deps;
 
-    logger.info({ active: store.count() }, "poll tick started");
+    logger.info({ active: await tasks.countTracked() }, "poll tick started");
 
-    await recordCompletedTaskResults(store, tasks, logger);
-    const refreshed = await refreshTrackedTickets(store, linear, github, agentId, logger);
+    const refreshed = await refreshTrackedTickets(tasks, linear, github, agentId, logger);
     const admitted = await admitNewTickets(
-      store,
+      tasks,
       linear,
-      github,
       agentId,
-      freeSlots(concurrency, store.count()),
+      freeSlots(concurrency, await tasks.countTracked()),
       logger,
     );
 
     const toDispatch = [...refreshed, ...admitted];
-    dispatchTickets(toDispatch, handler, this.queue, this.inFlight, store, logger);
+    await dispatchTickets(toDispatch, handler, this.queue, this.inFlight, logger);
 
     logger.info(
-      { active: store.count(), admitted: admitted.length, dispatched: toDispatch.length },
+      { active: await tasks.countTracked(), admitted: admitted.length, dispatched: toDispatch.length },
       "poll tick complete",
     );
   }
@@ -127,13 +125,13 @@ export function freeSlots(concurrency: number, activeCount: number): number {
 /** Pick which candidate tickets to admit: not already tracked, capped at free slots. */
 export function selectAdmissions(
   candidates: Ticket[],
-  isTracked: (id: string) => boolean,
+  isTracked: (identifier: string) => boolean,
   free: number,
 ): Ticket[] {
   if (free <= 0) {
     return [];
   }
-  return candidates.filter((ticket) => !isTracked(ticket.id)).slice(0, free);
+  return candidates.filter((ticket) => !isTracked(ticket.identifier)).slice(0, free);
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +139,7 @@ export function selectAdmissions(
 // ---------------------------------------------------------------------------
 
 interface TicketDecision {
-  /** Release the ticket from memory (its PR is merged or closed). */
+  /** Release the ticket's SQL slot. */
   remove: boolean;
   /** PR was merged (subset of `remove`); the ticket should be handed back to its human assignee. */
   merged: boolean;
@@ -152,35 +150,36 @@ interface TicketDecision {
   phase: TicketPhase;
 }
 
-function refToContext(pr: PullRequest): PullRequestRef {
-  return { owner: pr.owner, repo: pr.repo, number: pr.number };
-}
-
 /**
  * Refresh one tracked ticket and decide what to do with it.
- * - Not delegated to the manager → parked: held in its slot, not dispatched, GitHub left alone
- *   (it is waiting on its human owner, e.g. the creator answering the worker's question).
- * - Delegated to the manager, just back from parked → resume: re-dispatched (unless its PR is
- *   already merged/closed, which releases it).
- * - Known PR → look it up by ref; merged/closed releases it, otherwise dispatch iff it has
- *   failed tests or unresolved review comments.
- * - No PR yet → search open PRs; a fresh, still-PR-less ticket is dispatched only on the resume
- *   edge — the admission dispatch already covered its first run.
+ * - Terminal Linear tickets release their SQL slot, even if no PR is known.
+ * - Not delegated to the manager -> parked: held in its slot and not dispatched.
+ * - Delegated to the manager, just back from parked -> resume: re-dispatched.
+ * - Known PR -> query GitHub by the PR ref returned by a previous worker task.
+ * - No PR -> never discover or guess; dispatch only on the resume edge.
  */
 async function evaluateTicket(
   ticket: Ticket,
-  knownPr: PullRequest | null,
+  knownPr: PullRequestRef | null,
   prevPhase: TicketPhase,
   agentId: string,
   github: GitHubSource,
   logger: Logger,
 ): Promise<TicketDecision> {
+  if (isTerminalLinearTicket(ticket)) {
+    logger.info(
+      { ticket: ticket.identifier, statusName: ticket.status.name, statusType: ticket.status.type },
+      "linear ticket is terminal; releasing slot",
+    );
+    return { remove: true, merged: false, context: { ticket, pr: null }, dispatch: false, phase: "active" };
+  }
+
   if (ticket.delegate?.id !== agentId) {
     logger.debug(
       { ticket: ticket.identifier, delegate: ticket.delegate?.id ?? null },
       "ticket not delegated to manager; parking",
     );
-    return { remove: false, merged: false, context: { ticket, pr: knownPr }, dispatch: false, phase: "parked" };
+    return { remove: false, merged: false, context: { ticket, pr: null }, dispatch: false, phase: "parked" };
   }
 
   const resuming = prevPhase === "parked";
@@ -189,24 +188,11 @@ async function evaluateTicket(
   }
 
   if (knownPr) {
-    const status = await github.getPullRequestStatus(refToContext(knownPr));
+    const status = await github.getPullRequestStatus(knownPr);
     return decideForOpenPr(ticket, status, resuming, logger);
   }
 
-  logger.debug({ ticket: ticket.identifier }, "looking for pull request");
-  const found = await github.findPullRequestForTicket(ticket);
-  if (found === null) {
-    return { remove: false, merged: false, context: { ticket, pr: null }, dispatch: resuming, phase: "active" };
-  }
-  logger.info(
-    { ticket: ticket.identifier, pr: found.number, headRef: found.headRef },
-    "found pull request for ticket",
-  );
-  if (found.merged || found.state === "closed") {
-    return { remove: true, merged: found.merged, context: { ticket, pr: found }, dispatch: false, phase: "active" };
-  }
-  const status = await github.getPullRequestStatus(refToContext(found));
-  return decideForOpenPr(ticket, status, resuming, logger);
+  return { remove: false, merged: false, context: { ticket, pr: null }, dispatch: resuming, phase: "active" };
 }
 
 function decideForOpenPr(
@@ -233,41 +219,48 @@ function decideForOpenPr(
   return { remove: false, merged: false, context: { ticket, pr }, dispatch, phase: "active" };
 }
 
-/** Step 1 — refresh tracked tickets, release resolved PRs, collect those needing dispatch. */
+/** Step 1 — refresh tracked SQL slots, release resolved slots, collect those needing dispatch. */
 async function refreshTrackedTickets(
-  store: TicketStore,
+  tasks: TaskQueue,
   linear: LinearSource,
   github: GitHubSource,
   agentId: string,
   logger: Logger,
 ): Promise<TicketContext[]> {
   const toDispatch: TicketContext[] = [];
-  for (const { context, phase } of store.all()) {
-    const ticket = await linear.getTicket(context.ticket.id);
-    const decision = await evaluateTicket(ticket, context.pr, phase, agentId, github, logger);
+  for (const slot of await tasks.listTracked()) {
+    const knownPr = knownPrForSlot(slot);
+    const ticket = await linear.getTicket(slot.ticketId);
+    const decision = await evaluateTicket(ticket, knownPr, slot.slotStatus, agentId, github, logger);
     if (decision.remove) {
       if (decision.merged) {
         // PR merged — relinquish the agent's delegation so the ticket returns to its human assignee.
-        // If this throws, leave the ticket tracked so the next tick retries.
+        // If this throws, leave the slot tracked so the next tick retries.
         await linear.handBack(ticket.id);
         logger.info({ ticket: ticket.identifier }, "handed ticket back to assignee after merge");
       }
-      store.remove(ticket.id);
+      await tasks.setSlotStatus(slot.ticketId, "released");
       continue;
     }
-    store.upsert(ticket.id, decision.context, decision.phase);
+
+    if (slot.slotStatus !== decision.phase) {
+      await tasks.setSlotStatus(slot.ticketId, decision.phase);
+    }
     if (decision.dispatch) {
-      toDispatch.push(decision.context);
+      if (slot.latestTask.resultStatus === null) {
+        logger.debug({ ticket: ticket.identifier }, "ticket already has active SQL task; skipping dispatch");
+      } else {
+        toDispatch.push(decision.context);
+      }
     }
   }
   return toDispatch;
 }
 
-/** Step 2 — admit newly delegated tickets after checking whether they already have a PR. */
+/** Step 2 — admit newly delegated non-terminal tickets into free slots. */
 async function admitNewTickets(
-  store: TicketStore,
+  tasks: TaskQueue,
   linear: LinearSource,
-  github: GitHubSource,
   agentId: string,
   free: number,
   logger: Logger,
@@ -275,16 +268,12 @@ async function admitNewTickets(
   if (free <= 0) {
     return [];
   }
-  const candidates = await linear.findDelegatedTickets(agentId);
-  const admitted = selectAdmissions(candidates, (id) => store.has(id), free);
+  const [candidates, tracked] = await Promise.all([linear.findDelegatedTickets(agentId), tasks.listTracked()]);
+  const trackedTicketIds = new Set(tracked.map((slot) => slot.ticketId));
+  const admitted = selectAdmissions(candidates, (identifier) => trackedTicketIds.has(identifier), free);
   const contexts: TicketContext[] = [];
   for (const ticket of admitted) {
-    const pr = await github.findPullRequestForTicket(ticket);
-    if (pr) {
-      logger.info({ ticket: ticket.identifier, pr: pr.number, headRef: pr.headRef }, "found pull request for admitted ticket");
-    }
-    const context: TicketContext = { ticket, pr };
-    store.upsert(ticket.id, context);
+    const context: TicketContext = { ticket, pr: null };
     logger.info({ ticket: ticket.identifier }, "picked up ticket");
     contexts.push(context);
   }
@@ -292,46 +281,39 @@ async function admitNewTickets(
 }
 
 /** Step 3 — dispatch the given contexts to the handler, skipping any already in flight. */
-function dispatchTickets(
+async function dispatchTickets(
   contexts: TicketContext[],
   handler: TicketHandler,
   queue: PQueue,
   inFlight: Set<string>,
-  store: TicketStore,
   logger: Logger,
-): void {
+): Promise<void> {
+  const work: Array<Promise<void>> = [];
   for (const context of contexts) {
-    const id = context.ticket.id;
+    const id = context.ticket.identifier;
     if (inFlight.has(id)) {
       continue;
     }
-    if (store.get(id)?.activeTaskId !== null) {
-      logger.debug({ ticket: context.ticket.identifier }, "ticket already has active SQL task; skipping dispatch");
-      continue;
-    }
     inFlight.add(id);
-    void queue.add(() => runHandler(context, handler, store, inFlight, logger));
+    work.push(queue.add(() => runHandler(context, handler, inFlight, logger)));
   }
+  await Promise.all(work);
 }
 
-/** Run the handler for one ticket and record its dispatch status. Removal is PR-driven (refresh). */
+/** Run the handler for one ticket. Removal is PR/Linear-driven during refresh. */
 async function runHandler(
   context: TicketContext,
   handler: TicketHandler,
-  store: TicketStore,
   inFlight: Set<string>,
   logger: Logger,
 ): Promise<void> {
-  const id = context.ticket.id;
+  const id = context.ticket.identifier;
   try {
     const outcome = await handler.handle(context);
-    // The ticket may have been released by a concurrent refresh (merged/closed PR).
-    if (store.has(id)) {
-      if (outcome.taskId) {
-        store.setActiveTask(id, outcome.taskId);
-      }
-      store.setStatus(id, outcome.status);
-    }
+    logger.info(
+      { ticket: context.ticket.identifier, taskId: outcome.taskId ?? null, status: outcome.status },
+      "ticket handling queued",
+    );
   } catch (err) {
     logger.error({ err, ticket: context.ticket.identifier }, "ticket handling failed");
   } finally {
@@ -339,36 +321,15 @@ async function runHandler(
   }
 }
 
-async function recordCompletedTaskResults(
-  store: TicketStore,
-  tasks: TaskQueue,
-  logger: Logger,
-): Promise<void> {
-  const tracked = store
-    .all()
-    .filter((ticket) => ticket.activeTaskId !== null)
-    .map((ticket) => ({ ticketId: ticket.context.ticket.id, ticket: ticket.context.ticket.identifier, taskId: ticket.activeTaskId! }));
-  if (tracked.length === 0) {
-    return;
+function knownPrForSlot(slot: TaskSlot): PullRequestRef | null {
+  const task = slot.latestTask;
+  const pr = task.result?.pr ?? task.input.pr;
+  if (task.resultStatus === "done" && pr === null) {
+    throw new Error(`Task ${task.id} for ticket ${task.ticketId} completed with status done but has no pull request`);
   }
-  const completed = await tasks.getCompleted(tracked.map((ticket) => ticket.taskId));
-  const byTaskId = new Map(completed.map((task) => [task.id, task]));
-  for (const trackedTask of tracked) {
-    const task = byTaskId.get(trackedTask.taskId);
-    if (!task) {
-      continue;
-    }
-    if (task.resultStatus === null) {
-      throw new Error(`Completed task is missing result status: ${task.id}`);
-    }
-    if (!store.has(trackedTask.ticketId)) {
-      continue;
-    }
-    store.setStatus(trackedTask.ticketId, task.resultStatus);
-    store.clearActiveTask(trackedTask.ticketId);
-    logger.info(
-      { ticket: trackedTask.ticket, taskId: task.id, resultStatus: task.resultStatus },
-      "recorded completed SQL task result",
-    );
-  }
+  return pr;
+}
+
+function isTerminalLinearTicket(ticket: Ticket): boolean {
+  return TERMINAL_STATE_TYPES.includes(ticket.status.type) || TERMINAL_STATE_NAMES.includes(ticket.status.name);
 }

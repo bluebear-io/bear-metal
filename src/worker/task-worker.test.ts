@@ -55,9 +55,11 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     workerId: null,
     resultStatus: null,
     result: null,
+    slotStatus: "active",
     createdAt: new Date(),
     updatedAt: new Date(),
     completedAt: null,
+    releasedAt: null,
     ...overrides,
   };
 }
@@ -91,8 +93,16 @@ class FakeTaskQueue implements TaskQueue {
     this.completed.push({ taskId, result });
   }
 
-  async getCompleted(): Promise<TaskRecord[]> {
+  async listTracked() {
     return [];
+  }
+
+  async countTracked(): Promise<number> {
+    return 0;
+  }
+
+  async setSlotStatus(): Promise<TaskRecord> {
+    throw new Error("FakeTaskQueue.setSlotStatus is not used by TaskWorker tests");
   }
 
   async close(): Promise<void> {}

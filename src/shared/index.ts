@@ -21,7 +21,6 @@ export type {
 } from "./integrations/linear/types.js";
 export {
   GitHubIntegration,
-  branchMatchesTicket,
   type GitHubIntegrationOptions,
 } from "./integrations/github/client.js";
 export type {
