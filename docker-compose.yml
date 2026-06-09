@@ -14,3 +14,17 @@ services:
       - ./workspace:/app/workspace
       # Persist SQLite database across container restarts
       - ./data:/app/data
+
+  # Read-only dashboard backend — serves the React UI at / and API at /api
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    command: ["node", "dist/backend/index.js"]
+    ports:
+      - "${BACKEND_PORT:-3100}:${BACKEND_PORT:-3100}"
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data

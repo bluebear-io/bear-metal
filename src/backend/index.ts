@@ -1,14 +1,62 @@
 import "dotenv/config";
 
+import Database from "better-sqlite3";
 import { createLogger } from "../shared/index.js";
 import { loadBackendConfig } from "./config.js";
 import { openReadOnlyDb } from "./db/client.js";
 import { createApp } from "./app.js";
 
+// Create all tables on first boot; safe to run every time (IF NOT EXISTS).
+// Historical data is disposable — wipe the file on the instance to reset.
+const SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS tickets (
+    id TEXT PRIMARY KEY NOT NULL, identifier TEXT NOT NULL, title TEXT NOT NULL,
+    description TEXT, url TEXT NOT NULL, branch_name TEXT NOT NULL,
+    linear_status_name TEXT NOT NULL, linear_status_type TEXT NOT NULL,
+    labels_json TEXT NOT NULL DEFAULT '[]', bm_status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, completed_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS workers (
+    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
+    current_run_id TEXT, last_heartbeat_at INTEGER,
+    started_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS runs (
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL REFERENCES tickets(id),
+    attempt_number INTEGER NOT NULL, worker_id TEXT REFERENCES workers(id),
+    trigger TEXT NOT NULL, status TEXT NOT NULL, context_json TEXT,
+    started_at INTEGER, ended_at INTEGER, stop_reason TEXT, error TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS pull_requests (
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL REFERENCES tickets(id),
+    number INTEGER NOT NULL, title TEXT NOT NULL, head_ref TEXT NOT NULL,
+    state TEXT NOT NULL, draft INTEGER NOT NULL, merged INTEGER NOT NULL,
+    url TEXT NOT NULL, last_run_id TEXT REFERENCES runs(id),
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS ci_runs (
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL REFERENCES tickets(id),
+    run_id TEXT NOT NULL REFERENCES runs(id), pr_id TEXT REFERENCES pull_requests(id),
+    status TEXT NOT NULL, url TEXT, summary TEXT,
+    created_at INTEGER NOT NULL, completed_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS events (
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT REFERENCES tickets(id),
+    run_id TEXT REFERENCES runs(id), worker_id TEXT REFERENCES workers(id),
+    source TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL,
+    payload_json TEXT, created_at INTEGER NOT NULL
+  );
+`;
+
 function main(): void {
   const config = loadBackendConfig();
   const logger = createLogger({ level: config.logLevel, name: "bear-metal-backend" });
   const { dbPath, port } = config;
+  const init = new Database(dbPath);
+  init.exec(SCHEMA_SQL);
+  init.close();
   const { db, sqlite } = openReadOnlyDb(dbPath);
   const app = createApp(db);
   const server = app.listen(port, () => logger.info({ port, dbPath }, "bear-metal dashboard backend listening"));
