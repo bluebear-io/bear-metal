@@ -40,6 +40,110 @@ export interface SchedulerDeps {
   todoStatus?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+/** Open worker slots given the concurrency cap and the current active count. */
+export function freeSlots(concurrency: number, activeCount: number): number {
+  return Math.max(0, concurrency - activeCount);
+}
+
+/** Pick which candidate tickets to admit: not already active, capped at free slots. */
+export function selectAdmissions(
+  candidates: Ticket[],
+  isActive: (id: string) => boolean,
+  free: number,
+): Ticket[] {
+  if (free <= 0) {
+    return [];
+  }
+  return candidates.filter((ticket) => !isActive(ticket.id)).slice(0, free);
+}
+
+// ---------------------------------------------------------------------------
+// Effectful steps (each one cycle stage)
+// ---------------------------------------------------------------------------
+
+/** Merge a ticket with its GitHub PR (PR optional). The only place GitHub is queried. */
+async function buildContext(ticket: Ticket, github: GitHubSource): Promise<TicketContext> {
+  const pr = await github.findPullRequestForTicket(ticket);
+  return { ticket, pr };
+}
+
+/** Step 1 — re-fetch every active ticket and refresh its merged context. */
+async function refreshActiveTickets(
+  store: TicketStore,
+  linear: LinearSource,
+  github: GitHubSource,
+): Promise<void> {
+  for (const { context } of store.all()) {
+    const ticket = await linear.getTicket(context.ticket.id);
+    store.upsert(ticket.id, await buildContext(ticket, github));
+  }
+}
+
+/** Step 2 — admit new Todo tickets into free slots; returns how many were admitted. */
+async function admitNewTickets(
+  store: TicketStore,
+  linear: LinearSource,
+  label: string,
+  todoStatus: string,
+  free: number,
+): Promise<number> {
+  if (free <= 0) {
+    return 0;
+  }
+  const candidates = await linear.findTicketsByLabel(label, { status: todoStatus });
+  const admitted = selectAdmissions(candidates, (id) => store.isActive(id), free);
+  for (const ticket of admitted) {
+    store.upsert(ticket.id, { ticket, pr: null });
+  }
+  return admitted.length;
+}
+
+/** Step 3 — dispatch each active ticket not already in flight to the handler. */
+function dispatchActiveTickets(
+  store: TicketStore,
+  handler: TicketHandler,
+  queue: PQueue,
+  inFlight: Set<string>,
+  logger: Logger,
+): void {
+  for (const { context } of store.all()) {
+    if (inFlight.has(context.ticket.id)) {
+      continue;
+    }
+    inFlight.add(context.ticket.id);
+    void queue.add(() => runHandler(context, handler, store, inFlight, logger));
+  }
+}
+
+/** Run the handler for one ticket and release its slot/in-flight guard afterwards. */
+async function runHandler(
+  context: TicketContext,
+  handler: TicketHandler,
+  store: TicketStore,
+  inFlight: Set<string>,
+  logger: Logger,
+): Promise<void> {
+  const id = context.ticket.id;
+  try {
+    const outcome = await handler.handle(context);
+    if (outcome.done) {
+      store.remove(id);
+    }
+  } catch (err) {
+    logger.error({ err, ticket: context.ticket.identifier }, "ticket handling failed");
+  } finally {
+    inFlight.delete(id);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler — owns the timer, queue, and in-flight guard; composes the steps.
+// ---------------------------------------------------------------------------
+
 export class Scheduler {
   private readonly deps: SchedulerDeps;
   private readonly queue: PQueue;
@@ -80,47 +184,17 @@ export class Scheduler {
   async tick(): Promise<void> {
     const { store, linear, github, handler, logger, label, concurrency } = this.deps;
 
-    // 1. Refresh active tickets — the only place GitHub is queried.
-    for (const state of store.all()) {
-      const id = state.context.ticket.id;
-      const ticket = await linear.getTicket(id);
-      const pr = await github.findPullRequestForTicket(ticket);
-      store.upsert(id, { ticket, pr });
-    }
+    await refreshActiveTickets(store, linear, github);
 
-    // 2. Admit new Todo tickets only if there are free slots.
-    const free = concurrency - store.activeCount();
-    let admitted = 0;
-    if (free > 0) {
-      const todo = await linear.findTicketsByLabel(label, { status: this.todoStatus });
-      const toAdmit = todo.filter((ticket) => !store.isActive(ticket.id)).slice(0, free);
-      for (const ticket of toAdmit) {
-        store.upsert(ticket.id, { ticket, pr: null });
-        admitted += 1;
-      }
-    }
+    const admitted = await admitNewTickets(
+      store,
+      linear,
+      label,
+      this.todoStatus,
+      freeSlots(concurrency, store.activeCount()),
+    );
 
-    // 3. Dispatch each active ticket to the handler (skipping any already in flight).
-    for (const state of store.all()) {
-      const id = state.context.ticket.id;
-      if (this.inFlight.has(id)) {
-        continue;
-      }
-      this.inFlight.add(id);
-      const ctx = state.context;
-      void this.queue.add(async () => {
-        try {
-          const outcome = await handler.handle(ctx);
-          if (outcome.done) {
-            store.remove(id);
-          }
-        } catch (err) {
-          logger.error({ err, ticket: ctx.ticket.identifier }, "ticket handling failed");
-        } finally {
-          this.inFlight.delete(id);
-        }
-      });
-    }
+    dispatchActiveTickets(store, handler, this.queue, this.inFlight, logger);
 
     logger.info({ active: store.activeCount(), admitted }, "poll tick complete");
   }
