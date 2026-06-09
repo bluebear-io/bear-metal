@@ -90,7 +90,14 @@ function shutdown(signal: string): void {
   );
   void scheduler.stop().then(() => {
     server.close(() => {
-      logger.info({ signal }, "health server closed, goodnight 🌙");
+      logger.info(
+        { signal, closedAt: new Date().toISOString(), uptimeSeconds: process.uptime() },
+        "server stop: health server socket closed, scheduler drained, exiting cleanly",
+      );
+      logger.info(
+        { signal },
+        "🌙 health server closed — Bear Metal has tucked itself in, double-checked that the cave door is locked, whispered 'goodnight, sweet PRs' to the merge queue, and is now officially snoring. Don't wake the bear unless prod is on fire. 💤",
+      );
       process.exit(0);
     });
   });
