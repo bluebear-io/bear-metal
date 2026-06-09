@@ -24,6 +24,11 @@ export async function runPiWorker(input: {
 
   const setDecision = (next: DispatchResult) => {
     if (decision) {
+      // Idempotent for same status.
+      if (decision.status === next.status) return;
+      // pending wins over done: code was committed but we're still blocked on a thread.
+      if (next.status === "pending") { decision = next; return; }
+      if (decision.status === "pending") return;
       throw new Error(`Pi attempted to finish twice: ${decision.status} then ${next.status}`);
     }
     decision = next;
@@ -224,7 +229,12 @@ export async function runPiWorker(input: {
   }
 
   if (!decision) {
-    throw new Error("Pi finished without calling a finish tool (wrote_code, respond_to_ticket_reporter, or respond_to_comment_writer)");
+    if (input.context.state === "iteration") {
+      // Agent disagreed with all threads and made no code changes — replies were posted, work is done.
+      decision = { status: "done", pr: input.context.pr };
+    } else {
+      throw new Error("Pi finished without calling a finish tool (wrote_code or respond_to_ticket_reporter)");
+    }
   }
   return decision;
 }
