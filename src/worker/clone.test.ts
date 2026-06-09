@@ -32,6 +32,7 @@ describe("runCloneScript", () => {
         workspaceDir,
         stdout: "cloned",
         stderr: "",
+        netrcDir: expect.any(String),
       });
       await expect(access(cloneTarget)).rejects.toMatchObject({ code: "ENOENT" });
       expect(commandMock.runCommand).toHaveBeenCalledWith("bash", [join(root, "scripts", "clone-target-repos.sh")], {

@@ -121,6 +121,7 @@ function makeIntegrations() {
     linear: {
       getTicketContext: vi.fn(),
       moveTicketToInProgress: vi.fn(),
+      moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
     },
   };

@@ -50,16 +50,23 @@ export async function runPiWorker(input: {
   const agreeWithGithubMessage = defineTool({
     name: "agree_with_github_message",
     label: "Agree with GitHub message",
-    description: "Mark a GitHub review thread as accepted/addressed after fixing it.",
+    description: "Reply to a GitHub review thread after fixing it, then mark the thread as resolved.",
     parameters: Type.Object({
       threadId: Type.String({ description: "The GitHub review thread node id." }),
+      text: Type.String({ description: "The exact reply body to post to GitHub." }),
     }),
     execute: async (_toolCallId, params) => {
       logger.info({ threadId: params.threadId }, "pi tool: agree_with_github_message");
-      requirePullRequest(input.context.pr);
+      const pr = requirePullRequest(input.context.pr);
+      await input.github.replyToReviewThread(
+        pr,
+        params.threadId,
+        params.text,
+        input.context.pullRequest?.unresolvedReviewThreads ?? [],
+      );
       await input.github.resolveReviewThread(params.threadId);
       return {
-        content: [{ type: "text", text: `Resolved review thread ${params.threadId}.` }],
+        content: [{ type: "text", text: `Replied to and resolved review thread ${params.threadId}.` }],
         details: {},
       };
     },
@@ -82,8 +89,9 @@ export async function runPiWorker(input: {
         params.text,
         input.context.pullRequest?.unresolvedReviewThreads ?? [],
       );
+      await input.github.resolveReviewThread(params.threadId);
       return {
-        content: [{ type: "text", text: `Replied to review thread ${params.threadId}.` }],
+        content: [{ type: "text", text: `Replied to and resolved review thread ${params.threadId}.` }],
         details: {},
       };
     },
@@ -105,6 +113,7 @@ export async function runPiWorker(input: {
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
       await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
       const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
+      await input.linear.moveTicketToInReview(input.context.ticketId);
       setDecision({ status: "done", pr });
       return {
         content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
