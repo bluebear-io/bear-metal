@@ -6,7 +6,6 @@ import { TaskWorker } from "../worker/index.js";
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
-import { TicketStore } from "./state.js";
 import { createTaskQueueFromDatabaseUrl } from "./tasks.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 
@@ -32,14 +31,12 @@ const github = new GitHubIntegration({
 });
 const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
 await tasks.initialize();
-const store = new TicketStore(logger);
 const handler = new ManagerTicketHandler({ logger, tasks });
 
 const scheduler = new Scheduler({
   logger,
   linear,
   github,
-  store,
   tasks,
   handler,
   agentId: config.linearAssigneeId,
@@ -60,8 +57,7 @@ if (config.testTicketId) {
   let exitCode = 0;
   try {
     const ticket = await linear.getTicket(config.testTicketId);
-    const pr = await github.findPullRequestForTicket(ticket);
-    const ctx: TicketContext = { ticket, pr };
+    const ctx: TicketContext = { ticket, pr: null };
     await handler.handle(ctx);
     await taskWorker.tick();
     await taskWorker.stop();
@@ -77,7 +73,7 @@ if (config.testTicketId) {
   process.exit(exitCode);
 }
 
-const app = createServer({ store });
+const app = createServer({ tasks });
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, "health server listening");
   logger.info({ port: config.port, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");

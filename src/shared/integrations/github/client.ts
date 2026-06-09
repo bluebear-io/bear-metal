@@ -3,7 +3,6 @@ import { Octokit, type RestEndpointMethodTypes } from "@octokit/rest";
 
 import type { JsonValue } from "../../json.js";
 import type { CommentCapable, Integration } from "../base.js";
-import type { Ticket } from "../linear/types.js";
 import type {
   FailedCheckRun,
   FailedStatus,
@@ -27,23 +26,6 @@ export interface GitHubIntegrationOptions {
   installationId: number;
 }
 
-interface RepoCoords {
-  owner: string;
-  repo: string;
-}
-
-/** True when a PR head branch refers to the given ticket (case-insensitive substring). */
-export function branchMatchesTicket(
-  headRef: string,
-  ticket: Pick<Ticket, "identifier" | "branchName">,
-): boolean {
-  const ref = headRef.toLowerCase();
-  return (
-    ref.includes(ticket.identifier.toLowerCase()) ||
-    ref.includes(ticket.branchName.toLowerCase())
-  );
-}
-
 /** GitHub integration. Extend with more capabilities (merge, review, ...) as needed. */
 export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
@@ -63,27 +45,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
   async getInstallationToken(): Promise<string> {
     const auth = (await this.octokit.auth({ type: "installation" })) as { token: string };
     return auth.token;
-  }
-
-  /**
-   * Find the open PR whose head branch refers to the ticket, across every repo the
-   * App installation can access. Returns null if none. (GitHub is queried only for
-   * active tickets, so the per-repo scan stays cheap.)
-   */
-  async findPullRequestForTicket(ticket: Ticket): Promise<PullRequest | null> {
-    for (const { owner, repo } of await this.installationRepos()) {
-      const pulls = await this.octokit.paginate(this.octokit.pulls.list, {
-        owner,
-        repo,
-        state: "open",
-        per_page: 100,
-      });
-      const match = pulls.find((pull) => branchMatchesTicket(pull.head.ref, ticket));
-      if (match) {
-        return toPullRequest(match, owner, repo);
-      }
-    }
-    return null;
   }
 
   async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {
@@ -183,15 +144,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
         body,
       },
     );
-  }
-
-  /** Every repo the App installation can access. */
-  private async installationRepos(): Promise<RepoCoords[]> {
-    const repos = await this.octokit.paginate(
-      this.octokit.apps.listReposAccessibleToInstallation,
-      { per_page: 100 },
-    );
-    return repos.map((repo) => ({ owner: repo.owner.login, repo: repo.name }));
   }
 
   private async getFailedCheckRuns(ref: PullRequestRef, sha: string): Promise<FailedCheckRun[]> {
