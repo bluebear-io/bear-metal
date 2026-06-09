@@ -13,4 +13,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist dist
+COPY scripts scripts
 CMD ["node", "dist/manager/index.js"]
