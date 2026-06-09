@@ -1,11 +1,14 @@
 import { type Comment, type Issue, LinearClient } from "@linear/sdk";
 
 import type { CommentCapable, Integration } from "../base.js";
-import type { FindTicketsOptions, LinearTicketContext, Ticket, TicketComment } from "./types.js";
+import type { LinearTicketContext, Ticket, TicketComment } from "./types.js";
 
 export interface LinearIntegrationOptions {
   token: string;
 }
+
+/** Workflow-state types that mean a ticket needs no further work; never admitted. */
+const TERMINAL_STATE_TYPES = ["completed", "canceled"];
 
 /** Linear integration. Extend with more capabilities (find, label, ...) as needed. */
 export class LinearIntegration implements Integration, CommentCapable<string> {
@@ -17,15 +20,17 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   }
 
   /**
-   * Issues delegated to the agent. Linear assigns work to an agent via *delegation* (the human
-   * stays the assignee), so the manager discovers its tickets through `delegatedIssues`, not the
-   * `assignee` filter — `IssueFilter` has no `delegate` field to filter on directly.
+   * Non-terminal issues delegated to the agent. Linear assigns work to an agent via *delegation*
+   * (the human stays the assignee), so the manager discovers its tickets through `delegatedIssues`,
+   * not the `assignee` filter — `IssueFilter` has no `delegate` field to filter on directly.
+   * Completed/canceled tickets are excluded so the agent works everything still open, in any
+   * non-done state (Triage/Backlog/Todo/In Progress).
    */
-  async findDelegatedTickets(agentId: string, options: FindTicketsOptions = {}): Promise<Ticket[]> {
+  async findDelegatedTickets(agentId: string): Promise<Ticket[]> {
     const user = await this.client.user(agentId);
-    const page = await user.delegatedIssues(
-      options.status !== undefined ? { filter: { state: { name: { eq: options.status } } } } : {},
-    );
+    const page = await user.delegatedIssues({
+      filter: { state: { type: { nin: TERMINAL_STATE_TYPES } } },
+    });
     return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
   }
 

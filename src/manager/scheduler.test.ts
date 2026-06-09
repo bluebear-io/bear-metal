@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   createLogger,
-  type FindTicketsOptions,
   type PullRequest,
   type PullRequestRef,
   type PullRequestStatus,
@@ -42,7 +41,7 @@ class FakeLinear implements LinearSource {
     /** Override what getTicket returns per id (refresh sees a possibly-reassigned ticket). */
     private readonly refreshed: Record<string, Ticket> = {},
   ) {}
-  async findDelegatedTickets(_agentId: string, _options?: FindTicketsOptions): Promise<Ticket[]> {
+  async findDelegatedTickets(_agentId: string): Promise<Ticket[]> {
     return this.todo;
   }
   async getTicket(id: string): Promise<Ticket> {

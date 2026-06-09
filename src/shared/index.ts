@@ -13,7 +13,6 @@ export {
   type LinearIntegrationOptions,
 } from "./integrations/linear/client.js";
 export type {
-  FindTicketsOptions,
   LinearTicketContext,
   Ticket,
   TicketComment,

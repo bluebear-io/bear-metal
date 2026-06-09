@@ -48,8 +48,3 @@ export interface LinearTicketContext {
   issue: Ticket;
   comments: TicketComment[];
 }
-
-export interface FindTicketsOptions {
-  /** Filter by Linear workflow-state name (e.g. "Todo"). */
-  status?: string;
-}

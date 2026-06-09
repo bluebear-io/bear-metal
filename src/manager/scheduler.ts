@@ -1,7 +1,6 @@
 import PQueue from "p-queue";
 
 import type {
-  FindTicketsOptions,
   Logger,
   PullRequest,
   PullRequestRef,
@@ -15,7 +14,7 @@ import type { TicketPhase, TicketStore } from "./state.js";
 
 /** The Linear capabilities the scheduler needs (subset of LinearIntegration). */
 export interface LinearSource {
-  findDelegatedTickets(agentId: string, options?: FindTicketsOptions): Promise<Ticket[]>;
+  findDelegatedTickets(agentId: string): Promise<Ticket[]>;
   getTicket(id: string): Promise<Ticket>;
 }
 
@@ -42,8 +41,6 @@ export interface SchedulerDeps {
   agentId: string;
   concurrency: number;
   pollIntervalMs: number;
-  /** Linear workflow-state name new tickets are admitted from. */
-  todoStatus?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,11 +53,9 @@ export class Scheduler {
   /** Tickets with a handler invocation in flight — guards against double-dispatch. */
   private readonly inFlight = new Set<string>();
   private timer: NodeJS.Timeout | undefined;
-  private readonly todoStatus: string;
 
   constructor(deps: SchedulerDeps) {
     this.deps = deps;
-    this.todoStatus = deps.todoStatus ?? "Todo";
     this.queue = new PQueue({ concurrency: deps.concurrency });
   }
 
@@ -100,7 +95,6 @@ export class Scheduler {
       store,
       linear,
       agentId,
-      this.todoStatus,
       freeSlots(concurrency, store.count()),
       logger,
     );
@@ -255,19 +249,18 @@ async function refreshTrackedTickets(
   return toDispatch;
 }
 
-/** Step 2 — admit new Todo tickets into free slots; returns the admitted contexts. */
+/** Step 2 — admit newly delegated (non-done) tickets into free slots; returns the admitted contexts. */
 async function admitNewTickets(
   store: TicketStore,
   linear: LinearSource,
   agentId: string,
-  todoStatus: string,
   free: number,
   logger: Logger,
 ): Promise<TicketContext[]> {
   if (free <= 0) {
     return [];
   }
-  const candidates = await linear.findDelegatedTickets(agentId, { status: todoStatus });
+  const candidates = await linear.findDelegatedTickets(agentId);
   const admitted = selectAdmissions(candidates, (id) => store.has(id), free);
   const contexts: TicketContext[] = [];
   for (const ticket of admitted) {
