@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
-import type { TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import { buildTicketsQuery, fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
+import type { TicketDetail, TicketListItem, TicketsResponse, WorkerListItem } from "./types.js";
 
 const mockFetch = (body: unknown, init?: { ok?: boolean; status?: number }) => {
   const response = {
@@ -86,20 +86,38 @@ describe("api client", () => {
     vi.unstubAllGlobals();
   });
 
-  it("fetchTickets returns tickets and passes the status query", async () => {
-    mockFetch({ tickets: [ticket] });
+  it("fetchTickets returns the paginated response and serializes filters", async () => {
+    const body: TicketsResponse = { tickets: [ticket], total: 1, page: 1, pageSize: 25 };
+    mockFetch(body);
 
-    await expect(fetchTickets("abandoned")).resolves.toEqual([ticket]);
+    await expect(
+      fetchTickets({
+        search: "flaky",
+        bmStatuses: ["abandoned", "completed"],
+        labels: ["module:bff"],
+        stopReasons: ["timeout"],
+        page: 2,
+        pageSize: 10,
+      }),
+    ).resolves.toEqual(body);
 
-    expect(fetch).toHaveBeenCalledWith("/api/tickets?status=abandoned");
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/tickets?search=flaky&bmStatus=abandoned&bmStatus=completed&label=module%3Abff&stopReason=timeout&page=2&pageSize=10",
+    );
   });
 
-  it("fetchTickets calls the ticket collection path without a status", async () => {
-    mockFetch({ tickets: [] });
+  it("fetchTickets calls the ticket collection path with no filters", async () => {
+    mockFetch({ tickets: [], total: 0, page: 1, pageSize: 25 } satisfies TicketsResponse);
 
-    await expect(fetchTickets()).resolves.toEqual([]);
+    await fetchTickets();
 
     expect(fetch).toHaveBeenCalledWith("/api/tickets");
+  });
+
+  it("buildTicketsQuery omits empty values and trims search", () => {
+    expect(buildTicketsQuery()).toBe("");
+    expect(buildTicketsQuery({ search: "   ", errorSignature: "" })).toBe("");
+    expect(buildTicketsQuery({ search: "  hello  " })).toBe("?search=hello");
   });
 
   it("fetchTicketDetail returns the detail body", async () => {

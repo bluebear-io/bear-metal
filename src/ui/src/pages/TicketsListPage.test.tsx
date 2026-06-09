@@ -1,8 +1,8 @@
-import { screen } from "@testing-library/react";
+import { screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../test/utils.js";
-import type { TicketListItem } from "../api/types.js";
+import type { TicketFilters, TicketListItem, TicketsResponse } from "../api/types.js";
 import TicketsListPage from "./TicketsListPage.js";
 
 const mockTicket: TicketListItem = {
@@ -35,13 +35,60 @@ const mockTicket: TicketListItem = {
   latestCiStatus: "passed",
 };
 
+const ticketsResponse: TicketsResponse = {
+  tickets: [mockTicket],
+  total: 1,
+  page: 1,
+  pageSize: 25,
+};
+
+const useTicketsSpy = vi.fn();
+
 vi.mock("../api/queries.js", () => ({
-  useTickets: () => ({
-    data: [mockTicket],
+  useTickets: (filters: TicketFilters) => {
+    useTicketsSpy(filters);
+    return {
+      data: ticketsResponse,
+      error: null,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    };
+  },
+  useTicketFilterOptions: () => ({
+    data: {
+      bmStatuses: ["discovered", "completed", "abandoned", "ci_failed"],
+      stopReasons: ["completed", "timeout"],
+      labels: ["bear-metal", "module:bff"],
+      defaultPageSize: 25,
+      maxPageSize: 200,
+    },
     error: null,
     isFetching: false,
     isLoading: false,
-    refetch: vi.fn(),
+  }),
+  useWorkers: () => ({
+    data: [
+      {
+        id: "worker_1",
+        name: "runner-1",
+        status: "busy",
+        currentRunId: null,
+        lastHeartbeatAt: null,
+        startedAt: "2026-06-09T10:00:00.000Z",
+        updatedAt: "2026-06-09T10:07:00.000Z",
+        currentTicketIdentifier: null,
+        currentTicketTitle: null,
+        currentRun: null,
+        heartbeatAgeMs: null,
+        isDead: false,
+        isHeartbeatStale: false,
+        isTimedOut: false,
+      },
+    ],
+    error: null,
+    isFetching: false,
+    isLoading: false,
   }),
 }));
 
@@ -58,5 +105,37 @@ describe("TicketsListPage", () => {
       "href",
       "https://github.com/blueden/bear-metal/pull/42",
     );
+  });
+
+  it("exposes search, filter dropdowns, and pagination controls", () => {
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    expect(screen.getByLabelText(/^Search$/i)).toBeVisible();
+    expect(screen.getByLabelText(/Error signature/i)).toBeVisible();
+    expect(screen.getByLabelText(/^State$/i)).toBeVisible();
+    expect(screen.getByLabelText(/^Worker$/i)).toBeVisible();
+    expect(screen.getByLabelText(/^Label$/i)).toBeVisible();
+    expect(screen.getByLabelText(/Failure \/ stop reason/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+    expect(screen.getByText(/1 match/)).toBeVisible();
+  });
+
+  it("submits applied filters into the tickets query", () => {
+    useTicketsSpy.mockClear();
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    fireEvent.change(screen.getByLabelText(/^Search$/i), { target: { value: "  flaky  " } });
+    fireEvent.change(screen.getByLabelText(/Error signature/i), { target: { value: "wall clock" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    const last = useTicketsSpy.mock.calls.at(-1)?.[0];
+    expect(last).toMatchObject({
+      search: "flaky",
+      errorSignature: "wall clock",
+      page: 1,
+      pageSize: 25,
+    });
   });
 });

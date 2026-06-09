@@ -25,10 +25,13 @@ describe("GET /api/health", () => {
 });
 
 describe("GET /api/tickets", () => {
-  it("lists tickets newest-first with summaries", async () => {
+  it("lists tickets newest-first with summaries and pagination metadata", async () => {
     const res = await request(app).get("/api/tickets");
     expect(res.status).toBe(200);
     expect(res.body.tickets.length).toBe(4);
+    expect(res.body.total).toBe(4);
+    expect(res.body.page).toBe(1);
+    expect(typeof res.body.pageSize).toBe("number");
     expect(res.body.tickets[0].identifier).toBe("DEN-3004"); // newest createdAt
     expect(res.body.tickets.find((t: { identifier: string }) => t.identifier === "DEN-3002").latestRun).toMatchObject({
       id: "run_3",
@@ -39,15 +42,89 @@ describe("GET /api/tickets", () => {
     });
   });
 
-  it("filters by status", async () => {
+  it("filters by status (legacy single-value param)", async () => {
     const res = await request(app).get("/api/tickets?status=abandoned");
     expect(res.status).toBe(200);
     expect(res.body.tickets.map((t: { identifier: string }) => t.identifier)).toEqual(["DEN-3003"]);
+    expect(res.body.total).toBe(1);
+  });
+
+  it("filters by multiple bmStatus values", async () => {
+    const res = await request(app).get("/api/tickets?bmStatus=completed&bmStatus=abandoned");
+    expect(res.status).toBe(200);
+    expect(
+      res.body.tickets.map((t: { identifier: string }) => t.identifier).sort(),
+    ).toEqual(["DEN-3001", "DEN-3003"]);
+  });
+
+  it("supports full-text search", async () => {
+    const res = await request(app).get("/api/tickets?search=rate%20limiting");
+    expect(res.status).toBe(200);
+    expect(res.body.tickets.map((t: { identifier: string }) => t.identifier)).toEqual(["DEN-3001"]);
+  });
+
+  it("filters by worker, label, stop reason, error signature, and date range", async () => {
+    const byWorker = await request(app).get("/api/tickets?workerId=wk_2");
+    expect(byWorker.body.tickets.map((t: { identifier: string }) => t.identifier)).toEqual(["DEN-3002"]);
+
+    const byLabel = await request(app).get("/api/tickets?label=module%3Aingest");
+    expect(byLabel.body.tickets.map((t: { identifier: string }) => t.identifier)).toEqual(["DEN-3003"]);
+
+    const byReason = await request(app).get("/api/tickets?stopReason=timeout");
+    expect(byReason.body.tickets.map((t: { identifier: string }) => t.identifier)).toEqual(["DEN-3003"]);
+
+    const byError = await request(app).get("/api/tickets?errorSignature=wall%20clock");
+    expect(byError.body.tickets.map((t: { identifier: string }) => t.identifier)).toEqual(["DEN-3003"]);
+
+    const byDate = await request(app).get("/api/tickets?createdAfter=2026-06-09T08:30:00Z");
+    expect(byDate.body.tickets.map((t: { identifier: string }) => t.identifier)).toEqual(["DEN-3004"]);
+  });
+
+  it("paginates", async () => {
+    const page1 = await request(app).get("/api/tickets?page=1&pageSize=2");
+    expect(page1.status).toBe(200);
+    expect(page1.body.tickets.length).toBe(2);
+    expect(page1.body.total).toBe(4);
+    expect(page1.body.page).toBe(1);
+    expect(page1.body.pageSize).toBe(2);
+    const page2 = await request(app).get("/api/tickets?page=2&pageSize=2");
+    expect(page2.body.tickets.length).toBe(2);
+    const ids1 = page1.body.tickets.map((t: { id: string }) => t.id);
+    const ids2 = page2.body.tickets.map((t: { id: string }) => t.id);
+    expect(ids1.some((id: string) => ids2.includes(id))).toBe(false);
   });
 
   it("rejects an invalid status filter (fail-fast, not silently ignored)", async () => {
     const res = await request(app).get("/api/tickets?status=bogus");
     expect(res.status).toBe(400);
+  });
+
+  it("rejects an invalid stopReason filter", async () => {
+    const res = await request(app).get("/api/tickets?stopReason=bogus");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an invalid date filter", async () => {
+    const res = await request(app).get("/api/tickets?createdAfter=not-a-date");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects pageSize over the cap", async () => {
+    const res = await request(app).get("/api/tickets?pageSize=99999");
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/tickets/filters", () => {
+  it("returns dropdown sources", async () => {
+    const res = await request(app).get("/api/tickets/filters");
+    expect(res.status).toBe(200);
+    expect(res.body.bmStatuses).toContain("completed");
+    expect(res.body.bmStatuses).toContain("abandoned");
+    expect(res.body.stopReasons).toEqual(["completed", "timeout"]);
+    expect(res.body.labels).toEqual(["bear-metal", "module:bff", "module:ingest"]);
+    expect(typeof res.body.defaultPageSize).toBe("number");
+    expect(typeof res.body.maxPageSize).toBe("number");
   });
 });
 

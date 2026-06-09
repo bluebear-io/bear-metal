@@ -137,3 +137,35 @@ export interface TicketDetail {
   ciRuns: CiRun[];
   events: TicketEvent[];
 }
+
+export type StopReason = "completed" | "timeout" | "crash" | "error";
+
+export interface TicketFilters {
+  search?: string;
+  bmStatuses?: BmStatus[];
+  workerIds?: string[];
+  labels?: string[];
+  stopReasons?: StopReason[];
+  errorSignature?: string;
+  createdAfter?: string;
+  createdBefore?: string;
+  updatedAfter?: string;
+  updatedBefore?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface TicketsResponse {
+  tickets: TicketListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface TicketFilterOptions {
+  bmStatuses: BmStatus[];
+  stopReasons: StopReason[];
+  labels: string[];
+  defaultPageSize: number;
+  maxPageSize: number;
+}
