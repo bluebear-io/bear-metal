@@ -84,6 +84,10 @@ class FakeLinear implements LinearSource {
   async handBack(ticketId: string): Promise<void> {
     this.handBackCalls.push(ticketId);
   }
+  commentAndHandBackCalls: Array<{ ticketId: string; body: string }> = [];
+  async commentAndHandBack(ticketId: string, body: string): Promise<void> {
+    this.commentAndHandBackCalls.push({ ticketId, body });
+  }
 }
 
 class FakeGitHub implements GitHubSource {
@@ -416,6 +420,51 @@ describe("Scheduler.tick", () => {
     await scheduler.stop();
 
     expect(await tasks.countTracked()).toBe(0);
+  });
+
+  it("hands back and releases tickets that have reached the iteration limit", async () => {
+    const tasks = await makeQueue();
+    for (let i = 0; i < 20; i++) {
+      await seedCompletedTask(
+        tasks,
+        { state: "new", ticketId: "A", pr: null },
+        { status: "done", pr: prRef(7) },
+      );
+    }
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7), true, false) });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github, tasks, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(linear.commentAndHandBackCalls).toHaveLength(1);
+    expect(linear.commentAndHandBackCalls[0]?.ticketId).toBe("a");
+    expect(linear.commentAndHandBackCalls[0]?.body).toContain("maximum iteration limit of 20");
+    expect(await tasks.countTracked()).toBe(0);
+  });
+
+  it("dispatches normally for tickets below the iteration limit", async () => {
+    const tasks = await makeQueue();
+    for (let i = 0; i < 5; i++) {
+      await seedCompletedTask(
+        tasks,
+        { state: "new", ticketId: "A", pr: null },
+        { status: "done", pr: prRef(7) },
+      );
+    }
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7), true, false) });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github, tasks, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(1);
+    expect(linear.commentAndHandBackCalls).toEqual([]);
   });
 
   it("logs and skips a completed done task with no PR while continuing other tracked slots", async () => {

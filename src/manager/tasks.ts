@@ -29,6 +29,7 @@ export interface TaskRecord {
   updatedAt: Date;
   completedAt: Date | null;
   releasedAt: Date | null;
+  iterationNumber: number;
 }
 
 export interface TaskSlot {
@@ -45,6 +46,8 @@ export interface TaskQueue {
   listTracked(): Promise<TaskSlot[]>;
   countTracked(): Promise<number>;
   setSlotStatus(ticketId: string, status: SlotStatus): Promise<TaskRecord>;
+  /** Returns the number of tasks ever enqueued for this ticket (completed or not). */
+  getIterationCount(ticketId: string): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -61,6 +64,7 @@ interface TaskRow {
   updated_at: string | Date;
   completed_at: string | Date | null;
   released_at: string | Date | null;
+  iteration_number: number;
 }
 
 export function createTaskQueueFromDatabaseUrl(databaseUrl: string): TaskQueue {
@@ -100,11 +104,13 @@ class SqliteTaskQueue implements TaskQueue {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         completed_at TEXT NULL,
-        released_at TEXT NULL
+        released_at TEXT NULL,
+        iteration_number INTEGER NOT NULL DEFAULT 1
       );
     `);
     ensureSqliteColumn(db, "slot_status", "TEXT NOT NULL DEFAULT 'active'");
     ensureSqliteColumn(db, "released_at", "TEXT NULL");
+    ensureSqliteColumn(db, "iteration_number", "INTEGER NOT NULL DEFAULT 1");
     db.exec(`
       DROP INDEX IF EXISTS idx_tasks_acquire;
       CREATE INDEX IF NOT EXISTS idx_tasks_acquire
@@ -123,6 +129,10 @@ class SqliteTaskQueue implements TaskQueue {
     const db = this.requireDb();
     const id = randomUUID();
     const now = this.clock.nowIso();
+    const countRow = db
+      .prepare("SELECT COUNT(*) as count FROM tasks WHERE ticket_id = ?")
+      .get(input.ticketId) as { count: number } | undefined;
+    const iterationNumber = (countRow?.count ?? 0) + 1;
     db.prepare(`
       INSERT INTO tasks (
         id,
@@ -130,10 +140,18 @@ class SqliteTaskQueue implements TaskQueue {
         dispatch_state,
         input_json,
         created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, input.ticketId, input.state, JSON.stringify(input), now, now);
+        updated_at,
+        iteration_number
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, input.ticketId, input.state, JSON.stringify(input), now, now, iterationNumber);
     return rowToTask(this.getById(id));
+  }
+
+  async getIterationCount(ticketId: string): Promise<number> {
+    const row = this.requireDb()
+      .prepare("SELECT COUNT(*) as count FROM tasks WHERE ticket_id = ?")
+      .get(ticketId) as { count: number } | undefined;
+    return row?.count ?? 0;
   }
 
   async acquireNext(workerId: string): Promise<TaskRecord | null> {
@@ -269,10 +287,12 @@ class PostgresTaskQueue implements TaskQueue {
         created_at TIMESTAMPTZ NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL,
         completed_at TIMESTAMPTZ NULL,
-        released_at TIMESTAMPTZ NULL
+        released_at TIMESTAMPTZ NULL,
+        iteration_number INTEGER NOT NULL DEFAULT 1
       );
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS slot_status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ NULL;
+      ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_number INTEGER NOT NULL DEFAULT 1;
       DROP INDEX IF EXISTS idx_tasks_acquire;
       CREATE INDEX IF NOT EXISTS idx_tasks_acquire
         ON tasks(created_at)
@@ -296,13 +316,25 @@ class PostgresTaskQueue implements TaskQueue {
           dispatch_state,
           input_json,
           created_at,
-          updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+          updated_at,
+          iteration_number
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6,
+          (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = $2)
+        )
         RETURNING *
       `,
       [id, input.ticketId, input.state, JSON.stringify(input), now, now],
     );
     return rowToTask(requireSingleRow(result.rows, `inserted task ${id}`));
+  }
+
+  async getIterationCount(ticketId: string): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      "SELECT COUNT(*)::text as count FROM tasks WHERE ticket_id = $1",
+      [ticketId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
   }
 
   async acquireNext(workerId: string): Promise<TaskRecord | null> {
@@ -421,6 +453,7 @@ function rowToTask(row: TaskRow): TaskRecord {
     updatedAt: parseTimestamp(row.updated_at),
     completedAt: row.completed_at === null ? null : parseTimestamp(row.completed_at),
     releasedAt: row.released_at === null ? null : parseTimestamp(row.released_at),
+    iterationNumber: row.iteration_number,
   };
 }
 

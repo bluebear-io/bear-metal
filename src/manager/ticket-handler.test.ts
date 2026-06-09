@@ -70,6 +70,7 @@ class FakeTaskQueue implements TaskQueue {
       updatedAt: new Date(),
       completedAt: null,
       releasedAt: null,
+      iterationNumber: 1,
     };
   }
 
@@ -89,6 +90,10 @@ class FakeTaskQueue implements TaskQueue {
 
   async setSlotStatus(): Promise<TaskRecord> {
     throw new Error("FakeTaskQueue.setSlotStatus is not used by ManagerTicketHandler tests");
+  }
+
+  async getIterationCount(): Promise<number> {
+    return 0;
   }
 
   async close(): Promise<void> {}

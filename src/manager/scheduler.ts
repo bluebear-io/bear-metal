@@ -16,12 +16,16 @@ type TicketPhase = "active" | "parked";
 const TERMINAL_STATE_TYPES = ["completed", "canceled"];
 const TERMINAL_STATE_NAMES = ["Merged"];
 
+const MAX_ITERATIONS = 20;
+
 /** The Linear capabilities the scheduler needs (subset of LinearIntegration). */
 export interface LinearSource {
   findDelegatedTickets(agentId: string): Promise<Ticket[]>;
   getTicket(id: string): Promise<Ticket>;
   /** Relinquish the agent's delegation so the ticket returns to its human assignee. */
   handBack(ticketId: string): Promise<void>;
+  /** Post a comment on the ticket and then relinquish delegation. */
+  commentAndHandBack(ticketId: string, body: string): Promise<void>;
 }
 
 /** The GitHub capabilities the scheduler needs (subset of GitHubIntegration). */
@@ -104,7 +108,8 @@ export class Scheduler {
     );
 
     const toDispatch = [...refreshed, ...admitted];
-    await dispatchTickets(toDispatch, handler, this.queue, this.inFlight, logger);
+    const eligible = await enforceIterationLimit(toDispatch, tasks, linear, logger);
+    await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
     logger.info(
       { active: await tasks.countTracked(), admitted: admitted.length, dispatched: toDispatch.length },
@@ -326,6 +331,37 @@ async function runHandler(
   } finally {
     inFlight.delete(id);
   }
+}
+
+/**
+ * Step 2.5 — drop tickets that have reached MAX_ITERATIONS, hand them back to
+ * their human assignee with an explanatory comment, and release their slot.
+ */
+async function enforceIterationLimit(
+  contexts: TicketContext[],
+  tasks: TaskQueue,
+  linear: LinearSource,
+  logger: Logger,
+): Promise<TicketContext[]> {
+  const eligible: TicketContext[] = [];
+  for (const ctx of contexts) {
+    // Tasks are keyed by ticket identifier (e.g. "DEN-123"); Linear APIs by ticket id (UUID).
+    const count = await tasks.getIterationCount(ctx.ticket.identifier);
+    if (count >= MAX_ITERATIONS) {
+      logger.warn(
+        { ticket: ctx.ticket.identifier, count },
+        "iteration limit reached; handing back",
+      );
+      await linear.commentAndHandBack(
+        ctx.ticket.id,
+        `Reached the maximum iteration limit of ${MAX_ITERATIONS}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
+      );
+      await tasks.setSlotStatus(ctx.ticket.identifier, "released");
+    } else {
+      eligible.push(ctx);
+    }
+  }
+  return eligible;
 }
 
 function knownPrForSlot(slot: TaskSlot): PullRequestRef | null {
