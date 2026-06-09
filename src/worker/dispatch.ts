@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import { createLogger } from "../shared/index.js";
 import { getPackageRoot, runCloneScript, workspaceForTicket } from "./clone.js";
 import { runPiWorker } from "./pi.js";
@@ -63,9 +64,21 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   logger.info({ ticketId }, "linear ticket moved to in progress");
 
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
-  const result = await runPiWorker({ context, github, linear });
-  logger.info({ ticketId, status: result.status }, "pi worker session completed");
-  return result;
+  try {
+    const result = await runPiWorker({ context, github, linear });
+    logger.info({ ticketId, status: result.status }, "pi worker session completed");
+    return result;
+  } finally {
+    // Housekeeping: drop the checked-out blueden tree (and its nested sub-repos)
+    // so disk usage doesn't grow with every ticket. The next dispatch will re-clone.
+    const checkoutDir = resolve(workspaceDir, "blueden");
+    try {
+      await rm(checkoutDir, { recursive: true, force: true });
+      logger.info({ ticketId, checkoutDir }, "removed checked-out workspace folder");
+    } catch (error) {
+      logger.error({ ticketId, checkoutDir, error }, "failed to remove checked-out workspace folder");
+    }
+  }
 }
 
 export function validateDispatchInputs(state: DispatchState, ticketId: string, pr: PullRequestRef | null): void {
