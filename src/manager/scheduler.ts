@@ -231,14 +231,16 @@ function decideForOpenPr(
     return { remove: true, merged: pr.merged, context: { ticket, pr }, dispatch: false, phase: "active", trigger: "delegated_back" };
   }
   // Report the open PR's current state (best-effort; never affects dispatch).
-  // The granular observation (PR row + review threads + failing checks) is always sent;
-  // ciFailed/prOpened still fires for the bm_status transition + timeline event.
-  void reporter?.recordPullRequestObservation(ticket, pr, status.context, null);
-  if (testsFailed) {
-    void reporter?.ciFailed(ticket, `CI checks failed on PR #${pr.number}`);
-  } else {
-    void reporter?.prOpened(ticket, pr);
-  }
+  // The granular observation owns the pull_requests row write; await it before the
+  // bm_status transition so the two paths can't race on the same row.
+  void (async () => {
+    await reporter?.recordPullRequestObservation(ticket, pr, status.context, null);
+    if (testsFailed) {
+      await reporter?.ciFailed(ticket, `CI checks failed on PR #${pr.number}`);
+    } else {
+      await reporter?.prOpened(ticket, pr);
+    }
+  })();
   const dispatch = resuming || testsFailed || hasUnresolvedComments;
   if (dispatch) {
     logger.info(

@@ -69,11 +69,11 @@ describe("ciFailed", () => {
 });
 
 describe("prOpened", () => {
-  it("writes the PR row keyed owner/repo#number, sets pr_open, emits pr_opened", async () => {
+  it("sets pr_open and emits pr_opened (the PR row itself is owned by recordPullRequestObservation)", async () => {
     const c = fakeClient();
     const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", state: "open" as const, draft: false, merged: false, url: "purl" };
     await make(c).prOpened(ticket, pr);
-    expect(c.upsertPullRequest).toHaveBeenCalledWith(expect.objectContaining({ id: "o/r#7", ticketId: "lin_1", number: 7, state: "open" }));
+    expect(c.upsertPullRequest).not.toHaveBeenCalled();
     expect(c.upsertTicket).toHaveBeenCalledWith(expect.objectContaining({ bmStatus: "pr_open" }));
     expect(c.recordEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "pr_opened" }));
   });

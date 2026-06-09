@@ -83,9 +83,11 @@ export class DashboardReporter {
     await this.client.upsertTicket(this.ticketPayload(ticket, "in_progress", attemptCount, null));
   }
 
+  // The PR row itself is owned by `recordPullRequestObservation` (called every poll); this
+  // method only emits the bm_status transition + timeline event so the two paths can't race
+  // on the pull_requests row.
   async prOpened(ticket: Ticket, pr: PullRequest): Promise<void> {
     const t = this.ms();
-    await this.client.upsertPullRequest({ id: prId(pr), ticketId: ticket.id, number: pr.number, title: pr.title, headRef: pr.headRef, state: pr.state, draft: pr.draft, merged: pr.merged, url: pr.url, lastRunId: null, createdAt: t, updatedAt: t });
     await this.client.upsertTicket(this.ticketPayload(ticket, "pr_open", 0, null));
     await this.client.recordEvent({ ticketId: ticket.id, runId: null, workerId: null, source: "manager", type: "pr_opened", summary: `PR #${pr.number} opened`, payloadJson: null, createdAt: t });
   }
