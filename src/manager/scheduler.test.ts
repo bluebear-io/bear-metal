@@ -146,6 +146,27 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(2);
   });
 
+  it("admits higher-priority tickets first when concurrency is limited", async () => {
+    const tasks = await makeQueue();
+    // Linear may return tickets in any order; prove the scheduler reorders by priority
+    // before applying the concurrency cap. Urgent (1) and High (2) must win the two slots
+    // over Low (4) and No Priority (0).
+    const linear = new FakeLinear([
+      makeTicket("low", { priority: 4 }),
+      makeTicket("none", { priority: 0 }),
+      makeTicket("urgent", { priority: 1 }),
+      makeTicket("high", { priority: 2 }),
+    ]);
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), tasks, handler, concurrency: 2 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled.map((c) => c.ticket.id)).toEqual(["urgent", "high"]);
+    expect(await tasks.countTracked()).toBe(2);
+  });
+
   it("uses the worker-returned PR as the only known PR source for later iterations", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });

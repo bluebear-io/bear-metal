@@ -344,6 +344,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
         labels: ["bear-metal"],
         assignee: { id: "creator" },
         delegate: { id: "user-1" },
+        priority: 0,
       },
       comments: [],
     },
