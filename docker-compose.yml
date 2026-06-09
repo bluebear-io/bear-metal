@@ -24,7 +24,7 @@ services:
       - .env
     command: ["node", "dist/backend/index.js"]
     ports:
-      - "${BACKEND_PORT:-3100}:${BACKEND_PORT:-3100}"
+      - "80:${BACKEND_PORT:-3100}"
     restart: unless-stopped
     volumes:
       - ./data:/app/data
