@@ -36,8 +36,8 @@ function prRef(number = 7): PullRequestRef {
   return { owner: "acme", repo: "widgets", number };
 }
 
-function status(pr: PullRequest, testsFailed = false, hasUnresolvedComments = false): PullRequestStatus {
-  return { pr, testsFailed, hasUnresolvedComments };
+function status(pr: PullRequest, testsFailed = false, hasActionableUnresolvedComments = false): PullRequestStatus {
+  return { pr, testsFailed, hasActionableUnresolvedComments };
 }
 
 async function makeQueue(): Promise<TaskQueue> {
@@ -256,7 +256,7 @@ describe("Scheduler.tick", () => {
     expect(handler.handled.at(-1)?.pr?.number).toBe(7);
   });
 
-  it("re-dispatches an iteration with unresolved review comments", async () => {
+  it("re-dispatches an iteration with actionable unresolved review comments", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
     const handler = new RecordingHandler(tasks);
@@ -272,6 +272,25 @@ describe("Scheduler.tick", () => {
     await scheduler.stop();
 
     expect(handler.handled).toHaveLength(1);
+  });
+
+  it("does not re-dispatch an iteration whose unresolved threads are all from bear-metal (waiting on human)", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      // hasActionableUnresolvedComments: false — latest comment is from bear-metal, waiting on human
+      github: new FakeGitHub({ status: status(openPr(), false, false) }),
+      tasks,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
   });
 
   it("parks a tracked ticket whose delegation was relinquished, without dispatching or hitting GitHub", async () => {

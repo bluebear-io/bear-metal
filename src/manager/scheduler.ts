@@ -201,7 +201,7 @@ function decideForOpenPr(
   resuming: boolean,
   logger: Logger,
 ): TicketDecision {
-  const { pr, testsFailed, hasUnresolvedComments } = status;
+  const { pr, testsFailed, hasActionableUnresolvedComments } = status;
   if (pr.merged || pr.state === "closed") {
     logger.info(
       { ticket: ticket.identifier, pr: pr.number, merged: pr.merged, state: pr.state },
@@ -209,10 +209,10 @@ function decideForOpenPr(
     );
     return { remove: true, merged: pr.merged, context: { ticket, pr }, dispatch: false, phase: "active" };
   }
-  const dispatch = resuming || testsFailed || hasUnresolvedComments;
+  const dispatch = resuming || testsFailed || hasActionableUnresolvedComments;
   if (dispatch) {
     logger.info(
-      { ticket: ticket.identifier, pr: pr.number, resuming, testsFailed, hasUnresolvedComments },
+      { ticket: ticket.identifier, pr: pr.number, resuming, testsFailed, hasActionableUnresolvedComments },
       "pull request needs work; re-dispatching",
     );
   }
