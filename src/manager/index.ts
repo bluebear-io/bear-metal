@@ -61,7 +61,7 @@ const server = app.listen(config.port, () => {
   );
   logger.info(
     { port: config.port, pid: process.pid },
-    "🐻 Bear Metal is awake, caffeinated, and hungry for tickets — it stretched, growled at the standup, sniffed the backlog, picked the juiciest Linear ticket off the top, and is now lumbering toward the keyboard to ship some code. Reviewers, brace yourselves: there will be PRs, there will be diffs, and there will be honey-flavored commit messages. 🍯⌨️",
+    "🐻 Bear Metal is awake, caffeinated, and dangerously hungry for tickets — it rolled out of the cave at sunrise, stretched until its spine cracked like a stale changelog, growled at the standup bot, sniffed the entire backlog, licked a stray semicolon off its paw, and picked the juiciest Linear ticket off the top of the pile. It has now lumbered up to the keyboard, cracked its knuckles, opened seventeen tabs of MDN, muttered something rude about CommonJS, and started typing. Reviewers, brace yourselves: there will be PRs, there will be diffs, there will be force-pushes at 2am, there will be honey-flavored commit messages, and somewhere — somewhere — there will be a TODO that says 'fix later (sorry future bear)'. Sharpen your nits, polish your LGTMs, and hide the snacks. 🍯⌨️🐾📈",
   );
 });
 
