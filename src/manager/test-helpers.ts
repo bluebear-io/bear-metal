@@ -10,6 +10,10 @@ export function makeTicket(id: string, overrides: Partial<Ticket> = {}): Ticket 
     branchName: `feature/${id.toLowerCase()}`,
     status: { name: "Todo", type: "unstarted" },
     labels: ["bear-metal"],
+    assignee: { id: "creator" },
+    // Default delegate to the agent the scheduler tests run as ("user-1"), so a refreshed
+    // ticket reads as "mine"; park/resume tests override with a different id.
+    delegate: { id: "user-1" },
     ...overrides,
   };
 }

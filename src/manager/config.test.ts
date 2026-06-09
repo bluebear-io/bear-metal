@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 
 const REQUIRED = {
   LINEAR_API_TOKEN: "lin_token",
+  LINEAR_ASSIGNEE_ID: "user-1",
   GITHUB_APP_ID: "12345",
   GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\\nabc\\n-----END RSA PRIVATE KEY-----",
   GITHUB_APP_INSTALLATION_ID: "67890",
@@ -15,7 +16,7 @@ beforeEach(() => {
   snapshot = { ...process.env };
   for (const key of [
     "LINEAR_API_TOKEN",
-    "LINEAR_LABEL",
+    "LINEAR_ASSIGNEE_ID",
     "GITHUB_APP_ID",
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_APP_INSTALLATION_ID",
@@ -37,9 +38,9 @@ describe("loadConfig", () => {
     Object.assign(process.env, REQUIRED);
     const config = loadConfig();
     expect(config.linearApiToken).toBe("lin_token");
+    expect(config.linearAssigneeId).toBe("user-1");
     expect(config.githubAppId).toBe(12_345);
     expect(config.githubAppInstallationId).toBe(67_890);
-    expect(config.linearLabel).toBe("bear-metal");
     expect(config.workerConcurrency).toBe(2);
     expect(config.pollIntervalMs).toBe(60_000);
     expect(config.port).toBe(3000);
@@ -54,8 +55,8 @@ describe("loadConfig", () => {
 
   it("throws when a required variable is missing", () => {
     Object.assign(process.env, REQUIRED);
-    delete process.env.GITHUB_APP_ID;
-    expect(() => loadConfig()).toThrow(/GITHUB_APP_ID/);
+    delete process.env.LINEAR_ASSIGNEE_ID;
+    expect(() => loadConfig()).toThrow(/LINEAR_ASSIGNEE_ID/);
   });
 
   it("throws on a non-positive-integer numeric variable", () => {
@@ -64,9 +65,7 @@ describe("loadConfig", () => {
   });
 
   it("honors overrides for optional variables", () => {
-    Object.assign(process.env, REQUIRED, { LINEAR_LABEL: "robo", WORKER_CONCURRENCY: "5" });
-    const config = loadConfig();
-    expect(config.linearLabel).toBe("robo");
-    expect(config.workerConcurrency).toBe(5);
+    Object.assign(process.env, REQUIRED, { WORKER_CONCURRENCY: "5" });
+    expect(loadConfig().workerConcurrency).toBe(5);
   });
 });

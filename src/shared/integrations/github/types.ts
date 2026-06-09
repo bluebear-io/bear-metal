@@ -23,6 +23,15 @@ export interface PullRequest {
 /** Enough to locate a PR for follow-up calls (get, comment). */
 export type PullRequestRef = Pick<PullRequest, "owner" | "repo" | "number">;
 
+/** A PR plus the signals the manager uses to decide whether to re-dispatch it. */
+export interface PullRequestStatus {
+  pr: PullRequest;
+  /** Any failed check run or commit status on the head commit. */
+  testsFailed: boolean;
+  /** Any unresolved review thread. */
+  hasUnresolvedComments: boolean;
+}
+
 export interface FailedCheckRun {
   checkRun: JsonValue;
   annotations: JsonValue[];

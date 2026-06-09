@@ -1,6 +1,6 @@
 export interface Config {
   linearApiToken: string;
-  linearLabel: string;
+  linearAssigneeId: string;
   githubAppId: number;
   githubAppPrivateKey: string;
   githubAppInstallationId: number;
@@ -51,7 +51,7 @@ function positiveIntEnv(name: string, fallback: number): number {
 export function loadConfig(): Readonly<Config> {
   return Object.freeze({
     linearApiToken: requiredEnv("LINEAR_API_TOKEN"),
-    linearLabel: process.env.LINEAR_LABEL || "bear-metal",
+    linearAssigneeId: requiredEnv("LINEAR_ASSIGNEE_ID"),
     githubAppId: requiredPositiveIntEnv("GITHUB_APP_ID"),
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
     githubAppPrivateKey: requiredEnv("GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n"),

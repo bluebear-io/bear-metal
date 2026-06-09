@@ -11,6 +11,7 @@ import type {
   PullRequest,
   PullRequestContext,
   PullRequestRef,
+  PullRequestStatus,
   ReviewThread,
 } from "./types.js";
 
@@ -87,6 +88,19 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       pull_number: ref.number,
     });
     return toPullRequest(data, ref.owner, ref.repo);
+  }
+
+  /** PR merge/close state plus the work signals the manager dispatches on. */
+  async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
+    const [pr, context] = await Promise.all([
+      this.getPullRequest(ref),
+      this.getPullRequestContext(ref),
+    ]);
+    return {
+      pr,
+      testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
+      hasUnresolvedComments: context.unresolvedReviewThreads.length > 0,
+    };
   }
 
   async getPullRequestContext(ref: PullRequestRef): Promise<PullRequestContext> {

@@ -6,10 +6,11 @@ solves them with an LLM, and opens a GitHub PR.
 ## Scope (current)
 
 This repository currently contains one process with a **manager** and **worker**.
-The manager polls Linear tickets tagged `bear-metal`, looks up the GitHub PR for
-active tickets, and maintains an in-memory concurrency cap. The worker gathers
-Linear/GitHub context, runs the repository clone hook, invokes Pi, and records
-either `pending` or `done`.
+The manager polls Linear tickets assigned to `LINEAR_ASSIGNEE_ID`, looks up the
+GitHub PR for active tickets, and maintains an in-memory concurrency cap, recording
+each ticket's dispatch state (`new`/`iteration`) and status (`pending`/`done`). The
+worker gathers Linear/GitHub context, runs the repository clone hook, invokes Pi,
+and records either `pending` or `done`.
 
 ## Layout
 
@@ -31,7 +32,7 @@ Copy `.env.example` to `.env` and fill in the required values:
 | Var | Required | Default | Purpose |
 |-----|----------|---------|---------|
 | `LINEAR_API_TOKEN` | yes | — | Linear auth |
-| `LINEAR_LABEL` | no | `bear-metal` | label to filter tickets |
+| `LINEAR_ASSIGNEE_ID` | yes | — | Linear user id whose tickets the manager works |
 | `GITHUB_APP_ID` | yes | — | GitHub App id (numeric) |
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
 | `GITHUB_APP_INSTALLATION_ID` | yes | — | installation id (numeric) |

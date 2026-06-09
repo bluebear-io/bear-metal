@@ -14,7 +14,7 @@ const logger = createLogger({ level: config.logLevel, name: "manager", pretty: c
 
 logger.info(
   {
-    label: config.linearLabel,
+    assigneeId: config.linearAssigneeId,
     githubAppId: config.githubAppId,
     githubInstallationId: config.githubAppInstallationId,
     concurrency: config.workerConcurrency,
@@ -29,7 +29,7 @@ const github = new GitHubIntegration({
   privateKey: config.githubAppPrivateKey,
   installationId: config.githubAppInstallationId,
 });
-const store = new TicketStore();
+const store = new TicketStore(logger);
 const workerProcess = createWorkerProcess({ github, linear, logger });
 const handler = new ManagerTicketHandler({ logger, worker: workerProcess });
 
@@ -39,7 +39,7 @@ const scheduler = new Scheduler({
   github,
   store,
   handler,
-  label: config.linearLabel,
+  agentId: config.linearAssigneeId,
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });

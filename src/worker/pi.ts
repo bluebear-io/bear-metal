@@ -37,10 +37,10 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.info({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
-      await input.linear.commentAndAssignToCreator(input.context.ticketId, params.text);
+      await input.linear.commentAndHandBack(input.context.ticketId, params.text);
       setDecision({ status: "pending", pr: input.context.pr });
       return {
-        content: [{ type: "text", text: "Posted Linear comment, reassigned to creator, and marked dispatch pending." }],
+        content: [{ type: "text", text: "Posted Linear comment, relinquished delegation, and marked dispatch pending." }],
         details: {},
       };
     },

@@ -48,9 +48,9 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 }));
 
 describe("runPiWorker", () => {
-  it("comments and assigns the ticket to the creator when pending human response", async () => {
+  it("comments and hands the ticket back to its human owner when pending human response", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const commentAndAssignToCreator = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const commentAndHandBack = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
     const context = makeContext();
 
     const result = await runPiWorker({
@@ -58,11 +58,11 @@ describe("runPiWorker", () => {
       github: makeGithub(),
       linear: {
         getTicketContext: vi.fn(),
-        commentAndAssignToCreator,
+        commentAndHandBack,
       },
     });
 
-    expect(commentAndAssignToCreator).toHaveBeenCalledWith("DEN-1", "Need a product decision.");
+    expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", "Need a product decision.");
     expect(result).toEqual({ status: "pending", pr: null });
     expect(piMock.sessionDispose).toHaveBeenCalled();
   });
@@ -83,6 +83,8 @@ function makeContext(): WorkerInputContext {
         branchName: "feature/den-1-build-thing",
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
+        assignee: { id: "creator" },
+        delegate: { id: "user-1" },
       },
       comments: [],
     },

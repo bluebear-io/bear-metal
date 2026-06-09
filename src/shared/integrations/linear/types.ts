@@ -19,6 +19,13 @@ export interface Ticket {
   branchName: string;
   status: TicketStatus;
   labels: string[];
+  /** Human owner of the ticket (stays the creator even when an agent is delegated to it). */
+  assignee: { id: string } | null;
+  /**
+   * Agent the ticket is delegated to, or null. The manager works tickets delegated to it and
+   * parks those that are not — Linear assigns agent work via delegation, not assignment.
+   */
+  delegate: { id: string } | null;
 }
 
 export interface TicketCommentUser {
@@ -40,9 +47,4 @@ export interface TicketComment {
 export interface LinearTicketContext {
   issue: Ticket;
   comments: TicketComment[];
-}
-
-export interface FindTicketsOptions {
-  /** Filter by Linear workflow-state name (e.g. "Todo"). */
-  status?: string;
 }

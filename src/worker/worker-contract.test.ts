@@ -41,6 +41,8 @@ describe("worker contract", () => {
           branchName: "feature/den-1-fix-thing",
           status: { name: "Todo", type: "unstarted" },
           labels: ["bear-metal"],
+          assignee: { id: "creator" },
+          delegate: { id: "user-1" },
         },
         comments: [],
       },
