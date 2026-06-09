@@ -36,6 +36,7 @@ function status(pr: PullRequest, testsFailed = false, hasUnresolvedComments = fa
 }
 
 class FakeLinear implements LinearSource {
+  handBackCalls: string[] = [];
   constructor(
     private readonly todo: Ticket[],
     /** Override what getTicket returns per id (refresh sees a possibly-reassigned ticket). */
@@ -46,6 +47,9 @@ class FakeLinear implements LinearSource {
   }
   async getTicket(id: string): Promise<Ticket> {
     return this.refreshed[id] ?? this.todo.find((t) => t.id === id) ?? makeTicket(id);
+  }
+  async handBack(ticketId: string): Promise<void> {
+    this.handBackCalls.push(ticketId);
   }
 }
 
@@ -139,12 +143,13 @@ describe("Scheduler.tick", () => {
     expect(github.findCalls).toEqual(["a"]);
   });
 
-  it("releases a ticket when its PR is merged", async () => {
+  it("releases a ticket when its PR is merged and hands it back to the assignee", async () => {
     const store = new TicketStore();
     store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
     const github = new FakeGitHub({ status: status(openPr(7, { merged: true, state: "closed" })) });
+    const linear = new FakeLinear([]); // ticket is no longer Todo, so it won't be re-admitted
     const scheduler = buildScheduler({
-      linear: new FakeLinear([]), // ticket is no longer Todo, so it won't be re-admitted
+      linear,
       github,
       store,
       handler: new FakeHandler(),
@@ -155,14 +160,16 @@ describe("Scheduler.tick", () => {
     await scheduler.stop();
 
     expect(store.count()).toBe(0);
+    expect(linear.handBackCalls).toEqual(["a"]);
   });
 
-  it("releases a ticket when its PR is closed unmerged", async () => {
+  it("releases a ticket when its PR is closed unmerged without handing it back", async () => {
     const store = new TicketStore();
     store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
     const github = new FakeGitHub({ status: status(openPr(7, { state: "closed" })) });
+    const linear = new FakeLinear([]); // ticket is no longer Todo, so it won't be re-admitted
     const scheduler = buildScheduler({
-      linear: new FakeLinear([]), // ticket is no longer Todo, so it won't be re-admitted
+      linear,
       github,
       store,
       handler: new FakeHandler(),
@@ -173,6 +180,7 @@ describe("Scheduler.tick", () => {
     await scheduler.stop();
 
     expect(store.count()).toBe(0);
+    expect(linear.handBackCalls).toEqual([]);
   });
 
   it("re-dispatches an iteration whose PR has failed tests", async () => {
