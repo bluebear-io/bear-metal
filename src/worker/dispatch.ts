@@ -1,9 +1,16 @@
 import { mkdir } from "node:fs/promises";
+import { createLogger } from "../shared/index.js";
 import { getPackageRoot, runCloneScript, workspaceForTicket } from "./clone.js";
 import { runPiWorker } from "./pi.js";
 import type { DispatchResult, DispatchState, PullRequestRef, WorkerInputContext, WorkerIntegrations } from "./types.js";
 
 export type { DispatchResult, DispatchState, PullRequestRef };
+
+const logger = createLogger({
+  level: process.env.LOG_LEVEL ?? "info",
+  name: "worker:dispatch",
+  pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
+});
 
 export interface DispatchInput {
   state: DispatchState;
@@ -11,6 +18,8 @@ export interface DispatchInput {
   pr?: PullRequestRef | null;
   integrations: WorkerIntegrations;
   packageRoot?: string;
+  /** Delete and re-clone if the workspace already exists. Useful for re-running the same ticket. */
+  force?: boolean;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -24,10 +33,23 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   await mkdir(workspaceDir, { recursive: true });
 
+  logger.info({ ticketId, state, hasPr: pr !== null, workspaceDir }, "dispatch starting");
+
   const [ticket, pullRequest, cloneScript] = await Promise.all([
-    linear.getTicketContext(ticketId),
-    pr ? github.getPullRequestContext(pr) : Promise.resolve(null),
-    runCloneScript({ packageRoot, workspaceDir }),
+    linear.getTicketContext(ticketId).then((t) => {
+      logger.info({ ticketId }, "linear ticket fetched");
+      return t;
+    }),
+    pr
+      ? github.getPullRequestContext(pr).then((p) => {
+          logger.info({ owner: pr.owner, repo: pr.repo, number: pr.number }, "github PR context fetched");
+          return p;
+        })
+      : Promise.resolve(null),
+    runCloneScript({ packageRoot, workspaceDir, force: input.force }).then((r) => {
+      logger.info({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
+      return r;
+    }),
   ]);
 
   const context: WorkerInputContext = {
@@ -39,7 +61,10 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     cloneScript,
   };
 
-  return runPiWorker({ context, github, linear });
+  logger.info({ ticketId, workspaceDir }, "starting pi worker session");
+  const result = await runPiWorker({ context, github, linear });
+  logger.info({ ticketId, status: result.status }, "pi worker session completed");
+  return result;
 }
 
 export function validateDispatchInputs(state: DispatchState, ticketId: string, pr: PullRequestRef | null): void {

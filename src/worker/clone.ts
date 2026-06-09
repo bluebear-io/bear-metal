@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { access } from "node:fs/promises";
+import { access, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { runCommand } from "../shared/command.js";
 import type { CloneScriptResult } from "./types.js";
@@ -7,9 +7,15 @@ import type { CloneScriptResult } from "./types.js";
 export async function runCloneScript(input: {
   packageRoot: string;
   workspaceDir: string;
+  /** Delete and re-clone if the target already exists. Useful for re-running the same ticket. */
+  force?: boolean;
 }): Promise<CloneScriptResult> {
   const scriptPath = resolve(input.packageRoot, "scripts", "clone-target-repos.sh");
-  await ensureCloneTargetDoesNotExist(input.workspaceDir);
+  if (input.force) {
+    await rm(resolve(input.workspaceDir, "blueden"), { recursive: true, force: true });
+  } else {
+    await ensureCloneTargetDoesNotExist(input.workspaceDir);
+  }
   const result = await runCommand("bash", [scriptPath], {
     cwd: input.workspaceDir,
     timeoutMs: 10 * 60 * 1000,

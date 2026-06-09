@@ -26,7 +26,7 @@ export interface WorkerGitHub {
 
 export interface WorkerLinear {
   getTicketContext(ticketId: string): Promise<LinearTicketContext>;
-  leaveComment(ticketId: string, body: string): Promise<void>;
+  commentAndAssignToCreator(ticketId: string, body: string): Promise<void>;
 }
 
 export type WorkerIntegrations = {
