@@ -37,7 +37,11 @@ describe("runCloneScript", () => {
       expect(commandMock.runCommand).toHaveBeenCalledWith("bash", [join(root, "scripts", "clone-target-repos.sh")], {
         cwd: workspaceDir,
         timeoutMs: 10 * 60 * 1000,
-        env: expect.objectContaining({ GH_TOKEN: "test-token" }),
+        env: expect.objectContaining({
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
+          GIT_CONFIG_VALUE_0: "git@github.com:",
+        }),
       });
     } finally {
       await rm(root, { recursive: true, force: true });
