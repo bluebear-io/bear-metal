@@ -24,6 +24,11 @@ export async function runPiWorker(input: {
 
   const setDecision = (next: DispatchResult) => {
     if (decision) {
+      // Idempotent for same status.
+      if (decision.status === next.status) return;
+      // pending wins over done: code was committed but we're still blocked on a thread.
+      if (next.status === "pending") { decision = next; return; }
+      if (decision.status === "pending") return;
       throw new Error(`Pi attempted to finish twice: ${decision.status} then ${next.status}`);
     }
     decision = next;
@@ -75,7 +80,7 @@ export async function runPiWorker(input: {
   const disagreeWithGithubMessage = defineTool({
     name: "disagree_with_github_message",
     label: "Disagree with GitHub message",
-    description: "Reply to a GitHub review thread with a concrete code-backed explanation.",
+    description: "Reply to a GitHub review thread with a concrete code-backed explanation. Leaves the thread unresolved.",
     parameters: Type.Object({
       threadId: Type.String({ description: "The GitHub review thread node id." }),
       text: Type.String({ description: "The exact reply body to post to GitHub." }),
@@ -89,9 +94,33 @@ export async function runPiWorker(input: {
         params.text,
         input.context.pullRequest?.unresolvedReviewThreads ?? [],
       );
-      await input.github.resolveReviewThread(params.threadId);
       return {
-        content: [{ type: "text", text: `Replied to and resolved review thread ${params.threadId}.` }],
+        content: [{ type: "text", text: `Replied to review thread ${params.threadId} with disagreement.` }],
+        details: {},
+      };
+    },
+  });
+
+  const respondToCommentWriter = defineTool({
+    name: "respond_to_comment_writer",
+    label: "Respond to comment writer",
+    description: "Reply to a GitHub review thread with a blocker or question, then stop for human input. Leaves the thread unresolved.",
+    parameters: Type.Object({
+      threadId: Type.String({ description: "The GitHub review thread node id." }),
+      text: Type.String({ description: "The exact reply body to post to the review thread." }),
+    }),
+    execute: async (_toolCallId, params) => {
+      logger.info({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
+      const pr = requirePullRequest(input.context.pr);
+      await input.github.replyToReviewThread(
+        pr,
+        params.threadId,
+        params.text,
+        input.context.pullRequest?.unresolvedReviewThreads ?? [],
+      );
+      setDecision({ status: "pending", pr: input.context.pr });
+      return {
+        content: [{ type: "text", text: `Replied to review thread ${params.threadId} and set dispatch to pending.` }],
         details: {},
       };
     },
@@ -142,18 +171,23 @@ export async function runPiWorker(input: {
   ]);
   logger.info({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
 
+  const isNew = input.context.state === "new";
+  const stateTools = isNew
+    ? (["respond_to_ticket_reporter", "wrote_code"] as const)
+    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "wrote_code"] as const);
+  const stateCustomTools = isNew
+    ? [respondToTicketReporter, wroteCode]
+    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, wroteCode];
+
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
     modelRegistry: ModelRegistry.create(authStorage),
     sessionManager: SessionManager.inMemory(),
-    tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "respond_to_ticket_reporter", "agree_with_github_message", "disagree_with_github_message", "wrote_code"],
+    tools: ["read", "bash", "edit", "write", "grep", "find", "ls", ...stateTools],
     customTools: [
       ...guardedTools,
-      respondToTicketReporter,
-      agreeWithGithubMessage,
-      disagreeWithGithubMessage,
-      wroteCode,
+      ...stateCustomTools,
     ],
   });
 
@@ -195,7 +229,12 @@ export async function runPiWorker(input: {
   }
 
   if (!decision) {
-    throw new Error("Pi finished without calling respond_to_ticket_reporter or wrote_code");
+    if (input.context.state === "iteration") {
+      // Agent disagreed with all threads and made no code changes — replies were posted, work is done.
+      decision = { status: "done", pr: input.context.pr };
+    } else {
+      throw new Error("Pi finished without calling a finish tool (wrote_code or respond_to_ticket_reporter)");
+    }
   }
   return decision;
 }

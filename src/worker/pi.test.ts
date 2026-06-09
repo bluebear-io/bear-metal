@@ -100,7 +100,7 @@ describe("runPiWorker", () => {
     expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
   });
 
-  it("replies to and resolves a disagreed GitHub review thread", async () => {
+  it("replies to a disagreed GitHub review thread without resolving it", async () => {
     const { runPiWorker } = await import("./pi.js");
     const github = makeGithub();
     const linear = makeLinear();
@@ -130,7 +130,149 @@ describe("runPiWorker", () => {
       "The current code already handles this path.",
       context.pullRequest?.unresolvedReviewThreads,
     );
-    expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
+    expect(github.resolveReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("replies to a review thread and sets dispatch pending when respond_to_comment_writer is called", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const linear = makeLinear();
+    const context = makeContext({
+      state: "iteration",
+      pr: { owner: "acme", repo: "widgets", number: 7 },
+      pullRequest: makePullRequestContext(),
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "respond_to_comment_writer", {
+        threadId: "thread-1",
+        text: "I need clarification on the expected behavior here.",
+      });
+    });
+
+    const result = await runPiWorker({ context, github, linear, gitEnv: {} });
+
+    expect(github.replyToReviewThread).toHaveBeenCalledWith(
+      context.pr,
+      "thread-1",
+      "I need clarification on the expected behavior here.",
+      context.pullRequest?.unresolvedReviewThreads,
+    );
+    expect(github.resolveReviewThread).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: "pending", pr: context.pr });
+  });
+
+  it("returns done when agent only disagrees with all threads and makes no code changes", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const context = makeContext({
+      state: "iteration",
+      pr: { owner: "acme", repo: "widgets", number: 7 },
+      pullRequest: makePullRequestContext(),
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "disagree_with_github_message", {
+        threadId: "thread-1",
+        text: "No change needed.",
+      });
+      // agent calls no finish tool — disagree-only, no code changes
+    });
+
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+
+    expect(result).toEqual({ status: "done", pr: context.pr });
+  });
+
+  it("allows respond_to_comment_writer to be called for multiple threads without crashing", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const context = makeContext({
+      state: "iteration",
+      pr: { owner: "acme", repo: "widgets", number: 7 },
+      pullRequest: makePullRequestContext(),
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Question 1." });
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Question 2." });
+    });
+
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+
+    expect(github.replyToReviewThread).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ status: "pending", pr: context.pr });
+  });
+
+  it("returns pending when agent fixes some threads then calls respond_to_comment_writer", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const context = makeContext({
+      state: "iteration",
+      pr: { owner: "acme", repo: "widgets", number: 7 },
+      pullRequest: makePullRequestContext(),
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix thread 1",
+        prTitle: "fix",
+        prBody: "fix",
+      });
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
+    });
+
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+
+    expect(result).toEqual({ status: "pending", pr: context.pr });
+  });
+
+  it("registers respond_to_ticket_reporter and wrote_code in new task mode, not iteration tools", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const registeredNames: string[] = [];
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      for (const tool of customTools) registeredNames.push(tool.name);
+      await executeTool(customTools, "respond_to_ticket_reporter", { text: "Blocked." });
+    });
+
+    await runPiWorker({
+      context: makeContext({ state: "new" }),
+      github: makeGithub(),
+      linear: makeLinear(),
+      gitEnv: {},
+    });
+
+    expect(registeredNames).toContain("respond_to_ticket_reporter");
+    expect(registeredNames).toContain("wrote_code");
+    expect(registeredNames).not.toContain("agree_with_github_message");
+    expect(registeredNames).not.toContain("disagree_with_github_message");
+    expect(registeredNames).not.toContain("respond_to_comment_writer");
+  });
+
+  it("registers iteration tools in iteration mode, not respond_to_ticket_reporter", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const registeredNames: string[] = [];
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      for (const tool of customTools) registeredNames.push(tool.name);
+      await executeTool(customTools, "respond_to_comment_writer", {
+        threadId: "thread-1",
+        text: "Blocked.",
+      });
+    });
+
+    await runPiWorker({
+      context: makeContext({
+        state: "iteration",
+        pr: { owner: "acme", repo: "widgets", number: 7 },
+        pullRequest: makePullRequestContext(),
+      }),
+      github: makeGithub(),
+      linear: makeLinear(),
+      gitEnv: {},
+    });
+
+    expect(registeredNames).toContain("agree_with_github_message");
+    expect(registeredNames).toContain("disagree_with_github_message");
+    expect(registeredNames).toContain("respond_to_comment_writer");
+    expect(registeredNames).toContain("wrote_code");
+    expect(registeredNames).not.toContain("respond_to_ticket_reporter");
   });
 
   it("moves the Linear ticket to In Review after writing code", async () => {

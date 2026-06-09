@@ -28,8 +28,8 @@ export interface PullRequestStatus {
   pr: PullRequest;
   /** Any failed check run or commit status on the head commit. */
   testsFailed: boolean;
-  /** Any unresolved review thread. */
-  hasUnresolvedComments: boolean;
+  /** Any unresolved review thread whose latest comment is not from bear-metal. */
+  hasActionableUnresolvedComments: boolean;
 }
 
 export interface FailedCheckRun {
