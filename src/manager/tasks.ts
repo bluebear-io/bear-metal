@@ -75,6 +75,7 @@ export function createTaskQueueFromDatabaseUrl(databaseUrl: string): TaskQueue {
 
 class SqliteTaskQueue implements TaskQueue {
   private readonly path: string;
+  private readonly clock = new MonotonicIsoClock();
   private db: DatabaseSync | null = null;
 
   constructor(path: string) {
@@ -121,7 +122,7 @@ class SqliteTaskQueue implements TaskQueue {
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     const db = this.requireDb();
     const id = randomUUID();
-    const now = nowIso();
+    const now = this.clock.nowIso();
     db.prepare(`
       INSERT INTO tasks (
         id,
@@ -137,7 +138,7 @@ class SqliteTaskQueue implements TaskQueue {
 
   async acquireNext(workerId: string): Promise<TaskRecord | null> {
     const db = this.requireDb();
-    const now = nowIso();
+    const now = this.clock.nowIso();
     db.exec("BEGIN IMMEDIATE");
     try {
       const candidate = db.prepare(`
@@ -170,7 +171,7 @@ class SqliteTaskQueue implements TaskQueue {
 
   async complete(taskId: string, result: DispatchResult): Promise<void> {
     const db = this.requireDb();
-    const now = nowIso();
+    const now = this.clock.nowIso();
     const update = db.prepare(`
       UPDATE tasks
       SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?
@@ -205,7 +206,7 @@ class SqliteTaskQueue implements TaskQueue {
     if (!latest) {
       throw new Error(`Cannot set slot status for unknown ticket: ${ticketId}`);
     }
-    const now = nowIso();
+    const now = this.clock.nowIso();
     this.requireDb().prepare(`
       UPDATE tasks
       SET slot_status = ?, released_at = ?, updated_at = ?
@@ -248,6 +249,7 @@ class SqliteTaskQueue implements TaskQueue {
 
 class PostgresTaskQueue implements TaskQueue {
   private readonly pool: pg.Pool;
+  private readonly clock = new MonotonicIsoClock();
 
   constructor(databaseUrl: string) {
     this.pool = new pg.Pool({ connectionString: databaseUrl });
@@ -285,7 +287,7 @@ class PostgresTaskQueue implements TaskQueue {
 
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     const id = randomUUID();
-    const now = nowIso();
+    const now = this.clock.nowIso();
     const result = await this.pool.query<TaskRow>(
       `
         INSERT INTO tasks (
@@ -305,7 +307,7 @@ class PostgresTaskQueue implements TaskQueue {
 
   async acquireNext(workerId: string): Promise<TaskRecord | null> {
     const client = await this.pool.connect();
-    const now = nowIso();
+    const now = this.clock.nowIso();
     try {
       await client.query("BEGIN");
       const result = await client.query<TaskRow>(
@@ -337,7 +339,7 @@ class PostgresTaskQueue implements TaskQueue {
   }
 
   async complete(taskId: string, result: DispatchResult): Promise<void> {
-    const now = nowIso();
+    const now = this.clock.nowIso();
     const update = await this.pool.query(
       `
         UPDATE tasks
@@ -370,7 +372,7 @@ class PostgresTaskQueue implements TaskQueue {
   }
 
   async setSlotStatus(ticketId: string, status: SlotStatus): Promise<TaskRecord> {
-    const now = nowIso();
+    const now = this.clock.nowIso();
     const result = await this.pool.query<TaskRow>(
       `
         WITH latest AS (
@@ -519,13 +521,15 @@ function parseTimestamp(value: string | Date): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
-let lastNowMs = 0;
+class MonotonicIsoClock {
+  private lastNowMs = 0;
 
-function nowIso(): string {
-  const nowMs = Date.now();
-  const monotonicMs = Math.max(nowMs, lastNowMs + 1);
-  lastNowMs = monotonicMs;
-  return new Date(monotonicMs).toISOString();
+  nowIso(): string {
+    const nowMs = Date.now();
+    const monotonicMs = Math.max(nowMs, this.lastNowMs + 1);
+    this.lastNowMs = monotonicMs;
+    return new Date(monotonicMs).toISOString();
+  }
 }
 
 function requireSingleRow<T>(rows: T[], context: string): T {

@@ -399,18 +399,23 @@ describe("Scheduler.tick", () => {
     expect(await tasks.countTracked()).toBe(0);
   });
 
-  it("fails loudly when a completed done task has no PR in result or input", async () => {
+  it("logs and skips a completed done task with no PR while continuing other tracked slots", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: null });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "B", pr: null }, { status: "done", pr: prRef(7) });
+    const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
-      linear: new FakeLinear([], { A: makeTicket("a") }),
-      github: new FakeGitHub(),
+      linear: new FakeLinear([], { A: makeTicket("a"), B: makeTicket("b") }),
+      github: new FakeGitHub({ status: status(openPr(7), true, false) }),
       tasks,
-      handler: new RecordingHandler(tasks),
-      concurrency: 1,
+      handler,
+      concurrency: 2,
     });
 
-    await expect(scheduler.tick()).rejects.toThrow(/completed with status done but has no pull request/);
+    await scheduler.tick();
     await scheduler.stop();
+
+    expect(handler.handled.map((ctx) => ctx.ticket.identifier)).toEqual(["B"]);
+    expect(await tasks.countTracked()).toBe(2);
   });
 });

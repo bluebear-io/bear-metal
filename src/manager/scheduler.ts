@@ -229,29 +229,36 @@ async function refreshTrackedTickets(
 ): Promise<TicketContext[]> {
   const toDispatch: TicketContext[] = [];
   for (const slot of await tasks.listTracked()) {
-    const knownPr = knownPrForSlot(slot);
-    const ticket = await linear.getTicket(slot.ticketId);
-    const decision = await evaluateTicket(ticket, knownPr, slot.slotStatus, agentId, github, logger);
-    if (decision.remove) {
-      if (decision.merged) {
-        // PR merged — relinquish the agent's delegation so the ticket returns to its human assignee.
-        // If this throws, leave the slot tracked so the next tick retries.
-        await linear.handBack(ticket.id);
-        logger.info({ ticket: ticket.identifier }, "handed ticket back to assignee after merge");
+    try {
+      const knownPr = knownPrForSlot(slot);
+      const ticket = await linear.getTicket(slot.ticketId);
+      const decision = await evaluateTicket(ticket, knownPr, slot.slotStatus, agentId, github, logger);
+      if (decision.remove) {
+        if (decision.merged) {
+          // PR merged — relinquish the agent's delegation so the ticket returns to its human assignee.
+          // If this throws, leave the slot tracked so the next tick retries.
+          await linear.handBack(ticket.id);
+          logger.info({ ticket: ticket.identifier }, "handed ticket back to assignee after merge");
+        }
+        await tasks.setSlotStatus(slot.ticketId, "released");
+        continue;
       }
-      await tasks.setSlotStatus(slot.ticketId, "released");
-      continue;
-    }
 
-    if (slot.slotStatus !== decision.phase) {
-      await tasks.setSlotStatus(slot.ticketId, decision.phase);
-    }
-    if (decision.dispatch) {
-      if (slot.latestTask.resultStatus === null) {
-        logger.debug({ ticket: ticket.identifier }, "ticket already has active SQL task; skipping dispatch");
-      } else {
-        toDispatch.push(decision.context);
+      if (slot.slotStatus !== decision.phase) {
+        await tasks.setSlotStatus(slot.ticketId, decision.phase);
       }
+      if (decision.dispatch) {
+        if (slot.latestTask.resultStatus === null) {
+          logger.debug({ ticket: ticket.identifier }, "ticket already has active SQL task; skipping dispatch");
+        } else {
+          toDispatch.push(decision.context);
+        }
+      }
+    } catch (err) {
+      logger.error(
+        { err, ticketId: slot.ticketId, taskId: slot.latestTask.id },
+        "tracked slot refresh failed; leaving slot tracked",
+      );
     }
   }
   return toDispatch;
