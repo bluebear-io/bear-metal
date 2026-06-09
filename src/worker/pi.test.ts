@@ -20,6 +20,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   defineTool: (definition: unknown) => definition,
   createAgentSession: async (input: { customTools: Array<{ name: string; execute: (id: string, params: unknown) => Promise<unknown> }> }) => ({
     session: {
+      subscribe: vi.fn().mockReturnValue(vi.fn()),
+      exportToJsonl: vi.fn(),
       prompt: async () => {
         const tool = input.customTools.find((candidate) => candidate.name === "respond_to_ticket_reporter");
         if (!tool) {
