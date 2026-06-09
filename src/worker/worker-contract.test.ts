@@ -61,8 +61,9 @@ describe("worker contract", () => {
     };
 
     const prompt = buildWorkerPrompt(context);
-    expect(prompt).toMatch(/This is an iteration on an existing pull request/);
+    expect(prompt).toMatch(/Steps for this PR iteration/);
     expect(prompt).toMatch(/agree_with_github_message/);
+    expect(prompt).toMatch(/Never read, write, search, or cd outside the repository root/);
     expect(prompt).toMatch(/DEN-1/);
   });
 });

@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import { access, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { runCommand } from "../shared/command.js";
@@ -33,9 +34,10 @@ export function getPackageRoot(importMetaUrl: string): string {
   return resolve(dirname(fileURLToPath(importMetaUrl)), "..", "..");
 }
 
-export function workspaceForTicket(packageRoot: string, ticketId: string): string {
+export function workspaceForTicket(_packageRoot: string, ticketId: string): string {
   const safeTicketId = ticketId.replace(/[^a-zA-Z0-9_-]/g, "-");
-  return resolve(packageRoot, "workspace", safeTicketId);
+  const base = process.env.BEAR_METAL_WORKSPACE_DIR ?? resolve(homedir(), ".bear-metal", "workspace");
+  return resolve(base, safeTicketId);
 }
 
 async function ensureCloneTargetDoesNotExist(workspaceDir: string): Promise<void> {

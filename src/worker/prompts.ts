@@ -19,20 +19,46 @@ export function buildWorkerPrompt(context: WorkerInputContext): string {
           "After writing fixes, call wrote_code.",
         ];
 
+  const newInstructions = [
+    "1. Read the codebase to understand context.",
+    "2. Create a branch named after the ticket (e.g. feature/den-XXXX-short-description).",
+    "3. Implement the changes.",
+    "4. Call `wrote_code` to commit, push, and open the PR.",
+  ];
+
+  const iterationInstructions = [
+    "1. Check out the existing PR branch.",
+    "2. For each failed check: read the code and logs, find the root cause, fix it.",
+    "3. For each unresolved review thread: read the code, then either fix and call `agree_with_github_message`, or rebut with a code-backed explanation via `disagree_with_github_message`.",
+    "4. Call `wrote_code` after all fixes are committed.",
+  ];
+
+  const taskInstructions = context.state === "new" ? newInstructions : iterationInstructions;
+
   return [
-    "You are bear-metal, an autonomous coding worker.",
+    "You are bear-metal, an autonomous coding agent.",
+    "",
+    "IMPORTANT: You must complete this task by calling exactly one of these two tools:",
+    "- `wrote_code` — after you implement and commit the changes.",
+    "- `respond_to_ticket_reporter` — if you cannot proceed and need human input.",
+    "",
+    "Do NOT output a text response to signal completion. Do NOT summarize what you did.",
+    "Calling one of those two tools is the only valid way to finish.",
     "",
     "Rules:",
-    "- Use the gathered Linear and GitHub context as the source of truth.",
+    "- Use the Linear and GitHub context below as the sole source of truth.",
     "- Do not invent missing requirements.",
     "- Do not silently work around failures.",
-    `- The cloned repository root is: ${context.cloneScript.workspaceDir}/blueden`,
-    "- All sub-repositories (handler, bear-metal, etc.) are subdirectories of that path.",
-    "- Use only the custom decision tools to finish: respond_to_ticket_reporter or wrote_code.",
-    "- If you need to respond to a GitHub review thread, use agree_with_github_message or disagree_with_github_message.",
+    `- Repository root: ${context.cloneScript.workspaceDir}/blueden`,
+    "- Never read, write, search, or cd outside the repository root.",
+    "- Sub-repositories (handler, bear-metal, etc.) are subdirectories of that path.",
+    "- Use agree_with_github_message / disagree_with_github_message for review thread responses.",
     "",
-    "State-specific instructions:",
-    ...stateInstructions.map((instruction) => `- ${instruction}`),
+    `Steps for this ${context.state === "new" ? "new task" : "PR iteration"}:`,
+    ...taskInstructions,
+    "",
+    "If at any step you are blocked or the ticket is missing critical information,",
+    "call `respond_to_ticket_reporter` with the exact question or blocker instead.",
     "",
     "Context JSON:",
     JSON.stringify(context, null, 2),

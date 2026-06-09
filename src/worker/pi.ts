@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
 import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
+import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -18,6 +19,7 @@ export async function runPiWorker(input: {
   linear: WorkerLinear;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
+  const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
 
   const setDecision = (next: DispatchResult) => {
     if (decision) {
@@ -99,8 +101,9 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
-      await commitAndPush(params.repoRoot, params.commitMessage);
-      const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, params));
+      const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
+      await commitAndPush(repoRoot, params.commitMessage);
+      const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
       setDecision({ status: "done", pr });
       return {
         content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
@@ -116,6 +119,7 @@ export async function runPiWorker(input: {
 
   const prompt = buildWorkerPrompt(input.context);
   const workspaceDir = input.context.cloneScript.workspaceDir;
+  const guardedTools = createWorkspaceGuardedTools(workspaceRoot);
 
   await mkdir(workspaceDir, { recursive: true });
   await Promise.all([
@@ -125,12 +129,35 @@ export async function runPiWorker(input: {
   logger.info({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
 
   const { session } = await createAgentSession({
-    cwd: workspaceDir,
+    cwd: workspaceRoot,
     authStorage,
     modelRegistry: ModelRegistry.create(authStorage),
     sessionManager: SessionManager.inMemory(),
-    tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
-    customTools: [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, wroteCode],
+    tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "respond_to_ticket_reporter", "agree_with_github_message", "disagree_with_github_message", "wrote_code"],
+    customTools: [
+      ...guardedTools,
+      respondToTicketReporter,
+      agreeWithGithubMessage,
+      disagreeWithGithubMessage,
+      wroteCode,
+    ],
+  });
+
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === "tool_execution_start") {
+      logger.info({ tool: event.toolName, args: event.args }, "pi tool call");
+    } else if (event.type === "turn_end") {
+      const msg = event.message;
+      if ("role" in msg && msg.role === "assistant" && "content" in msg) {
+        const text = (msg.content as Array<{ type: string; text?: string }>)
+          .filter((c) => c.type === "text" && c.text)
+          .map((c) => c.text!)
+          .join("");
+        if (text) logger.info({ text }, "pi assistant output");
+      }
+    } else if (event.type === "agent_end") {
+      logger.info({ messageCount: event.messages.length }, "pi agent_end");
+    }
   });
 
   logger.info({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
@@ -141,6 +168,14 @@ export async function runPiWorker(input: {
     logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
     throw error;
   } finally {
+    const transcriptPath = resolve(workspaceDir, "session.jsonl");
+    try {
+      session.exportToJsonl(transcriptPath);
+      logger.info({ transcriptPath }, "pi session transcript saved");
+    } catch (exportError) {
+      logger.warn({ exportError }, "failed to export session transcript");
+    }
+    unsubscribe();
     session.dispose();
     logger.info({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
   }
