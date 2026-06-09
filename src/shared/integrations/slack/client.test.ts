@@ -20,7 +20,20 @@ describe("formatNotificationText", () => {
     );
   });
 
-  it("formats an 'updated' message and falls back to plain ticket id without url", () => {
+  it("escapes Slack mrkdwn special chars in title and ticket id to prevent link injection", () => {
+    const text = formatNotificationText({
+      kind: "opened",
+      pr: { owner: "acme", repo: "blueden", number: 1 },
+      title: "Check <https://evil.com|this> & stuff",
+      url: "https://github.com/acme/blueden/pull/1",
+      ticketId: "DEN-<1>",
+    });
+    expect(text).toContain("Check &lt;https://evil.com|this&gt; &amp; stuff");
+    expect(text).toContain("(ticket: DEN-&lt;1&gt;)");
+    expect(text).not.toContain("<https://evil.com|this>");
+  });
+
+  it("formats an 'updated' message and falls back to plain ticket id without url", () => { 
     const text = formatNotificationText({
       kind: "updated",
       pr: { owner: "acme", repo: "blueden", number: 7 },
