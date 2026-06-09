@@ -145,13 +145,13 @@ export function listRepoBreakdowns(db: Db): RepoBreakdown[] {
         ${schema.pullRequests.owner} as owner,
         ${schema.pullRequests.repo} as repo,
         ${schema.pullRequests.ticketId} as ticket_id,
-        ${schema.tickets.attemptCount} as attempt_count,
+        max(${schema.tickets.attemptCount}) as attempt_count,
         max(case when ${schema.pullRequests.merged} = 1 then 1 else 0 end) as merged_any,
         max(${schema.pullRequests.updatedAt}) as last_updated
       from ${schema.pullRequests}
       inner join ${schema.tickets} on ${schema.tickets.id} = ${schema.pullRequests.ticketId}
       where ${schema.pullRequests.owner} != '' and ${schema.pullRequests.repo} != ''
-      group by owner, repo, ticket_id, attempt_count
+      group by owner, repo, ticket_id
     )
     group by owner, repo
     order by lastActivityMs desc

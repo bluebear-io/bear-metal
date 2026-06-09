@@ -50,7 +50,11 @@ export function upsertRun(db: Db, p: RunPayload): void {
 // view simply ignores rows with empty owner/repo (see listRepoBreakdowns).
 function parseRepoFromUrl(url: string): { owner: string; repo: string } {
   try {
-    const parts = new URL(url).pathname.split("/").filter(Boolean);
+    const u = new URL(url);
+    if (u.hostname !== "github.com") return { owner: "", repo: "" };
+    const parts = u.pathname.split("/").filter(Boolean);
+    // Expect /{owner}/{repo}/pull/{n}
+    if (parts.length < 4 || parts[2] !== "pull") return { owner: "", repo: "" };
     return { owner: parts[0] ?? "", repo: parts[1] ?? "" };
   } catch {
     return { owner: "", repo: "" };
