@@ -27,17 +27,21 @@ export function upsertWorker(db: Db, p: WorkerPayload): void {
   // Record a status transition iff this is a new worker OR the status changed.
   // The transitions table is append-only and powers the worker utilization Gantt chart.
   // Must capture prev BEFORE the upsert so we can compare; insert the transition AFTER the
-  // worker row exists to satisfy the FK on first-seen workers.
-  const prev = db.select({ status: schema.workers.status }).from(schema.workers).where(eq(schema.workers.id, p.id)).get();
-  db.insert(schema.workers).values(row).onConflictDoUpdate({ target: schema.workers.id, set: row }).run();
-  if (!prev || prev.status !== p.status) {
-    db.insert(schema.workerStatusTransitions).values({
-      id: globalThis.crypto.randomUUID(),
-      workerId: p.id,
-      status: p.status,
-      changedAt: new Date(p.updatedAt),
-    }).run();
-  }
+  // worker row exists to satisfy the FK on first-seen workers. Wrap in a transaction so
+  // concurrent upserts of the same worker cannot read stale prev and double-insert (or
+  // skip) a transition row.
+  db.transaction((tx) => {
+    const prev = tx.select({ status: schema.workers.status }).from(schema.workers).where(eq(schema.workers.id, p.id)).get();
+    tx.insert(schema.workers).values(row).onConflictDoUpdate({ target: schema.workers.id, set: row }).run();
+    if (!prev || prev.status !== p.status) {
+      tx.insert(schema.workerStatusTransitions).values({
+        id: globalThis.crypto.randomUUID(),
+        workerId: p.id,
+        status: p.status,
+        changedAt: new Date(p.updatedAt),
+      }).run();
+    }
+  });
 }
 
 export function upsertRun(db: Db, p: RunPayload): void {

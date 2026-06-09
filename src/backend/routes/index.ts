@@ -47,7 +47,7 @@ export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
     let hours = WORKER_TIMELINE_DEFAULT_HOURS;
     if (raw !== undefined) {
       const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || parsed < WORKER_TIMELINE_MIN_HOURS || parsed > WORKER_TIMELINE_MAX_HOURS) {
+      if (!Number.isInteger(parsed) || parsed < WORKER_TIMELINE_MIN_HOURS || parsed > WORKER_TIMELINE_MAX_HOURS) {
         res.status(400).json({
           error: `hours must be an integer between ${WORKER_TIMELINE_MIN_HOURS} and ${WORKER_TIMELINE_MAX_HOURS}`,
         });
