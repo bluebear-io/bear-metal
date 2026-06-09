@@ -72,6 +72,31 @@ describe("TaskQueue", () => {
     expect(await queue.countTracked()).toBe(1);
   });
 
+  it("assigns iteration_number=1 on the first task and increments on re-dispatch for the same ticket", async () => {
+    const queue = await makeQueue();
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
+    expect(first.iterationNumber).toBe(1);
+
+    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null });
+    expect(second.iterationNumber).toBe(2);
+
+    const otherTicket = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null });
+    expect(otherTicket.iterationNumber).toBe(1);
+  });
+
+  it("reports iteration counts via getIterationCount", async () => {
+    const queue = await makeQueue();
+    expect(await queue.getIterationCount("DEN-unknown")).toBe(0);
+
+    await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
+    expect(await queue.getIterationCount("DEN-1")).toBe(1);
+
+    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null });
+    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null });
+    expect(await queue.getIterationCount("DEN-1")).toBe(3);
+    expect(await queue.getIterationCount("DEN-2")).toBe(0);
+  });
+
   it("parks, resumes, and releases a ticket slot by updating the latest task row", async () => {
     const queue = await makeQueue();
     const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
