@@ -50,4 +50,23 @@ describe("openReadWriteDb", () => {
   it("fails fast when the file is missing", () => {
     expect(() => openReadWriteDb("/no/such/file.sqlite")).toThrow(/not found/);
   });
+
+  it("does not enforce foreign keys (best-effort out-of-order writes)", () => {
+    dir = mkdtempSync(join(tmpdir(), "bm-fk-"));
+    const path = join(dir, "dash.sqlite");
+    const seed = drizzle(new Database(path), { schema });
+    migrate(seed, { migrationsFolder: "./src/backend/db/migrations" });
+
+    const { db, sqlite } = openReadWriteDb(path);
+    expect(sqlite.pragma("foreign_keys", { simple: true })).toBe(0);
+    // a child row referencing a non-existent ticket must NOT throw
+    expect(() =>
+      db.insert(schema.runs).values({
+        id: "r1", ticketId: "missing", attemptNumber: 1, workerId: null,
+        trigger: "new", status: "dispatched", contextJson: null,
+        startedAt: null, endedAt: null, stopReason: null, error: null, createdAt: new Date(1),
+      }).run()
+    ).not.toThrow();
+    sqlite.close();
+  });
 });

@@ -32,6 +32,11 @@ export function openReadWriteDb(path: string): ReadOnlyDb {
     throw new Error(`Bear Metal database file not found at "${path}"`);
   }
   const sqlite = new Database(path, { fileMustExist: true });
+  // The dashboard is a denormalized read model fed by best-effort, out-of-order writes (a child
+  // row can arrive before its parent). better-sqlite3 enables foreign_keys by default, which would
+  // make those out-of-order writes fail and — because writes are best-effort — silently drop rows.
+  // Disable enforcement here; the schema's FK declarations remain as relationship documentation.
+  sqlite.pragma("foreign_keys = OFF");
   const db = drizzle(sqlite, { schema });
   return { db, sqlite };
 }
