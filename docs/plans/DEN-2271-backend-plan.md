@@ -551,10 +551,13 @@ function main(): void {
   console.log(`${created ? "Created" : "Reseeded"} mock DB at ${dbPath}`);
 }
 
-// Run when invoked directly (tsx src/backend/mock/seed.ts).
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run when invoked directly. Compare realpaths (import.meta.url is the realpath but
+// process.argv[1] may be a symlinked path, e.g. /tmp -> /private/tmp), else the CLI silently no-ops.
+const invokedPath = process.argv[1];
+if (invokedPath && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(invokedPath)) {
   main();
 }
+// (imports: add `realpathSync` to the node:fs import and `import { fileURLToPath } from "node:url";`)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
