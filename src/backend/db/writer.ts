@@ -2,7 +2,7 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema.js";
 import type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload, TokenUsagePayload,
 } from "../../shared/dashboard/types.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
@@ -60,6 +60,14 @@ export function upsertCiRun(db: Db, p: CiRunPayload): void {
     url: p.url, summary: p.summary, createdAt: new Date(p.createdAt), completedAt: d(p.completedAt),
   };
   db.insert(schema.ciRuns).values(row).onConflictDoUpdate({ target: schema.ciRuns.id, set: row }).run();
+}
+
+export function insertTokenUsage(db: Db, p: TokenUsagePayload): void {
+  db.insert(schema.tokenUsage).values({
+    id: p.id, runId: p.runId, ticketId: p.ticketId, modelId: p.modelId,
+    inputTokens: p.inputTokens, outputTokens: p.outputTokens,
+    createdAt: new Date(p.createdAt),
+  }).onConflictDoNothing({ target: schema.tokenUsage.id }).run();
 }
 
 export function insertEvent(db: Db, p: EventPayload): void {

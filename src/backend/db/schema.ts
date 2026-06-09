@@ -76,6 +76,16 @@ export const ciRuns = sqliteTable("ci_runs", {
   completedAt: ts("completed_at"),
 });
 
+export const tokenUsage = sqliteTable("token_usage", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => runs.id),
+  ticketId: text("ticket_id").notNull().references(() => tickets.id),
+  modelId: text("model_id").notNull(),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  createdAt: ts("created_at").notNull(),
+});
+
 export const events = sqliteTable("events", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").references(() => tickets.id),

@@ -1,4 +1,4 @@
-import type { BmStatus, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import type { BmStatus, BudgetStatus, CostPeriod, CostSummary, TicketCost, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -25,4 +25,17 @@ export async function fetchWorkers(): Promise<WorkerListItem[]> {
   const body = await getJson<{ workers: WorkerListItem[] }>("/api/workers");
 
   return body.workers;
+}
+
+export async function fetchTicketCosts(): Promise<TicketCost[]> {
+  const body = await getJson<{ tickets: TicketCost[] }>("/api/costs/tickets");
+  return body.tickets;
+}
+
+export async function fetchCostSummary(period: CostPeriod): Promise<CostSummary> {
+  return getJson<CostSummary>(`/api/costs/summary?period=${encodeURIComponent(period)}`);
+}
+
+export async function fetchBudgetStatus(): Promise<BudgetStatus> {
+  return getJson<BudgetStatus>("/api/costs/budget");
 }

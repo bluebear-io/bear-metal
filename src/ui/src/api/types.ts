@@ -137,3 +137,30 @@ export interface TicketDetail {
   ciRuns: CiRun[];
   events: TicketEvent[];
 }
+
+export interface TicketCost {
+  ticketId: string;
+  ticketIdentifier: string;
+  ticketTitle: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  completedAt: string | null;
+}
+
+export type CostPeriod = "day" | "week" | "month";
+
+export interface CostSummary {
+  periodStart: string;
+  periodEnd: string;
+  totalCostUsd: number;
+  ticketCount: number;
+  byTicket: TicketCost[];
+}
+
+export interface BudgetStatus {
+  monthlyBudgetUsd: number | null;
+  spentThisMonthUsd: number;
+  remainingUsd: number | null;
+  percentUsed: number | null;
+}

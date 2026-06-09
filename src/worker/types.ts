@@ -2,9 +2,16 @@ import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThr
 
 export type DispatchState = "new" | "iteration";
 
+export interface TokenUsageSummary {
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export type DispatchResult = {
   status: "pending" | "done";
   pr: PullRequestRef | null;
+  tokenUsage?: TokenUsageSummary;
 };
 
 export type { PullRequestRef };

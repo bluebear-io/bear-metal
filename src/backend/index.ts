@@ -10,7 +10,7 @@ function main(): void {
   const logger = createLogger({ level: config.logLevel, name: "bear-metal-backend" });
   const { dbPath, port } = config;
   const { db, sqlite } = openReadWriteDb(dbPath);
-  const app = createApp(db, { ingestToken: config.ingestToken });
+  const app = createApp(db, { ingestToken: config.ingestToken, monthlyBudgetUsd: config.monthlyBudgetUsd });
   const server = app.listen(port, () => logger.info({ port, dbPath }, "bear-metal dashboard backend listening"));
 
   let shuttingDown = false;

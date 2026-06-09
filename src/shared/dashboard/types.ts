@@ -84,6 +84,16 @@ export interface CiRunPayload {
   completedAt: number | null;
 }
 
+export interface TokenUsagePayload {
+  id: string;
+  runId: string;
+  ticketId: string;
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  createdAt: number;
+}
+
 export interface EventPayload {
   ticketId: string | null;
   runId: string | null;

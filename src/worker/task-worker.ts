@@ -111,6 +111,9 @@ export class TaskWorker {
     if (result.pr) {
       void this.reporter?.recordPrOpenedById(issueId, result.pr, task.id);
     }
+    if (result.tokenUsage) {
+      void this.reporter?.tokenUsageRecorded(task.id, issueId, result.tokenUsage);
+    }
     void this.reporter?.workerUpsert(this.workerId, this.workerName, "idle", null, this.startedAtMs);
     this.logger.info(
       { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId, resultStatus: result.status },

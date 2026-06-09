@@ -8,6 +8,8 @@ import { createIngestRouter } from "./routes/ingest.js";
 export interface AppOptions {
   /** Shared secret enabling the write (ingest) API. Empty/omitted → read-only server. */
   ingestToken?: string;
+  /** Monthly USD budget surfaced through /api/costs/budget. null → no budget configured. */
+  monthlyBudgetUsd?: number | null;
 }
 
 /** Build the Express app around an opened DB. A non-empty ingestToken mounts the write API. */
@@ -18,6 +20,6 @@ export function createApp(db: BetterSQLite3Database<typeof schema>, options: App
   if (options.ingestToken) {
     app.use("/api", createIngestRouter(db, options.ingestToken));
   }
-  app.use("/api", createRouter(db));
+  app.use("/api", createRouter(db, { monthlyBudgetUsd: options.monthlyBudgetUsd ?? null }));
   return app;
 }

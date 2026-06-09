@@ -1,7 +1,8 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, gte } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
+import { modelPrice } from "../config.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
@@ -143,4 +144,138 @@ export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerList
       isTimedOut,
     };
   });
+}
+
+export interface TicketCost {
+  ticketId: string;
+  ticketIdentifier: string;
+  ticketTitle: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  completedAt: Date | null;
+}
+
+export interface CostSummary {
+  periodStart: Date;
+  periodEnd: Date;
+  totalCostUsd: number;
+  ticketCount: number;
+  byTicket: TicketCost[];
+}
+
+export interface BudgetStatus {
+  monthlyBudgetUsd: number | null;
+  spentThisMonthUsd: number;
+  remainingUsd: number | null;
+  percentUsed: number | null;
+}
+
+export type CostPeriod = "day" | "week" | "month";
+
+function rowCostUsd(modelId: string, inputTokens: number, outputTokens: number): number {
+  const price = modelPrice(modelId);
+  return (inputTokens * price.inputPer1M + outputTokens * price.outputPer1M) / 1_000_000;
+}
+
+export function listTicketCosts(db: Db): TicketCost[] {
+  const rows = db.select().from(schema.tokenUsage).all();
+  const byTicket = new Map<string, { input: number; output: number; cost: number }>();
+  for (const r of rows) {
+    const agg = byTicket.get(r.ticketId) ?? { input: 0, output: 0, cost: 0 };
+    agg.input += r.inputTokens;
+    agg.output += r.outputTokens;
+    agg.cost += rowCostUsd(r.modelId, r.inputTokens, r.outputTokens);
+    byTicket.set(r.ticketId, agg);
+  }
+  const result: TicketCost[] = [];
+  for (const [ticketId, agg] of byTicket) {
+    const ticket = db.select().from(schema.tickets).where(eq(schema.tickets.id, ticketId)).get();
+    if (!ticket) continue;
+    result.push({
+      ticketId,
+      ticketIdentifier: ticket.identifier,
+      ticketTitle: ticket.title,
+      inputTokens: agg.input,
+      outputTokens: agg.output,
+      costUsd: agg.cost,
+      completedAt: ticket.completedAt,
+    });
+  }
+  result.sort((a, b) => b.costUsd - a.costUsd);
+  return result;
+}
+
+function periodBounds(period: CostPeriod, now: Date): { start: Date; end: Date } {
+  const end = now;
+  if (period === "day") {
+    const start = new Date(now);
+    start.setUTCHours(0, 0, 0, 0);
+    return { start, end };
+  }
+  if (period === "week") {
+    const start = new Date(now);
+    start.setUTCHours(0, 0, 0, 0);
+    start.setUTCDate(start.getUTCDate() - 6);
+    return { start, end };
+  }
+  // month
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  return { start, end };
+}
+
+export function getCostSummary(db: Db, period: CostPeriod, now: Date = new Date()): CostSummary {
+  const { start, end } = periodBounds(period, now);
+  const rows = db.select().from(schema.tokenUsage).where(gte(schema.tokenUsage.createdAt, start)).all();
+  const inWindow = rows.filter((r) => r.createdAt < end);
+  const byTicket = new Map<string, { input: number; output: number; cost: number }>();
+  for (const r of inWindow) {
+    const agg = byTicket.get(r.ticketId) ?? { input: 0, output: 0, cost: 0 };
+    agg.input += r.inputTokens;
+    agg.output += r.outputTokens;
+    agg.cost += rowCostUsd(r.modelId, r.inputTokens, r.outputTokens);
+    byTicket.set(r.ticketId, agg);
+  }
+  const ticketRows: TicketCost[] = [];
+  let totalCostUsd = 0;
+  for (const [ticketId, agg] of byTicket) {
+    const ticket = db.select().from(schema.tickets).where(eq(schema.tickets.id, ticketId)).get();
+    if (!ticket) continue;
+    ticketRows.push({
+      ticketId,
+      ticketIdentifier: ticket.identifier,
+      ticketTitle: ticket.title,
+      inputTokens: agg.input,
+      outputTokens: agg.output,
+      costUsd: agg.cost,
+      completedAt: ticket.completedAt,
+    });
+    totalCostUsd += agg.cost;
+  }
+  ticketRows.sort((a, b) => b.costUsd - a.costUsd);
+  return {
+    periodStart: start,
+    periodEnd: end,
+    totalCostUsd,
+    ticketCount: ticketRows.length,
+    byTicket: ticketRows,
+  };
+}
+
+export function getBudgetStatus(db: Db, monthlyBudgetUsd: number | null, now: Date = new Date()): BudgetStatus {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+  const rows = db.select().from(schema.tokenUsage)
+    .where(gte(schema.tokenUsage.createdAt, start)).all();
+  const inMonth = rows.filter((r) => r.createdAt < end);
+  let spent = 0;
+  for (const r of inMonth) {
+    spent += rowCostUsd(r.modelId, r.inputTokens, r.outputTokens);
+  }
+  if (monthlyBudgetUsd === null) {
+    return { monthlyBudgetUsd: null, spentThisMonthUsd: spent, remainingUsd: null, percentUsed: null };
+  }
+  const remaining = monthlyBudgetUsd - spent;
+  const percent = monthlyBudgetUsd === 0 ? 0 : (spent / monthlyBudgetUsd) * 100;
+  return { monthlyBudgetUsd, spentThisMonthUsd: spent, remainingUsd: remaining, percentUsed: percent };
 }

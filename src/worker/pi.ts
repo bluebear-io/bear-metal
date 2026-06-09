@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
-import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
+import type { DispatchResult, PullRequestRef, TokenUsageSummary, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
@@ -143,6 +143,7 @@ export async function runPiWorker(input: {
     ],
   });
 
+  let tokenUsage: TokenUsageSummary | undefined;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
       logger.info({ tool: event.toolName, args: event.args }, "pi tool call");
@@ -157,6 +158,7 @@ export async function runPiWorker(input: {
       }
     } else if (event.type === "agent_end") {
       logger.info({ messageCount: event.messages.length }, "pi agent_end");
+      tokenUsage = summarizeTokenUsage(event.messages);
     }
   });
 
@@ -183,7 +185,36 @@ export async function runPiWorker(input: {
   if (!decision) {
     throw new Error("Pi finished without calling respond_to_ticket_reporter or wrote_code");
   }
+  if (tokenUsage) {
+    decision = { ...decision, tokenUsage };
+  }
   return decision;
+}
+
+/**
+ * Sum input/output tokens across all assistant messages in the agent_end payload
+ * and pick the most recent model id (assistant messages are appended in order).
+ * Returns undefined when the session produced no usable usage data.
+ */
+function summarizeTokenUsage(messages: unknown[]): TokenUsageSummary | undefined {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let modelId: string | undefined;
+  for (const m of messages) {
+    if (typeof m !== "object" || m === null) continue;
+    const msg = m as { role?: unknown; usage?: unknown; model?: unknown };
+    if (msg.role !== "assistant") continue;
+    const u = msg.usage as { input?: unknown; output?: unknown } | undefined;
+    if (u && typeof u.input === "number") inputTokens += u.input;
+    if (u && typeof u.output === "number") outputTokens += u.output;
+    if (typeof msg.model === "string" && msg.model) modelId = msg.model;
+  }
+  if (inputTokens === 0 && outputTokens === 0 && !modelId) return undefined;
+  return {
+    modelId: modelId ?? process.env.PI_MODEL_ID ?? "unknown",
+    inputTokens,
+    outputTokens,
+  };
 }
 
 async function createPullRequestForRepo(

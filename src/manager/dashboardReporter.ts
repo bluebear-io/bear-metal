@@ -137,4 +137,20 @@ export class DashboardReporter {
   async branchCreatedById(ticketId: string, runId: string, workerId: string, summary: string): Promise<void> {
     await this.client.recordEvent({ ticketId, runId, workerId, source: "worker", type: "branch_created", summary, payloadJson: null, createdAt: this.ms() });
   }
+
+  async tokenUsageRecorded(
+    runId: string,
+    ticketId: string,
+    usage: { modelId: string; inputTokens: number; outputTokens: number },
+  ): Promise<void> {
+    await this.client.recordTokenUsage({
+      id: globalThis.crypto.randomUUID(),
+      runId,
+      ticketId,
+      modelId: usage.modelId,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      createdAt: this.ms(),
+    });
+  }
 }

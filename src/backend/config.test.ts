@@ -8,7 +8,7 @@ describe("loadBackendConfig", () => {
       BACKEND_PORT: "4000",
       LOG_LEVEL: "debug",
     });
-    expect(cfg).toEqual({ dbPath: "/tmp/x.db", port: 4000, logLevel: "debug", ingestToken: "" });
+    expect(cfg).toEqual({ dbPath: "/tmp/x.db", port: 4000, logLevel: "debug", ingestToken: "", monthlyBudgetUsd: null });
   });
 
   it("defaults the port to 3100 when unset", () => {
@@ -28,6 +28,17 @@ describe("loadBackendConfig", () => {
   it("fails fast when the port is set but not a positive integer (no silent NaN)", () => {
     expect(() => loadBackendConfig({ BEAR_METAL_DB_PATH: "/tmp/x.db", BACKEND_PORT: "abc" })).toThrow(
       /BACKEND_PORT/,
+    );
+  });
+
+  it("parses MONTHLY_BUDGET_USD when set", () => {
+    const cfg = loadBackendConfig({ BEAR_METAL_DB_PATH: "/tmp/x.db", MONTHLY_BUDGET_USD: "500" });
+    expect(cfg.monthlyBudgetUsd).toBe(500);
+  });
+
+  it("fails fast when MONTHLY_BUDGET_USD is invalid", () => {
+    expect(() => loadBackendConfig({ BEAR_METAL_DB_PATH: "/tmp/x.db", MONTHLY_BUDGET_USD: "oops" })).toThrow(
+      /MONTHLY_BUDGET_USD/,
     );
   });
 });

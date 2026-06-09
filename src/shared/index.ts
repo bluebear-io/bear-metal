@@ -38,6 +38,6 @@ export type {
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
 export { createDashboardClient, type DashboardClient, type DashboardClientOptions } from "./dashboard/client.js";
 export type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload, TokenUsagePayload,
   BmStatus, RunStatus, RunTrigger, StopReason, CiStatus, EventType, EventSource, WorkerStatus as DashboardWorkerStatus,
 } from "./dashboard/types.js";
