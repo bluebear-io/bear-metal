@@ -33,6 +33,14 @@ describe("TicketStore", () => {
     expect(store.get("a")?.state).toBe("iteration");
   });
 
+  it("defaults phase to active, records a parked phase, and preserves it across setStatus", () => {
+    const store = new TicketStore();
+    expect(store.upsert("a", makeContext("a")).phase).toBe("active");
+    expect(store.upsert("b", makeContext("b"), "parked").phase).toBe("parked");
+    store.setStatus("b", "done");
+    expect(store.get("b")?.phase).toBe("parked");
+  });
+
   it("preserves admittedAt and status across refreshes", () => {
     const store = new TicketStore();
     const first = store.upsert("a", makeContext("a"));

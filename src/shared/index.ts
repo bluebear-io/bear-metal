@@ -32,6 +32,7 @@ export type {
   PullRequestContext,
   PRState,
   PullRequestRef,
+  PullRequestStatus,
   ReviewThread,
   ReviewThreadComment,
 } from "./integrations/github/types.js";

@@ -29,7 +29,7 @@ const github = new GitHubIntegration({
   privateKey: config.githubAppPrivateKey,
   installationId: config.githubAppInstallationId,
 });
-const store = new TicketStore();
+const store = new TicketStore(logger);
 const workerProcess = createWorkerProcess({ github, linear, logger });
 const handler = new ManagerTicketHandler({ logger, worker: workerProcess });
 

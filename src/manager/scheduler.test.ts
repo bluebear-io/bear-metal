@@ -4,6 +4,8 @@ import {
   createLogger,
   type FindTicketsOptions,
   type PullRequest,
+  type PullRequestRef,
+  type PullRequestStatus,
   type Ticket,
   type TicketContext,
   type WorkOutcome,
@@ -11,28 +13,54 @@ import {
 
 import { Scheduler, type GitHubSource, type LinearSource, type TicketHandler } from "./scheduler.js";
 import { TicketStore } from "./state.js";
-import { makeTicket } from "./test-helpers.js";
+import { makeContext, makeTicket } from "./test-helpers.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 
+function openPr(number = 7, overrides: Partial<PullRequest> = {}): PullRequest {
+  return {
+    owner: "acme",
+    repo: "widgets",
+    number,
+    title: "PR",
+    headRef: "feature/a",
+    state: "open",
+    draft: false,
+    merged: false,
+    url: `https://github.com/acme/widgets/pull/${number}`,
+    ...overrides,
+  };
+}
+
+function status(pr: PullRequest, testsFailed = false, hasUnresolvedComments = false): PullRequestStatus {
+  return { pr, testsFailed, hasUnresolvedComments };
+}
+
 class FakeLinear implements LinearSource {
-  getTicketIds: string[] = [];
-  constructor(private readonly todo: Ticket[]) {}
+  constructor(
+    private readonly todo: Ticket[],
+    /** Override what getTicket returns per id (refresh sees a possibly-reassigned ticket). */
+    private readonly refreshed: Record<string, Ticket> = {},
+  ) {}
   async findTicketsByAssignee(_assigneeId: string, _options?: FindTicketsOptions): Promise<Ticket[]> {
     return this.todo;
   }
   async getTicket(id: string): Promise<Ticket> {
-    this.getTicketIds.push(id);
-    return this.todo.find((t) => t.id === id) ?? makeTicket(id);
+    return this.refreshed[id] ?? this.todo.find((t) => t.id === id) ?? makeTicket(id);
   }
 }
 
 class FakeGitHub implements GitHubSource {
-  lookups: string[] = [];
-  constructor(private readonly pr: PullRequest | null = null) {}
+  findCalls: string[] = [];
+  statusCalls: number[] = [];
+  constructor(private readonly opts: { found?: PullRequest | null; status?: PullRequestStatus } = {}) {}
   async findPullRequestForTicket(ticket: Ticket): Promise<PullRequest | null> {
-    this.lookups.push(ticket.id);
-    return this.pr;
+    this.findCalls.push(ticket.id);
+    return this.opts.found ?? null;
+  }
+  async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
+    this.statusCalls.push(ref.number);
+    return this.opts.status ?? status(openPr(ref.number));
   }
 }
 
@@ -64,34 +92,18 @@ function buildScheduler(deps: {
   });
 }
 
-const PR: PullRequest = {
-  owner: "acme",
-  repo: "widgets",
-  number: 7,
-  title: "PR",
-  headRef: "feature/a",
-  state: "open",
-  draft: false,
-  merged: false,
-  url: "https://github.com/acme/widgets/pull/7",
-};
-
 describe("Scheduler.tick", () => {
-  it("admits at most `concurrency` tickets assigned to the user", async () => {
+  it("admits at most `concurrency` tickets and dispatches new ones", async () => {
     const store = new TicketStore();
     const linear = new FakeLinear([makeTicket("a"), makeTicket("b"), makeTicket("c")]);
-    const scheduler = buildScheduler({
-      linear,
-      github: new FakeGitHub(),
-      store,
-      handler: new FakeHandler(),
-      concurrency: 2,
-    });
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), store, handler, concurrency: 2 });
 
     await scheduler.tick();
     await scheduler.stop();
 
     expect(store.count()).toBe(2);
+    expect(handler.handled).toHaveLength(2);
   });
 
   it("admits nothing new when slots are full", async () => {
@@ -106,80 +118,37 @@ describe("Scheduler.tick", () => {
     });
 
     await scheduler.tick();
+    await scheduler.stop();
     await scheduler.tick();
     await scheduler.stop();
 
     expect(store.count()).toBe(2);
   });
 
-  it("queries GitHub only for active tickets (never for fresh admissions)", async () => {
+  it("does not query GitHub during admission, only when refreshing tracked tickets", async () => {
     const store = new TicketStore();
-    const linear = new FakeLinear([makeTicket("a"), makeTicket("b")]);
-    const github = new FakeGitHub(PR);
+    const linear = new FakeLinear([makeTicket("a")]);
+    const github = new FakeGitHub();
+    const scheduler = buildScheduler({ linear, github, store, handler: new FakeHandler(), concurrency: 1 });
+
+    await scheduler.tick(); // admit "a" (new) — no GitHub call
+    await scheduler.stop();
+    expect(github.findCalls).toHaveLength(0);
+
+    await scheduler.tick(); // refresh tracked "a" (still no PR) — searches for a PR
+    await scheduler.stop();
+    expect(github.findCalls).toEqual(["a"]);
+  });
+
+  it("releases a ticket when its PR is merged", async () => {
+    const store = new TicketStore();
+    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
+    const github = new FakeGitHub({ status: status(openPr(7, { merged: true, state: "closed" })) });
     const scheduler = buildScheduler({
-      linear,
+      linear: new FakeLinear([]), // ticket is no longer Todo, so it won't be re-admitted
       github,
       store,
       handler: new FakeHandler(),
-      concurrency: 2,
-    });
-
-    await scheduler.tick();
-    expect(github.lookups).toHaveLength(0);
-
-    await scheduler.tick();
-    await scheduler.stop();
-    expect(github.lookups.sort()).toEqual(["a", "b"]);
-  });
-
-  it("hands the handler the merged ticket + PR context", async () => {
-    const store = new TicketStore();
-    const linear = new FakeLinear([makeTicket("a")]);
-    const handler = new FakeHandler();
-    const scheduler = buildScheduler({
-      linear,
-      github: new FakeGitHub(PR),
-      store,
-      handler,
-      concurrency: 1,
-    });
-
-    await scheduler.tick(); // admit "a", dispatch with pr: null
-    await scheduler.stop(); // drain so the ticket is no longer in flight
-    await scheduler.tick(); // refresh "a" → pr: PR, dispatch again
-    await scheduler.stop();
-
-    expect(handler.handled.at(-1)?.ticket.id).toBe("a");
-    expect(handler.handled.at(-1)?.pr).toEqual(PR);
-  });
-
-  it("records a pending dispatch and keeps the ticket", async () => {
-    const store = new TicketStore();
-    const linear = new FakeLinear([makeTicket("a")]);
-    const scheduler = buildScheduler({
-      linear,
-      github: new FakeGitHub(null),
-      store,
-      handler: new FakeHandler({ status: "pending" }),
-      concurrency: 1,
-    });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    expect(store.count()).toBe(1);
-    expect(store.get("a")?.status).toBe("pending");
-  });
-
-  it("removes a ticket only when a done dispatch is an iteration", async () => {
-    const store = new TicketStore();
-    store.upsert("a", { ticket: makeTicket("a"), pr: PR }); // iteration
-    const linear = new FakeLinear([makeTicket("a")]);
-    const scheduler = buildScheduler({
-      linear,
-      github: new FakeGitHub(PR),
-      store,
-      handler: new FakeHandler({ status: "done" }),
       concurrency: 1,
     });
 
@@ -189,14 +158,33 @@ describe("Scheduler.tick", () => {
     expect(store.count()).toBe(0);
   });
 
-  it("keeps a done dispatch that is still new (no PR)", async () => {
+  it("releases a ticket when its PR is closed unmerged", async () => {
     const store = new TicketStore();
-    const linear = new FakeLinear([makeTicket("a")]);
+    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
+    const github = new FakeGitHub({ status: status(openPr(7, { state: "closed" })) });
     const scheduler = buildScheduler({
-      linear,
-      github: new FakeGitHub(null),
+      linear: new FakeLinear([]), // ticket is no longer Todo, so it won't be re-admitted
+      github,
       store,
-      handler: new FakeHandler({ status: "done" }),
+      handler: new FakeHandler(),
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(store.count()).toBe(0);
+  });
+
+  it("re-dispatches an iteration whose PR has failed tests", async () => {
+    const store = new TicketStore();
+    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([makeTicket("a")]),
+      github: new FakeGitHub({ status: status(openPr(), true, false) }),
+      store,
+      handler,
       concurrency: 1,
     });
 
@@ -204,7 +192,108 @@ describe("Scheduler.tick", () => {
     await scheduler.stop();
 
     expect(store.count()).toBe(1);
-    expect(store.get("a")?.status).toBe("done");
-    expect(store.get("a")?.state).toBe("new");
+    expect(handler.handled.at(-1)?.ticket.id).toBe("a");
+    expect(handler.handled.at(-1)?.pr?.number).toBe(7);
+  });
+
+  it("re-dispatches an iteration with unresolved review comments", async () => {
+    const store = new TicketStore();
+    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([makeTicket("a")]),
+      github: new FakeGitHub({ status: status(openPr(), false, true) }),
+      store,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(1);
+  });
+
+  it("parks a tracked ticket reassigned away from the manager without dispatching or hitting GitHub", async () => {
+    const store = new TicketStore();
+    store.upsert("a", makeContext("a")); // mine, no PR, phase active
+    const reassigned = makeTicket("a", { assignee: { id: "creator" } });
+    const github = new FakeGitHub();
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { a: reassigned }),
+      github,
+      store,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(store.count()).toBe(1);
+    expect(store.get("a")?.phase).toBe("parked");
+    expect(github.findCalls).toHaveLength(0);
+    expect(github.statusCalls).toHaveLength(0);
+  });
+
+  it("resumes a parked ticket when it is reassigned back to the manager", async () => {
+    const store = new TicketStore();
+    store.upsert("a", makeContext("a"), "parked"); // was parked, no PR
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { a: makeTicket("a") }), // back to me (default assignee user-1)
+      github: new FakeGitHub({ found: null }),
+      store,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled.map((c) => c.ticket.id)).toEqual(["a"]);
+    expect(store.get("a")?.phase).toBe("active");
+    expect(store.count()).toBe(1);
+  });
+
+  it("does not re-dispatch a no-PR active ticket on refresh (dispatch is edge-triggered)", async () => {
+    const store = new TicketStore();
+    store.upsert("a", makeContext("a")); // mine, no PR, phase active
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { a: makeTicket("a") }),
+      github: new FakeGitHub({ found: null }),
+      store,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(store.count()).toBe(1);
+    expect(store.get("a")?.phase).toBe("active");
+  });
+
+  it("does not re-dispatch a clean, open, unmerged iteration", async () => {
+    const store = new TicketStore();
+    store.upsert("a", { ticket: makeTicket("a"), pr: openPr() });
+    const handler = new FakeHandler();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([makeTicket("a")]),
+      github: new FakeGitHub({ status: status(openPr(), false, false) }),
+      store,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(store.count()).toBe(1);
+    expect(handler.handled).toHaveLength(0);
   });
 });

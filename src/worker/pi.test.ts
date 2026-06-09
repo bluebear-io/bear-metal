@@ -68,6 +68,7 @@ function makeContext(): WorkerInputContext {
         branchName: "feature/den-1-build-thing",
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
+        assignee: { id: "user-1" },
       },
       comments: [],
     },

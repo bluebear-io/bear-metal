@@ -19,6 +19,8 @@ export interface Ticket {
   branchName: string;
   status: TicketStatus;
   labels: string[];
+  /** Current assignee, or null if unassigned. The manager parks tickets not assigned to it. */
+  assignee: { id: string } | null;
 }
 
 export interface TicketCommentUser {
