@@ -2,15 +2,15 @@ import "dotenv/config";
 
 import { createLogger } from "../shared/index.js";
 import { loadBackendConfig } from "./config.js";
-import { openReadOnlyDb } from "./db/client.js";
+import { openReadWriteDb } from "./db/client.js";
 import { createApp } from "./app.js";
 
 function main(): void {
   const config = loadBackendConfig();
   const logger = createLogger({ level: config.logLevel, name: "bear-metal-backend" });
   const { dbPath, port } = config;
-  const { db, sqlite } = openReadOnlyDb(dbPath);
-  const app = createApp(db);
+  const { db, sqlite } = openReadWriteDb(dbPath);
+  const app = createApp(db, { ingestToken: config.ingestToken });
   const server = app.listen(port, () => logger.info({ port, dbPath }, "bear-metal dashboard backend listening"));
 
   let shuttingDown = false;
