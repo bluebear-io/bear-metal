@@ -113,8 +113,12 @@ export async function runPiWorker(input: {
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
       await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
       const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
-      await input.linear.moveTicketToInReview(input.context.ticketId);
       setDecision({ status: "done", pr });
+      try {
+        await input.linear.moveTicketToInReview(input.context.ticketId);
+      } catch (err) {
+        logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
+      }
       return {
         content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
         details: { pr },
