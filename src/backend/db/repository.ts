@@ -139,9 +139,14 @@ export function getTimeSavedSummary(db: Db): TimeSavedSummary {
     };
   });
 
-  const totalEstimatedHumanHours = byTicket.reduce((s, t) => s + (t.estimatedHumanHours ?? 0), 0);
-  const totalActualBmHours = byTicket.reduce((s, t) => s + (t.actualBmHours ?? 0), 0);
-  const totalSavedHours = byTicket.reduce((s, t) => s + (t.savedHours ?? 0), 0);
+  // Only include tickets with measurable run data in the aggregates so the
+  // three totals stay internally consistent (estimated - actual === saved).
+  // Tickets with null actualBmHours are still listed in byTicket but excluded
+  // from the headline sums to avoid showing contradictory stat cards.
+  const withData = byTicket.filter((t) => t.savedHours !== null);
+  const totalEstimatedHumanHours = withData.reduce((s, t) => s + (t.estimatedHumanHours ?? 0), 0);
+  const totalActualBmHours = withData.reduce((s, t) => s + (t.actualBmHours ?? 0), 0);
+  const totalSavedHours = withData.reduce((s, t) => s + (t.savedHours ?? 0), 0);
 
   byTicket.sort((a, b) => (b.savedHours ?? -Infinity) - (a.savedHours ?? -Infinity));
 

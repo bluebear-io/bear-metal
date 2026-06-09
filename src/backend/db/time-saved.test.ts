@@ -111,6 +111,9 @@ describe("getTimeSavedSummary", () => {
     const summary = getTimeSavedSummary(db);
     expect(summary.byTicket[0]!.actualBmHours).toBeNull();
     expect(summary.byTicket[0]!.savedHours).toBeNull();
+    // Tickets without measurable run data are excluded from the aggregate totals
+    // so the three numbers stay internally consistent (estimated - actual === saved).
+    expect(summary.totalEstimatedHumanHours).toBe(0);
     expect(summary.totalActualBmHours).toBe(0);
     expect(summary.totalSavedHours).toBe(0);
   });
