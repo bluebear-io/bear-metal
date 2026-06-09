@@ -1,0 +1,32 @@
+{
+  "name": "bear-metal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/manager/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/manager/index.js",
+    "dev": "tsx watch src/manager/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@linear/sdk": "84.0.0",
+    "@octokit/rest": "22.0.1",
+    "dotenv": "17.4.2",
+    "express": "4.22.2",
+    "p-queue": "9.2.0",
+    "pino": "10.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.25",
+    "@types/node": "22.19.19",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.6"
+  }
+}
