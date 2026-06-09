@@ -105,6 +105,7 @@ export interface ModelComparisonRow {
   succeededRuns: number;
   successRate: number;
   avgDurationSeconds: number | null;
+  runsWithDuration: number;
   totalPromptTokens: number;
   totalCompletionTokens: number;
   totalCostUsd: number;

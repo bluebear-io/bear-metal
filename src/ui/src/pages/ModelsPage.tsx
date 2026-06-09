@@ -28,9 +28,12 @@ const aggregateByFamily = (rows: ModelComparisonRow[]): ModelComparisonRow[] => 
   for (const row of rows) {
     const existing = byFamily.get(row.family);
     const durBucket = succeededDurationWeighted.get(row.family) ?? { sumSeconds: 0, count: 0 };
-    if (row.avgDurationSeconds !== null) {
-      durBucket.sumSeconds += row.avgDurationSeconds * row.totalRuns;
-      durBucket.count += row.totalRuns;
+    // Weight by runsWithDuration (not totalRuns): the per-model avg only covers runs that
+    // had both started_at and ended_at, so we must reconstruct the family-level mean using
+    // the same denominator the backend used.
+    if (row.avgDurationSeconds !== null && row.runsWithDuration > 0) {
+      durBucket.sumSeconds += row.avgDurationSeconds * row.runsWithDuration;
+      durBucket.count += row.runsWithDuration;
     }
     succeededDurationWeighted.set(row.family, durBucket);
     if (!existing) {
@@ -42,6 +45,7 @@ const aggregateByFamily = (rows: ModelComparisonRow[]): ModelComparisonRow[] => 
         succeededRuns: row.succeededRuns,
         successRate: 0,
         avgDurationSeconds: null,
+        runsWithDuration: row.runsWithDuration,
         totalPromptTokens: row.totalPromptTokens,
         totalCompletionTokens: row.totalCompletionTokens,
         totalCostUsd: row.totalCostUsd,
@@ -50,6 +54,7 @@ const aggregateByFamily = (rows: ModelComparisonRow[]): ModelComparisonRow[] => 
     } else {
       existing.totalRuns += row.totalRuns;
       existing.succeededRuns += row.succeededRuns;
+      existing.runsWithDuration += row.runsWithDuration;
       existing.totalPromptTokens += row.totalPromptTokens;
       existing.totalCompletionTokens += row.totalCompletionTokens;
       existing.totalCostUsd += row.totalCostUsd;

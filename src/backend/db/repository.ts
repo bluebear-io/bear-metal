@@ -58,6 +58,8 @@ export interface ModelComparisonRow {
   successRate: number;
   /** Average wall-clock seconds for runs that have both started_at and ended_at. */
   avgDurationSeconds: number | null;
+  /** Number of runs that contributed to `avgDurationSeconds` (i.e. had both started_at and ended_at). */
+  runsWithDuration: number;
   totalPromptTokens: number;
   totalCompletionTokens: number;
   /** Sum of estimated cost across all runs of this model (USD). */
@@ -191,6 +193,7 @@ export function listModelComparison(db: Db): ModelComparisonRow[] {
       succeededRuns: b.succeededRuns,
       successRate: b.totalRuns > 0 ? b.succeededRuns / b.totalRuns : 0,
       avgDurationSeconds: avgDuration,
+      runsWithDuration: b.durations.length,
       totalPromptTokens: b.promptTokens,
       totalCompletionTokens: b.completionTokens,
       totalCostUsd: b.costSum,

@@ -40,9 +40,15 @@ export function upsertRun(db: Db, p: RunPayload): void {
     target: schema.runs.id,
     set: {
       ...row,
-      // createdAt is immutable after insert; startedAt is set-once (never reset to null by a later transition).
+      // createdAt is immutable after insert; startedAt and the usage fields are set-once —
+      // a later transition (e.g. an out-of-order or duplicate status update) must never
+      // wipe out previously-recorded values by sending null.
       createdAt: sql`${schema.runs.createdAt}`,
       startedAt: sql`coalesce(${schema.runs.startedAt}, excluded.started_at)`,
+      promptTokens: sql`coalesce(excluded.prompt_tokens, ${schema.runs.promptTokens})`,
+      completionTokens: sql`coalesce(excluded.completion_tokens, ${schema.runs.completionTokens})`,
+      modelName: sql`coalesce(excluded.model_name, ${schema.runs.modelName})`,
+      provider: sql`coalesce(excluded.provider, ${schema.runs.provider})`,
     },
   }).run();
 }
