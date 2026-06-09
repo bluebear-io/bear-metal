@@ -16,5 +16,6 @@
     "sourceMap": true,
     "declaration": false
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/ui", "dist", "node_modules"]
 }
