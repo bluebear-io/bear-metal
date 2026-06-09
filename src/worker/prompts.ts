@@ -13,7 +13,7 @@ export function buildWorkerPrompt(context: WorkerInputContext): string {
           "Check out the existing PR branch before changing code.",
           "For each failed check, thoroughly read the code and logs, find the root cause, and solve it.",
           "For each unresolved review thread, thoroughly read the code and validate the comment.",
-          "If you agree with a review thread, fix the code and call agree_with_github_message for that thread.",
+          "If you agree with a review thread, fix the code and call agree_with_github_message with a concrete explanation of what changed.",
           "If you disagree with a review thread, call disagree_with_github_message with a concrete code-backed explanation (i.e. `your assumption is incorrect, the code (in the manager function)[url] actually does this and that).",
           "If implementation is not possible, call respond_to_ticket_reporter with the exact question or blocker and stop.",
           "After writing fixes, call wrote_code.",
@@ -29,7 +29,7 @@ export function buildWorkerPrompt(context: WorkerInputContext): string {
   const iterationInstructions = [
     "1. Check out the existing PR branch.",
     "2. For each failed check: read the code and logs, find the root cause, fix it.",
-    "3. For each unresolved review thread: read the code, then either fix and call `agree_with_github_message`, or rebut with a code-backed explanation via `disagree_with_github_message`.",
+    "3. For each unresolved review thread: read the code, then either fix and call `agree_with_github_message` with a reply, or rebut with a code-backed explanation via `disagree_with_github_message`.",
     "4. Call `wrote_code` after all fixes are committed.",
   ];
 

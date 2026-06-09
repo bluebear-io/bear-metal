@@ -56,6 +56,14 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   }
 
   async moveTicketToInProgress(ticketId: string): Promise<void> {
+    await this.moveTicketToState(ticketId, "In Progress");
+  }
+
+  async moveTicketToInReview(ticketId: string): Promise<void> {
+    await this.moveTicketToState(ticketId, "In Review");
+  }
+
+  private async moveTicketToState(ticketId: string, stateName: string): Promise<void> {
     const issue = await this.client.issue(ticketId);
     const team = await issue.team;
     if (!team) {
@@ -64,17 +72,17 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
 
     const states = await this.client.workflowStates({
       filter: {
-        name: { eq: "In Progress" },
+        name: { eq: stateName },
         team: { id: { eq: team.id } },
       },
       first: 10,
     });
-    const inProgressState = states.nodes.find((state) => state.name === "In Progress" && state.teamId === team.id);
-    if (!inProgressState) {
-      throw new Error(`Linear team ${team.name} has no In Progress workflow state`);
+    const state = states.nodes.find((candidate) => candidate.name === stateName && candidate.teamId === team.id);
+    if (!state) {
+      throw new Error(`Linear team ${team.name} has no ${stateName} workflow state`);
     }
 
-    await issue.update({ stateId: inProgressState.id });
+    await issue.update({ stateId: state.id });
   }
 
   /**

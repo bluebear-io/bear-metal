@@ -19,6 +19,7 @@ vi.mock("./clone.js", () => ({
       workspaceDir: dispatchMock.workspaceDir,
       stdout: "",
       stderr: "",
+      netrcDir: "/tmp/netrc",
     };
   },
 }));
@@ -60,6 +61,7 @@ describe("dispatch", () => {
             comments: [],
           })),
           moveTicketToInProgress,
+          moveTicketToInReview: vi.fn(),
           commentAndHandBack: vi.fn(),
         },
       },
@@ -139,6 +141,7 @@ function makeIntegrations() {
         comments: [],
       })),
       moveTicketToInProgress: vi.fn(async () => {}),
+      moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
     },
   };
