@@ -1,3 +1,5 @@
+import type { JsonValue } from "../../json.js";
+
 export type PRState = "open" | "closed";
 
 /**
@@ -20,3 +22,41 @@ export interface PullRequest {
 
 /** Enough to locate a PR for follow-up calls (get, comment). */
 export type PullRequestRef = Pick<PullRequest, "owner" | "repo" | "number">;
+
+export interface FailedCheckRun {
+  checkRun: JsonValue;
+  annotations: JsonValue[];
+}
+
+export interface FailedStatus {
+  status: JsonValue;
+}
+
+export interface ReviewThreadComment {
+  id: string;
+  databaseId: number | null;
+  body: string;
+  author: string | null;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  path: string | null;
+  line: number | null;
+  originalLine: number | null;
+  diffHunk: string | null;
+}
+
+export interface ReviewThread {
+  id: string;
+  isResolved: boolean;
+  path: string | null;
+  line: number | null;
+  comments: ReviewThreadComment[];
+}
+
+export interface PullRequestContext {
+  pullRequest: JsonValue;
+  failedCheckRuns: FailedCheckRun[];
+  failedStatuses: FailedStatus[];
+  unresolvedReviewThreads: ReviewThread[];
+}

@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 import { createLogger, GitHubIntegration, LinearIntegration } from "../shared/index.js";
-import { process as workerProcess } from "../worker/index.js";
+import { createWorkerProcess } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
@@ -30,6 +30,7 @@ const github = new GitHubIntegration({
   installationId: config.githubAppInstallationId,
 });
 const store = new TicketStore();
+const workerProcess = createWorkerProcess({ github, linear, logger });
 const handler = new ManagerTicketHandler({ logger, worker: workerProcess });
 
 const scheduler = new Scheduler({

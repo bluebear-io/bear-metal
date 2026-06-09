@@ -1,9 +1,7 @@
-import { basename } from "node:path";
-import type { PullRequestRef } from "./types.js";
-import { runCommand } from "./shell.js";
+import { runCommand } from "../command.js";
 
 export type RemoteRef = {
-  org: string;
+  owner: string;
   repo: string;
 };
 
@@ -38,23 +36,15 @@ export async function getRemoteRef(repoRoot: string): Promise<RemoteRef> {
 export function parseGitHubRemote(remoteUrl: string): RemoteRef {
   const sshMatch = /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/.exec(remoteUrl);
   if (sshMatch) {
-    return { org: sshMatch[1]!, repo: sshMatch[2]! };
+    return { owner: sshMatch[1]!, repo: sshMatch[2]! };
   }
 
   const httpsMatch = /^https:\/\/(?:[^@]+@)?github\.com\/([^/]+)\/(.+?)(?:\.git)?$/.exec(remoteUrl);
   if (httpsMatch) {
-    return { org: httpsMatch[1]!, repo: httpsMatch[2]! };
+    return { owner: httpsMatch[1]!, repo: httpsMatch[2]! };
   }
 
   throw new Error(`Unsupported GitHub remote URL: ${remoteUrl}`);
-}
-
-export function normalizePullRequestRef(ref: PullRequestRef): PullRequestRef {
-  return {
-    org: ref.org,
-    repo: basename(ref.repo, ".git"),
-    number: ref.number,
-  };
 }
 
 function git(args: string[], cwd: string) {

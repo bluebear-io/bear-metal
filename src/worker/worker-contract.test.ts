@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseGitHubRemote } from "./git.js";
+import { parseGitHubRemote } from "../shared/index.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { validateDispatchInputs } from "./dispatch.js";
 import type { WorkerInputContext } from "./types.js";
@@ -11,17 +11,17 @@ describe("worker contract", () => {
 
   it("rejects new state with PR", () => {
     expect(() =>
-      validateDispatchInputs("new", "DEN-1", { org: "bluebear-io", repo: "bear-metal", number: "1" }),
+      validateDispatchInputs("new", "DEN-1", { owner: "bluebear-io", repo: "bear-metal", number: 1 }),
     ).toThrow(/must not include a pull request/);
   });
 
   it("accepts ssh and https remotes", () => {
     expect(parseGitHubRemote("git@github.com:bluebear-io/bear-metal.git")).toEqual({
-      org: "bluebear-io",
+      owner: "bluebear-io",
       repo: "bear-metal",
     });
     expect(parseGitHubRemote("https://github.com/Blue-Bear-Security/handler.git")).toEqual({
-      org: "Blue-Bear-Security",
+      owner: "Blue-Bear-Security",
       repo: "handler",
     });
   });
@@ -30,8 +30,20 @@ describe("worker contract", () => {
     const context: WorkerInputContext = {
       state: "iteration",
       ticketId: "DEN-1",
-      pr: { org: "bluebear-io", repo: "bear-metal", number: "7" },
-      ticket: { issue: { title: "Fix thing" }, comments: [] },
+      pr: { owner: "bluebear-io", repo: "bear-metal", number: 7 },
+      ticket: {
+        issue: {
+          id: "issue-id",
+          identifier: "DEN-1",
+          title: "Fix thing",
+          description: null,
+          url: "https://linear.app/bluebear/issue/DEN-1/fix-thing",
+          branchName: "feature/den-1-fix-thing",
+          status: { name: "Todo", type: "unstarted" },
+          labels: ["bear-metal"],
+        },
+        comments: [],
+      },
       pullRequest: {
         pullRequest: { number: 7 },
         failedCheckRuns: [],

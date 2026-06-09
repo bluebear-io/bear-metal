@@ -1,16 +1,13 @@
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { getCurrentBranch, getRemoteRef, commitAndPush } from "./git.js";
-import type { DispatchResult, PullRequestRef, WorkerConfig, WorkerInputContext } from "./types.js";
-import type { GitHubClient } from "./github.js";
-import type { LinearClient } from "./linear.js";
+import { commitAndPush, getCurrentBranch, getRemoteRef } from "../shared/index.js";
+import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 
 export async function runPiWorker(input: {
   context: WorkerInputContext;
-  config: WorkerConfig;
-  github: GitHubClient;
-  linear: LinearClient;
+  github: WorkerGitHub;
+  linear: WorkerLinear;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
 
@@ -29,7 +26,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact comment body to post to Linear." }),
     }),
     execute: async (_toolCallId, params) => {
-      await input.linear.createComment(input.context.ticketId, params.text);
+      await input.linear.leaveComment(input.context.ticketId, params.text);
       setDecision({ status: "pending", pr: input.context.pr });
       return {
         content: [{ type: "text", text: "Posted Linear comment and marked dispatch pending." }],
@@ -94,7 +91,7 @@ export async function runPiWorker(input: {
       const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, params));
       setDecision({ status: "done", pr });
       return {
-        content: [{ type: "text", text: `Committed and pushed code for PR ${pr.org}/${pr.repo}#${pr.number}.` }],
+        content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
         details: { pr },
       };
     },
@@ -127,14 +124,14 @@ export async function runPiWorker(input: {
 }
 
 async function createPullRequestForRepo(
-  github: GitHubClient,
+  github: WorkerGitHub,
   params: { repoRoot: string; prTitle: string; prBody: string; baseBranch?: string },
 ): Promise<PullRequestRef> {
   const remote = await getRemoteRef(params.repoRoot);
   const branch = await getCurrentBranch(params.repoRoot);
-  const base = params.baseBranch ?? (await github.getDefaultBranch(remote.org, remote.repo));
+  const base = params.baseBranch ?? (await github.getDefaultBranch(remote.owner, remote.repo));
   return github.createPullRequest({
-    org: remote.org,
+    owner: remote.owner,
     repo: remote.repo,
     title: params.prTitle,
     head: branch,

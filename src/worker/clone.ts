@@ -1,8 +1,8 @@
 import { fileURLToPath } from "node:url";
 import { access } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { runCommand } from "../shared/command.js";
 import type { CloneScriptResult } from "./types.js";
-import { runCommand } from "./shell.js";
 
 export async function runCloneScript(input: {
   packageRoot: string;

@@ -21,6 +21,27 @@ export interface Ticket {
   labels: string[];
 }
 
+export interface TicketCommentUser {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface TicketComment {
+  id: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  url: string;
+  quotedText: string | null;
+  user: TicketCommentUser | null;
+}
+
+export interface LinearTicketContext {
+  issue: Ticket;
+  comments: TicketComment[];
+}
+
 export interface FindTicketsOptions {
   /** Filter by Linear workflow-state name (e.g. "Todo"). */
   status?: string;

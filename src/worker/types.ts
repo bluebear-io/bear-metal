@@ -1,66 +1,37 @@
-export type DispatchState = "new" | "iteration";
+import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThread } from "../shared/index.js";
 
-export type PullRequestRef = {
-  org: string;
-  repo: string;
-  number: string;
-};
+export type DispatchState = "new" | "iteration";
 
 export type DispatchResult = {
   status: "pending" | "done";
   pr: PullRequestRef | null;
 };
 
-export type WorkerConfig = {
-  githubToken: string;
-  githubOwner: string;
-  githubRepo: string;
-  linearApiToken: string;
-};
+export type { PullRequestRef };
 
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export interface WorkerGitHub {
+  getPullRequestContext(pr: PullRequestRef): Promise<PullRequestContext>;
+  resolveReviewThread(threadId: string): Promise<void>;
+  replyToReviewThread(pr: PullRequestRef, threadId: string, body: string, threads: ReviewThread[]): Promise<void>;
+  getDefaultBranch(owner: string, repo: string): Promise<string>;
+  createPullRequest(input: {
+    owner: string;
+    repo: string;
+    title: string;
+    head: string;
+    base: string;
+    body: string;
+  }): Promise<PullRequestRef>;
+}
 
-export type TicketContext = {
-  issue: JsonValue;
-  comments: JsonValue[];
-};
+export interface WorkerLinear {
+  getTicketContext(ticketId: string): Promise<LinearTicketContext>;
+  leaveComment(ticketId: string, body: string): Promise<void>;
+}
 
-export type FailedCheckRun = {
-  checkRun: JsonValue;
-  annotations: JsonValue[];
-};
-
-export type FailedStatus = {
-  status: JsonValue;
-};
-
-export type ReviewThreadComment = {
-  id: string;
-  databaseId: number | null;
-  body: string;
-  author: string | null;
-  url: string;
-  createdAt: string;
-  updatedAt: string;
-  path: string | null;
-  line: number | null;
-  originalLine: number | null;
-  diffHunk: string | null;
-};
-
-export type ReviewThread = {
-  id: string;
-  isResolved: boolean;
-  path: string | null;
-  line: number | null;
-  comments: ReviewThreadComment[];
-};
-
-export type PullRequestContext = {
-  pullRequest: JsonValue;
-  failedCheckRuns: FailedCheckRun[];
-  failedStatuses: FailedStatus[];
-  unresolvedReviewThreads: ReviewThread[];
+export type WorkerIntegrations = {
+  github: WorkerGitHub;
+  linear: WorkerLinear;
 };
 
 export type CloneScriptResult = {
@@ -74,7 +45,7 @@ export type WorkerInputContext = {
   state: DispatchState;
   ticketId: string;
   pr: PullRequestRef | null;
-  ticket: TicketContext;
+  ticket: LinearTicketContext;
   pullRequest: PullRequestContext | null;
   cloneScript: CloneScriptResult;
 };
