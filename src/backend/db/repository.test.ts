@@ -28,6 +28,21 @@ describe("listTickets", () => {
     expect(completed.attemptCount).toBe(1);
   });
 
+  it("includes the latest run summary for each ticket", () => {
+    const rows = listTickets(db);
+    const retry = rows.find((r) => r.identifier === "DEN-3002")!;
+    expect(retry.latestRun).toMatchObject({
+      id: "run_3",
+      attemptNumber: 2,
+      status: "running",
+      trigger: "ci_failure",
+      workerId: "wk_2",
+    });
+
+    const abandoned = rows.find((r) => r.identifier === "DEN-3003")!;
+    expect(abandoned.latestRun?.status).toBe("timed_out");
+  });
+
   it("filters by bmStatus", () => {
     const rows = listTickets(db, { bmStatus: "abandoned" });
     expect(rows.map((r) => r.identifier)).toEqual(["DEN-3003"]);
@@ -53,11 +68,26 @@ describe("getTicketDetail", () => {
 
 describe("listWorkers", () => {
   it("returns workers with their current ticket identifier when busy", () => {
-    const rows = listWorkers(db);
+    const rows = listWorkers(db, { now: new Date("2026-06-09T09:01:00Z") });
     expect(rows.length).toBe(3);
     const busy = rows.find((w) => w.id === "wk_1")!;
     expect(busy.status).toBe("busy");
     expect(busy.currentTicketIdentifier).toBe("DEN-3004");
-    expect(rows.some((w) => w.status === "dead")).toBe(true);
+    expect(busy.currentRun).toMatchObject({
+      id: "run_in_1",
+      ticketId: "lin_4",
+      ticketIdentifier: "DEN-3004",
+      ticketTitle: "Add CSV export to reports page",
+      attemptNumber: 1,
+      status: "running",
+    });
+    expect(busy.currentRun?.runtimeMs).toBe(6 * 60 * 1000);
+    expect(busy.isDead).toBe(false);
+    expect(busy.isTimedOut).toBe(false);
+    expect(busy.isHeartbeatStale).toBe(false);
+
+    const dead = rows.find((w) => w.id === "wk_3")!;
+    expect(dead.isDead).toBe(true);
+    expect(dead.isHeartbeatStale).toBe(true);
   });
 });

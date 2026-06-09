@@ -30,6 +30,13 @@ describe("GET /api/tickets", () => {
     expect(res.status).toBe(200);
     expect(res.body.tickets.length).toBe(4);
     expect(res.body.tickets[0].identifier).toBe("DEN-3004"); // newest createdAt
+    expect(res.body.tickets.find((t: { identifier: string }) => t.identifier === "DEN-3002").latestRun).toMatchObject({
+      id: "run_3",
+      attemptNumber: 2,
+      status: "running",
+      trigger: "ci_failure",
+      workerId: "wk_2",
+    });
   });
 
   it("filters by status", async () => {
@@ -64,6 +71,23 @@ describe("GET /api/workers", () => {
     const res = await request(app).get("/api/workers");
     expect(res.status).toBe(200);
     expect(res.body.workers.length).toBe(3);
-    expect(res.body.workers.find((w: { id: string }) => w.id === "wk_1").currentTicketIdentifier).toBe("DEN-3004");
+    const busy = res.body.workers.find((w: { id: string }) => w.id === "wk_1");
+    expect(busy.currentTicketIdentifier).toBe("DEN-3004");
+    expect(busy.currentRun).toMatchObject({
+      id: "run_in_1",
+      ticketIdentifier: "DEN-3004",
+      ticketTitle: "Add CSV export to reports page",
+      status: "running",
+    });
+    expect(busy.currentTicketTitle).toBe("Add CSV export to reports page");
+    expect(busy.currentRun.runtimeMs).toEqual(expect.any(Number));
+    expect(busy.currentRun.startedAt).toMatch(/^2026-06-09T08:55:00/);
+    expect(busy.currentRun.endedAt).toBeNull();
+    expect(busy).toMatchObject({
+      isDead: false,
+      isTimedOut: expect.any(Boolean),
+      isHeartbeatStale: expect.any(Boolean),
+      heartbeatAgeMs: expect.any(Number),
+    });
   });
 });

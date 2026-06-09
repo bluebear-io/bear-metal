@@ -17,9 +17,9 @@
 Base path `/api`. **All timestamp columns are serialized as ISO strings** (the backend stores `Date`/`timestamp_ms`; `res.json` → ISO string). `labelsJson` is a JSON-encoded string (e.g. `'["bear-metal"]'`).
 
 - `GET /api/health` → `{ status: "ok" }`
-- `GET /api/tickets[?status=<bmStatus>]` → `{ tickets: TicketListItem[] }` (newest-first; invalid status → 400)
+- `GET /api/tickets[?status=<bmStatus>]` → `{ tickets: TicketListItem[] }` (newest-first; includes latest run summary; invalid status → 400)
 - `GET /api/tickets/:id` → `TicketDetail` (404 if missing)
-- `GET /api/workers` → `{ workers: WorkerListItem[] }`
+- `GET /api/workers` → `{ workers: WorkerListItem[] }` (includes current run and health flags)
 
 Shapes (HTTP/serialized form) are defined in Task U1 (`src/ui/src/api/types.ts`).
 
@@ -75,11 +75,11 @@ Pin EXACT versions (per CONTRIBUTING: no `^`/`~`, and respect the 4-week quarant
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "vite --host 127.0.0.1 --port 5273",
+    "build": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false && tsc -p tsconfig.node.json --noEmit --pretty false"
   },
   "dependencies": {
     "@tanstack/react-query": "<pin>",
@@ -308,7 +308,12 @@ export interface Ticket {
   labelsJson: string; bmStatus: BmStatus; attemptCount: number; maxAttempts: number;
   createdAt: string; updatedAt: string; completedAt: string | null;
 }
+export interface LatestRunSummary {
+  id: string; attemptNumber: number; status: RunStatus; trigger: RunTrigger;
+  workerId: string | null; startedAt: string | null; endedAt: string | null; createdAt: string;
+}
 export interface TicketListItem extends Ticket {
+  latestRun: LatestRunSummary | null;
   latestPr: { number: number; url: string; state: "open" | "closed"; merged: boolean } | null;
   latestCiStatus: CiStatus | null;
 }
@@ -316,7 +321,18 @@ export interface Worker {
   id: string; name: string; status: WorkerStatus; currentRunId: string | null;
   lastHeartbeatAt: string | null; startedAt: string; updatedAt: string;
 }
-export interface WorkerListItem extends Worker { currentTicketIdentifier: string | null; }
+export interface CurrentRunSummary extends LatestRunSummary {
+  ticketId: string; ticketIdentifier: string; ticketTitle: string; runtimeMs: number | null;
+}
+export interface WorkerListItem extends Worker {
+  currentTicketIdentifier: string | null;
+  currentTicketTitle: string | null;
+  currentRun: CurrentRunSummary | null;
+  heartbeatAgeMs: number | null;
+  isDead: boolean;
+  isHeartbeatStale: boolean;
+  isTimedOut: boolean;
+}
 export interface Run {
   id: string; ticketId: string; attemptNumber: number; workerId: string | null;
   trigger: RunTrigger; status: RunStatus; contextJson: string | null;
@@ -454,7 +470,7 @@ export const useWorkers = () =>
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { formatDateTime, formatDuration, parseLabels } from "./format.js";
+import { formatDateTime, formatDuration, formatDurationMs, parseLabels } from "./format.js";
 
 describe("format", () => {
   it("formats an ISO timestamp to a readable local string", () => {
@@ -465,6 +481,9 @@ describe("format", () => {
   });
   it("formats a duration between two ISO times", () => {
     expect(formatDuration("2026-06-09T07:00:00Z", "2026-06-09T07:45:00Z")).toBe("45m");
+  });
+  it("formats a duration in milliseconds", () => {
+    expect(formatDurationMs(6 * 60000)).toBe("6m");
   });
   it("returns 'in progress' when end is null", () => {
     expect(formatDuration("2026-06-09T07:00:00Z", null)).toBe("in progress");
@@ -490,6 +509,11 @@ export function formatDuration(startIso: string | null, endIso: string | null): 
   if (!startIso) return "—";
   if (!endIso) return "in progress";
   const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  return formatDurationMs(ms);
+}
+
+export function formatDurationMs(ms: number | null): string {
+  if (ms === null) return "—";
   const mins = Math.round(ms / 60000);
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
@@ -506,7 +530,7 @@ export function parseLabels(labelsJson: string): string[] {
 }
 ```
 
-- [ ] **Step 4: Run → PASS (6).**
+- [ ] **Step 4: Run → PASS (7).**
 
 - [ ] **Step 5: `src/ui/src/components/StatusBadge.tsx`** — colored pill keyed by status
 
@@ -519,9 +543,10 @@ const TONE: Record<string, string> = {
   blue: "bg-[var(--color-primary)]/15 text-[var(--color-primary)]",
 };
 const STATUS_TONE: Record<string, keyof typeof TONE> = {
-  completed: "green", passed: "green", merged: "green", succeeded: "green",
+  completed: "green", passed: "green", merged: "green", succeeded: "green", healthy: "green",
   abandoned: "red", failed: "red", crashed: "red", dead: "red", ci_failed: "red", timed_out: "red",
   in_progress: "blue", running: "blue", dispatched: "blue", busy: "blue", ci_running: "blue", pr_open: "blue",
+  heartbeat_stale: "orange",
   discovered: "gray", idle: "gray", stopped: "gray", open: "blue", closed: "gray",
 };
 export function StatusBadge({ status }: { status: string }) {
@@ -650,7 +675,9 @@ vi.mock("../api/client.js", () => ({
       linearStatusName: "Done", linearStatusType: "completed", labelsJson: "[]",
       bmStatus: "completed", attemptCount: 1, maxAttempts: 5,
       createdAt: "2026-06-09T07:05:00Z", updatedAt: "2026-06-09T07:55:00Z", completedAt: "2026-06-09T07:55:00Z",
-      description: null, latestPr: { number: 1500, url: "pr", state: "closed", merged: true }, latestCiStatus: "passed" },
+      description: null,
+      latestRun: { id: "run_1", attemptNumber: 1, status: "succeeded", trigger: "new", workerId: "wk_1", startedAt: "2026-06-09T07:05:00Z", endedAt: "2026-06-09T07:50:00Z", createdAt: "2026-06-09T07:05:00Z" },
+      latestPr: { number: 1500, url: "pr", state: "closed", merged: true }, latestCiStatus: "passed" },
   ]),
 }));
 
@@ -662,6 +689,7 @@ test("renders ticket rows with identifier, status, attempts and PR link", async 
   renderWithProviders(<TicketsListPage />);
   expect(await screen.findByText("DEN-3001")).toBeInTheDocument();
   expect(screen.getByText("completed")).toBeInTheDocument();
+  expect(screen.getByText("succeeded")).toBeInTheDocument();
   expect(screen.getByText("1/5")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: /#1500/ })).toHaveAttribute("href", "pr");
 });
@@ -690,7 +718,7 @@ export function TicketsListPage() {
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="text-left text-[var(--color-text-secondary)]">
-              <th className="py-2">Ticket</th><th>Title</th><th>Status</th><th>Attempts</th><th>CI</th><th>PR</th><th>Updated</th>
+              <th className="py-2">Ticket</th><th>Title</th><th>Status</th><th>Latest run</th><th>Attempts</th><th>CI</th><th>PR</th><th>Updated</th>
             </tr>
           </thead>
           <tbody>
@@ -701,6 +729,7 @@ export function TicketsListPage() {
                 </td>
                 <td>{t.title}</td>
                 <td><StatusBadge status={t.bmStatus} /></td>
+                <td>{t.latestRun ? <StatusBadge status={t.latestRun.status} /> : "—"}</td>
                 <td>{t.attemptCount}/{t.maxAttempts}</td>
                 <td>{t.latestCiStatus ? <StatusBadge status={t.latestCiStatus} /> : "—"}</td>
                 <td>{t.latestPr ? <a className="text-[var(--color-primary)]" href={t.latestPr.url}>#{t.latestPr.number}</a> : "—"}</td>
@@ -879,8 +908,23 @@ import { renderWithProviders } from "../test/utils.js";
 
 vi.mock("../api/client.js", () => ({
   fetchWorkers: vi.fn().mockResolvedValue([
-    { id: "wk_1", name: "worker-1", status: "busy", currentRunId: "run_in_1", lastHeartbeatAt: "2026-06-09T09:00:00Z", startedAt: "2026-06-09T07:00:00Z", updatedAt: "2026-06-09T09:00:00Z", currentTicketIdentifier: "DEN-3004" },
-    { id: "wk_3", name: "worker-3", status: "dead", currentRunId: null, lastHeartbeatAt: "2026-06-09T08:10:00Z", startedAt: "2026-06-09T07:00:00Z", updatedAt: "2026-06-09T08:40:00Z", currentTicketIdentifier: null },
+    {
+      id: "wk_1", name: "worker-1", status: "busy", currentRunId: "run_in_1",
+      lastHeartbeatAt: "2026-06-09T09:00:00Z", startedAt: "2026-06-09T07:00:00Z", updatedAt: "2026-06-09T09:00:00Z",
+      currentTicketIdentifier: "DEN-3004", currentTicketTitle: "CSV export",
+      currentRun: {
+        id: "run_in_1", ticketId: "lin_4", ticketIdentifier: "DEN-3004", ticketTitle: "CSV export",
+        attemptNumber: 1, status: "running", trigger: "new", workerId: "wk_1",
+        startedAt: "2026-06-09T08:55:00Z", endedAt: null, createdAt: "2026-06-09T08:55:00Z", runtimeMs: 6 * 60000,
+      },
+      heartbeatAgeMs: 60000, isDead: false, isHeartbeatStale: false, isTimedOut: false,
+    },
+    {
+      id: "wk_3", name: "worker-3", status: "dead", currentRunId: null,
+      lastHeartbeatAt: "2026-06-09T08:10:00Z", startedAt: "2026-06-09T07:00:00Z", updatedAt: "2026-06-09T08:40:00Z",
+      currentTicketIdentifier: null, currentTicketTitle: null, currentRun: null,
+      heartbeatAgeMs: 51 * 60000, isDead: true, isHeartbeatStale: true, isTimedOut: false,
+    },
   ]),
 }));
 
@@ -893,6 +937,9 @@ test("renders workers with status and current ticket", async () => {
   expect(await screen.findByText("worker-1")).toBeInTheDocument();
   expect(screen.getByText("busy")).toBeInTheDocument();
   expect(screen.getByText("DEN-3004")).toBeInTheDocument();
+  expect(screen.getByText("running")).toBeInTheDocument();
+  expect(screen.getByText("6m")).toBeInTheDocument();
+  expect(screen.getByText("healthy")).toBeInTheDocument();
   expect(screen.getByText("dead")).toBeInTheDocument();
 });
 ```
@@ -905,7 +952,14 @@ import { PageHeader } from "../components/PageHeader.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
-import { formatDateTime } from "../lib/format.js";
+import { formatDateTime, formatDurationMs } from "../lib/format.js";
+
+function workerHealth(w: { isDead: boolean; isTimedOut: boolean; isHeartbeatStale: boolean }): "dead" | "timed_out" | "heartbeat_stale" | "healthy" {
+  if (w.isDead) return "dead";
+  if (w.isTimedOut) return "timed_out";
+  if (w.isHeartbeatStale) return "heartbeat_stale";
+  return "healthy";
+}
 
 export function WorkersPage() {
   const q = useWorkers();
@@ -919,7 +973,7 @@ export function WorkersPage() {
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="text-left text-[var(--color-text-secondary)]">
-              <th className="py-2">Worker</th><th>Status</th><th>Current ticket</th><th>Last heartbeat</th>
+              <th className="py-2">Worker</th><th>Status</th><th>Current ticket</th><th>Current run</th><th>Runtime</th><th>Health</th><th>Last heartbeat</th>
             </tr>
           </thead>
           <tbody>
@@ -928,6 +982,9 @@ export function WorkersPage() {
                 <td className="py-2">{w.name}</td>
                 <td><StatusBadge status={w.status} /></td>
                 <td>{w.currentTicketIdentifier ?? "—"}</td>
+                <td>{w.currentRun ? <StatusBadge status={w.currentRun.status} /> : "—"}</td>
+                <td>{formatDurationMs(w.currentRun?.runtimeMs ?? null)}</td>
+                <td><StatusBadge status={workerHealth(w)} /></td>
                 <td>{formatDateTime(w.lastHeartbeatAt)}</td>
               </tr>
             ))}
