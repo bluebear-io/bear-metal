@@ -36,3 +36,8 @@ export type {
   ReviewThreadComment,
 } from "./integrations/github/types.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
+export { createDashboardClient, type DashboardClient, type DashboardClientOptions } from "./dashboard/client.js";
+export type {
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  BmStatus, RunStatus, RunTrigger, StopReason, CiStatus, EventType, EventSource, WorkerStatus as DashboardWorkerStatus,
+} from "./dashboard/types.js";
