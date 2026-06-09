@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { createLogger, GitHubIntegration, LinearIntegration } from "../shared/index.js";
+import { createLogger, GitHubIntegration, LinearIntegration, type TicketContext } from "../shared/index.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
@@ -53,6 +53,25 @@ const taskWorker = new TaskWorker({
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });
+
+if (config.testTicketId) {
+  // Test mode: handle exactly one ticket end-to-end and exit.
+  logger.info({ ticketId: config.testTicketId }, "test mode: running single-ticket pipeline");
+  try {
+    const ticket = await linear.getTicket(config.testTicketId);
+    const pr = await github.findPullRequestForTicket(ticket);
+    const ctx: TicketContext = { ticket, pr };
+    await handler.handle(ctx);
+    await taskWorker.tick();
+    await taskWorker.stop();
+    await tasks.close();
+    logger.info({ ticketId: config.testTicketId }, "test mode: pipeline complete");
+  } catch (err) {
+    logger.error({ err, ticketId: config.testTicketId }, "test mode: pipeline failed");
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 const app = createServer({ store });
 const server = app.listen(config.port, () => {

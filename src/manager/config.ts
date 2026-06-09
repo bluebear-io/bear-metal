@@ -10,6 +10,7 @@ export interface Config {
   port: number;
   logLevel: string;
   logPretty: boolean;
+  testTicketId: string | null;
 }
 
 function requiredEnv(name: string): string {
@@ -63,5 +64,6 @@ export function loadConfig(): Readonly<Config> {
     port: positiveIntEnv("PORT", 3000),
     logLevel: process.env.LOG_LEVEL || "info",
     logPretty: boolEnv("LOG_PRETTY", false),
+    testTicketId: process.env.TEST_TICKET_ID?.trim() || null,
   });
 }
