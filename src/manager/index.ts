@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { createLogger, GitHubIntegration, LinearIntegration } from "../shared/index.js";
+import { createLogger, GitHubIntegration, LinearIntegration, type TicketContext } from "../shared/index.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
@@ -53,6 +53,29 @@ const taskWorker = new TaskWorker({
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });
+
+if (config.testTicketId) {
+  // Test mode: handle exactly one ticket end-to-end and exit.
+  logger.info({ ticketId: config.testTicketId }, "test mode: running single-ticket pipeline");
+  let exitCode = 0;
+  try {
+    const ticket = await linear.getTicket(config.testTicketId);
+    const pr = await github.findPullRequestForTicket(ticket);
+    const ctx: TicketContext = { ticket, pr };
+    await handler.handle(ctx);
+    await taskWorker.tick();
+    await taskWorker.stop();
+    logger.info({ ticketId: config.testTicketId }, "test mode: pipeline complete");
+  } catch (err) {
+    logger.error({ err, ticketId: config.testTicketId }, "test mode: pipeline failed");
+    exitCode = 1;
+  } finally {
+    // Always close the task queue so the DB connection is released and the SQLite WAL is checkpointed,
+    // even when the pipeline throws partway through.
+    await tasks.close();
+  }
+  process.exit(exitCode);
+}
 
 const app = createServer({ store });
 const server = app.listen(config.port, () => {
