@@ -13,7 +13,7 @@ export function createServer(deps: ServerDeps): Express {
     res.json({
       status: "ok",
       uptime: process.uptime(),
-      activeTickets: deps.store.activeCount(),
+      activeTickets: deps.store.count(),
     });
   });
 

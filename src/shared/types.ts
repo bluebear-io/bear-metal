@@ -7,13 +7,13 @@ export interface TicketContext {
   pr: PullRequest | null;
 }
 
-/** The handler's result to the scheduler. `done` releases the ticket's slot. */
-export interface WorkOutcome {
-  done: boolean;
-}
+export type WorkerStatus = "pending" | "done";
 
-/** Minimal now; the future worker/state machine widens this. */
-export type WorkerStatus = "noop";
+/** The handler's result to the scheduler. */
+export interface WorkOutcome {
+  status: WorkerStatus;
+  taskId?: string;
+}
 
 /** The worker's response to the handler. */
 export interface WorkerResponse {

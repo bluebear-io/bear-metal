@@ -1,21 +1,23 @@
 import "dotenv/config";
 
 import { createLogger, GitHubIntegration, LinearIntegration } from "../shared/index.js";
-import { process as workerProcess } from "../worker/index.js";
+import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 import { TicketStore } from "./state.js";
+import { createTaskQueueFromDatabaseUrl } from "./tasks.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 
 const config = loadConfig();
-const logger = createLogger({ level: config.logLevel, name: "manager" });
+const logger = createLogger({ level: config.logLevel, name: "manager", pretty: config.logPretty });
 
 logger.info(
   {
-    label: config.linearLabel,
-    repo: `${config.githubOwner}/${config.githubRepo}`,
+    assigneeId: config.linearAssigneeId,
+    githubAppId: config.githubAppId,
+    githubInstallationId: config.githubAppInstallationId,
     concurrency: config.workerConcurrency,
     pollIntervalMs: config.pollIntervalMs,
   },
@@ -24,20 +26,30 @@ logger.info(
 
 const linear = new LinearIntegration({ token: config.linearApiToken });
 const github = new GitHubIntegration({
-  token: config.githubToken,
-  owner: config.githubOwner,
-  repo: config.githubRepo,
+  appId: config.githubAppId,
+  privateKey: config.githubAppPrivateKey,
+  installationId: config.githubAppInstallationId,
 });
-const store = new TicketStore();
-const handler = new ManagerTicketHandler({ logger, worker: workerProcess });
+const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
+await tasks.initialize();
+const store = new TicketStore(logger);
+const handler = new ManagerTicketHandler({ logger, tasks });
 
 const scheduler = new Scheduler({
   logger,
   linear,
   github,
   store,
+  tasks,
   handler,
-  label: config.linearLabel,
+  agentId: config.linearAssigneeId,
+  concurrency: config.workerConcurrency,
+  pollIntervalMs: config.pollIntervalMs,
+});
+const taskWorker = new TaskWorker({
+  logger,
+  tasks,
+  integrations: { github, linear },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });
@@ -45,9 +57,11 @@ const scheduler = new Scheduler({
 const app = createServer({ store });
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, "health server listening");
+  logger.info({ port: config.port, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 });
 
 scheduler.start();
+taskWorker.start();
 
 let shuttingDown = false;
 function shutdown(signal: string): void {
@@ -56,9 +70,15 @@ function shutdown(signal: string): void {
   }
   shuttingDown = true;
   logger.info({ signal }, "shutting down");
-  void scheduler.stop().then(() => {
-    server.close(() => process.exit(0));
-  });
+  logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
+  void Promise.all([scheduler.stop(), taskWorker.stop()])
+    .then(() => tasks.close())
+    .then(() => {
+      server.close(() => {
+        logger.info({ signal }, "health server closed, goodnight 🌙");
+        process.exit(0);
+      });
+    });
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

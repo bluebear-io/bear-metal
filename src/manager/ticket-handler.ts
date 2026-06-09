@@ -1,35 +1,37 @@
-import type { Logger, TicketContext, WorkOutcome, WorkerResponse } from "../shared/index.js";
-
-/** The worker entry point the handler delegates to. */
-export type WorkerProcess = (ctx: TicketContext) => Promise<WorkerResponse>;
+import type { Logger, TicketContext, WorkOutcome } from "../shared/index.js";
+import type { TaskQueue } from "./tasks.js";
 
 export interface ManagerTicketHandlerDeps {
   logger: Logger;
-  worker: WorkerProcess;
+  tasks: TaskQueue;
 }
 
 /**
  * Decision owner for a single ticket. Given the full merged Linear + GitHub data,
- * it decides what to do and which metadata to use, then delegates solving to the
- * worker. Today it only forwards to the no-op worker stub; the future state machine
- * grows here.
+ * it decides what to do and which metadata to use, then records a SQL task for a
+ * worker to acquire.
  */
 export class ManagerTicketHandler {
   private readonly logger: Logger;
-  private readonly worker: WorkerProcess;
+  private readonly tasks: TaskQueue;
 
   constructor(deps: ManagerTicketHandlerDeps) {
     this.logger = deps.logger;
-    this.worker = deps.worker;
+    this.tasks = deps.tasks;
   }
 
   async handle(ctx: TicketContext): Promise<WorkOutcome> {
+    const state = ctx.pr === null ? "new" : "iteration";
+    const pr = ctx.pr === null ? null : { owner: ctx.pr.owner, repo: ctx.pr.repo, number: ctx.pr.number };
     this.logger.info(
-      { ticket: ctx.ticket.identifier, hasPr: ctx.pr !== null },
-      "handling ticket",
+      { ticket: ctx.ticket.identifier, state, hasPr: ctx.pr !== null },
+      "enqueueing ticket task",
     );
-    const response = await this.worker(ctx);
-    // A non-noop status means the ticket is finished and its slot can be released.
-    return { done: response.status !== "noop" };
+    const task = await this.tasks.enqueue({
+      state,
+      ticketId: ctx.ticket.identifier,
+      pr,
+    });
+    return { status: "pending", taskId: task.id };
   }
 }

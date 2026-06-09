@@ -9,3 +9,8 @@ services:
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     restart: unless-stopped
+    volumes:
+      # Persist in-progress repo workspaces across container restarts
+      - ./workspace:/app/workspace
+      # Persist SQLite database across container restarts
+      - ./data:/app/data

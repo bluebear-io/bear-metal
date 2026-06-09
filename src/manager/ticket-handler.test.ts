@@ -1,31 +1,85 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { createLogger, type WorkerResponse } from "../shared/index.js";
+import { createLogger } from "../shared/index.js";
 
 import { ManagerTicketHandler } from "./ticket-handler.js";
 import { makeContext } from "./test-helpers.js";
+import type { DispatchTaskInput, TaskQueue, TaskRecord } from "./tasks.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 
 describe("ManagerTicketHandler", () => {
-  it("delegates to the worker with the full context and keeps the ticket on noop", async () => {
-    const worker = vi.fn(async (): Promise<WorkerResponse> => ({ status: "noop" }));
-    const handler = new ManagerTicketHandler({ logger, worker });
+  it("enqueues a new task and returns the SQL task id", async () => {
+    const tasks = new FakeTaskQueue();
+    const handler = new ManagerTicketHandler({ logger, tasks });
     const ctx = makeContext("den-1");
 
     const outcome = await handler.handle(ctx);
 
-    expect(worker).toHaveBeenCalledWith(ctx);
-    expect(outcome.done).toBe(false);
+    expect(tasks.enqueued).toEqual([{ state: "new", ticketId: "DEN-1", pr: null }]);
+    expect(outcome.status).toBe("pending");
+    expect(outcome.taskId).toBe("task-1");
   });
 
-  it("frees the ticket when the worker reports a non-noop status", async () => {
-    // The only WorkerStatus today is "noop"; simulate a future terminal status.
-    const worker = vi.fn(async (): Promise<WorkerResponse> => ({ status: "done" } as unknown as WorkerResponse));
-    const handler = new ManagerTicketHandler({ logger, worker });
+  it("enqueues an iteration task with a compact pull request ref", async () => {
+    const tasks = new FakeTaskQueue();
+    const handler = new ManagerTicketHandler({ logger, tasks });
 
-    const outcome = await handler.handle(makeContext("den-2"));
+    await handler.handle({
+      ticket: makeContext("den-2").ticket,
+      pr: {
+        owner: "bluebear-io",
+        repo: "bear-metal",
+        number: 5,
+        title: "PR",
+        headRef: "feature/den-2",
+        state: "open",
+        draft: false,
+        merged: false,
+        url: "https://github.com/bluebear-io/bear-metal/pull/5",
+      },
+    });
 
-    expect(outcome.done).toBe(true);
+    expect(tasks.enqueued).toEqual([
+      {
+        state: "iteration",
+        ticketId: "DEN-2",
+        pr: { owner: "bluebear-io", repo: "bear-metal", number: 5 },
+      },
+    ]);
   });
 });
+
+class FakeTaskQueue implements TaskQueue {
+  enqueued: DispatchTaskInput[] = [];
+
+  async initialize(): Promise<void> {}
+
+  async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
+    this.enqueued.push(input);
+    return {
+      id: `task-${this.enqueued.length}`,
+      ticketId: input.ticketId,
+      dispatchState: input.state,
+      input,
+      workerId: null,
+      resultStatus: null,
+      result: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      completedAt: null,
+    };
+  }
+
+  async acquireNext(): Promise<TaskRecord | null> {
+    return null;
+  }
+
+  async complete(): Promise<void> {}
+
+  async getCompleted(): Promise<TaskRecord[]> {
+    return [];
+  }
+
+  async close(): Promise<void> {}
+}

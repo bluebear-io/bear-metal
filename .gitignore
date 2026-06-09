@@ -1,6 +1,7 @@
 node_modules/
 dist/
+workspace/
 *.tsbuildinfo
-.env
-.env.local
+.env*
+!.env.example
 npm-debug.log*
