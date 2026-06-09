@@ -21,7 +21,7 @@ export function seedMockData(db: Db): void {
 
   db.insert(schema.workers).values([
     { id: "wk_1", name: "worker-1", status: "busy", currentRunId: "run_in_1", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T09:00:00Z") },
-    { id: "wk_2", name: "worker-2", status: "idle", currentRunId: null, lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T09:00:00Z") },
+    { id: "wk_2", name: "worker-2", status: "busy", currentRunId: "run_3", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T09:00:00Z") },
     { id: "wk_3", name: "worker-3", status: "dead", currentRunId: null, lastHeartbeatAt: t("2026-06-09T08:10:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T08:40:00Z") },
   ]).run();
 

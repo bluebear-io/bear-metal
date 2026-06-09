@@ -24,4 +24,10 @@ describe("loadBackendConfig", () => {
   it("fails fast when the DB path is missing (no silent default)", () => {
     expect(() => loadBackendConfig({})).toThrow(/BEAR_METAL_DB_PATH/);
   });
+
+  it("fails fast when the port is set but not a positive integer (no silent NaN)", () => {
+    expect(() => loadBackendConfig({ BEAR_METAL_DB_PATH: "/tmp/x.db", BACKEND_PORT: "abc" })).toThrow(
+      /BACKEND_PORT/,
+    );
+  });
 });

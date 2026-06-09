@@ -1,6 +1,6 @@
 import "dotenv/config";
 
-import { createLogger } from "../shared/logger.js";
+import { createLogger } from "../shared/index.js";
 import { loadBackendConfig } from "./config.js";
 import { openReadOnlyDb } from "./db/client.js";
 import { createApp } from "./app.js";
