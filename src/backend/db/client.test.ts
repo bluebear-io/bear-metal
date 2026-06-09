@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { openReadOnlyDb } from "./client.js";
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import * as schema from "./schema.js";
+import { openReadOnlyDb, openReadWriteDb } from "./client.js";
 
 let dir: string | undefined;
 afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = undefined; });
@@ -25,5 +28,26 @@ describe("openReadOnlyDb", () => {
     const { sqlite } = openReadOnlyDb(path);
     expect(() => sqlite.exec("INSERT INTO t VALUES ('x')")).toThrow();
     sqlite.close();
+  });
+});
+
+describe("openReadWriteDb", () => {
+  it("opens an existing file writable", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bm-rw-"));
+    const path = join(dir, "dash.sqlite");
+    const seed = drizzle(new Database(path), { schema });
+    migrate(seed, { migrationsFolder: "./src/backend/db/migrations" });
+
+    const { db, sqlite } = openReadWriteDb(path);
+    db.insert(schema.workers)
+      .values({ id: "w1", name: "n", status: "idle", currentRunId: null, lastHeartbeatAt: null, startedAt: new Date(1), updatedAt: new Date(1) })
+      .run();
+    const rows = db.select().from(schema.workers).all();
+    sqlite.close();
+    expect(rows).toHaveLength(1);
+  });
+
+  it("fails fast when the file is missing", () => {
+    expect(() => openReadWriteDb("/no/such/file.sqlite")).toThrow(/not found/);
   });
 });
