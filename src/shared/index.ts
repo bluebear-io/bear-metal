@@ -10,5 +10,5 @@ export {
   branchMatchesTicket,
   type GitHubIntegrationOptions,
 } from "./integrations/github/client.js";
-export type { PullRequest, PRState } from "./integrations/github/types.js";
+export type { PullRequest, PRState, PullRequestRef } from "./integrations/github/types.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";

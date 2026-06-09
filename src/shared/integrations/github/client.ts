@@ -1,14 +1,21 @@
+import { createAppAuth } from "@octokit/auth-app";
 import { Octokit, type RestEndpointMethodTypes } from "@octokit/rest";
 
 import type { CommentCapable, Integration } from "../base.js";
 import type { Ticket } from "../linear/types.js";
-import type { PRState, PullRequest } from "./types.js";
+import type { PRState, PullRequest, PullRequestRef } from "./types.js";
 
 type OctokitPullListItem = RestEndpointMethodTypes["pulls"]["list"]["response"]["data"][number];
 type OctokitPull = RestEndpointMethodTypes["pulls"]["get"]["response"]["data"];
 
 export interface GitHubIntegrationOptions {
-  token: string;
+  /** GitHub App credentials — the client authenticates as the installation. */
+  appId: number;
+  privateKey: string;
+  installationId: number;
+}
+
+interface RepoCoords {
   owner: string;
   repo: string;
 }
@@ -26,51 +33,78 @@ export function branchMatchesTicket(
 }
 
 /** GitHub integration. Extend with more capabilities (merge, review, ...) as needed. */
-export class GitHubIntegration implements Integration, CommentCapable<number> {
+export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
   private readonly octokit: Octokit;
-  private readonly owner: string;
-  private readonly repo: string;
 
   constructor(options: GitHubIntegrationOptions) {
-    this.octokit = new Octokit({ auth: options.token });
-    this.owner = options.owner;
-    this.repo = options.repo;
+    this.octokit = new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId: options.appId,
+        privateKey: options.privateKey,
+        installationId: options.installationId,
+      },
+    });
   }
 
-  /** Find the open PR whose head branch refers to the ticket, or null if none. */
+  /**
+   * Find the open PR whose head branch refers to the ticket, across every repo the
+   * App installation can access. Returns null if none. (GitHub is queried only for
+   * active tickets, so the per-repo scan stays cheap.)
+   */
   async findPullRequestForTicket(ticket: Ticket): Promise<PullRequest | null> {
-    const pulls = await this.octokit.paginate(this.octokit.pulls.list, {
-      owner: this.owner,
-      repo: this.repo,
-      state: "open",
-      per_page: 100,
-    });
-    const match = pulls.find((pull) => branchMatchesTicket(pull.head.ref, ticket));
-    return match ? toPullRequest(match) : null;
+    for (const { owner, repo } of await this.installationRepos()) {
+      const pulls = await this.octokit.paginate(this.octokit.pulls.list, {
+        owner,
+        repo,
+        state: "open",
+        per_page: 100,
+      });
+      const match = pulls.find((pull) => branchMatchesTicket(pull.head.ref, ticket));
+      if (match) {
+        return toPullRequest(match, owner, repo);
+      }
+    }
+    return null;
   }
 
-  async getPullRequest(number: number): Promise<PullRequest> {
+  async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {
     const { data } = await this.octokit.pulls.get({
-      owner: this.owner,
-      repo: this.repo,
-      pull_number: number,
+      owner: ref.owner,
+      repo: ref.repo,
+      pull_number: ref.number,
     });
-    return toPullRequest(data);
+    return toPullRequest(data, ref.owner, ref.repo);
   }
 
-  async leaveComment(prNumber: number, body: string): Promise<void> {
+  async leaveComment(ref: PullRequestRef, body: string): Promise<void> {
     await this.octokit.issues.createComment({
-      owner: this.owner,
-      repo: this.repo,
-      issue_number: prNumber,
+      owner: ref.owner,
+      repo: ref.repo,
+      issue_number: ref.number,
       body,
     });
   }
+
+  /** Every repo the App installation can access. */
+  private async installationRepos(): Promise<RepoCoords[]> {
+    const repos = await this.octokit.paginate(
+      this.octokit.apps.listReposAccessibleToInstallation,
+      { per_page: 100 },
+    );
+    return repos.map((repo) => ({ owner: repo.owner.login, repo: repo.name }));
+  }
 }
 
-function toPullRequest(pull: OctokitPullListItem | OctokitPull): PullRequest {
+function toPullRequest(
+  pull: OctokitPullListItem | OctokitPull,
+  owner: string,
+  repo: string,
+): PullRequest {
   return {
+    owner,
+    repo,
     number: pull.number,
     title: pull.title,
     headRef: pull.head.ref,

@@ -4,9 +4,11 @@ import { readWorkerConfig } from "./env.js";
 
 // `process` (the exported function below) shadows the Node global in this module,
 // so reach the environment through globalThis.
+const env = globalThis.process.env;
 const logger = createLogger({
-  level: globalThis.process.env.LOG_LEVEL ?? "info",
+  level: env.LOG_LEVEL ?? "info",
   name: "worker",
+  pretty: env.LOG_PRETTY === "true" || env.LOG_PRETTY === "1",
 });
 
 export async function process(ctx: TicketContext): Promise<WorkerResponse> {

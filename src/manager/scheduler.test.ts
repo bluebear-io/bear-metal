@@ -65,6 +65,8 @@ function buildScheduler(deps: {
 }
 
 const PR: PullRequest = {
+  owner: "acme",
+  repo: "widgets",
   number: 7,
   title: "PR",
   headRef: "feature/a",

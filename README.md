@@ -32,13 +32,14 @@ Copy `.env.example` to `.env` and fill in the required values:
 |-----|----------|---------|---------|
 | `LINEAR_API_TOKEN` | yes | — | Linear auth |
 | `LINEAR_LABEL` | no | `bear-metal` | label to filter tickets |
-| `GITHUB_TOKEN` | yes | — | GitHub auth |
-| `GITHUB_OWNER` | yes | — | repo owner/org to scan PRs |
-| `GITHUB_REPO` | yes | — | repo to scan PRs |
+| `GITHUB_APP_ID` | yes | — | GitHub App id (numeric) |
+| `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
+| `GITHUB_APP_INSTALLATION_ID` | yes | — | installation id (numeric) |
 | `WORKER_CONCURRENCY` | no | `2` | max tickets worked in parallel |
 | `POLL_INTERVAL_MS` | no | `60000` | poll cadence |
 | `PORT` | no | `3000` | health server port |
 | `LOG_LEVEL` | no | `info` | pino log level |
+| `LOG_PRETTY` | no | `false` | colorized, human-readable logs (dev); JSON when false |
 
 The worker also needs Pi model credentials supported by
 `@earendil-works/pi-coding-agent`, such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
