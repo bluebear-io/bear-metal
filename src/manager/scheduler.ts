@@ -16,6 +16,8 @@ import type { TicketPhase, TicketStore } from "./state.js";
 export interface LinearSource {
   findDelegatedTickets(agentId: string): Promise<Ticket[]>;
   getTicket(id: string): Promise<Ticket>;
+  /** Relinquish the agent's delegation so the ticket returns to its human assignee. */
+  handBack(ticketId: string): Promise<void>;
 }
 
 /** The GitHub capabilities the scheduler needs (subset of GitHubIntegration). */
@@ -137,6 +139,8 @@ export function selectAdmissions(
 interface TicketDecision {
   /** Release the ticket from memory (its PR is merged or closed). */
   remove: boolean;
+  /** PR was merged (subset of `remove`); the ticket should be handed back to its human assignee. */
+  merged: boolean;
   context: TicketContext;
   /** Hand the ticket to the worker this tick. */
   dispatch: boolean;
@@ -172,7 +176,7 @@ async function evaluateTicket(
       { ticket: ticket.identifier, delegate: ticket.delegate?.id ?? null },
       "ticket not delegated to manager; parking",
     );
-    return { remove: false, context: { ticket, pr: knownPr }, dispatch: false, phase: "parked" };
+    return { remove: false, merged: false, context: { ticket, pr: knownPr }, dispatch: false, phase: "parked" };
   }
 
   const resuming = prevPhase === "parked";
@@ -188,14 +192,14 @@ async function evaluateTicket(
   logger.debug({ ticket: ticket.identifier }, "looking for pull request");
   const found = await github.findPullRequestForTicket(ticket);
   if (found === null) {
-    return { remove: false, context: { ticket, pr: null }, dispatch: resuming, phase: "active" };
+    return { remove: false, merged: false, context: { ticket, pr: null }, dispatch: resuming, phase: "active" };
   }
   logger.info(
     { ticket: ticket.identifier, pr: found.number, headRef: found.headRef },
     "found pull request for ticket",
   );
   if (found.merged || found.state === "closed") {
-    return { remove: true, context: { ticket, pr: found }, dispatch: false, phase: "active" };
+    return { remove: true, merged: found.merged, context: { ticket, pr: found }, dispatch: false, phase: "active" };
   }
   const status = await github.getPullRequestStatus(refToContext(found));
   return decideForOpenPr(ticket, status, resuming, logger);
@@ -213,7 +217,7 @@ function decideForOpenPr(
       { ticket: ticket.identifier, pr: pr.number, merged: pr.merged, state: pr.state },
       "pull request resolved; releasing ticket",
     );
-    return { remove: true, context: { ticket, pr }, dispatch: false, phase: "active" };
+    return { remove: true, merged: pr.merged, context: { ticket, pr }, dispatch: false, phase: "active" };
   }
   const dispatch = resuming || testsFailed || hasUnresolvedComments;
   if (dispatch) {
@@ -222,7 +226,7 @@ function decideForOpenPr(
       "pull request needs work; re-dispatching",
     );
   }
-  return { remove: false, context: { ticket, pr }, dispatch, phase: "active" };
+  return { remove: false, merged: false, context: { ticket, pr }, dispatch, phase: "active" };
 }
 
 /** Step 1 — refresh tracked tickets, release resolved PRs, collect those needing dispatch. */
@@ -238,6 +242,12 @@ async function refreshTrackedTickets(
     const ticket = await linear.getTicket(context.ticket.id);
     const decision = await evaluateTicket(ticket, context.pr, phase, agentId, github, logger);
     if (decision.remove) {
+      if (decision.merged) {
+        // PR merged — relinquish the agent's delegation so the ticket returns to its human assignee.
+        // If this throws, leave the ticket tracked so the next tick retries.
+        await linear.handBack(ticket.id);
+        logger.info({ ticket: ticket.identifier }, "handed ticket back to assignee after merge");
+      }
       store.remove(ticket.id);
       continue;
     }

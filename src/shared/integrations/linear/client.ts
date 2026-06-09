@@ -83,6 +83,12 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
    */
   async commentAndHandBack(ticketId: string, body: string): Promise<void> {
     await this.client.createComment({ issueId: ticketId, body });
+    await this.handBack(ticketId);
+  }
+
+  /** Relinquish the agent's delegation without commenting. Used when a PR merges and the
+   * ticket should return to its human assignee. */
+  async handBack(ticketId: string): Promise<void> {
     const issue = await this.client.issue(ticketId);
     await issue.update({ delegateId: null });
   }
