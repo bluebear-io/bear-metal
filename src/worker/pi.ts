@@ -1,8 +1,16 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { commitAndPush, getCurrentBranch, getRemoteRef } from "../shared/index.js";
+import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
 import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
+
+const logger = createLogger({
+  level: process.env.LOG_LEVEL ?? "info",
+  name: "worker:pi",
+  pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
+});
 
 export async function runPiWorker(input: {
   context: WorkerInputContext;
@@ -26,10 +34,11 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact comment body to post to Linear." }),
     }),
     execute: async (_toolCallId, params) => {
-      await input.linear.leaveComment(input.context.ticketId, params.text);
+      logger.info({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
+      await input.linear.commentAndAssignToCreator(input.context.ticketId, params.text);
       setDecision({ status: "pending", pr: input.context.pr });
       return {
-        content: [{ type: "text", text: "Posted Linear comment and marked dispatch pending." }],
+        content: [{ type: "text", text: "Posted Linear comment, reassigned to creator, and marked dispatch pending." }],
         details: {},
       };
     },
@@ -43,6 +52,7 @@ export async function runPiWorker(input: {
       threadId: Type.String({ description: "The GitHub review thread node id." }),
     }),
     execute: async (_toolCallId, params) => {
+      logger.info({ threadId: params.threadId }, "pi tool: agree_with_github_message");
       requirePullRequest(input.context.pr);
       await input.github.resolveReviewThread(params.threadId);
       return {
@@ -61,6 +71,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact reply body to post to GitHub." }),
     }),
     execute: async (_toolCallId, params) => {
+      logger.info({ threadId: params.threadId }, "pi tool: disagree_with_github_message");
       const pr = requirePullRequest(input.context.pr);
       await input.github.replyToReviewThread(
         pr,
@@ -87,6 +98,7 @@ export async function runPiWorker(input: {
       baseBranch: Type.Optional(Type.String({ description: "Base branch for a new PR. Defaults to repository default branch." })),
     }),
     execute: async (_toolCallId, params) => {
+      logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
       await commitAndPush(params.repoRoot, params.commitMessage);
       const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, params));
       setDecision({ status: "done", pr });
@@ -98,12 +110,22 @@ export async function runPiWorker(input: {
   });
 
   const authStorage = AuthStorage.create();
-  setRuntimeApiKeyFromEnv(authStorage, "anthropic", "ANTHROPIC_API_KEY");
-  setRuntimeApiKeyFromEnv(authStorage, "openai", "OPENAI_API_KEY");
-  setRuntimeApiKeyFromEnv(authStorage, "google", "GOOGLE_API_KEY");
+  setApiKeyFromEnv(authStorage, "anthropic", "ANTHROPIC_API_KEY");
+  setApiKeyFromEnv(authStorage, "openai", "OPENAI_API_KEY");
+  setApiKeyFromEnv(authStorage, "google", "GOOGLE_API_KEY");
+
+  const prompt = buildWorkerPrompt(input.context);
+  const workspaceDir = input.context.cloneScript.workspaceDir;
+
+  await mkdir(workspaceDir, { recursive: true });
+  await Promise.all([
+    writeFile(resolve(workspaceDir, "context.json"), JSON.stringify(input.context, null, 2), "utf8"),
+    writeFile(resolve(workspaceDir, "prompt.txt"), prompt, "utf8"),
+  ]);
+  logger.info({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
 
   const { session } = await createAgentSession({
-    cwd: input.context.cloneScript.workspaceDir,
+    cwd: workspaceDir,
     authStorage,
     modelRegistry: ModelRegistry.create(authStorage),
     sessionManager: SessionManager.inMemory(),
@@ -111,10 +133,16 @@ export async function runPiWorker(input: {
     customTools: [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, wroteCode],
   });
 
+  logger.info({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
+
   try {
-    await session.prompt(buildWorkerPrompt(input.context));
+    await session.prompt(prompt);
+  } catch (error) {
+    logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
+    throw error;
   } finally {
     session.dispose();
+    logger.info({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
   }
 
   if (!decision) {
@@ -147,9 +175,11 @@ function requirePullRequest(pr: PullRequestRef | null): PullRequestRef {
   return pr;
 }
 
-function setRuntimeApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: string): void {
+function setApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: string): void {
   const apiKey = process.env[envName];
   if (apiKey) {
     authStorage.setRuntimeApiKey(provider, apiKey);
+  } else {
+    logger.warn({ provider, envName }, "API key not set; this provider will be unavailable to the pi agent");
   }
 }

@@ -46,6 +46,17 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     await this.client.createComment({ issueId: ticketId, body });
   }
 
+  async commentAndAssignToCreator(ticketId: string, body: string): Promise<void> {
+    const issue = await this.client.issue(ticketId);
+    const creatorId = issue.creatorId;
+    if (!creatorId) {
+      throw new Error(`Linear issue ${issue.identifier} has no creator to assign back to`);
+    }
+
+    await this.client.createComment({ issueId: ticketId, body });
+    await issue.update({ assigneeId: creatorId });
+  }
+
   private async getComments(issue: Issue): Promise<TicketComment[]> {
     const comments: TicketComment[] = [];
     let after: string | undefined;
