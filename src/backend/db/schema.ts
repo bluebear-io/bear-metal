@@ -59,6 +59,9 @@ export const pullRequests = sqliteTable("pull_requests", {
   draft: integer("draft", { mode: "boolean" }).notNull(),
   merged: integer("merged", { mode: "boolean" }).notNull(),
   url: text("url").notNull(),
+  // Repo identity parsed from `url` at write time so per-repo queries are an indexed group-by instead of a full table scan + URL parse.
+  owner: text("owner").notNull().default(""),
+  repo: text("repo").notNull().default(""),
   lastRunId: text("last_run_id").references(() => runs.id),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),

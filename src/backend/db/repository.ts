@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
@@ -53,6 +53,21 @@ interface ListWorkerOptions {
   now?: Date;
 }
 
+export interface RepoBreakdown {
+  owner: string;
+  repo: string;
+  /** Total tickets that opened at least one PR in this repo. */
+  ticketCount: number;
+  /** Tickets where at least one PR in this repo was merged. */
+  mergedCount: number;
+  /** mergedCount / ticketCount, or null if ticketCount === 0. */
+  successRate: number | null;
+  /** Average tickets.attemptCount across tickets that touched this repo. */
+  avgIterations: number | null;
+  /** Most recent pull_requests.updatedAt across all PRs in this repo. */
+  lastActivityAt: Date | null;
+}
+
 function toLatestRunSummary(run: Run): LatestRunSummary {
   return {
     id: run.id,
@@ -103,6 +118,59 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
   const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
 
   return { ticket, runs, pullRequests, ciRuns, events };
+}
+
+export function listRepoBreakdowns(db: Db): RepoBreakdown[] {
+  // Two-level group-by: inner query reduces to one row per (owner, repo, ticket) so the
+  // outer aggregates (count, sum, avg) see each ticket once — multiple PRs per ticket
+  // would otherwise double-count toward ticketCount / mergedCount / avgIterations.
+  // Rows with empty owner/repo (unparseable URLs, pre-migration legacy) are excluded.
+  const rows = db.all<{
+    owner: string;
+    repo: string;
+    ticketCount: number;
+    mergedCount: number;
+    avgIterations: number | null;
+    lastActivityMs: number | null;
+  }>(sql`
+    select
+      owner,
+      repo,
+      count(*) as ticketCount,
+      sum(merged_any) as mergedCount,
+      avg(attempt_count) as avgIterations,
+      max(last_updated) as lastActivityMs
+    from (
+      select
+        ${schema.pullRequests.owner} as owner,
+        ${schema.pullRequests.repo} as repo,
+        ${schema.pullRequests.ticketId} as ticket_id,
+        ${schema.tickets.attemptCount} as attempt_count,
+        max(case when ${schema.pullRequests.merged} = 1 then 1 else 0 end) as merged_any,
+        max(${schema.pullRequests.updatedAt}) as last_updated
+      from ${schema.pullRequests}
+      inner join ${schema.tickets} on ${schema.tickets.id} = ${schema.pullRequests.ticketId}
+      where ${schema.pullRequests.owner} != '' and ${schema.pullRequests.repo} != ''
+      group by owner, repo, ticket_id, attempt_count
+    )
+    group by owner, repo
+    order by lastActivityMs desc
+  `);
+
+  return rows.map((r) => {
+    const ticketCount = Number(r.ticketCount);
+    const mergedCount = Number(r.mergedCount);
+    const avgIterations = r.avgIterations === null ? null : Number(r.avgIterations);
+    return {
+      owner: r.owner,
+      repo: r.repo,
+      ticketCount,
+      mergedCount,
+      successRate: ticketCount === 0 ? null : mergedCount / ticketCount,
+      avgIterations,
+      lastActivityAt: r.lastActivityMs === null ? null : new Date(Number(r.lastActivityMs)),
+    };
+  });
 }
 
 export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {

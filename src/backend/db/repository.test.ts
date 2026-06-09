@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { eq } from "drizzle-orm";
 import * as schema from "./schema.js";
 import { seedMockData } from "../mock/seed.js";
-import { listTickets, getTicketDetail, listWorkers } from "./repository.js";
+import { listTickets, getTicketDetail, listWorkers, listRepoBreakdowns } from "./repository.js";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -63,6 +64,35 @@ describe("getTicketDetail", () => {
 
   it("returns null for an unknown ticket", () => {
     expect(getTicketDetail(db, "nope")).toBeNull();
+  });
+});
+
+describe("listRepoBreakdowns", () => {
+  it("aggregates seeded PRs by repo with success rate and last activity", () => {
+    const rows = listRepoBreakdowns(db);
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row.owner).toBe("bluebear-io");
+    expect(row.repo).toBe("blueden");
+    // pr_1 (lin_1, merged) + pr_2 (lin_2, not merged) → 2 distinct tickets, 1 merged.
+    expect(row.ticketCount).toBe(2);
+    expect(row.mergedCount).toBe(1);
+    expect(row.successRate).toBeCloseTo(0.5);
+    // tickets.attemptCount: lin_1 = 1, lin_2 = 2 → avg 1.5.
+    expect(row.avgIterations).toBeCloseTo(1.5);
+    // Latest of pr_1.updatedAt (07:55) and pr_2.updatedAt (08:46) → 08:46.
+    expect(row.lastActivityAt?.toISOString()).toBe("2026-06-09T08:46:00.000Z");
+  });
+
+  it("excludes rows with empty owner/repo", () => {
+    // Simulate a pre-migration PR row by clearing owner/repo on pr_2; it should drop out
+    // of the breakdown but pr_1 (lin_1, merged) should remain the sole aggregate.
+    db.update(schema.pullRequests).set({ owner: "", repo: "" }).where(eq(schema.pullRequests.id, "pr_2")).run();
+    const rows = listRepoBreakdowns(db);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.ticketCount).toBe(1);
+    expect(rows[0]!.mergedCount).toBe(1);
+    expect(rows[0]!.successRate).toBe(1);
   });
 });
 

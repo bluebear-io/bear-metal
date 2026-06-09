@@ -130,6 +130,16 @@ export interface TicketEvent {
   createdAt: string;
 }
 
+export interface RepoBreakdown {
+  owner: string;
+  repo: string;
+  ticketCount: number;
+  mergedCount: number;
+  successRate: number | null;
+  avgIterations: number | null;
+  lastActivityAt: string | null;
+}
+
 export interface TicketDetail {
   ticket: Ticket;
   runs: Run[];

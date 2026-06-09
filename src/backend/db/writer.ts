@@ -45,10 +45,23 @@ export function upsertRun(db: Db, p: RunPayload): void {
   }).run();
 }
 
+// Parses `https://github.com/{owner}/{repo}/pull/{n}`-style URLs. Returns empty strings
+// for any URL we can't parse — the column defaults preserve insert safety, and the per-repo
+// view simply ignores rows with empty owner/repo (see listRepoBreakdowns).
+function parseRepoFromUrl(url: string): { owner: string; repo: string } {
+  try {
+    const parts = new URL(url).pathname.split("/").filter(Boolean);
+    return { owner: parts[0] ?? "", repo: parts[1] ?? "" };
+  } catch {
+    return { owner: "", repo: "" };
+  }
+}
+
 export function upsertPullRequest(db: Db, p: PullRequestPayload): void {
+  const { owner, repo } = parseRepoFromUrl(p.url);
   const row = {
     id: p.id, ticketId: p.ticketId, number: p.number, title: p.title, headRef: p.headRef,
-    state: p.state, draft: p.draft, merged: p.merged, url: p.url, lastRunId: p.lastRunId,
+    state: p.state, draft: p.draft, merged: p.merged, url: p.url, owner, repo, lastRunId: p.lastRunId,
     createdAt: new Date(p.createdAt), updatedAt: new Date(p.updatedAt),
   };
   db.insert(schema.pullRequests).values(row).onConflictDoUpdate({ target: schema.pullRequests.id, set: row }).run();

@@ -66,6 +66,22 @@ describe("GET /api/tickets/:id", () => {
   });
 });
 
+describe("GET /api/repos", () => {
+  it("returns per-repo breakdown derived from PR URLs", async () => {
+    const res = await request(app).get("/api/repos");
+    expect(res.status).toBe(200);
+    expect(res.body.repos).toHaveLength(1);
+    expect(res.body.repos[0]).toMatchObject({
+      owner: "bluebear-io",
+      repo: "blueden",
+      ticketCount: 2,
+      mergedCount: 1,
+      successRate: 0.5,
+      avgIterations: 1.5,
+    });
+  });
+});
+
 describe("GET /api/workers", () => {
   it("lists workers with current ticket", async () => {
     const res = await request(app).get("/api/workers");
