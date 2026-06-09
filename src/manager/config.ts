@@ -10,6 +10,10 @@ export interface Config {
   port: number;
   logLevel: string;
   logPretty: boolean;
+  /** Base URL of the observability dashboard write API. Empty disables dashboard reporting. */
+  dashboardUrl: string;
+  /** Shared secret sent as a bearer token to the dashboard write API. */
+  ingestToken: string;
 }
 
 function requiredEnv(name: string): string {
@@ -63,5 +67,7 @@ export function loadConfig(): Readonly<Config> {
     port: positiveIntEnv("PORT", 3000),
     logLevel: process.env.LOG_LEVEL || "info",
     logPretty: boolEnv("LOG_PRETTY", false),
+    dashboardUrl: process.env.DASHBOARD_URL ?? "",
+    ingestToken: process.env.INGEST_TOKEN ?? "",
   });
 }
