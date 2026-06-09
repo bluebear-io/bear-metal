@@ -1,12 +1,13 @@
 import "dotenv/config";
 
 import { createLogger, GitHubIntegration, LinearIntegration } from "../shared/index.js";
-import { createWorkerProcess } from "../worker/index.js";
+import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 import { TicketStore } from "./state.js";
+import { createTaskQueueFromDatabaseUrl } from "./tasks.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 
 const config = loadConfig();
@@ -29,17 +30,26 @@ const github = new GitHubIntegration({
   privateKey: config.githubAppPrivateKey,
   installationId: config.githubAppInstallationId,
 });
+const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
+await tasks.initialize();
 const store = new TicketStore(logger);
-const workerProcess = createWorkerProcess({ github, linear, logger });
-const handler = new ManagerTicketHandler({ logger, worker: workerProcess });
+const handler = new ManagerTicketHandler({ logger, tasks });
 
 const scheduler = new Scheduler({
   logger,
   linear,
   github,
   store,
+  tasks,
   handler,
   agentId: config.linearAssigneeId,
+  concurrency: config.workerConcurrency,
+  pollIntervalMs: config.pollIntervalMs,
+});
+const taskWorker = new TaskWorker({
+  logger,
+  tasks,
+  integrations: { github, linear },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });
@@ -51,6 +61,7 @@ const server = app.listen(config.port, () => {
 });
 
 scheduler.start();
+taskWorker.start();
 
 let shuttingDown = false;
 function shutdown(signal: string): void {
@@ -60,12 +71,14 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   logger.info({ signal }, "shutting down");
   logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
-  void scheduler.stop().then(() => {
-    server.close(() => {
-      logger.info({ signal }, "health server closed, goodnight 🌙");
-      process.exit(0);
+  void Promise.all([scheduler.stop(), taskWorker.stop()])
+    .then(() => tasks.close())
+    .then(() => {
+      server.close(() => {
+        logger.info({ signal }, "health server closed, goodnight 🌙");
+        process.exit(0);
+      });
     });
-  });
 }
 
 process.on("SIGINT", () => shutdown("SIGINT"));

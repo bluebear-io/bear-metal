@@ -20,6 +20,8 @@ export interface TicketState {
   /** Whether the ticket is currently assigned to the manager ("active") or parked. */
   phase: TicketPhase;
   status: DispatchStatus;
+  /** SQL task row currently carrying this ticket's manager-to-worker handoff. */
+  activeTaskId: string | null;
   /** When this ticket first took a worker slot. */
   admittedAt: Date;
   updatedAt: Date;
@@ -46,6 +48,7 @@ export class TicketStore {
       state: context.pr ? "iteration" : "new",
       phase,
       status: existing?.status ?? "pending",
+      activeTaskId: existing?.activeTaskId ?? null,
       admittedAt: existing?.admittedAt ?? now,
       updatedAt: now,
     };
@@ -57,11 +60,43 @@ export class TicketStore {
         state: state.state,
         phase: state.phase,
         status: state.status,
+        activeTaskId: state.activeTaskId,
         count: this.tickets.size,
       },
       "memory: ticket upserted",
     );
     return state;
+  }
+
+  /** Record the task row currently assigned to this ticket. */
+  setActiveTask(id: string, taskId: string): TicketState {
+    const existing = this.tickets.get(id);
+    if (!existing) {
+      throw new Error(`Cannot set active task for unknown ticket: ${id}`);
+    }
+    const updated: TicketState = { ...existing, activeTaskId: taskId, updatedAt: new Date() };
+    this.tickets.set(id, updated);
+    this.logger?.info(
+      {
+        ticket: updated.context.ticket.identifier,
+        taskId,
+        state: updated.state,
+        count: this.tickets.size,
+      },
+      "memory: ticket active task updated",
+    );
+    return updated;
+  }
+
+  /** Clear the active task once its dispatch result has been recorded. */
+  clearActiveTask(id: string): TicketState {
+    const existing = this.tickets.get(id);
+    if (!existing) {
+      throw new Error(`Cannot clear active task for unknown ticket: ${id}`);
+    }
+    const updated: TicketState = { ...existing, activeTaskId: null, updatedAt: new Date() };
+    this.tickets.set(id, updated);
+    return updated;
   }
 
   /** Record the worker dispatch status for a tracked ticket. */

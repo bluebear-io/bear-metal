@@ -12,3 +12,5 @@ services:
     volumes:
       # Persist in-progress repo workspaces across container restarts
       - ./workspace:/app/workspace
+      # Persist SQLite database across container restarts
+      - ./data:/app/data

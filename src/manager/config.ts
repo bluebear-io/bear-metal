@@ -4,6 +4,7 @@ export interface Config {
   githubAppId: number;
   githubAppPrivateKey: string;
   githubAppInstallationId: number;
+  databaseUrl: string;
   workerConcurrency: number;
   pollIntervalMs: number;
   port: number;
@@ -56,6 +57,7 @@ export function loadConfig(): Readonly<Config> {
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
     githubAppPrivateKey: requiredEnv("GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n"),
     githubAppInstallationId: requiredPositiveIntEnv("GITHUB_APP_INSTALLATION_ID"),
+    databaseUrl: process.env.DATABASE_URL || "sqlite:./bear-metal-manager.sqlite",
     workerConcurrency: positiveIntEnv("WORKER_CONCURRENCY", 2),
     pollIntervalMs: positiveIntEnv("POLL_INTERVAL_MS", 60_000),
     port: positiveIntEnv("PORT", 3000),

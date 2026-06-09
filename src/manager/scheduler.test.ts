@@ -13,6 +13,7 @@ import {
 import { Scheduler, type GitHubSource, type LinearSource, type TicketHandler } from "./scheduler.js";
 import { TicketStore } from "./state.js";
 import { makeContext, makeTicket } from "./test-helpers.js";
+import type { DispatchTaskInput, TaskQueue, TaskRecord } from "./tasks.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 
@@ -33,6 +34,22 @@ function openPr(number = 7, overrides: Partial<PullRequest> = {}): PullRequest {
 
 function status(pr: PullRequest, testsFailed = false, hasUnresolvedComments = false): PullRequestStatus {
   return { pr, testsFailed, hasUnresolvedComments };
+}
+
+function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
+  return {
+    id: "task-1",
+    ticketId: "DEN-1",
+    dispatchState: "new",
+    input: { state: "new", ticketId: "DEN-1", pr: null },
+    workerId: "worker-1",
+    resultStatus: null,
+    result: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    completedAt: null,
+    ...overrides,
+  };
 }
 
 class FakeLinear implements LinearSource {
@@ -76,10 +93,34 @@ class FakeHandler implements TicketHandler {
   }
 }
 
+class FakeTasks implements TaskQueue {
+  constructor(private readonly completed: TaskRecord[] = []) {}
+
+  async initialize(): Promise<void> {}
+
+  async enqueue(_input: DispatchTaskInput): Promise<TaskRecord> {
+    throw new Error("FakeTasks.enqueue is not used by scheduler tests");
+  }
+
+  async acquireNext(): Promise<TaskRecord | null> {
+    return null;
+  }
+
+  async complete(): Promise<void> {}
+
+  async getCompleted(taskIds: string[]): Promise<TaskRecord[]> {
+    const allowed = new Set(taskIds);
+    return this.completed.filter((task) => allowed.has(task.id));
+  }
+
+  async close(): Promise<void> {}
+}
+
 function buildScheduler(deps: {
   linear: LinearSource;
   github: GitHubSource;
   store: TicketStore;
+  tasks?: TaskQueue;
   handler: TicketHandler;
   concurrency: number;
 }): Scheduler {
@@ -88,6 +129,7 @@ function buildScheduler(deps: {
     linear: deps.linear,
     github: deps.github,
     store: deps.store,
+    tasks: deps.tasks ?? new FakeTasks(),
     handler: deps.handler,
     agentId: "user-1",
     concurrency: deps.concurrency,
@@ -107,6 +149,33 @@ describe("Scheduler.tick", () => {
 
     expect(store.count()).toBe(2);
     expect(handler.handled).toHaveLength(2);
+  });
+
+  it("records completed SQL task results for tracked task ids", async () => {
+    const store = new TicketStore();
+    store.upsert("a", makeContext("a"));
+    store.setActiveTask("a", "task-1");
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { a: makeTicket("a") }),
+      github: new FakeGitHub(),
+      store,
+      tasks: new FakeTasks([
+        taskRecord({
+          id: "task-1",
+          ticketId: "DEN-A",
+          resultStatus: "done",
+          result: { status: "done", pr: null },
+        }),
+      ]),
+      handler: new FakeHandler(),
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(store.get("a")?.status).toBe("done");
+    expect(store.get("a")?.activeTaskId).toBeNull();
   });
 
   it("admits nothing new when slots are full", async () => {

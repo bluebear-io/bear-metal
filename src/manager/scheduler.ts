@@ -11,6 +11,7 @@ import type {
 } from "../shared/index.js";
 
 import type { TicketPhase, TicketStore } from "./state.js";
+import type { TaskQueue } from "./tasks.js";
 
 /** The Linear capabilities the scheduler needs (subset of LinearIntegration). */
 export interface LinearSource {
@@ -38,6 +39,7 @@ export interface SchedulerDeps {
   linear: LinearSource;
   github: GitHubSource;
   store: TicketStore;
+  tasks: TaskQueue;
   handler: TicketHandler;
   /** Linear user id of the agent the manager runs as; it works tickets delegated to this id. */
   agentId: string;
@@ -88,10 +90,11 @@ export class Scheduler {
    * that need work), admit new tickets into free slots, then dispatch the eligible set.
    */
   async tick(): Promise<void> {
-    const { store, linear, github, handler, logger, agentId, concurrency } = this.deps;
+    const { store, tasks, linear, github, handler, logger, agentId, concurrency } = this.deps;
 
     logger.info({ active: store.count() }, "poll tick started");
 
+    await recordCompletedTaskResults(store, tasks, logger);
     const refreshed = await refreshTrackedTickets(store, linear, github, agentId, logger);
     const admitted = await admitNewTickets(
       store,
@@ -296,6 +299,10 @@ function dispatchTickets(
     if (inFlight.has(id)) {
       continue;
     }
+    if (store.get(id)?.activeTaskId !== null) {
+      logger.debug({ ticket: context.ticket.identifier }, "ticket already has active SQL task; skipping dispatch");
+      continue;
+    }
     inFlight.add(id);
     void queue.add(() => runHandler(context, handler, store, inFlight, logger));
   }
@@ -314,11 +321,48 @@ async function runHandler(
     const outcome = await handler.handle(context);
     // The ticket may have been released by a concurrent refresh (merged/closed PR).
     if (store.has(id)) {
+      if (outcome.taskId) {
+        store.setActiveTask(id, outcome.taskId);
+      }
       store.setStatus(id, outcome.status);
     }
   } catch (err) {
     logger.error({ err, ticket: context.ticket.identifier }, "ticket handling failed");
   } finally {
     inFlight.delete(id);
+  }
+}
+
+async function recordCompletedTaskResults(
+  store: TicketStore,
+  tasks: TaskQueue,
+  logger: Logger,
+): Promise<void> {
+  const tracked = store
+    .all()
+    .filter((ticket) => ticket.activeTaskId !== null)
+    .map((ticket) => ({ ticketId: ticket.context.ticket.id, ticket: ticket.context.ticket.identifier, taskId: ticket.activeTaskId! }));
+  if (tracked.length === 0) {
+    return;
+  }
+  const completed = await tasks.getCompleted(tracked.map((ticket) => ticket.taskId));
+  const byTaskId = new Map(completed.map((task) => [task.id, task]));
+  for (const trackedTask of tracked) {
+    const task = byTaskId.get(trackedTask.taskId);
+    if (!task) {
+      continue;
+    }
+    if (task.resultStatus === null) {
+      throw new Error(`Completed task is missing result status: ${task.id}`);
+    }
+    if (!store.has(trackedTask.ticketId)) {
+      continue;
+    }
+    store.setStatus(trackedTask.ticketId, task.resultStatus);
+    store.clearActiveTask(trackedTask.ticketId);
+    logger.info(
+      { ticket: trackedTask.ticket, taskId: task.id, resultStatus: task.resultStatus },
+      "recorded completed SQL task result",
+    );
   }
 }

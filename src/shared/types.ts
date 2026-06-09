@@ -12,6 +12,7 @@ export type WorkerStatus = "pending" | "done";
 /** The handler's result to the scheduler. */
 export interface WorkOutcome {
   status: WorkerStatus;
+  taskId?: string;
 }
 
 /** The worker's response to the handler. */
