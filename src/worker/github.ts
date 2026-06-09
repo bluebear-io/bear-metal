@@ -197,7 +197,7 @@ function isFailedStatus(status: JsonValue): boolean {
   return isRecord(status) && status.state !== "success";
 }
 
-function isRecord(value: JsonValue): value is { [key: string]: JsonValue } {
+function isRecord(value: unknown): value is { [key: string]: JsonValue } {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 

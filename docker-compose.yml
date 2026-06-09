@@ -1,0 +1,11 @@
+services:
+  # The monolith: manager + worker (in-process) + shared, one container.
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    restart: unless-stopped

@@ -38,12 +38,12 @@ export async function getRemoteRef(repoRoot: string): Promise<RemoteRef> {
 export function parseGitHubRemote(remoteUrl: string): RemoteRef {
   const sshMatch = /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/.exec(remoteUrl);
   if (sshMatch) {
-    return { org: sshMatch[1], repo: sshMatch[2] };
+    return { org: sshMatch[1]!, repo: sshMatch[2]! };
   }
 
   const httpsMatch = /^https:\/\/(?:[^@]+@)?github\.com\/([^/]+)\/(.+?)(?:\.git)?$/.exec(remoteUrl);
   if (httpsMatch) {
-    return { org: httpsMatch[1], repo: httpsMatch[2] };
+    return { org: httpsMatch[1]!, repo: httpsMatch[2]! };
   }
 
   throw new Error(`Unsupported GitHub remote URL: ${remoteUrl}`);

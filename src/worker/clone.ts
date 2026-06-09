@@ -24,11 +24,7 @@ export async function runCloneScript(input: {
 }
 
 export function getPackageRoot(importMetaUrl: string): string {
-  const currentDir = dirname(fileURLToPath(importMetaUrl));
-  if (currentDir.endsWith("/dist/worker")) {
-    return resolve(currentDir, "..", "..");
-  }
-  return resolve(currentDir, "..");
+  return resolve(dirname(fileURLToPath(importMetaUrl)), "..", "..");
 }
 
 export function workspaceForTicket(packageRoot: string, ticketId: string): string {

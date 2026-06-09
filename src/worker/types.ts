@@ -13,7 +13,9 @@ export type DispatchResult = {
 
 export type WorkerConfig = {
   githubToken: string;
-  linearApiKey: string;
+  githubOwner: string;
+  githubRepo: string;
+  linearApiToken: string;
 };
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };

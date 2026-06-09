@@ -17,7 +17,7 @@ export async function dispatch(
 
   const config = readWorkerConfig();
   const github = new GitHubClient(config.githubToken);
-  const linear = new LinearClient(config.linearApiKey);
+  const linear = new LinearClient(config.linearApiToken);
   const packageRoot = getPackageRoot(import.meta.url);
   const workspaceDir = workspaceForTicket(packageRoot, ticketId);
 
