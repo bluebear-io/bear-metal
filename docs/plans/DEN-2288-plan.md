@@ -26,7 +26,7 @@
 - `src/shared/index.ts` — export the dashboard client + types (modify).
 
 **Manager/worker (projection + wiring):**
-- `src/manager/dashboard-reporter.ts` — **new**: semantic lifecycle → rows/events, owns `bm_status`/event mapping.
+- `src/manager/dashboardReporter.ts` — **new**: semantic lifecycle → rows/events, owns `bm_status`/event mapping.
 - `src/manager/tasks.ts` — add `trigger` + `attemptNumber` to task input/row (modify).
 - `src/manager/ticket-handler.ts` — emit `dispatched` (modify).
 - `src/manager/scheduler.ts` — emit ticket/PR/CI/run transitions (modify).
@@ -969,8 +969,8 @@ git commit -m "feat(manager): [DEN-2288] track run trigger and attempt number on
 ## Task 7: DashboardReporter — lifecycle → rows/events
 
 **Files:**
-- Create: `src/manager/dashboard-reporter.ts`
-- Test: `src/manager/dashboard-reporter.test.ts`
+- Create: `src/manager/dashboardReporter.ts`
+- Test: `src/manager/dashboardReporter.test.ts`
 
 The single place that knows the `bm_status` mapping and event types. Methods are fire-and-forget (the client is already best-effort). It needs a clock injected (the repo bans ambient `Date.now()` in some contexts and it keeps tests deterministic).
 
@@ -979,12 +979,12 @@ The single place that knows the `bm_status` mapping and event types. Methods are
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// src/manager/dashboard-reporter.test.ts
+// src/manager/dashboardReporter.test.ts
 import { describe, it, expect, vi } from "vitest";
 import { createLogger } from "../shared/index.js";
 import type { DashboardClient } from "../shared/index.js";
 import type { Ticket } from "../shared/index.js";
-import { DashboardReporter } from "./dashboard-reporter.js";
+import { DashboardReporter } from "./dashboardReporter.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 function fakeClient() {
@@ -1033,13 +1033,13 @@ describe("ciFailed", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run src/manager/dashboard-reporter.test.ts`
+Run: `npx vitest run src/manager/dashboardReporter.test.ts`
 Expected: FAIL — module missing.
 
 - [ ] **Step 3: Implement**
 
 ```ts
-// src/manager/dashboard-reporter.ts
+// src/manager/dashboardReporter.ts
 import type { DashboardClient, Logger, PullRequest, Ticket } from "../shared/index.js";
 import type { BmStatus, RunTrigger } from "../shared/index.js";
 
@@ -1144,13 +1144,13 @@ Note: `attemptCount` on ticket-status updates other than dispatch is passed as `
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run src/manager/dashboard-reporter.test.ts`
+Run: `npx vitest run src/manager/dashboardReporter.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/manager/dashboard-reporter.ts src/manager/dashboard-reporter.test.ts
+git add src/manager/dashboardReporter.ts src/manager/dashboardReporter.test.ts
 git commit -m "feat(manager): [DEN-2288] add DashboardReporter lifecycle projection"
 ```
 
@@ -1167,7 +1167,7 @@ Thread the trigger reason into dispatch and call the reporter at the transition 
 - [ ] **Step 1: Add `reporter` to `SchedulerDeps`**
 
 ```ts
-import type { DashboardReporter } from "./dashboard-reporter.js";
+import type { DashboardReporter } from "./dashboardReporter.js";
 // ...
 export interface SchedulerDeps {
   // ...existing fields...
@@ -1299,7 +1299,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/manager/ticket-handler.ts src/worker/task-worker.ts src/manager/dashboard-reporter.ts src/manager/tasks.ts src/manager/*.test.ts src/worker/*.test.ts
+git add src/manager/ticket-handler.ts src/worker/task-worker.ts src/manager/dashboardReporter.ts src/manager/tasks.ts src/manager/*.test.ts src/worker/*.test.ts
 git commit -m "feat(manager): [DEN-2288] project run lifecycle + worker rows from the worker"
 ```
 
@@ -1329,7 +1329,7 @@ and in `loadConfig`:
 After `const tasks = ...`:
 ```ts
 import { createDashboardClient } from "../shared/index.js";
-import { DashboardReporter } from "./dashboard-reporter.js";
+import { DashboardReporter } from "./dashboardReporter.js";
 // ...
 const reporter = config.dashboardUrl
   ? new DashboardReporter({
@@ -1384,7 +1384,7 @@ async branchCreatedById(ticketId: string, runId: string, workerId: string, branc
 - [ ] **Step 4:** Run tests + commit.
 
 ```bash
-git add src/worker/task-worker.ts src/manager/dashboard-reporter.ts src/worker/task-worker.test.ts
+git add src/worker/task-worker.ts src/manager/dashboardReporter.ts src/worker/task-worker.test.ts
 git commit -m "feat(worker): [DEN-2288] emit progress and branch_created events"
 ```
 
