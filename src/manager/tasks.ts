@@ -129,10 +129,9 @@ class SqliteTaskQueue implements TaskQueue {
     const db = this.requireDb();
     const id = randomUUID();
     const now = this.clock.nowIso();
-    const countRow = db
-      .prepare("SELECT COUNT(*) as count FROM tasks WHERE ticket_id = ?")
-      .get(input.ticketId) as { count: number } | undefined;
-    const iterationNumber = (countRow?.count ?? 0) + 1;
+    // Compute iteration_number atomically via subquery so concurrent enqueues for the
+    // same ticket can't both observe the same pre-insert count (TOCTOU). Matches the
+    // Postgres path.
     db.prepare(`
       INSERT INTO tasks (
         id,
@@ -142,8 +141,8 @@ class SqliteTaskQueue implements TaskQueue {
         created_at,
         updated_at,
         iteration_number
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, input.ticketId, input.state, JSON.stringify(input), now, now, iterationNumber);
+      ) VALUES (?, ?, ?, ?, ?, ?, (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = ?))
+    `).run(id, input.ticketId, input.state, JSON.stringify(input), now, now, input.ticketId);
     return rowToTask(this.getById(id));
   }
 

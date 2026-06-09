@@ -112,7 +112,7 @@ export class Scheduler {
     await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
     logger.info(
-      { active: await tasks.countTracked(), admitted: admitted.length, dispatched: toDispatch.length },
+      { active: await tasks.countTracked(), admitted: admitted.length, dispatched: eligible.length },
       "poll tick complete",
     );
   }
@@ -346,19 +346,28 @@ async function enforceIterationLimit(
   const eligible: TicketContext[] = [];
   for (const ctx of contexts) {
     // Tasks are keyed by ticket identifier (e.g. "DEN-123"); Linear APIs by ticket id (UUID).
-    const count = await tasks.getIterationCount(ctx.ticket.identifier);
-    if (count >= MAX_ITERATIONS) {
-      logger.warn(
-        { ticket: ctx.ticket.identifier, count },
-        "iteration limit reached; handing back",
+    try {
+      const count = await tasks.getIterationCount(ctx.ticket.identifier);
+      if (count >= MAX_ITERATIONS) {
+        logger.warn(
+          { ticket: ctx.ticket.identifier, count },
+          "iteration limit reached; handing back",
+        );
+        await linear.commentAndHandBack(
+          ctx.ticket.id,
+          `Reached the maximum iteration limit of ${MAX_ITERATIONS}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
+        );
+        await tasks.setSlotStatus(ctx.ticket.identifier, "released");
+      } else {
+        eligible.push(ctx);
+      }
+    } catch (err) {
+      // Isolate per-ticket failures so a transient Linear/DB error for one ticket
+      // doesn't abort iteration-limit checks (and dispatch) for the rest of the batch.
+      logger.error(
+        { err, ticket: ctx.ticket.identifier },
+        "iteration limit check failed; skipping dispatch",
       );
-      await linear.commentAndHandBack(
-        ctx.ticket.id,
-        `Reached the maximum iteration limit of ${MAX_ITERATIONS}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
-      );
-      await tasks.setSlotStatus(ctx.ticket.identifier, "released");
-    } else {
-      eligible.push(ctx);
     }
   }
   return eligible;
