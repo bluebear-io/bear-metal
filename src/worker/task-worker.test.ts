@@ -4,6 +4,7 @@ import { createLogger } from "../shared/index.js";
 import type { DispatchTaskInput, TaskQueue, TaskRecord } from "../manager/tasks.js";
 import { TaskWorker } from "./task-worker.js";
 import type { DispatchInput, DispatchResult } from "./dispatch.js";
+import type { DashboardReporter } from "../manager/dashboardReporter.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 
@@ -44,7 +45,52 @@ describe("TaskWorker", () => {
       },
     ]);
   });
+
+  it("reports run lifecycle, worker rows, and progress events through the reporter", async () => {
+    const input = { state: "new" as const, ticketId: "DEN-1", pr: null, trigger: "new" as const, ticketIssueId: "lin_1" };
+    const pr = { owner: "bluebear-io", repo: "bear-metal", number: 7 };
+    const tasks = new FakeTaskQueue(taskRecord({ id: "task-1", attemptNumber: 2, input }));
+    const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
+      status: "done",
+      pr,
+    }));
+    const reporter = makeReporter();
+    const worker = new TaskWorker({
+      logger,
+      tasks,
+      integrations: makeIntegrations(),
+      concurrency: 1,
+      pollIntervalMs: 60_000,
+      workerId: "worker-1",
+      runDispatch,
+      reporter: reporter as unknown as DashboardReporter,
+    });
+
+    await worker.tick();
+    await worker.stop();
+
+    expect(reporter.runStartedById).toHaveBeenCalledWith("task-1", "lin_1", "worker-1", 2, "new");
+    expect(reporter.workerUpsert).toHaveBeenCalledWith("worker-1", expect.any(String), "busy", "task-1", expect.any(Number));
+    expect(reporter.branchCreatedById).toHaveBeenCalledWith("lin_1", "task-1", "worker-1", "Branch for DEN-1");
+    expect(reporter.progressById).toHaveBeenCalledWith("lin_1", "task-1", "worker-1", "Worker finished: done");
+    expect(reporter.runSucceededById).toHaveBeenCalledWith("task-1", "lin_1", "worker-1", 2, "new");
+    expect(reporter.recordPrOpenedById).toHaveBeenCalledWith("lin_1", pr, "task-1");
+    expect(reporter.workerUpsert).toHaveBeenLastCalledWith("worker-1", expect.any(String), "idle", null, expect.any(Number));
+    expect(reporter.runCrashedById).not.toHaveBeenCalled();
+  });
 });
+
+function makeReporter() {
+  return {
+    workerUpsert: vi.fn(),
+    runStartedById: vi.fn(),
+    runSucceededById: vi.fn(),
+    runCrashedById: vi.fn(),
+    recordPrOpenedById: vi.fn(),
+    progressById: vi.fn(),
+    branchCreatedById: vi.fn(),
+  };
+}
 
 function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
   return {
