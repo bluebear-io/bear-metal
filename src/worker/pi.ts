@@ -17,6 +17,7 @@ export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
+  gitEnv: NodeJS.ProcessEnv;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
   const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
@@ -102,7 +103,7 @@ export async function runPiWorker(input: {
     execute: async (_toolCallId, params) => {
       logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
-      await commitAndPush(repoRoot, params.commitMessage);
+      await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
       const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
       setDecision({ status: "done", pr });
       return {
@@ -119,7 +120,7 @@ export async function runPiWorker(input: {
 
   const prompt = buildWorkerPrompt(input.context);
   const workspaceDir = input.context.cloneScript.workspaceDir;
-  const guardedTools = createWorkspaceGuardedTools(workspaceRoot);
+  const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
 
   await mkdir(workspaceDir, { recursive: true });
   await Promise.all([

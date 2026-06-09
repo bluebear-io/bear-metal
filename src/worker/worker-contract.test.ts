@@ -57,6 +57,7 @@ describe("worker contract", () => {
         workspaceDir: "/tmp/workspace",
         stdout: "",
         stderr: "",
+        netrcDir: "/tmp/netrc",
       },
     };
 

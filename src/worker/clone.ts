@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
-import { rm, mkdir, writeFile, chmod } from "node:fs/promises";
+import { rm, mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { runCommand } from "../shared/command.js";
 import type { CloneScriptResult } from "./types.js";
@@ -18,6 +18,8 @@ export async function runCloneScript(input: {
   // (inside clone-repos.sh) inherit the same credentials.
   // SSH URLs (git@github.com:...) are rewritten to HTTPS via GIT_CONFIG_* so the
   // container doesn't need an SSH client.
+  // The netrcDir is NOT deleted here — it is returned and must be cleaned up by the
+  // caller after the full dispatch (including pi's git push) completes.
   const netrcDir = resolve(tmpdir(), `bear-metal-clone-${Date.now()}`);
   await mkdir(netrcDir, { mode: 0o700 });
   const netrcPath = resolve(netrcDir, ".netrc");
@@ -25,29 +27,26 @@ export async function runCloneScript(input: {
     mode: 0o600,
   });
 
-  try {
-    const result = await runCommand("bash", [scriptPath], {
-      cwd: input.workspaceDir,
-      timeoutMs: 10 * 60 * 1000,
-      env: {
-        ...process.env,
-        HOME: netrcDir,
-        // Rewrite SSH URLs to HTTPS — no SSH client needed in the container
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
-        GIT_CONFIG_VALUE_0: "git@github.com:",
-      },
-    });
+  const result = await runCommand("bash", [scriptPath], {
+    cwd: input.workspaceDir,
+    timeoutMs: 10 * 60 * 1000,
+    env: {
+      ...process.env,
+      HOME: netrcDir,
+      // Rewrite SSH URLs to HTTPS — no SSH client needed in the container
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
+      GIT_CONFIG_VALUE_0: "git@github.com:",
+    },
+  });
 
-    return {
-      scriptPath,
-      workspaceDir: input.workspaceDir,
-      stdout: result.stdout,
-      stderr: result.stderr,
-    };
-  } finally {
-    await rm(netrcDir, { recursive: true, force: true });
-  }
+  return {
+    scriptPath,
+    workspaceDir: input.workspaceDir,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    netrcDir,
+  };
 }
 
 export function getPackageRoot(importMetaUrl: string): string {

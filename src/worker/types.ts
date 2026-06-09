@@ -41,6 +41,9 @@ export type CloneScriptResult = {
   workspaceDir: string;
   stdout: string;
   stderr: string;
+  /** Absolute path to a private temp dir containing .netrc with GitHub token.
+   *  Caller is responsible for deleting it after the dispatch completes. */
+  netrcDir: string;
 };
 
 export type WorkerInputContext = {

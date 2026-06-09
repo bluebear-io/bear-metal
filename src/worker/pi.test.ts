@@ -61,6 +61,7 @@ describe("runPiWorker", () => {
         moveTicketToInProgress: vi.fn(),
         commentAndHandBack,
       },
+      gitEnv: {},
     });
 
     expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", "Need a product decision.");
@@ -95,6 +96,7 @@ function makeContext(): WorkerInputContext {
       workspaceDir: "/tmp/workspace",
       stdout: "",
       stderr: "",
+      netrcDir: "/tmp/netrc",
     },
   };
 }
