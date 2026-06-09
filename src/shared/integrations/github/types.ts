@@ -5,6 +5,9 @@ export type PRState = "open" | "closed";
  * integration boundary so the rest of the codebase never sees raw Octokit shapes.
  */
 export interface PullRequest {
+  /** Repo this PR lives in — the agent scans every repo the App installation can access. */
+  owner: string;
+  repo: string;
   number: number;
   title: string;
   /** Head branch name. */
@@ -14,3 +17,6 @@ export interface PullRequest {
   merged: boolean;
   url: string;
 }
+
+/** Enough to locate a PR for follow-up calls (get, comment). */
+export type PullRequestRef = Pick<PullRequest, "owner" | "repo" | "number">;

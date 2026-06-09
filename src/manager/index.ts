@@ -10,12 +10,13 @@ import { TicketStore } from "./state.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 
 const config = loadConfig();
-const logger = createLogger({ level: config.logLevel, name: "manager" });
+const logger = createLogger({ level: config.logLevel, name: "manager", pretty: config.logPretty });
 
 logger.info(
   {
     label: config.linearLabel,
-    repo: `${config.githubOwner}/${config.githubRepo}`,
+    githubAppId: config.githubAppId,
+    githubInstallationId: config.githubAppInstallationId,
     concurrency: config.workerConcurrency,
     pollIntervalMs: config.pollIntervalMs,
   },
@@ -24,9 +25,9 @@ logger.info(
 
 const linear = new LinearIntegration({ token: config.linearApiToken });
 const github = new GitHubIntegration({
-  token: config.githubToken,
-  owner: config.githubOwner,
-  repo: config.githubRepo,
+  appId: config.githubAppId,
+  privateKey: config.githubAppPrivateKey,
+  installationId: config.githubAppInstallationId,
 });
 const store = new TicketStore();
 const handler = new ManagerTicketHandler({ logger, worker: workerProcess });
