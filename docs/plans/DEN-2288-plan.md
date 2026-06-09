@@ -1,5 +1,7 @@
 # Observability Integration Implementation Plan
 
+> **STATUS: IMPLEMENTED** on `feature/den-2288-observability-integration`. See "Execution notes" at the bottom for deviations from this plan that were made during implementation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the live bear-metal manager + worker write their real ticket / run / PR / CI / worker state and history into the dashboard DB via HTTP write endpoints, replacing the mock seed as the dashboard's data source.
@@ -1429,3 +1431,18 @@ Expected: `401`.
 - **ID reconciliation:** runs/PRs/events use the Linear **issue id** as `ticketId`; since the task queue only stored the identifier, `ticketIssueId` is added to `DispatchTaskInput` in Task 6/9a so the worker can populate it. **When implementing, do Task 6 and Task 9's `ticketIssueId` addition together.**
 - **Type consistency:** reporter method names (`ticketDiscovered`, `runDispatched`, `runStarted`/`runStartedById`, `runSucceeded`/`runSucceededById`, `runCrashed`/`runCrashedById`, `prOpened`/`recordPrOpenedById`, `ciFailed`, `delegatedBack`, `ticketCompleted`, `workerUpsert`, `progressById`, `branchCreatedById`) are used consistently across Tasks 7–11. Payload field names match `shared/dashboard/types.ts`.
 - **Known phase-1 limitations carried as code comments:** `attemptCount` is `0` on non-dispatch ticket upserts; crashed tasks remain acquired in the queue (unchanged behavior); `ci_running`/`ci_passed`/`abandoned`/`worker_timeout` are never emitted.
+
+---
+
+## Execution notes (deviations from the plan as implemented)
+
+The plan was executed task-by-task with a reviewer pass per task. Deviations made to keep each commit green and correct:
+
+1. **Task structure:** `ticketIssueId` (originally a Task 9 concern) was folded into Task 6, since changing `DispatchTaskInput` and its only non-test caller (`ticket-handler.ts`) had to land together. The `DashboardReporter` was implemented complete in Task 7 (including the `*ById` worker methods originally split into Tasks 9/11), so later tasks are pure call-site wiring. Old Task 11 (progress/branch events) was merged into Task 9.
+2. **Ingest auth scoping (Task 4):** `requireToken` is applied **per-route** on the PUT/POST handlers, not via a router-wide `router.use(...)`. A global guard would 401 the unauthenticated GETs that must fall through to the read router (both routers mount at `/api`). Per-route auth lets unmatched GETs fall through cleanly.
+3. **Config test (Task 4):** `backend/config.test.ts`'s exact-match `toEqual` was updated to include the new `ingestToken: ""` field.
+4. **bm_status ownership:** The worker has only `ticketIssueId` (a string), not the full Linear `Ticket`, and the write API requires a full ticket payload — so the worker never upserts ticket rows. `bm_status` transitions are owned by the Ticket-holders: handler (`dispatched`), scheduler (`discovered`/`in_progress`/`pr_open`/`ci_failed`/`completed`). The worker writes only `runs`/`workers`/`events`.
+5. **Run timestamp fidelity (fix commit):** `upsertRun`'s conflict policy preserves `createdAt` (immutable) and `startedAt` (set-once via `coalesce`), so terminal transitions that resend `startedAt: null` don't clobber the run's start time.
+6. **FK enforcement (fix commit):** `openReadWriteDb` sets `PRAGMA foreign_keys = OFF`. better-sqlite3 defaults FKs ON; since dashboard writes are best-effort and **unordered** (a child row can arrive before its parent), enforced FKs would fail+silently-drop those rows. The schema's FK declarations remain as relationship documentation.
+
+**Final state:** full suite green (116 tests), `npm run typecheck` clean, and an end-to-end smoke test against the live backend confirmed 401 (no token) / 204 (PUT ticket + POST event) / 400 (bad enum) / correct read-back. Phase-2 items from the design (§8: attempt cap + `abandoned`, worker heartbeat, CI conclusion polling + `ci_running`/ci_runs rows, GitHub PR timestamps) remain unimplemented as planned.
