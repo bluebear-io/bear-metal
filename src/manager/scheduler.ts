@@ -96,14 +96,16 @@ export class Scheduler {
   async tick(): Promise<void> {
     const { tasks, linear, github, handler, logger, agentId, concurrency } = this.deps;
 
-    logger.info({ active: await tasks.countTracked() }, "poll tick started");
+    const tracked = await tasks.listTracked();
+    const inFlight = tracked.filter((s) => s.latestTask.resultStatus === null).length;
+    logger.info({ tracked: tracked.length, inFlight }, "poll tick started");
 
     const refreshed = await refreshTrackedTickets(tasks, linear, github, agentId, logger);
     const admitted = await admitNewTickets(
       tasks,
       linear,
       agentId,
-      freeSlots(concurrency, await tasks.countTracked()),
+      freeSlots(concurrency, inFlight),
       logger,
     );
 
@@ -111,8 +113,14 @@ export class Scheduler {
     const eligible = await enforceIterationLimit(toDispatch, tasks, linear, logger);
     await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
+    const trackedAfter = await tasks.listTracked();
     logger.info(
-      { active: await tasks.countTracked(), admitted: admitted.length, dispatched: eligible.length },
+      {
+        tracked: trackedAfter.length,
+        inFlight: trackedAfter.filter((s) => s.latestTask.resultStatus === null).length,
+        admitted: admitted.length,
+        dispatched: eligible.length,
+      },
       "poll tick complete",
     );
   }
