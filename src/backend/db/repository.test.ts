@@ -19,6 +19,8 @@ describe("listTickets", () => {
     const rows = listTickets(db);
     expect(rows.length).toBe(4);
     expect(rows[0]!.createdAt >= rows[1]!.createdAt).toBe(true);
+    const createdAts = rows.map((r) => r.createdAt.getTime());
+    expect(createdAts).toEqual([...createdAts].sort((a, b) => b - a));
     const completed = rows.find((r) => r.identifier === "DEN-3001")!;
     expect(completed.bmStatus).toBe("completed");
     expect(completed.latestPr?.number).toBe(1500);
@@ -40,7 +42,8 @@ describe("getTicketDetail", () => {
     expect(detail.runs[1]!.worker?.name).toBe("worker-2");
     expect(detail.pullRequests[0]!.number).toBe(1501);
     expect(detail.ciRuns.some((c) => c.status === "failed")).toBe(true);
-    expect(detail.events[0]!.createdAt <= detail.events.at(-1)!.createdAt).toBe(true);
+    const eventTimes = detail.events.map((e) => e.createdAt.getTime());
+    expect(eventTimes).toEqual([...eventTimes].sort((a, b) => a - b));
   });
 
   it("returns null for an unknown ticket", () => {

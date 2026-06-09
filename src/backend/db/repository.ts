@@ -6,7 +6,7 @@ import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./typ
 type Db = BetterSQLite3Database<typeof schema>;
 
 export interface TicketListItem extends Ticket {
-  latestPr: { number: number; url: string; state: string; merged: boolean } | null;
+  latestPr: { number: number; url: string; state: PullRequestRow["state"]; merged: boolean } | null;
   latestCiStatus: "running" | "passed" | "failed" | null;
 }
 
@@ -33,6 +33,7 @@ export function listTickets(db: Db, filter?: { bmStatus?: Ticket["bmStatus"] }):
     return {
       ...ticket,
       latestPr: latestPrRow ? { number: latestPrRow.number, url: latestPrRow.url, state: latestPrRow.state, merged: latestPrRow.merged } : null,
+      // latestCiStatus = the ticket's most recent CI outcome overall (not scoped to latestPr); a ticket reuses one branch/PR so this is the dashboard's "current CI state".
       latestCiStatus: ci[0]?.status ?? null,
     };
   });
