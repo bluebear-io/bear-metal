@@ -57,6 +57,7 @@ const taskWorker = new TaskWorker({
 if (config.testTicketId) {
   // Test mode: handle exactly one ticket end-to-end and exit.
   logger.info({ ticketId: config.testTicketId }, "test mode: running single-ticket pipeline");
+  let exitCode = 0;
   try {
     const ticket = await linear.getTicket(config.testTicketId);
     const pr = await github.findPullRequestForTicket(ticket);
@@ -64,13 +65,16 @@ if (config.testTicketId) {
     await handler.handle(ctx);
     await taskWorker.tick();
     await taskWorker.stop();
-    await tasks.close();
     logger.info({ ticketId: config.testTicketId }, "test mode: pipeline complete");
   } catch (err) {
     logger.error({ err, ticketId: config.testTicketId }, "test mode: pipeline failed");
-    process.exit(1);
+    exitCode = 1;
+  } finally {
+    // Always close the task queue so the DB connection is released and the SQLite WAL is checkpointed,
+    // even when the pipeline throws partway through.
+    await tasks.close();
   }
-  process.exit(0);
+  process.exit(exitCode);
 }
 
 const app = createServer({ store });
