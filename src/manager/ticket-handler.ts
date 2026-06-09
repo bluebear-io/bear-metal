@@ -1,4 +1,4 @@
-import type { Logger, TicketContext, WorkOutcome } from "../shared/index.js";
+import type { Logger, RunTrigger, TicketContext, WorkOutcome } from "../shared/index.js";
 import type { TaskQueue } from "./tasks.js";
 
 export interface ManagerTicketHandlerDeps {
@@ -23,6 +23,8 @@ export class ManagerTicketHandler {
   async handle(ctx: TicketContext): Promise<WorkOutcome> {
     const state = ctx.pr === null ? "new" : "iteration";
     const pr = ctx.pr === null ? null : { owner: ctx.pr.owner, repo: ctx.pr.repo, number: ctx.pr.number };
+    // Provisional trigger from PR presence; the scheduler refines this with the real reason in a later change.
+    const trigger: RunTrigger = ctx.pr === null ? "new" : "delegated_back";
     this.logger.info(
       { ticket: ctx.ticket.identifier, state, hasPr: ctx.pr !== null },
       "enqueueing ticket task",
@@ -31,6 +33,8 @@ export class ManagerTicketHandler {
       state,
       ticketId: ctx.ticket.identifier,
       pr,
+      trigger,
+      ticketIssueId: ctx.ticket.id,
     });
     return { status: "pending", taskId: task.id };
   }

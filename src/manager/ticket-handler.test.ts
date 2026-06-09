@@ -16,7 +16,9 @@ describe("ManagerTicketHandler", () => {
 
     const outcome = await handler.handle(ctx);
 
-    expect(tasks.enqueued).toEqual([{ state: "new", ticketId: "DEN-1", pr: null }]);
+    expect(tasks.enqueued).toEqual([
+      { state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "den-1" },
+    ]);
     expect(outcome.status).toBe("pending");
     expect(outcome.taskId).toBe("task-1");
   });
@@ -45,6 +47,8 @@ describe("ManagerTicketHandler", () => {
         state: "iteration",
         ticketId: "DEN-2",
         pr: { owner: "bluebear-io", repo: "bear-metal", number: 5 },
+        trigger: "delegated_back",
+        ticketIssueId: "den-2",
       },
     ]);
   });
@@ -61,6 +65,7 @@ class FakeTaskQueue implements TaskQueue {
       id: `task-${this.enqueued.length}`,
       ticketId: input.ticketId,
       dispatchState: input.state,
+      attemptNumber: this.enqueued.length,
       input,
       workerId: null,
       resultStatus: null,

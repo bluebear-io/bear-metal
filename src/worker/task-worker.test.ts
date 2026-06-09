@@ -9,7 +9,7 @@ const logger = createLogger({ level: "silent", name: "test" });
 
 describe("TaskWorker", () => {
   it("acquires a task with its worker id and writes the dispatch result", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", pr: null };
+    const input = { state: "new" as const, ticketId: "DEN-1", pr: null, trigger: "new" as const, ticketIssueId: "lin_1" };
     const tasks = new FakeTaskQueue(taskRecord({ input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
       status: "done",
@@ -51,7 +51,8 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     id: "task-1",
     ticketId: "DEN-1",
     dispatchState: "new",
-    input: { state: "new", ticketId: "DEN-1", pr: null },
+    attemptNumber: 1,
+    input: { state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" },
     workerId: null,
     resultStatus: null,
     result: null,

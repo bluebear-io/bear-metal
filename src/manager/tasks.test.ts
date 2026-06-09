@@ -18,7 +18,7 @@ afterEach(async () => {
 describe("TaskQueue", () => {
   it("enqueues and atomically acquires one task", async () => {
     const queue = await makeQueue();
-    const input = { state: "new" as const, ticketId: "DEN-1", pr: null };
+    const input = { state: "new" as const, ticketId: "DEN-1", pr: null, trigger: "new" as const, ticketIssueId: "lin_0" };
 
     const task = await queue.enqueue(input);
     expect(task.ticketId).toBe("DEN-1");
@@ -37,8 +37,8 @@ describe("TaskQueue", () => {
 
   it("records dispatch result JSON and returns completed tracked tasks", async () => {
     const queue = await makeQueue();
-    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
-    const second = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null });
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
+    const second = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null, trigger: "new", ticketIssueId: "lin_2" });
 
     await queue.acquireNext("worker-1");
     await queue.complete(first.id, {
@@ -54,5 +54,20 @@ describe("TaskQueue", () => {
       status: "done",
       pr: { owner: "bluebear-io", repo: "bear-metal", number: 5 },
     });
+  });
+
+  it("stamps trigger and a 1-based attemptNumber per ticket", async () => {
+    const queue = createTaskQueueFromDatabaseUrl("sqlite::memory:");
+    await queue.initialize();
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
+    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: { owner: "o", repo: "r", number: 3 }, trigger: "ci_failure", ticketIssueId: "lin_1" });
+    const other = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null, trigger: "new", ticketIssueId: "lin_2" });
+    expect(first.attemptNumber).toBe(1);
+    expect(first.input.trigger).toBe("new");
+    expect(first.input.ticketIssueId).toBe("lin_1");
+    expect(second.attemptNumber).toBe(2);
+    expect(second.input.trigger).toBe("ci_failure");
+    expect(other.attemptNumber).toBe(1);
+    await queue.close();
   });
 });

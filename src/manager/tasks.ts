@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
 
+import type { RunTrigger } from "../shared/index.js";
 import type { DispatchResult, DispatchState, PullRequestRef } from "../worker/index.js";
 
 export const DEFAULT_DATABASE_URL = "sqlite:./bear-metal-manager.sqlite";
@@ -12,12 +13,15 @@ export interface DispatchTaskInput {
   state: DispatchState;
   ticketId: string;
   pr: PullRequestRef | null;
+  trigger: RunTrigger;
+  ticketIssueId: string;
 }
 
 export interface TaskRecord {
   id: string;
   ticketId: string;
   dispatchState: DispatchState;
+  attemptNumber: number;
   input: DispatchTaskInput;
   workerId: string | null;
   resultStatus: DispatchResult["status"] | null;
@@ -40,6 +44,7 @@ interface TaskRow {
   id: string;
   ticket_id: string;
   dispatch_state: string;
+  attempt_number: number;
   input_json: string;
   worker_id: string | null;
   result_status: string | null;
@@ -77,6 +82,7 @@ class SqliteTaskQueue implements TaskQueue {
         id TEXT PRIMARY KEY,
         ticket_id TEXT NOT NULL,
         dispatch_state TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
         input_json TEXT NOT NULL,
         worker_id TEXT NULL,
         result_status TEXT NULL,
@@ -99,16 +105,19 @@ class SqliteTaskQueue implements TaskQueue {
     const db = this.requireDb();
     const id = randomUUID();
     const now = nowIso();
+    const prior = db.prepare("SELECT COUNT(*) AS c FROM tasks WHERE ticket_id = ?").get(input.ticketId) as { c: number };
+    const attemptNumber = prior.c + 1;
     db.prepare(`
       INSERT INTO tasks (
         id,
         ticket_id,
         dispatch_state,
+        attempt_number,
         input_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, input.ticketId, input.state, JSON.stringify(input), now, now);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, input.ticketId, input.state, attemptNumber, JSON.stringify(input), now, now);
     return rowToTask(this.getById(id));
   }
 
@@ -206,6 +215,7 @@ class PostgresTaskQueue implements TaskQueue {
         id TEXT PRIMARY KEY,
         ticket_id TEXT NOT NULL,
         dispatch_state TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
         input_json TEXT NOT NULL,
         worker_id TEXT NULL,
         result_status TEXT NULL,
@@ -226,19 +236,25 @@ class PostgresTaskQueue implements TaskQueue {
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     const id = randomUUID();
     const now = nowIso();
+    const prior = await this.pool.query<{ c: number }>(
+      "SELECT COUNT(*)::int AS c FROM tasks WHERE ticket_id = $1",
+      [input.ticketId],
+    );
+    const attemptNumber = requireSingleRow(prior.rows, `attempt count for ${input.ticketId}`).c + 1;
     const result = await this.pool.query<TaskRow>(
       `
         INSERT INTO tasks (
           id,
           ticket_id,
           dispatch_state,
+          attempt_number,
           input_json,
           created_at,
           updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
       `,
-      [id, input.ticketId, input.state, JSON.stringify(input), now, now],
+      [id, input.ticketId, input.state, attemptNumber, JSON.stringify(input), now, now],
     );
     return rowToTask(requireSingleRow(result.rows, `inserted task ${id}`));
   }
@@ -326,6 +342,7 @@ function rowToTask(row: TaskRow): TaskRecord {
     id: row.id,
     ticketId: row.ticket_id,
     dispatchState: parseDispatchState(row.dispatch_state),
+    attemptNumber: Number(row.attempt_number),
     input: parseTaskInput(row.input_json),
     workerId: row.worker_id,
     resultStatus,
@@ -340,7 +357,18 @@ function parseTaskInput(value: string): DispatchTaskInput {
   const parsed = parseJsonObject(value, "task input_json");
   const state = parseDispatchState(parsed.state);
   const ticketId = requireString(parsed.ticketId, "task input ticketId");
-  return { state, ticketId, pr: parsePullRequestRef(parsed.pr) };
+  return {
+    state,
+    ticketId,
+    pr: parsePullRequestRef(parsed.pr),
+    trigger: parseTrigger(parsed.trigger),
+    ticketIssueId: requireString(parsed.ticketIssueId, "task input ticketIssueId"),
+  };
+}
+
+function parseTrigger(value: unknown): RunTrigger {
+  if (value === "new" || value === "ci_failure" || value === "delegated_back") return value;
+  throw new Error(`Invalid run trigger: ${String(value)}`);
 }
 
 function parseDispatchResult(value: string): DispatchResult {
