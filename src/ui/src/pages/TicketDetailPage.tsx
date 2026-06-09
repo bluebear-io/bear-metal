@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 
 import { useTicketDetail } from "../api/queries.js";
-import type { CiRun, PullRequest, Run, Ticket, TicketEvent } from "../api/types.js";
+import type { CiCheck, CiRun, PullRequest, ReviewThread, ReviewThreadComment, Run, Ticket, TicketEvent } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
@@ -109,37 +109,178 @@ const RunsSection = ({ runs }: { runs: Run[] }) => (
   </Section>
 );
 
-const PullRequestRow = ({ pullRequest }: { pullRequest: PullRequest }) => (
-  <li className="grid gap-3 border-b border-border-default px-4 py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_auto]">
-    <div className="min-w-0">
-      <a href={pullRequest.url} className="font-medium text-primary hover:underline">
-        #{pullRequest.number} {pullRequest.title}
-      </a>
-      <p className="mt-1 truncate text-xs text-text-muted">{pullRequest.headRef}</p>
-    </div>
-    <div className="flex flex-wrap items-center gap-2">
-      <StatusBadge status={pullRequest.merged ? "merged" : pullRequest.state} />
-      <span className="text-xs text-text-secondary">{pullRequest.draft ? "Draft" : "Ready"}</span>
-      <span className="text-xs text-text-secondary">{pullRequest.merged ? "Merged" : "Unmerged"}</span>
-    </div>
-  </li>
-);
+// Best-effort JSON parser — server stores comments as a JSON string; bad data renders as no comments.
+function parseComments(json: string): ReviewThreadComment[] {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? (parsed as ReviewThreadComment[]) : [];
+  } catch {
+    return [];
+  }
+}
 
-const CiRunRow = ({ ciRun }: { ciRun: CiRun }) => (
-  <li className="grid gap-3 border-b border-border-default px-4 py-3 last:border-b-0 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
-    <StatusBadge status={ciRun.status} />
-    <div className="min-w-0 text-sm text-text-secondary">
-      {ciRun.url === null ? (
-        <span>{ciRun.summary ?? "No CI summary"}</span>
-      ) : (
-        <a href={ciRun.url} className="text-primary hover:underline">
-          {ciRun.summary ?? "CI run"}
-        </a>
+function parseAnnotations(json: string): Array<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? (parsed as Array<Record<string, unknown>>) : [];
+  } catch {
+    return [];
+  }
+}
+
+const ReviewThreadItem = ({ thread }: { thread: ReviewThread }) => {
+  const comments = parseComments(thread.commentsJson);
+  const location = thread.path
+    ? `${thread.path}${thread.line !== null ? `:${thread.line}` : ""}`
+    : "general";
+  return (
+    <li className="border-b border-border-default px-4 py-3 last:border-b-0">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="truncate text-xs font-medium text-text-secondary">{location}</span>
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+            thread.isResolved
+              ? "bg-status-green/10 text-status-green"
+              : "bg-status-yellow/10 text-status-yellow"
+          }`}
+        >
+          {thread.isResolved ? "Resolved" : "Needs action"}
+        </span>
+      </div>
+      <ul className="mt-2 flex flex-col gap-2">
+        {comments.length === 0 ? (
+          <li className="text-xs text-text-muted">No comment body</li>
+        ) : (
+          comments.map((comment) => (
+            <li className="text-sm text-text-primary" key={comment.id}>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+                <span>{comment.author ?? "unknown"}</span>
+                <span>·</span>
+                <a href={comment.url} className="text-primary hover:underline">
+                  comment
+                </a>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap break-words">{comment.body}</p>
+            </li>
+          ))
+        )}
+      </ul>
+    </li>
+  );
+};
+
+const PullRequestRow = ({ pullRequest }: { pullRequest: PullRequest }) => {
+  const threads = pullRequest.reviewThreads ?? [];
+  const unresolved = threads.filter((t) => !t.isResolved).length;
+  return (
+    <li className="flex flex-col gap-3 border-b border-border-default px-4 py-3 last:border-b-0">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="min-w-0">
+          <a href={pullRequest.url} className="font-medium text-primary hover:underline">
+            #{pullRequest.number} {pullRequest.title}
+          </a>
+          <p className="mt-1 truncate text-xs text-text-muted">{pullRequest.headRef}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge status={pullRequest.merged ? "merged" : pullRequest.state} />
+          <span className="text-xs text-text-secondary">{pullRequest.draft ? "Draft" : "Ready"}</span>
+          <span className="text-xs text-text-secondary">{pullRequest.merged ? "Merged" : "Unmerged"}</span>
+        </div>
+      </div>
+      {threads.length > 0 && (
+        <div className="rounded-md border border-border-default bg-bg-page">
+          <h4 className="border-b border-border-default px-3 py-2 text-xs font-semibold uppercase text-text-secondary">
+            Review comments ({unresolved} unresolved / {threads.length} total)
+          </h4>
+          <ul>
+            {threads.map((thread) => (
+              <ReviewThreadItem key={thread.id} thread={thread} />
+            ))}
+          </ul>
+        </div>
       )}
-    </div>
-    <span className="text-xs text-text-muted">{formatDateTime(ciRun.completedAt ?? ciRun.createdAt)}</span>
-  </li>
-);
+    </li>
+  );
+};
+
+const CiCheckItem = ({ check }: { check: CiCheck }) => {
+  const annotations = parseAnnotations(check.annotationsJson);
+  return (
+    <li className="border-b border-border-default px-4 py-2 last:border-b-0">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          {check.detailsUrl ? (
+            <a href={check.detailsUrl} className="text-sm font-medium text-primary hover:underline">
+              {check.name}
+            </a>
+          ) : (
+            <span className="text-sm font-medium text-text-primary">{check.name}</span>
+          )}
+          {check.summary && (
+            <p className="mt-1 text-xs text-text-secondary whitespace-pre-wrap break-words">{check.summary}</p>
+          )}
+        </div>
+        <span className="rounded-full bg-status-red/10 px-2 py-0.5 text-xs font-medium text-status-red">
+          {check.conclusion ?? "failed"}
+        </span>
+      </div>
+      {annotations.length > 0 && (
+        <ul className="mt-2 flex flex-col gap-1 rounded border border-border-default bg-bg-page px-3 py-2 text-xs text-text-secondary">
+          {annotations.slice(0, 5).map((annotation, index) => {
+            const path = String(annotation.path ?? "");
+            const startLine = annotation.start_line ?? annotation.line ?? null;
+            const message = String(annotation.message ?? annotation.title ?? "");
+            return (
+              <li key={index} className="font-mono">
+                <span className="text-text-primary">
+                  {path}
+                  {startLine !== null ? `:${String(startLine)}` : ""}
+                </span>{" "}
+                <span>{message}</span>
+              </li>
+            );
+          })}
+          {annotations.length > 5 && (
+            <li className="text-text-muted">+ {annotations.length - 5} more annotation(s)</li>
+          )}
+        </ul>
+      )}
+    </li>
+  );
+};
+
+const CiRunRow = ({ ciRun }: { ciRun: CiRun }) => {
+  const checks = ciRun.checks ?? [];
+  return (
+    <li className="flex flex-col gap-2 border-b border-border-default px-4 py-3 last:border-b-0">
+      <div className="grid gap-3 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
+        <StatusBadge status={ciRun.status} />
+        <div className="min-w-0 text-sm text-text-secondary">
+          {ciRun.url === null ? (
+            <span>{ciRun.summary ?? "No CI summary"}</span>
+          ) : (
+            <a href={ciRun.url} className="text-primary hover:underline">
+              {ciRun.summary ?? "CI run"}
+            </a>
+          )}
+        </div>
+        <span className="text-xs text-text-muted">{formatDateTime(ciRun.completedAt ?? ciRun.createdAt)}</span>
+      </div>
+      {checks.length > 0 && (
+        <div className="rounded-md border border-border-default bg-bg-page">
+          <h4 className="border-b border-border-default px-3 py-2 text-xs font-semibold uppercase text-text-secondary">
+            Failing checks ({checks.length})
+          </h4>
+          <ul>
+            {checks.map((check) => (
+              <CiCheckItem key={check.id} check={check} />
+            ))}
+          </ul>
+        </div>
+      )}
+    </li>
+  );
+};
 
 const PullRequestCiSection = ({ pullRequests, ciRuns }: { pullRequests: PullRequest[]; ciRuns: CiRun[] }) => (
   <Section title="PR / CI">

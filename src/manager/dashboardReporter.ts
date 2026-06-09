@@ -1,4 +1,7 @@
-import type { DashboardClient, Logger, PullRequest, Ticket } from "../shared/index.js";
+import type {
+  CiCheckPayload, DashboardClient, FailedCheckRun, FailedStatus, JsonValue,
+  Logger, PullRequest, PullRequestContext, ReviewThread, ReviewThreadPayload, Ticket,
+} from "../shared/index.js";
 import type { BmStatus, RunTrigger } from "../shared/index.js";
 
 export interface DashboardReporterDeps {
@@ -93,6 +96,51 @@ export class DashboardReporter {
     await this.client.recordEvent({ ticketId: ticket.id, runId: null, workerId: null, source: "ci", type: "ci_failed", summary, payloadJson: null, createdAt: t });
   }
 
+  /**
+   * Persist the dashboard-facing slice of a PR observation: PR row, review threads, and
+   * (if CI failed on the head commit) a `ci_runs` row plus its failing checks. Best-effort
+   * — the underlying client swallows network errors and never breaks the agent loop.
+   *
+   * The ci_run id is keyed on (prDbId, headSha) so re-polls of the same commit replace the
+   * same row instead of accumulating duplicates.
+   */
+  async recordPullRequestObservation(
+    ticket: Ticket,
+    pr: PullRequest,
+    context: PullRequestContext,
+    lastRunId: string | null,
+  ): Promise<void> {
+    const t = this.ms();
+    const prDbId = prId(pr);
+    await this.client.upsertPullRequest({
+      id: prDbId, ticketId: ticket.id, number: pr.number, title: pr.title, headRef: pr.headRef,
+      state: pr.state, draft: pr.draft, merged: pr.merged, url: pr.url, lastRunId,
+      createdAt: t, updatedAt: t,
+    });
+
+    const threads: ReviewThreadPayload[] = context.reviewThreads.map((thread) =>
+      toReviewThreadPayload(prDbId, thread, t),
+    );
+    await this.client.replaceReviewThreads(prDbId, threads);
+
+    const failedChecksCount = context.failedCheckRuns.length + context.failedStatuses.length;
+    if (failedChecksCount === 0) {
+      return;
+    }
+
+    const ciRunId = `${prDbId}@${context.headSha.slice(0, 12)}`;
+    const summary = ciRunSummary(context);
+    await this.client.upsertCiRun({
+      id: ciRunId, ticketId: ticket.id, runId: lastRunId ?? ciRunId, prId: prDbId,
+      status: "failed", url: null, summary, createdAt: t, completedAt: t,
+    });
+    const checks: CiCheckPayload[] = [
+      ...context.failedCheckRuns.map((run) => toCheckRunPayload(ciRunId, run, t)),
+      ...context.failedStatuses.map((status) => toFailedStatusPayload(ciRunId, status, t)),
+    ];
+    await this.client.replaceCiChecks(ciRunId, checks);
+  }
+
   async delegatedBack(ticket: Ticket, summary: string): Promise<void> {
     await this.client.recordEvent({ ticketId: ticket.id, runId: null, workerId: null, source: "manager", type: "delegated_back", summary, payloadJson: null, createdAt: this.ms() });
   }
@@ -137,4 +185,96 @@ export class DashboardReporter {
   async branchCreatedById(ticketId: string, runId: string, workerId: string, summary: string): Promise<void> {
     await this.client.recordEvent({ ticketId, runId, workerId, source: "worker", type: "branch_created", summary, payloadJson: null, createdAt: this.ms() });
   }
+}
+
+// ---- granular CI / review-thread helpers ---------------------------------
+
+function toReviewThreadPayload(prDbId: string, thread: ReviewThread, t: number): ReviewThreadPayload {
+  return {
+    id: thread.id,
+    prId: prDbId,
+    path: thread.path,
+    line: thread.line,
+    isResolved: thread.isResolved,
+    commentsJson: JSON.stringify(thread.comments),
+    createdAt: t,
+    updatedAt: t,
+  };
+}
+
+function toCheckRunPayload(ciRunId: string, failed: FailedCheckRun, t: number): CiCheckPayload {
+  const cr = failed.checkRun as Record<string, JsonValue>;
+  const externalId = String(readField(cr, "id") ?? "");
+  const name = String(readField(cr, "name") ?? "check");
+  const conclusion = stringOrNull(readField(cr, "conclusion"));
+  const detailsUrl = stringOrNull(readField(cr, "details_url") ?? readField(cr, "html_url"));
+  const summary = readCheckRunSummary(cr);
+  return {
+    id: `${ciRunId}:check_run:${externalId}`,
+    ciRunId,
+    source: "check_run",
+    externalId,
+    name,
+    conclusion,
+    detailsUrl,
+    summary,
+    annotationsJson: JSON.stringify(failed.annotations),
+    createdAt: t,
+  };
+}
+
+function toFailedStatusPayload(ciRunId: string, failed: FailedStatus, t: number): CiCheckPayload {
+  const status = failed.status as Record<string, JsonValue>;
+  const externalId = String(readField(status, "context") ?? "");
+  const conclusion = stringOrNull(readField(status, "state"));
+  return {
+    id: `${ciRunId}:status:${externalId}`,
+    ciRunId,
+    source: "status",
+    externalId,
+    name: externalId || "status",
+    conclusion,
+    detailsUrl: stringOrNull(readField(status, "target_url")),
+    summary: stringOrNull(readField(status, "description")),
+    annotationsJson: "[]",
+    createdAt: t,
+  };
+}
+
+function ciRunSummary(context: PullRequestContext): string {
+  const failedNames = context.failedCheckRuns
+    .map((failed) => {
+      const cr = failed.checkRun as Record<string, JsonValue>;
+      return String(readField(cr, "name") ?? "check");
+    })
+    .concat(
+      context.failedStatuses.map((failed) => {
+        const status = failed.status as Record<string, JsonValue>;
+        return String(readField(status, "context") ?? "status");
+      }),
+    );
+  return failedNames.length === 0 ? "CI failed" : `${failedNames.length} failing: ${failedNames.join(", ")}`;
+}
+
+function readField(o: Record<string, JsonValue> | undefined, key: string): JsonValue | undefined {
+  if (!o) return undefined;
+  const v = o[key];
+  return v === undefined ? undefined : v;
+}
+
+function stringOrNull(v: JsonValue | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "string") return v;
+  return String(v);
+}
+
+function readCheckRunSummary(cr: Record<string, JsonValue>): string | null {
+  const output = cr.output;
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    const summary = (output as Record<string, JsonValue>).summary;
+    if (typeof summary === "string" && summary.length > 0) return summary;
+    const title = (output as Record<string, JsonValue>).title;
+    if (typeof title === "string" && title.length > 0) return title;
+  }
+  return null;
 }

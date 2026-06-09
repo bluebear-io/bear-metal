@@ -100,6 +100,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
       hasUnresolvedComments: context.unresolvedReviewThreads.length > 0,
+      context,
     };
   }
 
@@ -111,17 +112,19 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
     const headSha = pullRequest.head.sha;
 
-    const [failedCheckRuns, failedStatuses, unresolvedReviewThreads] = await Promise.all([
+    const [failedCheckRuns, failedStatuses, reviewThreads] = await Promise.all([
       this.getFailedCheckRuns(ref, headSha),
       this.getFailedStatuses(ref, headSha),
-      this.getUnresolvedReviewThreads(ref),
+      this.getReviewThreads(ref),
     ]);
 
     return {
       pullRequest: pullRequest as JsonValue,
+      headSha,
       failedCheckRuns,
       failedStatuses,
-      unresolvedReviewThreads,
+      unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
+      reviewThreads,
     };
   }
 
@@ -224,7 +227,8 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return data.statuses.filter(isFailedStatus).map((status) => ({ status: status as JsonValue }));
   }
 
-  private async getUnresolvedReviewThreads(ref: PullRequestRef): Promise<ReviewThread[]> {
+  /** Every review thread on the PR — resolved + unresolved — so dashboards can render full conversations. */
+  private async getReviewThreads(ref: PullRequestRef): Promise<ReviewThread[]> {
     const response = await this.octokit.graphql<ReviewThreadsResponse>(REVIEW_THREADS_QUERY, {
       owner: ref.owner,
       name: ref.repo,
@@ -233,7 +237,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 
     const threads = response.repository.pullRequest.reviewThreads.nodes;
     return threads
-      .filter((thread) => !thread.isResolved)
       .map((thread) => ({
         id: thread.id,
         isResolved: thread.isResolved,

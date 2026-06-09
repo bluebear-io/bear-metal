@@ -84,6 +84,40 @@ export interface CiRunPayload {
   completedAt: number | null;
 }
 
+/**
+ * One failing CI check (test/lint/type). Identified by `id` for idempotent upsert across polls;
+ * use `<ciRunId>:<source>:<externalId>` so re-polling the same SHA replaces the same row.
+ */
+export interface CiCheckPayload {
+  id: string;
+  ciRunId: string;
+  /** "check_run" (GitHub Checks API) vs "status" (legacy commit status). */
+  source: "check_run" | "status";
+  /** GitHub check_run.id (string) or status context. */
+  externalId: string;
+  name: string;
+  conclusion: string | null;
+  detailsUrl: string | null;
+  summary: string | null;
+  /** Serialized GitHub annotations (line-level test/lint failures). */
+  annotationsJson: string;
+  createdAt: number;
+}
+
+/** One PR review thread (resolved or unresolved) with its full comment chain. */
+export interface ReviewThreadPayload {
+  /** GitHub GraphQL node id of the thread. */
+  id: string;
+  prId: string;
+  path: string | null;
+  line: number | null;
+  isResolved: boolean;
+  /** Serialized ReviewThreadComment[]. */
+  commentsJson: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface EventPayload {
   ticketId: string | null;
   runId: string | null;

@@ -1,7 +1,11 @@
 import { Router, type RequestHandler } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import { upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent } from "../db/writer.js";
+import {
+  upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent,
+  replaceCiChecksForRun, replaceReviewThreadsForPr,
+} from "../db/writer.js";
+import type { CiCheckPayload, ReviewThreadPayload } from "../../shared/dashboard/types.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 
@@ -129,6 +133,62 @@ export function createIngestRouter(db: Db, token: string): Router {
       status: enumVal(b, "status", schema.ciRuns.status.enumValues), url: strOrNull(b, "url"),
       summary: strOrNull(b, "summary"), createdAt: num(b, "createdAt"), completedAt: numOrNull(b, "completedAt"),
     });
+  }));
+
+  router.put("/ci-runs/:id/checks", requireToken, handle((b, id) => {
+    if (!id) throw new BadPayload("missing ci run id");
+    const list = b.checks;
+    if (!Array.isArray(list)) throw new BadPayload("checks must be an array");
+    const payloads: CiCheckPayload[] = list.map((raw, idx) => {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        throw new BadPayload(`checks[${idx}] must be an object`);
+      }
+      const c = raw as Record<string, unknown>;
+      return {
+        id: str(c, "id"),
+        ciRunId: id,
+        source: enumVal(c, "source", schema.ciChecks.source.enumValues),
+        externalId: str(c, "externalId"),
+        name: str(c, "name"),
+        conclusion: strOrNull(c, "conclusion"),
+        detailsUrl: strOrNull(c, "detailsUrl"),
+        summary: strOrNull(c, "summary"),
+        annotationsJson: str(c, "annotationsJson"),
+        createdAt: num(c, "createdAt"),
+      };
+    });
+    replaceCiChecksForRun(db, id, payloads);
+  }));
+
+  router.put("/pull-requests/:id/review-threads", requireToken, handle((b, id) => {
+    if (!id) throw new BadPayload("missing pull request id");
+    const list = b.threads;
+    if (!Array.isArray(list)) throw new BadPayload("threads must be an array");
+    const payloads: ReviewThreadPayload[] = list.map((raw, idx) => {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        throw new BadPayload(`threads[${idx}] must be an object`);
+      }
+      const t = raw as Record<string, unknown>;
+      const lineRaw = t.line;
+      let line: number | null = null;
+      if (lineRaw !== null && lineRaw !== undefined) {
+        if (typeof lineRaw !== "number" || !Number.isFinite(lineRaw)) {
+          throw new BadPayload(`threads[${idx}].line must be a number or null`);
+        }
+        line = lineRaw;
+      }
+      return {
+        id: str(t, "id"),
+        prId: id,
+        path: strOrNull(t, "path"),
+        line,
+        isResolved: bool(t, "isResolved"),
+        commentsJson: str(t, "commentsJson"),
+        createdAt: num(t, "createdAt"),
+        updatedAt: num(t, "updatedAt"),
+      };
+    });
+    replaceReviewThreadsForPr(db, id, payloads);
   }));
 
   router.post("/events", requireToken, handle((b) => {

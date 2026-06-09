@@ -30,6 +30,8 @@ export interface PullRequestStatus {
   testsFailed: boolean;
   /** Any unresolved review thread. */
   hasUnresolvedComments: boolean;
+  /** Full granular context (failed checks + every review thread) — fed into the dashboard. */
+  context: PullRequestContext;
 }
 
 export interface FailedCheckRun {
@@ -65,7 +67,12 @@ export interface ReviewThread {
 
 export interface PullRequestContext {
   pullRequest: JsonValue;
+  /** PR head commit SHA — used to key CI runs idempotently. */
+  headSha: string;
   failedCheckRuns: FailedCheckRun[];
   failedStatuses: FailedStatus[];
+  /** Subset of `reviewThreads` where isResolved=false — kept for back-compat with worker callers. */
   unresolvedReviewThreads: ReviewThread[];
+  /** Every review thread on the PR, resolved or not, so the dashboard can render the full conversation. */
+  reviewThreads: ReviewThread[];
 }

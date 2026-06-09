@@ -48,9 +48,11 @@ describe("worker contract", () => {
       },
       pullRequest: {
         pullRequest: { number: 7 },
+        headSha: "deadbeef",
         failedCheckRuns: [],
         failedStatuses: [],
         unresolvedReviewThreads: [],
+        reviewThreads: [],
       },
       cloneScript: {
         scriptPath: "/tmp/script.sh",

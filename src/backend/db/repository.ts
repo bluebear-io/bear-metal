@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
-import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
+import type { Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, EventRow, Worker } from "./types.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
@@ -31,11 +31,21 @@ export interface TicketListItem extends Ticket {
   latestCiStatus: "running" | "passed" | "failed" | null;
 }
 
+/** A CI run with its individual failing checks (test/lint/type/etc.) attached. */
+export interface CiRunWithChecks extends CiRun {
+  checks: CiCheck[];
+}
+
+/** A PR row with its review threads (resolved + unresolved) attached. */
+export interface PullRequestWithThreads extends PullRequestRow {
+  reviewThreads: ReviewThreadRow[];
+}
+
 export interface TicketDetail {
   ticket: Ticket;
   runs: (Run & { worker: Worker | null })[];
-  pullRequests: PullRequestRow[];
-  ciRuns: CiRun[];
+  pullRequests: PullRequestWithThreads[];
+  ciRuns: CiRunWithChecks[];
   events: EventRow[];
 }
 
@@ -98,8 +108,16 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
   const workersById = new Map(db.select().from(schema.workers).all().map((w) => [w.id, w]));
   const runs = runRows.map((r) => ({ ...r, worker: r.workerId ? workersById.get(r.workerId) ?? null : null }));
 
-  const pullRequests = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
-  const ciRuns = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, id)).orderBy(schema.ciRuns.createdAt).all();
+  const prRows = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
+  const pullRequests: PullRequestWithThreads[] = prRows.map((pr) => ({
+    ...pr,
+    reviewThreads: db.select().from(schema.reviewThreads).where(eq(schema.reviewThreads.prId, pr.id)).orderBy(schema.reviewThreads.updatedAt).all(),
+  }));
+  const ciRunRows = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, id)).orderBy(schema.ciRuns.createdAt).all();
+  const ciRuns: CiRunWithChecks[] = ciRunRows.map((ci) => ({
+    ...ci,
+    checks: db.select().from(schema.ciChecks).where(eq(schema.ciChecks.ciRunId, ci.id)).orderBy(schema.ciChecks.createdAt).all(),
+  }));
   const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
 
   return { ticket, runs, pullRequests, ciRuns, events };

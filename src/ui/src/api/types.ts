@@ -91,6 +91,29 @@ export interface Run {
   worker: Worker | null;
 }
 
+export interface ReviewThreadComment {
+  id: string;
+  body: string;
+  author: string | null;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  path: string | null;
+  line: number | null;
+}
+
+export interface ReviewThread {
+  id: string;
+  prId: string;
+  path: string | null;
+  line: number | null;
+  isResolved: boolean;
+  /** Raw JSON string — serialized ReviewThreadComment[]. Parsed by the renderer. */
+  commentsJson: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PullRequest {
   id: string;
   ticketId: string;
@@ -104,6 +127,21 @@ export interface PullRequest {
   lastRunId: string | null;
   createdAt: string;
   updatedAt: string;
+  reviewThreads: ReviewThread[];
+}
+
+export interface CiCheck {
+  id: string;
+  ciRunId: string;
+  source: "check_run" | "status";
+  externalId: string;
+  name: string;
+  conclusion: string | null;
+  detailsUrl: string | null;
+  summary: string | null;
+  /** Raw JSON string — serialized annotation array. Parsed by the renderer. */
+  annotationsJson: string;
+  createdAt: string;
 }
 
 export interface CiRun {
@@ -116,6 +154,7 @@ export interface CiRun {
   summary: string | null;
   createdAt: string;
   completedAt: string | null;
+  checks: CiCheck[];
 }
 
 export interface TicketEvent {

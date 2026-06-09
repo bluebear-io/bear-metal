@@ -52,6 +52,85 @@ describe("PUT /api/tickets/:id", () => {
   });
 });
 
+describe("PUT /api/ci-runs/:id/checks", () => {
+  async function seedTicketRunPrCi() {
+    await request(app).put("/api/tickets/lin_x").set("authorization", `Bearer ${TOKEN}`).send(ticketBody);
+    await request(app).put("/api/runs/run_1").set("authorization", `Bearer ${TOKEN}`).send({
+      id: "run_1", ticketId: "lin_x", attemptNumber: 1, workerId: null, trigger: "new",
+      status: "running", contextJson: null, startedAt: 1, endedAt: null, stopReason: null,
+      error: null, createdAt: 1,
+    });
+    await request(app).put("/api/pull-requests/pr_1").set("authorization", `Bearer ${TOKEN}`).send({
+      id: "pr_1", ticketId: "lin_x", number: 1, title: "x", headRef: "h", state: "open",
+      draft: false, merged: false, url: "u", lastRunId: "run_1", createdAt: 1, updatedAt: 1,
+    });
+    await request(app).put("/api/ci-runs/ci_1").set("authorization", `Bearer ${TOKEN}`).send({
+      id: "ci_1", ticketId: "lin_x", runId: "run_1", prId: "pr_1", status: "failed",
+      url: null, summary: null, createdAt: 1, completedAt: null,
+    });
+  }
+
+  it("replaces the failing checks attached to a CI run and surfaces them on the read API", async () => {
+    await seedTicketRunPrCi();
+    const res = await request(app).put("/api/ci-runs/ci_1/checks").set("authorization", `Bearer ${TOKEN}`).send({
+      checks: [
+        { id: "chk_a", source: "check_run", externalId: "99", name: "ESLint", conclusion: "failure", detailsUrl: null, summary: "1 problem", annotationsJson: "[]", createdAt: 2 },
+      ],
+    });
+    expect(res.status).toBe(204);
+    const detail = await request(app).get("/api/tickets/lin_x");
+    expect(detail.body.ciRuns[0].checks).toHaveLength(1);
+    expect(detail.body.ciRuns[0].checks[0]).toMatchObject({ name: "ESLint", conclusion: "failure" });
+
+    // Replacing with a new set must drop the previous rows.
+    await request(app).put("/api/ci-runs/ci_1/checks").set("authorization", `Bearer ${TOKEN}`).send({
+      checks: [
+        { id: "chk_b", source: "status", externalId: "jenkins", name: "jenkins", conclusion: "failure", detailsUrl: null, summary: null, annotationsJson: "[]", createdAt: 3 },
+      ],
+    });
+    const after = await request(app).get("/api/tickets/lin_x");
+    expect(after.body.ciRuns[0].checks.map((c: { id: string }) => c.id)).toEqual(["chk_b"]);
+  });
+
+  it("rejects a non-array payload with 400", async () => {
+    await seedTicketRunPrCi();
+    const res = await request(app).put("/api/ci-runs/ci_1/checks").set("authorization", `Bearer ${TOKEN}`).send({ checks: "nope" });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("PUT /api/pull-requests/:id/review-threads", () => {
+  async function seedTicketAndPr() {
+    await request(app).put("/api/tickets/lin_x").set("authorization", `Bearer ${TOKEN}`).send(ticketBody);
+    await request(app).put("/api/pull-requests/pr_1").set("authorization", `Bearer ${TOKEN}`).send({
+      id: "pr_1", ticketId: "lin_x", number: 1, title: "x", headRef: "h", state: "open",
+      draft: false, merged: false, url: "u", lastRunId: null, createdAt: 1, updatedAt: 1,
+    });
+  }
+
+  it("replaces review threads on a PR and surfaces them on the read API", async () => {
+    await seedTicketAndPr();
+    const res = await request(app).put("/api/pull-requests/pr_1/review-threads").set("authorization", `Bearer ${TOKEN}`).send({
+      threads: [
+        { id: "t1", path: "f.ts", line: 1, isResolved: false, commentsJson: "[]", createdAt: 1, updatedAt: 1 },
+        { id: "t2", path: null, line: null, isResolved: true, commentsJson: "[]", createdAt: 1, updatedAt: 1 },
+      ],
+    });
+    expect(res.status).toBe(204);
+    const detail = await request(app).get("/api/tickets/lin_x");
+    expect(detail.body.pullRequests[0].reviewThreads).toHaveLength(2);
+    expect(detail.body.pullRequests[0].reviewThreads.find((t: { id: string }) => t.id === "t2").isResolved).toBe(true);
+  });
+
+  it("rejects a non-boolean isResolved with 400", async () => {
+    await seedTicketAndPr();
+    const res = await request(app).put("/api/pull-requests/pr_1/review-threads").set("authorization", `Bearer ${TOKEN}`).send({
+      threads: [{ id: "t1", path: null, line: null, isResolved: "yes", commentsJson: "[]", createdAt: 1, updatedAt: 1 }],
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("POST /api/events", () => {
   it("appends an event", async () => {
     await request(app).put("/api/tickets/lin_x").set("authorization", `Bearer ${TOKEN}`).send(ticketBody);

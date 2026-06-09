@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createLogger,
+  type JsonValue,
   type PullRequest,
   type PullRequestRef,
   type PullRequestStatus,
@@ -35,7 +36,19 @@ function openPr(number = 7, overrides: Partial<PullRequest> = {}): PullRequest {
 }
 
 function status(pr: PullRequest, testsFailed = false, hasUnresolvedComments = false): PullRequestStatus {
-  return { pr, testsFailed, hasUnresolvedComments };
+  return {
+    pr,
+    testsFailed,
+    hasUnresolvedComments,
+    context: {
+      pullRequest: { head: { sha: "deadbeef" } } as unknown as JsonValue,
+      headSha: "deadbeef",
+      failedCheckRuns: [],
+      failedStatuses: [],
+      unresolvedReviewThreads: [],
+      reviewThreads: [],
+    },
+  };
 }
 
 function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {

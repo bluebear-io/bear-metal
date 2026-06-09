@@ -231,6 +231,9 @@ function decideForOpenPr(
     return { remove: true, merged: pr.merged, context: { ticket, pr }, dispatch: false, phase: "active", trigger: "delegated_back" };
   }
   // Report the open PR's current state (best-effort; never affects dispatch).
+  // The granular observation (PR row + review threads + failing checks) is always sent;
+  // ciFailed/prOpened still fires for the bm_status transition + timeline event.
+  void reporter?.recordPullRequestObservation(ticket, pr, status.context, null);
   if (testsFailed) {
     void reporter?.ciFailed(ticket, `CI checks failed on PR #${pr.number}`);
   } else {
