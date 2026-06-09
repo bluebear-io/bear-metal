@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
 import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
+import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -18,6 +19,7 @@ export async function runPiWorker(input: {
   linear: WorkerLinear;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
+  const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
 
   const setDecision = (next: DispatchResult) => {
     if (decision) {
@@ -99,8 +101,9 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
-      await commitAndPush(params.repoRoot, params.commitMessage);
-      const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, params));
+      const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
+      await commitAndPush(repoRoot, params.commitMessage);
+      const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
       setDecision({ status: "done", pr });
       return {
         content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
@@ -116,6 +119,7 @@ export async function runPiWorker(input: {
 
   const prompt = buildWorkerPrompt(input.context);
   const workspaceDir = input.context.cloneScript.workspaceDir;
+  const guardedTools = createWorkspaceGuardedTools(workspaceRoot);
 
   await mkdir(workspaceDir, { recursive: true });
   await Promise.all([
@@ -125,12 +129,18 @@ export async function runPiWorker(input: {
   logger.info({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
 
   const { session } = await createAgentSession({
-    cwd: resolve(workspaceDir, "blueden"),
+    cwd: workspaceRoot,
     authStorage,
     modelRegistry: ModelRegistry.create(authStorage),
     sessionManager: SessionManager.inMemory(),
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "respond_to_ticket_reporter", "agree_with_github_message", "disagree_with_github_message", "wrote_code"],
-    customTools: [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, wroteCode],
+    customTools: [
+      ...guardedTools,
+      respondToTicketReporter,
+      agreeWithGithubMessage,
+      disagreeWithGithubMessage,
+      wroteCode,
+    ],
   });
 
   const unsubscribe = session.subscribe((event) => {

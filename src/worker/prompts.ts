@@ -50,6 +50,7 @@ export function buildWorkerPrompt(context: WorkerInputContext): string {
     "- Do not invent missing requirements.",
     "- Do not silently work around failures.",
     `- Repository root: ${context.cloneScript.workspaceDir}/blueden`,
+    "- Never read, write, search, or cd outside the repository root.",
     "- Sub-repositories (handler, bear-metal, etc.) are subdirectories of that path.",
     "- Use agree_with_github_message / disagree_with_github_message for review thread responses.",
     "",

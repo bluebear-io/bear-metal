@@ -5,6 +5,11 @@ const piMock = vi.hoisted(() => ({
   sessionDispose: vi.fn(),
 }));
 
+const makeTool = (name: string) => ({
+  name,
+  execute: vi.fn(),
+});
+
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   AuthStorage: {
     create: () => ({
@@ -18,6 +23,14 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
     inMemory: () => ({}),
   },
   defineTool: (definition: unknown) => definition,
+  createLocalBashOperations: () => ({ exec: vi.fn() }),
+  createReadToolDefinition: () => makeTool("read"),
+  createBashToolDefinition: () => makeTool("bash"),
+  createEditToolDefinition: () => makeTool("edit"),
+  createWriteToolDefinition: () => makeTool("write"),
+  createGrepToolDefinition: () => makeTool("grep"),
+  createFindToolDefinition: () => makeTool("find"),
+  createLsToolDefinition: () => makeTool("ls"),
   createAgentSession: async (input: { customTools: Array<{ name: string; execute: (id: string, params: unknown) => Promise<unknown> }> }) => ({
     session: {
       subscribe: vi.fn().mockReturnValue(vi.fn()),
