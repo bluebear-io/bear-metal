@@ -5,12 +5,13 @@ solves them with an LLM, and opens a GitHub PR.
 
 ## Scope (current)
 
-This repository currently contains one process with a **manager** and **worker**.
+This repository currently contains one package with a **manager** and **worker**.
 The manager polls Linear tickets assigned to `LINEAR_ASSIGNEE_ID`, looks up the
-GitHub PR for active tickets, and maintains an in-memory concurrency cap, recording
-each ticket's dispatch state (`new`/`iteration`) and status (`pending`/`done`). The
-worker gathers Linear/GitHub context, runs the repository clone hook, invokes Pi,
-and records either `pending` or `done`.
+GitHub PR for active tickets, and maintains an in-memory concurrency cap. It
+hands work to workers through a SQL-backed `tasks` table. The worker atomically
+acquires a task row, gathers Linear/GitHub context, runs the repository clone
+hook, invokes Pi, and writes the dispatch result (`pending` or `done`) back to
+that task row.
 
 ## Layout
 
@@ -36,6 +37,7 @@ Copy `.env.example` to `.env` and fill in the required values:
 | `GITHUB_APP_ID` | yes | — | GitHub App id (numeric) |
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
 | `GITHUB_APP_INSTALLATION_ID` | yes | — | installation id (numeric) |
+| `DATABASE_URL` | no | `sqlite:./bear-metal-manager.sqlite` | task queue database; supports `sqlite:<path>` and `postgres://...` |
 | `WORKER_CONCURRENCY` | no | `2` | max tickets worked in parallel |
 | `POLL_INTERVAL_MS` | no | `60000` | poll cadence |
 | `PORT` | no | `3000` | health server port |
@@ -45,6 +47,34 @@ Copy `.env.example` to `.env` and fill in the required values:
 The worker also needs Pi model credentials supported by
 `@earendil-works/pi-coding-agent`, such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 or `GOOGLE_API_KEY`.
+
+## SQL Task Handoff
+
+The manager-to-worker handoff uses a SQL table named `tasks`:
+
+```sql
+tasks (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL,
+  dispatch_state TEXT NOT NULL,
+  input_json TEXT NOT NULL,
+  worker_id TEXT NULL,
+  result_status TEXT NULL,
+  result_json TEXT NULL,
+  created_at TIMESTAMP NOT NULL,
+  updated_at TIMESTAMP NOT NULL,
+  completed_at TIMESTAMP NULL
+)
+```
+
+`worker_id IS NULL AND result_status IS NULL` means the row has not been
+acquired. `worker_id IS NOT NULL AND result_status IS NULL` means a worker is
+running it. `result_status IS NOT NULL` is the return value from the worker's
+dispatch function, with the full dispatch result in `result_json`.
+
+Each dispatch attempt is a separate row. Completed rows are retained for
+debugging and audit history; the manager only polls task IDs held in its
+in-memory ticket store.
 
 ## Clone Hook
 

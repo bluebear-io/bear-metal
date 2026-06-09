@@ -20,6 +20,7 @@ beforeEach(() => {
     "GITHUB_APP_ID",
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_APP_INSTALLATION_ID",
+    "DATABASE_URL",
     "WORKER_CONCURRENCY",
     "POLL_INTERVAL_MS",
     "PORT",
@@ -41,6 +42,7 @@ describe("loadConfig", () => {
     expect(config.linearAssigneeId).toBe("user-1");
     expect(config.githubAppId).toBe(12_345);
     expect(config.githubAppInstallationId).toBe(67_890);
+    expect(config.databaseUrl).toBe("sqlite:./bear-metal-manager.sqlite");
     expect(config.workerConcurrency).toBe(2);
     expect(config.pollIntervalMs).toBe(60_000);
     expect(config.port).toBe(3000);
@@ -65,7 +67,8 @@ describe("loadConfig", () => {
   });
 
   it("honors overrides for optional variables", () => {
-    Object.assign(process.env, REQUIRED, { WORKER_CONCURRENCY: "5" });
+    Object.assign(process.env, REQUIRED, { DATABASE_URL: "postgres://db.example/app", WORKER_CONCURRENCY: "5" });
+    expect(loadConfig().databaseUrl).toBe("postgres://db.example/app");
     expect(loadConfig().workerConcurrency).toBe(5);
   });
 });

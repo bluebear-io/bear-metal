@@ -50,6 +50,17 @@ describe("TicketStore", () => {
     expect(second.status).toBe("done");
   });
 
+  it("tracks and clears the active SQL task id", () => {
+    const store = new TicketStore();
+    store.upsert("a", makeContext("a"));
+    store.setActiveTask("a", "task-1");
+    expect(store.get("a")?.activeTaskId).toBe("task-1");
+    store.upsert("a", makeContext("a"));
+    expect(store.get("a")?.activeTaskId).toBe("task-1");
+    store.clearActiveTask("a");
+    expect(store.get("a")?.activeTaskId).toBeNull();
+  });
+
   it("setStatus updates the status and throws for unknown tickets", () => {
     const store = new TicketStore();
     store.upsert("a", makeContext("a"));
