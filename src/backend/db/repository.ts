@@ -276,6 +276,8 @@ export function getBudgetStatus(db: Db, monthlyBudgetUsd: number | null, now: Da
     return { monthlyBudgetUsd: null, spentThisMonthUsd: spent, remainingUsd: null, percentUsed: null };
   }
   const remaining = monthlyBudgetUsd - spent;
-  const percent = monthlyBudgetUsd === 0 ? 0 : (spent / monthlyBudgetUsd) * 100;
+  // A $0 budget means "no spending allowed": any spend is 100% over (we cap the
+  // reported percentage so the burndown bar shows red instead of green).
+  const percent = monthlyBudgetUsd === 0 ? (spent > 0 ? 100 : 0) : (spent / monthlyBudgetUsd) * 100;
   return { monthlyBudgetUsd, spentThisMonthUsd: spent, remainingUsd: remaining, percentUsed: percent };
 }

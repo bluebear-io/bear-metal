@@ -24,7 +24,13 @@ let activeModelPrices: Record<string, ModelPrice> = parseModelPricesFromEnv(proc
 
 function parseModelPricesFromEnv(raw: string | undefined): Record<string, ModelPrice> | null {
   if (!raw) return null;
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`MODEL_PRICES_JSON is not valid JSON (${reason})`);
+  }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("MODEL_PRICES_JSON must be a JSON object keyed by model id");
   }

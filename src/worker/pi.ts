@@ -200,6 +200,7 @@ function summarizeTokenUsage(messages: unknown[]): TokenUsageSummary | undefined
   let inputTokens = 0;
   let outputTokens = 0;
   let modelId: string | undefined;
+  let unexpectedUsageShape = false;
   for (const m of messages) {
     if (typeof m !== "object" || m === null) continue;
     const msg = m as { role?: unknown; usage?: unknown; model?: unknown };
@@ -207,7 +208,19 @@ function summarizeTokenUsage(messages: unknown[]): TokenUsageSummary | undefined
     const u = msg.usage as { input?: unknown; output?: unknown } | undefined;
     if (u && typeof u.input === "number") inputTokens += u.input;
     if (u && typeof u.output === "number") outputTokens += u.output;
+    // Detect format drift: a usage object present but neither expected field is a
+    // number means the pi-coding-agent payload shape changed (e.g. snake_case
+    // input_tokens) and our cost tracking would silently record zeros.
+    if (u && typeof u === "object" && typeof u.input !== "number" && typeof u.output !== "number") {
+      unexpectedUsageShape = true;
+    }
     if (typeof msg.model === "string" && msg.model) modelId = msg.model;
+  }
+  if (unexpectedUsageShape) {
+    logger.warn(
+      { sampleKeys: sampleUsageKeys(messages) },
+      "pi agent_end usage object present but input/output were not numbers — token accounting may be incorrect",
+    );
   }
   if (inputTokens === 0 && outputTokens === 0 && !modelId) return undefined;
   return {
@@ -215,6 +228,18 @@ function summarizeTokenUsage(messages: unknown[]): TokenUsageSummary | undefined
     inputTokens,
     outputTokens,
   };
+}
+
+function sampleUsageKeys(messages: unknown[]): string[] | undefined {
+  for (const m of messages) {
+    if (typeof m !== "object" || m === null) continue;
+    const msg = m as { role?: unknown; usage?: unknown };
+    if (msg.role !== "assistant") continue;
+    if (msg.usage && typeof msg.usage === "object") {
+      return Object.keys(msg.usage as Record<string, unknown>);
+    }
+  }
+  return undefined;
 }
 
 async function createPullRequestForRepo(
