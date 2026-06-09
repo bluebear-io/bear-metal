@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { sql } from "drizzle-orm";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 
 describe("schema", () => {
@@ -11,12 +11,35 @@ describe("schema", () => {
     );
   });
 
-  it("can be created in a SQLite database", () => {
+  it("agrees with the generated migration: a tickets row round-trips through the Drizzle schema", () => {
     const sqlite = new Database(":memory:");
     const db = drizzle(sqlite, { schema });
-    db.run(sql`CREATE TABLE tickets (id TEXT PRIMARY KEY)`);
-    const rows = db.all(sql`SELECT name FROM sqlite_master WHERE type='table'`);
-    expect(rows).toContainEqual({ name: "tickets" });
+    migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
+
+    db.insert(schema.tickets)
+      .values({
+        id: "ticket-1",
+        identifier: "DEN-2271",
+        title: "Design UI application",
+        url: "https://linear.app/bluebear/issue/DEN-2271",
+        branchName: "feature/den-2271-design-ui-application",
+        linearStatusName: "In Progress",
+        linearStatusType: "started",
+        bmStatus: "discovered",
+        maxAttempts: 3,
+        createdAt: new Date("2026-06-09T00:00:00.000Z"),
+        updatedAt: new Date("2026-06-09T00:00:00.000Z"),
+      })
+      .run();
+
+    const rows = db.select().from(schema.tickets).all();
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    expect(row).toBeDefined();
+    expect(row!.identifier).toBe("DEN-2271");
+    expect(row!.attemptCount).toBe(0);
+    expect(row!.labelsJson).toBe("[]");
+
     sqlite.close();
   });
 });
