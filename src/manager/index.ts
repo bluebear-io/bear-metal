@@ -45,9 +45,24 @@ const scheduler = new Scheduler({
 });
 
 const app = createServer({ store });
+const startedAt = new Date();
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, "health server listening");
-  logger.info({ port: config.port, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+  logger.info(
+    {
+      port: config.port,
+      pid: process.pid,
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      startedAt: startedAt.toISOString(),
+    },
+    "server start: manager process is up and accepting traffic",
+  );
+  logger.info(
+    { port: config.port, pid: process.pid },
+    "🐻 Bear Metal is awake, caffeinated, and hungry for tickets — it stretched, growled at the standup, sniffed the backlog, picked the juiciest Linear ticket off the top, and is now lumbering toward the keyboard to ship some code. Reviewers, brace yourselves: there will be PRs, there will be diffs, and there will be honey-flavored commit messages. 🍯⌨️",
+  );
 });
 
 scheduler.start();
@@ -58,8 +73,21 @@ function shutdown(signal: string): void {
     return;
   }
   shuttingDown = true;
+  const uptimeSeconds = process.uptime();
   logger.info({ signal }, "shutting down");
-  logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
+  logger.info(
+    {
+      signal,
+      pid: process.pid,
+      uptimeSeconds,
+      stoppedAt: new Date().toISOString(),
+    },
+    "server stop: received shutdown signal, draining scheduler and closing health server",
+  );
+  logger.info(
+    { signal, pid: process.pid, uptimeSeconds },
+    "🐻 Bear Metal is wiping honey off the keyboard, packing the laptop into its cave, hanging the 'gone fishing' sign on the PR queue, and shuffling back into hibernation — it logged off, dimmed the lights, set an out-of-office on Slack, and curled up next to a stack of half-read RFCs. See you on the next sprint, reviewers; try not to merge anything spicy without me. 💤🐟📚",
+  );
   void scheduler.stop().then(() => {
     server.close(() => {
       logger.info({ signal }, "health server closed, goodnight 🌙");
