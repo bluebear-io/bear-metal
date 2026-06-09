@@ -1,4 +1,5 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import { sql } from "drizzle-orm";
 import * as schema from "./schema.js";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
@@ -33,7 +34,15 @@ export function upsertRun(db: Db, p: RunPayload): void {
     startedAt: d(p.startedAt), endedAt: d(p.endedAt), stopReason: p.stopReason, error: p.error,
     createdAt: new Date(p.createdAt),
   };
-  db.insert(schema.runs).values(row).onConflictDoUpdate({ target: schema.runs.id, set: row }).run();
+  db.insert(schema.runs).values(row).onConflictDoUpdate({
+    target: schema.runs.id,
+    set: {
+      ...row,
+      // createdAt is immutable after insert; startedAt is set-once (never reset to null by a later transition).
+      createdAt: sql`${schema.runs.createdAt}`,
+      startedAt: sql`coalesce(${schema.runs.startedAt}, excluded.started_at)`,
+    },
+  }).run();
 }
 
 export function upsertPullRequest(db: Db, p: PullRequestPayload): void {
