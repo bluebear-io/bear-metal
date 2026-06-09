@@ -10,7 +10,7 @@ export const useTickets = (filters: TicketFilters = {}) =>
   });
 
 export const useTicketFilterOptions = () =>
-  useQuery({ queryKey: ["tickets", "filters"], queryFn: () => fetchTicketFilterOptions() });
+  useQuery({ queryKey: ["ticketFilterOptions"], queryFn: () => fetchTicketFilterOptions() });
 
 export const useTicketDetail = (id: string) =>
   useQuery({ queryKey: ["ticket", id], queryFn: () => fetchTicketDetail(id) });

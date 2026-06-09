@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, like, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
@@ -117,11 +117,13 @@ function buildTicketWhere(filter: ListTicketsFilter | undefined): SQL | undefine
 
   if (filter.search && filter.search.trim() !== "") {
     const needle = `%${escapeLike(filter.search.trim().toLowerCase())}%`;
+    // SQLite's LIKE has no default escape character, so we must specify ESCAPE '\\' to
+    // make the backslash escapes emitted by escapeLike() actually neutralise % and _.
     const searchCond = or(
-      like(sql`lower(${schema.tickets.identifier})`, needle),
-      like(sql`lower(${schema.tickets.title})`, needle),
-      like(sql`lower(coalesce(${schema.tickets.description}, ''))`, needle),
-      like(sql`lower(${schema.tickets.branchName})`, needle),
+      sql`lower(${schema.tickets.identifier}) like ${needle} escape '\\'`,
+      sql`lower(${schema.tickets.title}) like ${needle} escape '\\'`,
+      sql`lower(coalesce(${schema.tickets.description}, '')) like ${needle} escape '\\'`,
+      sql`lower(${schema.tickets.branchName}) like ${needle} escape '\\'`,
     );
     if (searchCond) conditions.push(searchCond);
   }
@@ -131,11 +133,13 @@ function buildTicketWhere(filter: ListTicketsFilter | undefined): SQL | undefine
   }
 
   if (filter.labels && filter.labels.length > 0) {
-    // labelsJson is a JSON array string like '["bear-metal","module:bff"]'.
-    // Require each requested label to appear as a quoted token in the array.
+    // labelsJson is a JSON array string; use json_each so we compare actual array
+    // elements instead of substring-matching the raw JSON (which is vulnerable to
+    // labels that embed quote/comma characters).
     for (const label of filter.labels) {
-      const needle = `%${escapeLike(`"${label}"`)}%`;
-      conditions.push(like(schema.tickets.labelsJson, needle));
+      conditions.push(
+        sql`exists (select 1 from json_each(${schema.tickets.labelsJson}) where value = ${label})`,
+      );
     }
   }
 
@@ -154,7 +158,7 @@ function buildTicketWhere(filter: ListTicketsFilter | undefined): SQL | undefine
   }
   if (filter.errorSignature && filter.errorSignature.trim() !== "") {
     const needle = `%${escapeLike(filter.errorSignature.trim().toLowerCase())}%`;
-    runConditions.push(like(sql`lower(coalesce(${schema.runs.error}, ''))`, needle));
+    runConditions.push(sql`lower(coalesce(${schema.runs.error}, '')) like ${needle} escape '\\'`);
   }
   if (runConditions.length > 0) {
     conditions.push(
@@ -231,7 +235,8 @@ export function listTicketLabels(db: Db): string[] {
     let parsed: unknown;
     try {
       parsed = JSON.parse(row.labelsJson);
-    } catch {
+    } catch (err) {
+      console.warn(`listTicketLabels: failed to parse labelsJson ${JSON.stringify(row.labelsJson)}`, err);
       continue;
     }
     if (!Array.isArray(parsed)) continue;
