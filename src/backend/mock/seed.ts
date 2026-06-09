@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
@@ -25,10 +26,10 @@ export function seedMockData(db: Db): void {
   ]).run();
 
   db.insert(schema.tickets).values([
-    { id: "lin_1", identifier: "DEN-3001", title: "Add rate limiting to ingest API", description: "Throttle per-key.", url: "https://linear.app/bluebearsecurity/issue/DEN-3001", branchName: "feature/den-3001-rate-limit", linearStatusName: "Done", linearStatusType: "completed", labelsJson: JSON.stringify(["bear-metal", "module:bff"]), bmStatus: "completed", attemptCount: 1, maxAttempts: 5, createdAt: t("2026-06-09T07:05:00Z"), updatedAt: t("2026-06-09T07:55:00Z"), completedAt: t("2026-06-09T07:55:00Z") },
-    { id: "lin_2", identifier: "DEN-3002", title: "Fix flaky session aggregator test", description: "Race in fixture.", url: "https://linear.app/bluebearsecurity/issue/DEN-3002", branchName: "feature/den-3002-flaky-test", linearStatusName: "In Progress", linearStatusType: "started", labelsJson: JSON.stringify(["bear-metal"]), bmStatus: "ci_failed", attemptCount: 2, maxAttempts: 5, createdAt: t("2026-06-09T08:00:00Z"), updatedAt: t("2026-06-09T08:50:00Z"), completedAt: null },
-    { id: "lin_3", identifier: "DEN-3003", title: "Migrate detector config to v3", description: "Schema change.", url: "https://linear.app/bluebearsecurity/issue/DEN-3003", branchName: "feature/den-3003-config-v3", linearStatusName: "In Progress", linearStatusType: "started", labelsJson: JSON.stringify(["bear-metal", "module:ingest"]), bmStatus: "abandoned", attemptCount: 5, maxAttempts: 5, createdAt: t("2026-06-08T20:00:00Z"), updatedAt: t("2026-06-09T06:00:00Z"), completedAt: null },
-    { id: "lin_4", identifier: "DEN-3004", title: "Add CSV export to reports page", description: "Client-side export.", url: "https://linear.app/bluebearsecurity/issue/DEN-3004", branchName: "feature/den-3004-csv-export", linearStatusName: "In Progress", linearStatusType: "started", labelsJson: JSON.stringify(["bear-metal", "module:bff"]), bmStatus: "in_progress", attemptCount: 1, maxAttempts: 5, createdAt: t("2026-06-09T08:55:00Z"), updatedAt: t("2026-06-09T09:00:00Z"), completedAt: null },
+    { id: "lin_1", identifier: "DEN-3001", title: "Add rate limiting to ingest API", description: "Throttle per-key.", url: "https://linear.app/bluebearsecurity/issue/DEN-3001", branchName: "feature/den-3001-rate-limit", linearStatusName: "Done", linearStatusType: "completed", labelsJson: JSON.stringify(["bear-metal", "module:bff"]), bmStatus: "completed", attemptCount: 1, maxAttempts: 5, createdAt: t("2026-06-09T07:05:00Z"), updatedAt: t("2026-06-09T07:55:00Z"), completedAt: t("2026-06-09T07:55:00Z") }, // happy path: completed & merged
+    { id: "lin_2", identifier: "DEN-3002", title: "Fix flaky session aggregator test", description: "Race in fixture.", url: "https://linear.app/bluebearsecurity/issue/DEN-3002", branchName: "feature/den-3002-flaky-test", linearStatusName: "In Progress", linearStatusType: "started", labelsJson: JSON.stringify(["bear-metal"]), bmStatus: "ci_failed", attemptCount: 2, maxAttempts: 5, createdAt: t("2026-06-09T08:00:00Z"), updatedAt: t("2026-06-09T08:50:00Z"), completedAt: null }, // last CI failed; retry (attempt 2) in flight
+    { id: "lin_3", identifier: "DEN-3003", title: "Migrate detector config to v3", description: "Schema change.", url: "https://linear.app/bluebearsecurity/issue/DEN-3003", branchName: "feature/den-3003-config-v3", linearStatusName: "In Progress", linearStatusType: "started", labelsJson: JSON.stringify(["bear-metal", "module:ingest"]), bmStatus: "abandoned", attemptCount: 5, maxAttempts: 5, createdAt: t("2026-06-08T20:00:00Z"), updatedAt: t("2026-06-09T06:00:00Z"), completedAt: null }, // exhausted max_attempts → abandoned
+    { id: "lin_4", identifier: "DEN-3004", title: "Add CSV export to reports page", description: "Client-side export.", url: "https://linear.app/bluebearsecurity/issue/DEN-3004", branchName: "feature/den-3004-csv-export", linearStatusName: "In Progress", linearStatusType: "started", labelsJson: JSON.stringify(["bear-metal", "module:bff"]), bmStatus: "in_progress", attemptCount: 1, maxAttempts: 5, createdAt: t("2026-06-09T08:55:00Z"), updatedAt: t("2026-06-09T09:00:00Z"), completedAt: null }, // fresh, in progress on a busy worker
   ]).run();
 
   db.insert(schema.runs).values([
@@ -74,6 +75,7 @@ function main(): void {
 }
 
 // Run when invoked directly (tsx src/backend/mock/seed.ts).
-if (import.meta.url === `file://${process.argv[1]}`) {
+const invokedPath = process.argv[1];
+if (invokedPath && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(invokedPath)) {
   main();
 }
