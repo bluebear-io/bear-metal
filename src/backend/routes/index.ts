@@ -3,8 +3,12 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
 import { listTickets, getTicketDetail, listWorkers } from "../db/repository.js";
 
-const BM_STATUSES = ["discovered", "dispatched", "in_progress", "pr_open", "ci_running", "ci_failed", "completed", "abandoned"] as const;
+const BM_STATUSES = schema.tickets.bmStatus.enumValues;
 type BmStatus = (typeof BM_STATUSES)[number];
+
+function isBmStatus(v: unknown): v is BmStatus {
+  return typeof v === "string" && (BM_STATUSES as readonly string[]).includes(v);
+}
 
 export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
   const router = Router();
@@ -15,11 +19,11 @@ export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
 
   router.get("/tickets", (req, res) => {
     const status = req.query.status;
-    if (status !== undefined && !BM_STATUSES.includes(status as BmStatus)) {
+    if (status !== undefined && !isBmStatus(status)) {
       res.status(400).json({ error: `invalid status filter: ${String(status)}` });
       return;
     }
-    res.json({ tickets: listTickets(db, status ? { bmStatus: status as BmStatus } : undefined) });
+    res.json({ tickets: listTickets(db, status !== undefined ? { bmStatus: status } : undefined) });
   });
 
   router.get("/tickets/:id", (req, res) => {
