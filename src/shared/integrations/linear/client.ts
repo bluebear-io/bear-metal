@@ -10,6 +10,12 @@ export interface LinearIntegrationOptions {
 /** Workflow-state types that mean a ticket needs no further work; never admitted. */
 const TERMINAL_STATE_TYPES = ["completed", "canceled"];
 
+/**
+ * States excluded by name because their *type* doesn't mark them done. "Merged" is a `started`-type
+ * state here (same family as In Progress / In Review, which are wanted), so type filtering misses it.
+ */
+const EXCLUDED_STATE_NAMES = ["Merged"];
+
 /** Linear integration. Extend with more capabilities (find, label, ...) as needed. */
 export class LinearIntegration implements Integration, CommentCapable<string> {
   readonly name = "linear";
@@ -23,13 +29,13 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
    * Non-terminal issues delegated to the agent. Linear assigns work to an agent via *delegation*
    * (the human stays the assignee), so the manager discovers its tickets through `delegatedIssues`,
    * not the `assignee` filter — `IssueFilter` has no `delegate` field to filter on directly.
-   * Completed/canceled tickets are excluded so the agent works everything still open, in any
-   * non-done state (Triage/Backlog/Todo/In Progress).
+   * Completed/canceled tickets are excluded (by type), as is "Merged" (by name), so the agent works
+   * everything still open, in any non-done state (Triage/Backlog/Todo/In Progress/In Review).
    */
   async findDelegatedTickets(agentId: string): Promise<Ticket[]> {
     const user = await this.client.user(agentId);
     const page = await user.delegatedIssues({
-      filter: { state: { type: { nin: TERMINAL_STATE_TYPES } } },
+      filter: { state: { type: { nin: TERMINAL_STATE_TYPES }, name: { nin: EXCLUDED_STATE_NAMES } } },
     });
     return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
   }
