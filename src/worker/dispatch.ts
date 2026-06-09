@@ -27,7 +27,13 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const pr = input.pr ?? null;
   validateDispatchInputs(state, ticketId, pr);
 
-  const { github, linear } = integrations;
+  const { github, linear, database } = integrations;
+
+  // Mark the task in_progress before any external work so a crash mid-dispatch
+  // still leaves an auditable record. Idempotent across replays.
+  if (state === "new") {
+    await database.recordTaskInProgress(ticketId);
+  }
   const packageRoot = input.packageRoot ?? getPackageRoot(import.meta.url);
   const workspaceDir = workspaceForTicket(packageRoot, ticketId);
 

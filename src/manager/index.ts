@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 import { createLogger, GitHubIntegration, LinearIntegration } from "../shared/index.js";
-import { createWorkerProcess } from "../worker/index.js";
+import { createDatabase, createWorkerProcess } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
@@ -30,7 +30,9 @@ const github = new GitHubIntegration({
   installationId: config.githubAppInstallationId,
 });
 const store = new TicketStore();
-const workerProcess = createWorkerProcess({ github, linear, logger });
+const database = createDatabase({ logger });
+await database.init();
+const workerProcess = createWorkerProcess({ github, linear, database, logger });
 const handler = new ManagerTicketHandler({ logger, worker: workerProcess });
 
 const scheduler = new Scheduler({
@@ -58,7 +60,8 @@ function shutdown(signal: string): void {
   }
   shuttingDown = true;
   logger.info({ signal }, "shutting down");
-  void scheduler.stop().then(() => {
+  void scheduler.stop().then(async () => {
+    await database.close();
     server.close(() => process.exit(0));
   });
 }

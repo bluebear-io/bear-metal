@@ -1,5 +1,9 @@
 import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThread } from "../shared/index.js";
 
+export interface WorkerDatabase {
+  recordTaskInProgress(ticketId: string): Promise<void>;
+}
+
 export type DispatchState = "new" | "iteration";
 
 export type DispatchResult = {
@@ -32,6 +36,7 @@ export interface WorkerLinear {
 export type WorkerIntegrations = {
   github: WorkerGitHub;
   linear: WorkerLinear;
+  database: WorkerDatabase;
 };
 
 export type CloneScriptResult = {
