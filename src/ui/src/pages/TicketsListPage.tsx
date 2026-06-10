@@ -67,7 +67,7 @@ function matchesFilter(ticket: TicketListItem, filter: FilterKey): boolean {
 
 export default function TicketsListPage() {
   const q = useTickets();
-  const tickets = useMemo<TicketListItem[]>(() => q.data ?? [], [q.data]);
+  const tickets = q.data ?? [];
   const [filter, setFilter] = useState<FilterKey>("all");
 
   const counts = useMemo(() => {
