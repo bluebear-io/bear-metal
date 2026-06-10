@@ -109,7 +109,7 @@ if (config.testTicketId) {
 const app = createServer({ tasks });
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, "health server listening");
-  logger.info({ port: config.port, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+  logger.info({ port: config.port, pid: process.pid }, "🚀 Bear Metal booted up — fueled by caffeine and conventional commits, let's go!");
 });
 
 scheduler.start();
@@ -122,7 +122,7 @@ function shutdown(signal: string): void {
   }
   shuttingDown = true;
   logger.info({ signal }, "shutting down");
-  logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
+  logger.info({ signal, pid: process.pid }, "🛌 Bear Metal clocking out — dreaming of green CI and clean diffs, catch you soon!");
   void Promise.all([scheduler.stop(), taskWorker.stop()])
     .then(() => tasks.close())
     .then(() => {
