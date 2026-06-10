@@ -27,6 +27,7 @@ function openPr(number = 7, overrides: Partial<PullRequest> = {}): PullRequest {
     number,
     title: "PR",
     headRef: "feature/a",
+    headSha: `sha-${number}`,
     state: "open",
     draft: false,
     merged: false,
