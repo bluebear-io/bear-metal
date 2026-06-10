@@ -56,7 +56,7 @@ export const runs = pgTable("runs", {
   ticketId: text("ticket_id").notNull().references(() => tickets.id),
   attemptNumber: integer("attempt_number").notNull(),
   workerId: text("worker_id").references(() => workers.id),
-  trigger: text("trigger", { enum: ["new", "ci_failure", "delegated_back"] }).notNull(),
+  trigger: text("trigger", { enum: ["new", "ci_failure", "delegated_back", "merge_conflict"] }).notNull(),
   status: text("status", {
     enum: ["dispatched", "running", "succeeded", "failed", "timed_out", "crashed"],
   }).notNull(),

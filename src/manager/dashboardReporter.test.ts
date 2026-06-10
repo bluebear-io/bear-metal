@@ -94,6 +94,7 @@ describe("recordPullRequestObservation", () => {
         { id: "t1", isResolved: false, path: "f.ts", line: 1, comments: [{ id: "c1", databaseId: 1, body: "x", author: "a", url: "u", createdAt: "t", updatedAt: "t", path: "f.ts", line: 1, originalLine: 1, diffHunk: null }] },
         { id: "t2", isResolved: true, path: "g.ts", line: 2, comments: [] },
       ],
+      mergeable: true,
     };
     await make(c).recordPullRequestObservation(ticket, pr, context, "run_5");
     expect(c.upsertPullRequest).toHaveBeenCalledWith(expect.objectContaining({ id: "o/r#7", lastRunId: "run_5" }));
@@ -121,6 +122,7 @@ describe("recordPullRequestObservation", () => {
       ],
       unresolvedReviewThreads: [],
       reviewThreads: [],
+      mergeable: true,
     };
     await make(c).recordPullRequestObservation(ticket, pr, context, null);
     expect(c.upsertCiRun).toHaveBeenCalledWith(expect.objectContaining({

@@ -32,9 +32,10 @@ export function buildWorkerPrompt(context: WorkerInputContext): string {
       ]
     : [
         "1. Check out the existing PR branch.",
-        "2. For each failed check: read the code and logs, find the root cause, fix it.",
-        "3. For each unresolved review thread: read the code and respond using the tools above.",
-        "4. Call `wrote_code` once all code changes are done.",
+        "2. If any PR context has `mergeable: false`, the head branch conflicts with its base. Rebase / merge the base branch into the PR head, resolve the conflicts, and push.",
+        "3. For each failed check: read the code and logs, find the root cause, fix it.",
+        "4. For each unresolved review thread: read the code and respond using the tools above.",
+        "5. Call `wrote_code` once all code changes are done.",
       ];
 
   const blockerNote = isNew

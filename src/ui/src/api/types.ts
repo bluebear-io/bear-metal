@@ -10,7 +10,7 @@ export type BmStatus =
 
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
-export type RunTrigger = "new" | "ci_failure" | "delegated_back";
+export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export type CiStatus = "running" | "passed" | "failed";
 
 export interface Ticket {

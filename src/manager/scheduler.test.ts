@@ -44,11 +44,13 @@ function status(
   testsFailed = false,
   hasActionableUnresolvedComments = false,
   humanTookOver = false,
+  hasMergeConflicts = false,
 ): PullRequestStatus {
   return {
     pr,
     testsFailed,
     hasActionableUnresolvedComments,
+    hasMergeConflicts,
     humanTookOver,
     context: {
       pullRequest: { head: { sha: "deadbeef" } } as unknown as JsonValue,
@@ -57,6 +59,7 @@ function status(
       failedStatuses: [],
       unresolvedReviewThreads: [],
       reviewThreads: [],
+      mergeable: hasMergeConflicts ? false : true,
     },
   };
 }
@@ -272,6 +275,27 @@ describe("Scheduler.tick", () => {
       trigger: "ci_failure",
       ticketIssueId: "a",
     });
+  });
+
+  it("re-dispatches a PR with merge conflicts using the merge_conflict trigger", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      // testsFailed=false, hasActionableUnresolvedComments=false, humanTookOver=false,
+      // hasMergeConflicts=true — conflicts alone must trigger a re-dispatch with the new trigger.
+      github: new FakeGitHub({ status: status(openPr(7), false, false, false, true) }),
+      tasks,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(1);
+    expect(handler.triggers).toEqual(["merge_conflict"]);
   });
 
   it("admits nothing new when SQL slots are full", async () => {

@@ -586,7 +586,7 @@ function parseTaskInput(value: string): DispatchTaskInput {
 }
 
 function parseTrigger(value: unknown): RunTrigger {
-  if (value === "new" || value === "ci_failure" || value === "delegated_back") return value;
+  if (value === "new" || value === "ci_failure" || value === "delegated_back" || value === "merge_conflict") return value;
   throw new Error(`Invalid run trigger: ${String(value)}`);
 }
 
