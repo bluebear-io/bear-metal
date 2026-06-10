@@ -10,7 +10,7 @@ export type DispatchState = "new" | "iteration";
 
 export type DispatchResult = {
   status: "pending" | "done";
-  pr: PullRequestRef | null;
+  prs: PullRequestRef[];
 };
 
 export type { PullRequestRef };
@@ -62,8 +62,8 @@ export type CloneScriptResult = {
 export type WorkerInputContext = {
   state: DispatchState;
   ticketId: string;
-  pr: PullRequestRef | null;
+  prs: PullRequestRef[];
   ticket: LinearTicketContext;
-  pullRequest: PullRequestContext | null;
+  pullRequests: PullRequestContext[];
   cloneScript: CloneScriptResult;
 };

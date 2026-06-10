@@ -12,7 +12,7 @@ export const DEFAULT_DATABASE_URL = "sqlite:./bear-metal-manager.sqlite";
 export interface DispatchTaskInput {
   state: DispatchState;
   ticketId: string;
-  pr: PullRequestRef | null;
+  prs: PullRequestRef[];
   trigger: RunTrigger;
   ticketIssueId: string;
 }
@@ -496,7 +496,12 @@ function parseTaskInput(value: string): DispatchTaskInput {
   return {
     state,
     ticketId,
-    pr: parsePullRequestRef(parsed.pr),
+    // Backward compat: rows written before the prs[] migration have a singular `pr` field.
+    prs: Array.isArray(parsed.prs)
+      ? parsePullRequestRefs(parsed.prs, "task input prs")
+      : parsed.pr != null
+        ? [parsePullRequestRef(parsed.pr, "task input pr (legacy)")]
+        : [],
     trigger: parseTrigger(parsed.trigger),
     ticketIssueId: requireString(parsed.ticketIssueId, "task input ticketIssueId"),
   };
@@ -509,27 +514,34 @@ function parseTrigger(value: unknown): RunTrigger {
 
 function parseDispatchResult(value: string): DispatchResult {
   const parsed = parseJsonObject(value, "task result_json");
+  // Backward compat: rows written before the prs[] migration have a singular `pr` field.
+  const prs = Array.isArray(parsed.prs)
+    ? parsePullRequestRefs(parsed.prs, "task result prs")
+    : parsed.pr != null
+      ? [parsePullRequestRef(parsed.pr, "task result pr (legacy)")]
+      : [];
   return {
     status: requireResultStatus(parsed.status),
-    pr: parsePullRequestRef(parsed.pr),
+    prs,
   };
 }
 
-function parsePullRequestRef(value: unknown): PullRequestRef | null {
-  if (value === null) {
-    return null;
+function parsePullRequestRefs(value: unknown, fieldName: string): PullRequestRef[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array`);
   }
+  return value.map((item, i) => parsePullRequestRef(item, `${fieldName}[${i}]`));
+}
+
+function parsePullRequestRef(value: unknown, fieldName: string): PullRequestRef {
   if (!isRecord(value)) {
-    throw new Error("Pull request ref must be null or an object");
+    throw new Error(`${fieldName} must be an object`);
   }
-  const owner = requireString(value.owner, "pull request owner");
-  const repo = requireString(value.repo, "pull request repo");
+  const owner = requireString(value.owner, `${fieldName}.owner`);
+  const repo = requireString(value.repo, `${fieldName}.repo`);
   const number = value.number;
-  if (typeof number !== "number") {
-    throw new Error("pull request number must be a positive integer");
-  }
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error("pull request number must be a positive integer");
+  if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) {
+    throw new Error(`${fieldName}.number must be a positive integer`);
   }
   return { owner, repo, number };
 }

@@ -1,10 +1,10 @@
-import type { PullRequest } from "./integrations/github/types.js";
+import type { PullRequestRef } from "./integrations/github/types.js";
 import type { Ticket } from "./integrations/linear/types.js";
 
-/** Full per-ticket data handed to the manager's ticket handler. PR is optional. */
+/** Full per-ticket data handed to the manager's ticket handler. May span multiple PRs. */
 export interface TicketContext {
   ticket: Ticket;
-  pr: PullRequest | null;
+  prs: PullRequestRef[];
 }
 
 export type WorkerStatus = "pending" | "done";
