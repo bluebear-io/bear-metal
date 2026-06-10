@@ -21,7 +21,7 @@ const logger = createLogger({
 });
 
 const MAX_WORKER_TIME_MS = 2 * 60 * 60 * 1000; // 2 hours
-const MAX_WORKER_TOKENS = 2_000_000;             // 2M tokens
+const MAX_WORKER_TOKENS = 20_000_000;            // 20M tokens
 
 export async function runPiWorker(input: {
   context: WorkerInputContext;
