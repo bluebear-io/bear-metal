@@ -27,7 +27,7 @@ vi.mock("./clone.js", () => ({
 vi.mock("./pi.js", () => ({
   runPiWorker: async (_input: { context: WorkerInputContext }): Promise<DispatchResult> => {
     dispatchMock.calls.push("pi");
-    return { status: "pending", pr: null };
+    return { status: "pending", prs: [] };
   },
 }));
 
@@ -67,7 +67,7 @@ describe("dispatch", () => {
       },
     });
 
-    expect(result).toEqual({ status: "pending", pr: null });
+    expect(result).toEqual({ status: "pending", prs: [] });
     expect(moveTicketToInProgress).toHaveBeenCalledWith("DEN-1");
     expect(dispatchMock.calls.indexOf("in-progress")).toBeLessThan(dispatchMock.calls.indexOf("pi"));
   });

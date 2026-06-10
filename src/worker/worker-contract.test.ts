@@ -6,13 +6,13 @@ import type { WorkerInputContext } from "./types.js";
 
 describe("worker contract", () => {
   it("rejects iteration without PR", () => {
-    expect(() => validateDispatchInputs("iteration", "DEN-1", null)).toThrow(/requires a pull request/);
+    expect(() => validateDispatchInputs("iteration", "DEN-1", [])).toThrow(/requires at least one pull request/);
   });
 
   it("rejects new state with PR", () => {
     expect(() =>
-      validateDispatchInputs("new", "DEN-1", { owner: "bluebear-io", repo: "bear-metal", number: 1 }),
-    ).toThrow(/must not include a pull request/);
+      validateDispatchInputs("new", "DEN-1", [{ owner: "bluebear-io", repo: "bear-metal", number: 1 }]),
+    ).toThrow(/must not include any pull requests/);
   });
 
   it("accepts ssh and https remotes", () => {
@@ -30,7 +30,7 @@ describe("worker contract", () => {
     const context: WorkerInputContext = {
       state: "iteration",
       ticketId: "DEN-1",
-      pr: { owner: "bluebear-io", repo: "bear-metal", number: 7 },
+      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 7 }],
       ticket: {
         issue: {
           id: "issue-id",
@@ -46,12 +46,14 @@ describe("worker contract", () => {
         },
         comments: [],
       },
-      pullRequest: {
-        pullRequest: { number: 7 },
-        failedCheckRuns: [],
-        failedStatuses: [],
-        unresolvedReviewThreads: [],
-      },
+      pullRequests: [
+        {
+          pullRequest: { number: 7 },
+          failedCheckRuns: [],
+          failedStatuses: [],
+          unresolvedReviewThreads: [],
+        },
+      ],
       cloneScript: {
         scriptPath: "/tmp/script.sh",
         workspaceDir: "/tmp/workspace",
@@ -75,7 +77,7 @@ describe("worker contract", () => {
     const context: WorkerInputContext = {
       state: "new",
       ticketId: "DEN-2",
-      pr: null,
+      prs: [],
       ticket: {
         issue: {
           id: "issue-id",
@@ -91,7 +93,7 @@ describe("worker contract", () => {
         },
         comments: [],
       },
-      pullRequest: null,
+      pullRequests: [],
       cloneScript: {
         scriptPath: "/tmp/script.sh",
         workspaceDir: "/tmp/workspace",

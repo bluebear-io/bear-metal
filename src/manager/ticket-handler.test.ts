@@ -16,7 +16,7 @@ describe("ManagerTicketHandler", () => {
 
     const outcome = await handler.handle(ctx);
 
-    expect(tasks.enqueued).toEqual([{ state: "new", ticketId: "DEN-1", pr: null }]);
+    expect(tasks.enqueued).toEqual([{ state: "new", ticketId: "DEN-1", prs: [] }]);
     expect(outcome.status).toBe("pending");
     expect(outcome.taskId).toBe("task-1");
   });
@@ -27,24 +27,14 @@ describe("ManagerTicketHandler", () => {
 
     await handler.handle({
       ticket: makeContext("den-2").ticket,
-      pr: {
-        owner: "bluebear-io",
-        repo: "bear-metal",
-        number: 5,
-        title: "PR",
-        headRef: "feature/den-2",
-        state: "open",
-        draft: false,
-        merged: false,
-        url: "https://github.com/bluebear-io/bear-metal/pull/5",
-      },
+      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 5 }],
     });
 
     expect(tasks.enqueued).toEqual([
       {
         state: "iteration",
         ticketId: "DEN-2",
-        pr: { owner: "bluebear-io", repo: "bear-metal", number: 5 },
+        prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 5 }],
       },
     ]);
   });

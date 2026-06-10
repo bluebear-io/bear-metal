@@ -19,5 +19,5 @@ export function makeTicket(id: string, overrides: Partial<Ticket> = {}): Ticket 
 }
 
 export function makeContext(id: string): TicketContext {
-  return { ticket: makeTicket(id), pr: null };
+  return { ticket: makeTicket(id), prs: [] };
 }

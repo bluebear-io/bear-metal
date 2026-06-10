@@ -9,11 +9,11 @@ const logger = createLogger({ level: "silent", name: "test" });
 
 describe("TaskWorker", () => {
   it("acquires a task with its worker id and writes the dispatch result", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", pr: null };
+    const input = { state: "new" as const, ticketId: "DEN-1", prs: [] };
     const tasks = new FakeTaskQueue(taskRecord({ input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
       status: "done",
-      pr: { owner: "bluebear-io", repo: "bear-metal", number: 7 },
+      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 7 }],
     }));
     const worker = new TaskWorker({
       logger,
@@ -39,7 +39,7 @@ describe("TaskWorker", () => {
         taskId: "task-1",
         result: {
           status: "done",
-          pr: { owner: "bluebear-io", repo: "bear-metal", number: 7 },
+          prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 7 }],
         },
       },
     ]);
@@ -51,7 +51,7 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     id: "task-1",
     ticketId: "DEN-1",
     dispatchState: "new",
-    input: { state: "new", ticketId: "DEN-1", pr: null },
+    input: { state: "new", ticketId: "DEN-1", prs: [] },
     workerId: null,
     resultStatus: null,
     result: null,
