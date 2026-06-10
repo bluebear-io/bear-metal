@@ -114,6 +114,7 @@ class SqliteTaskQueue implements TaskQueue {
         iteration_number INTEGER NOT NULL DEFAULT 1
       );
     `);
+    ensureSqliteColumn(db, "attempt_number", "INTEGER NOT NULL DEFAULT 1");
     ensureSqliteColumn(db, "slot_status", "TEXT NOT NULL DEFAULT 'active'");
     ensureSqliteColumn(db, "released_at", "TEXT NULL");
     ensureSqliteColumn(db, "iteration_number", "INTEGER NOT NULL DEFAULT 1");
