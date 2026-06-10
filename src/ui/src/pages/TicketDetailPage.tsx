@@ -332,12 +332,12 @@ const TimelineSection = ({ events }: { events: TicketEvent[] }) => (
     ) : (
       <ol className="rounded-md border border-border-default bg-bg-card">
         {events.map((event) => (
-          <li className="grid gap-2 border-b border-border-default px-4 py-3 last:border-b-0 sm:grid-cols-[auto_minmax(0,1fr)_auto]" key={event.id}>
+          <li className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-default px-4 py-3 last:border-b-0" key={event.id}>
             <span className="rounded-full border border-border-default px-2 py-0.5 text-xs font-medium text-text-secondary">
               {event.source} / {event.type.replaceAll("_", " ")}
             </span>
             <span className="text-sm text-text-primary">{event.summary}</span>
-            <time className="text-xs text-text-muted" dateTime={event.createdAt}>
+            <time className="whitespace-nowrap text-right text-xs text-text-muted" dateTime={event.createdAt}>
               {formatDateTime(event.createdAt)}
             </time>
           </li>
