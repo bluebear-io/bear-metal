@@ -40,6 +40,23 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
   }
 
+  /**
+   * Every issue delegated to the agent across all states, including completed/canceled/merged.
+   * Used by the backfill tool to reconstruct dashboard history — the active-only `findDelegatedTickets`
+   * is wrong for that purpose because it filters terminal states out.
+   */
+  async findAllDelegatedTickets(agentId: string): Promise<Ticket[]> {
+    const user = await this.client.user(agentId);
+    const issues: Issue[] = [];
+    let after: string | undefined;
+    do {
+      const page = await user.delegatedIssues({ first: 100, after });
+      issues.push(...page.nodes);
+      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
+    } while (after !== undefined);
+    return Promise.all(issues.map((issue) => this.toTicket(issue)));
+  }
+
   async getTicket(id: string): Promise<Ticket> {
     const issue = await this.client.issue(id);
     return this.toTicket(issue);
@@ -130,6 +147,10 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       labels: labels.nodes.map((node) => node.name),
       assignee: issue.assigneeId ? { id: issue.assigneeId } : null,
       delegate: issue.delegateId ? { id: issue.delegateId } : null,
+      createdAt: issue.createdAt.toISOString(),
+      updatedAt: issue.updatedAt.toISOString(),
+      completedAt: issue.completedAt?.toISOString() ?? null,
+      canceledAt: issue.canceledAt?.toISOString() ?? null,
     };
   }
 
