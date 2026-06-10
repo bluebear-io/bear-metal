@@ -532,6 +532,37 @@ describe("runPiWorker", () => {
     expect(slack.notifyPullRequest).toHaveBeenCalledTimes(1);
   });
 
+  it("sends a slack notification on iteration with no unresolved review threads (e.g. CI-failure re-run)", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const prContext = makePullRequestContext();
+    prContext.reviewThreads = [];
+    prContext.unresolvedReviewThreads = [];
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix",
+        prTitle: "fix",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({
+      context: makeContext({
+        state: "iteration",
+        prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+        pullRequests: [prContext],
+      }),
+      github: makeGithub(),
+      linear,
+      slack,
+      gitEnv: {},
+    });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("comments and hands the ticket back to its human owner when pending human response", async () => {
     const { runPiWorker } = await import("./pi.js");
     const commentAndHandBack = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);

@@ -367,7 +367,12 @@ function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequ
 
 function shouldNotifySlackForPr(context: WorkerInputContext, pr: PullRequestRef): boolean {
   if (context.state === "new") return true;
-  return unresolvedThreadsFor(context, pr).some((thread) => {
+  const threads = unresolvedThreadsFor(context, pr);
+  // No unresolved threads ⇒ iteration was triggered by something other than
+  // bot-comment churn (e.g. CI failure, manual re-delegation). Notify so humans
+  // waiting on the update aren't left in the dark.
+  if (threads.length === 0) return true;
+  return threads.some((thread) => {
     const latest = thread.comments[thread.comments.length - 1];
     return latest ? isHumanAuthor(latest.author) : false;
   });
