@@ -13,6 +13,9 @@ const logger = createLogger({
   pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
 });
 
+const MAX_WORKER_TIME_MS = 2 * 60 * 60 * 1000; // 2 hours
+const MAX_WORKER_TOKENS = 2_000_000;             // 2M tokens
+
 export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
@@ -210,12 +213,40 @@ export async function runPiWorker(input: {
 
   logger.info({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
 
+  let limitHitReason: string | null = null;
+
+  // Token limit: checked after every turn.
+  const unsubscribeLimits = session.subscribe((event) => {
+    if (event.type === "turn_end" && !limitHitReason) {
+      const stats = session.getSessionStats();
+      if (stats.tokens.total >= MAX_WORKER_TOKENS) {
+        limitHitReason = `token limit of ${MAX_WORKER_TOKENS.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
+        logger.warn({ ticketId: input.context.ticketId, tokens: stats.tokens.total }, "token limit reached; aborting session");
+        void session.abort();
+      }
+    }
+  });
+
+  // Time limit: fires after 2 hours regardless of turn state.
+  const timeoutHandle = setTimeout(() => {
+    if (!limitHitReason) {
+      limitHitReason = `time limit of 2 hours reached`;
+      logger.warn({ ticketId: input.context.ticketId }, "time limit reached; aborting session");
+      void session.abort();
+    }
+  }, MAX_WORKER_TIME_MS);
+
   try {
     await session.prompt(prompt);
   } catch (error) {
-    logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
-    throw error;
+    if (!limitHitReason) {
+      logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
+      throw error;
+    }
+    // limit abort caused the throw — handled below
   } finally {
+    clearTimeout(timeoutHandle);
+    unsubscribeLimits();
     const transcriptPath = resolve(workspaceDir, "session.jsonl");
     try {
       session.exportToJsonl(transcriptPath);
@@ -226,6 +257,16 @@ export async function runPiWorker(input: {
     unsubscribe();
     session.dispose();
     logger.info({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
+  }
+
+  // If a limit was hit and the worker hadn't already set a decision, hand back.
+  if (limitHitReason && !decision) {
+    logger.info({ ticketId: input.context.ticketId, reason: limitHitReason }, "limit hit without prior decision; handing back");
+    await input.linear.commentAndHandBack(
+      input.context.ticketId,
+      `Stopped automatically: ${limitHitReason}. Please review progress and re-delegate to continue.`,
+    );
+    return { status: "pending", pr: input.context.pr };
   }
 
   if (!decision) {
