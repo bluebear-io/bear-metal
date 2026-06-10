@@ -109,6 +109,8 @@ function escapeSlackMrkdwn(text: string): string {
 
 export function formatNotificationText(notification: PullRequestNotification): string {
   const { kind, pr, title, url, ticketId, ticketUrl } = notification;
+  if (!url.startsWith("https://")) throw new Error(`Invalid PR URL: ${url}`);
+  if (ticketUrl && !ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
   const verb = kind === "opened" ? "opened" : "updated";
   const icon = kind === "opened" ? ":rocket:" : ":arrows_counterclockwise:";
   const safeTitle = escapeSlackMrkdwn(title);

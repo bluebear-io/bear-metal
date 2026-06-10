@@ -172,9 +172,11 @@ export async function runPiWorker(input: {
       // Design constraint: at most one PR per (owner, repo) per dispatch.
       // A second wrote_code call against the same repo updates the existing PR
       // rather than creating a new branch/PR within that repo.
-      const existingPr = input.context.prs.find(
-        (p) => p.owner === remote.owner && p.repo === remote.repo,
-      ) ?? null;
+      // Check collectedPrs (created earlier in this dispatch) before input.context.prs (from previous dispatch).
+      const existingPr =
+        collectedPrs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
+        input.context.prs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
+        null;
       const isNewPr = existingPr === null;
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
       setDecision({ status: "done", prs: [pr] });

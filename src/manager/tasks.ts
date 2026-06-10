@@ -495,7 +495,12 @@ function parseTaskInput(value: string): DispatchTaskInput {
   return {
     state,
     ticketId,
-    prs: parsePullRequestRefs(parsed.prs, "task input prs"),
+    // Backward compat: rows written before the prs[] migration have a singular `pr` field.
+    prs: Array.isArray(parsed.prs)
+      ? parsePullRequestRefs(parsed.prs, "task input prs")
+      : parsed.pr != null
+        ? [parsePullRequestRef(parsed.pr, "task input pr (legacy)")]
+        : [],
     trigger: parseTrigger(parsed.trigger),
     ticketIssueId: requireString(parsed.ticketIssueId, "task input ticketIssueId"),
   };
@@ -508,9 +513,15 @@ function parseTrigger(value: unknown): RunTrigger {
 
 function parseDispatchResult(value: string): DispatchResult {
   const parsed = parseJsonObject(value, "task result_json");
+  // Backward compat: rows written before the prs[] migration have a singular `pr` field.
+  const prs = Array.isArray(parsed.prs)
+    ? parsePullRequestRefs(parsed.prs, "task result prs")
+    : parsed.pr != null
+      ? [parsePullRequestRef(parsed.pr, "task result pr (legacy)")]
+      : [];
   return {
     status: requireResultStatus(parsed.status),
-    prs: parsePullRequestRefs(parsed.prs, "task result prs"),
+    prs,
   };
 }
 
