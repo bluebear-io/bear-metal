@@ -3,7 +3,14 @@ import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
-import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
+import type {
+  DispatchResult,
+  PullRequestRef,
+  WorkerGitHub,
+  WorkerInputContext,
+  WorkerLinear,
+  WorkerSlack,
+} from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
@@ -20,6 +27,7 @@ export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
+  slack?: WorkerSlack;
   gitEnv: NodeJS.ProcessEnv;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
@@ -152,12 +160,25 @@ export async function runPiWorker(input: {
         { mode: 0o600 },
       );
       await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
+      const isNewPr = input.context.pr === null;
       const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
       setDecision({ status: "done", pr });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
       } catch (err) {
         logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
+      }
+      if (input.slack) {
+        // The Slack client logs and swallows its own failures so a Slack outage
+        // doesn't mask a successful commit/push from the rest of the pipeline.
+        await input.slack.notifyPullRequest({
+          kind: isNewPr ? "opened" : "updated",
+          pr,
+          title: params.prTitle,
+          url: `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`,
+          ticketId: input.context.ticketId,
+          ticketUrl: input.context.ticket.issue.url,
+        });
       }
       return {
         content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],

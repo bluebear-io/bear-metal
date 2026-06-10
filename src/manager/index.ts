@@ -1,6 +1,13 @@
 import "dotenv/config";
 
-import { createDashboardClient, createLogger, GitHubIntegration, LinearIntegration, type TicketContext } from "../shared/index.js";
+import {
+  createDashboardClient,
+  createLogger,
+  GitHubIntegration,
+  LinearIntegration,
+  SlackIntegration,
+  type TicketContext,
+} from "../shared/index.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
@@ -30,6 +37,19 @@ const github = new GitHubIntegration({
   privateKey: config.githubAppPrivateKey,
   installationId: config.githubAppInstallationId,
 });
+const slack =
+  config.slackBotToken && config.slackNotificationChannel
+    ? new SlackIntegration({
+        token: config.slackBotToken,
+        channel: config.slackNotificationChannel,
+        logger: createLogger({ level: config.logLevel, name: "slack", pretty: config.logPretty }),
+      })
+    : undefined;
+if (!slack) {
+  logger.warn(
+    "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
+  );
+}
 const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
 await tasks.initialize();
 // Dashboard reporting is best-effort and opt-in: with no DASHBOARD_URL it stays undefined and
@@ -58,7 +78,7 @@ const scheduler = new Scheduler({
 const taskWorker = new TaskWorker({
   logger,
   tasks,
-  integrations: { github, linear },
+  integrations: { github, linear, slack },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
   reporter,

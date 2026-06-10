@@ -34,6 +34,13 @@ export type {
   ReviewThread,
   ReviewThreadComment,
 } from "./integrations/github/types.js";
+export {
+  SlackIntegration,
+  formatNotificationText,
+  type SlackIntegrationOptions,
+  type PullRequestNotification,
+  type PullRequestNotificationKind,
+} from "./integrations/slack/client.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
 export { createDashboardClient, type DashboardClient, type DashboardClientOptions } from "./dashboard/client.js";
 export type {
