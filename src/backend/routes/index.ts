@@ -59,5 +59,33 @@ export function createRouter(repo: Repository): Router {
     }
   });
 
+  router.get("/summary", async (req, res, next) => {
+    try {
+      const now = new Date();
+      const defaultFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const to = parseIsoOrDefault(req.query.to, now);
+      const from = parseIsoOrDefault(req.query.from, defaultFrom);
+      if (!from || !to) {
+        res.status(400).json({ error: "from and to must be valid ISO timestamps" });
+        return;
+      }
+      if (from.getTime() >= to.getTime()) {
+        res.status(400).json({ error: "from must be before to" });
+        return;
+      }
+      const summary = await repo.getPeriodSummary({ from, to });
+      res.json(summary);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
+}
+
+function parseIsoOrDefault(raw: unknown, fallback: Date): Date | null {
+  if (raw === undefined) return fallback;
+  if (typeof raw !== "string" || raw === "") return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
