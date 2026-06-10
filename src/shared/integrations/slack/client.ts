@@ -113,7 +113,7 @@ export function formatNotificationText(notification: PullRequestNotification): s
   const icon = kind === "opened" ? ":rocket:" : ":arrows_counterclockwise:";
   const safeTitle = escapeSlackMrkdwn(title);
   const safeTicketId = escapeSlackMrkdwn(ticketId);
-  const prLink = `<${url}|${pr.owner}/${pr.repo}#${pr.number}>`;
+  const prLink = `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`;
   const ticketLabel = ticketUrl ? `<${ticketUrl}|${safeTicketId}>` : safeTicketId;
   return `${icon} *PR ${verb}* ${prLink} — ${safeTitle} (ticket: ${ticketLabel})`;
 }
