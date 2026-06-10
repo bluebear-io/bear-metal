@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, EventRow, Worker } from "./types.js";
@@ -113,18 +113,37 @@ function elapsedSince(now: Date, then: Date | null): number | null {
 export function listTickets(db: Db, filter?: { bmStatus?: Ticket["bmStatus"] }): TicketListItem[] {
   const where = filter?.bmStatus ? eq(schema.tickets.bmStatus, filter.bmStatus) : undefined;
   const ticketRows = db.select().from(schema.tickets).where(where).orderBy(desc(schema.tickets.createdAt)).all();
+  if (ticketRows.length === 0) return [];
+
+  // Batch the per-ticket joins into one query per child table; group + reduce in JS.
+  // Order matters: each `latest*` pick relies on the ORDER BY matching what the
+  // previous per-ticket query did (run: attemptNumber desc then createdAt desc;
+  // PR: updatedAt desc; CI: createdAt desc). The first row seen per ticketId wins.
+  const ticketIds = ticketRows.map((t) => t.id);
+  const runRows = db.select().from(schema.runs).where(inArray(schema.runs.ticketId, ticketIds))
+    .orderBy(desc(schema.runs.attemptNumber), desc(schema.runs.createdAt)).all();
+  const prRows = db.select().from(schema.pullRequests).where(inArray(schema.pullRequests.ticketId, ticketIds))
+    .orderBy(desc(schema.pullRequests.updatedAt)).all();
+  const ciRows = db.select().from(schema.ciRuns).where(inArray(schema.ciRuns.ticketId, ticketIds))
+    .orderBy(desc(schema.ciRuns.createdAt)).all();
+
+  const latestRunByTicket = new Map<string, Run>();
+  for (const r of runRows) if (!latestRunByTicket.has(r.ticketId)) latestRunByTicket.set(r.ticketId, r);
+  const latestPrByTicket = new Map<string, PullRequestRow>();
+  for (const p of prRows) if (!latestPrByTicket.has(p.ticketId)) latestPrByTicket.set(p.ticketId, p);
+  const latestCiByTicket = new Map<string, CiRun>();
+  for (const c of ciRows) if (!latestCiByTicket.has(c.ticketId)) latestCiByTicket.set(c.ticketId, c);
 
   return ticketRows.map((ticket) => {
-    const latestRunRow = db.select().from(schema.runs).where(eq(schema.runs.ticketId, ticket.id)).orderBy(desc(schema.runs.attemptNumber), desc(schema.runs.createdAt)).get();
-    const prs = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, ticket.id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
-    const latestPrRow = prs[0] ?? null;
-    const ci = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, ticket.id)).orderBy(desc(schema.ciRuns.createdAt)).all();
+    const latestRunRow = latestRunByTicket.get(ticket.id) ?? null;
+    const latestPrRow = latestPrByTicket.get(ticket.id) ?? null;
+    const latestCi = latestCiByTicket.get(ticket.id) ?? null;
     return {
       ...ticket,
       latestRun: latestRunRow ? toLatestRunSummary(latestRunRow) : null,
       latestPr: latestPrRow ? { number: latestPrRow.number, url: latestPrRow.url, state: latestPrRow.state, merged: latestPrRow.merged } : null,
       // latestCiStatus = the ticket's most recent CI outcome overall (not scoped to latestPr); a ticket reuses one branch/PR so this is the dashboard's "current CI state".
-      latestCiStatus: ci[0]?.status ?? null,
+      latestCiStatus: latestCi?.status ?? null,
     };
   });
 }
@@ -142,14 +161,33 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
   }));
 
   const prRows = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
+  const threadRows = prRows.length === 0
+    ? []
+    : db.select().from(schema.reviewThreads).where(inArray(schema.reviewThreads.prId, prRows.map((p) => p.id))).orderBy(schema.reviewThreads.updatedAt).all();
+  const threadsByPr = new Map<string, ReviewThreadRow[]>();
+  for (const t of threadRows) {
+    const list = threadsByPr.get(t.prId) ?? [];
+    list.push(t);
+    threadsByPr.set(t.prId, list);
+  }
   const pullRequests: PullRequestWithThreads[] = prRows.map((pr) => ({
     ...pr,
-    reviewThreads: db.select().from(schema.reviewThreads).where(eq(schema.reviewThreads.prId, pr.id)).orderBy(schema.reviewThreads.updatedAt).all(),
+    reviewThreads: threadsByPr.get(pr.id) ?? [],
   }));
+
   const ciRunRows = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, id)).orderBy(schema.ciRuns.createdAt).all();
+  const checkRows = ciRunRows.length === 0
+    ? []
+    : db.select().from(schema.ciChecks).where(inArray(schema.ciChecks.ciRunId, ciRunRows.map((c) => c.id))).orderBy(schema.ciChecks.createdAt).all();
+  const checksByCiRun = new Map<string, CiCheck[]>();
+  for (const c of checkRows) {
+    const list = checksByCiRun.get(c.ciRunId) ?? [];
+    list.push(c);
+    checksByCiRun.set(c.ciRunId, list);
+  }
   const ciRuns: CiRunWithChecks[] = ciRunRows.map((ci) => ({
     ...ci,
-    checks: db.select().from(schema.ciChecks).where(eq(schema.ciChecks.ciRunId, ci.id)).orderBy(schema.ciChecks.createdAt).all(),
+    checks: checksByCiRun.get(ci.id) ?? [],
   }));
   const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
 
@@ -226,14 +264,33 @@ export function listModelComparison(db: Db): ModelComparisonRow[] {
 export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {
   const now = options.now ?? new Date();
   const workers = db.select().from(schema.workers).all();
+
+  // Batch the current-run + current-ticket lookups. Most operator dashboards
+  // only run a handful of workers, but the per-row round-trip pattern showed up
+  // in DEN-2321 review — collapse it to two queries regardless.
+  const runIds = workers.map((w) => w.currentRunId).filter((id): id is string => id !== null);
+  const runById = new Map<string, Run>();
+  if (runIds.length > 0) {
+    for (const r of db.select().from(schema.runs).where(inArray(schema.runs.id, runIds)).all()) {
+      runById.set(r.id, r);
+    }
+  }
+  const ticketIds = Array.from(new Set(Array.from(runById.values()).map((r) => r.ticketId)));
+  const ticketById = new Map<string, Ticket>();
+  if (ticketIds.length > 0) {
+    for (const t of db.select().from(schema.tickets).where(inArray(schema.tickets.id, ticketIds)).all()) {
+      ticketById.set(t.id, t);
+    }
+  }
+
   return workers.map((w) => {
     let currentTicketIdentifier: string | null = null;
     let currentTicketTitle: string | null = null;
     let currentRun: CurrentRunSummary | null = null;
     if (w.currentRunId) {
-      const run = db.select().from(schema.runs).where(eq(schema.runs.id, w.currentRunId)).get();
+      const run = runById.get(w.currentRunId);
       if (run) {
-        const ticket = db.select().from(schema.tickets).where(eq(schema.tickets.id, run.ticketId)).get();
+        const ticket = ticketById.get(run.ticketId);
         currentTicketIdentifier = ticket?.identifier ?? null;
         currentTicketTitle = ticket?.title ?? null;
         if (ticket) {
