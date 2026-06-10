@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
@@ -103,6 +103,73 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
   const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
 
   return { ticket, runs, pullRequests, ciRuns, events };
+}
+
+export interface RepoBreakdown {
+  owner: string;
+  repo: string;
+  /** Distinct tickets with at least one PR in this repo. */
+  ticketCount: number;
+  /** Distinct tickets in this repo with at least one merged PR. */
+  mergedCount: number;
+  /** mergedCount / ticketCount, or null if ticketCount === 0. */
+  successRate: number | null;
+  /** Average tickets.attemptCount across tickets in this repo, or null if none. */
+  avgIterations: number | null;
+  /** Most recent pull_requests.updatedAt across PRs in this repo. */
+  lastActivityAt: Date | null;
+}
+
+export function listRepoBreakdowns(db: Db): RepoBreakdown[] {
+  // Filter out rows where owner/repo are unset (defaulted ""). These can come from rows that
+  // existed before the migration or from URLs that failed to parse — neither belongs in the
+  // per-repo breakdown.
+  const prs = db.select().from(schema.pullRequests).where(and(ne(schema.pullRequests.owner, ""), ne(schema.pullRequests.repo, ""))).all();
+  if (prs.length === 0) return [];
+
+  const ticketsById = new Map(db.select().from(schema.tickets).all().map((t) => [t.id, t]));
+
+  interface Acc {
+    owner: string;
+    repo: string;
+    ticketIds: Set<string>;
+    mergedTicketIds: Set<string>;
+    lastActivityAt: Date;
+  }
+  const groups = new Map<string, Acc>();
+  for (const pr of prs) {
+    const key = `${pr.owner}/${pr.repo}`;
+    let acc = groups.get(key);
+    if (!acc) {
+      acc = { owner: pr.owner, repo: pr.repo, ticketIds: new Set(), mergedTicketIds: new Set(), lastActivityAt: pr.updatedAt };
+      groups.set(key, acc);
+    }
+    acc.ticketIds.add(pr.ticketId);
+    if (pr.merged) acc.mergedTicketIds.add(pr.ticketId);
+    if (pr.updatedAt.getTime() > acc.lastActivityAt.getTime()) acc.lastActivityAt = pr.updatedAt;
+  }
+
+  return [...groups.values()]
+    .map((g) => {
+      const ticketCount = g.ticketIds.size;
+      const mergedCount = g.mergedTicketIds.size;
+      const attemptCounts: number[] = [];
+      for (const tid of g.ticketIds) {
+        const t = ticketsById.get(tid);
+        if (t) attemptCounts.push(t.attemptCount);
+      }
+      const avgIterations = attemptCounts.length === 0 ? null : attemptCounts.reduce((s, n) => s + n, 0) / attemptCounts.length;
+      return {
+        owner: g.owner,
+        repo: g.repo,
+        ticketCount,
+        mergedCount,
+        successRate: ticketCount === 0 ? null : mergedCount / ticketCount,
+        avgIterations,
+        lastActivityAt: g.lastActivityAt,
+      } satisfies RepoBreakdown;
+    })
+    .sort((a, b) => (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0));
 }
 
 export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {

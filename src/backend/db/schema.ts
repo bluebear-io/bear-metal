@@ -59,6 +59,8 @@ export const pullRequests = sqliteTable("pull_requests", {
   draft: integer("draft", { mode: "boolean" }).notNull(),
   merged: integer("merged", { mode: "boolean" }).notNull(),
   url: text("url").notNull(),
+  owner: text("owner").notNull().default(""),
+  repo: text("repo").notNull().default(""),
   lastRunId: text("last_run_id").references(() => runs.id),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),

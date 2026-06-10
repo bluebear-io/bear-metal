@@ -4,7 +4,7 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 import { seedMockData } from "../mock/seed.js";
-import { listTickets, getTicketDetail, listWorkers } from "./repository.js";
+import { listTickets, getTicketDetail, listWorkers, listRepoBreakdowns } from "./repository.js";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -63,6 +63,24 @@ describe("getTicketDetail", () => {
 
   it("returns null for an unknown ticket", () => {
     expect(getTicketDetail(db, "nope")).toBeNull();
+  });
+});
+
+describe("listRepoBreakdowns", () => {
+  it("groups PRs by owner/repo with correct counts, success rate, avg iterations, and last activity", () => {
+    const rows = listRepoBreakdowns(db);
+    expect(rows).toHaveLength(1);
+    const r = rows[0]!;
+    expect(r.owner).toBe("bluebear-io");
+    expect(r.repo).toBe("blueden");
+    // lin_1 + lin_2 both have a PR in this repo.
+    expect(r.ticketCount).toBe(2);
+    // Only lin_1 has a merged PR.
+    expect(r.mergedCount).toBe(1);
+    expect(r.successRate).toBeCloseTo(0.5);
+    // attemptCount: lin_1 = 1, lin_2 = 2 → avg 1.5
+    expect(r.avgIterations).toBeCloseTo(1.5);
+    expect(r.lastActivityAt?.toISOString()).toBe("2026-06-09T08:46:00.000Z");
   });
 });
 

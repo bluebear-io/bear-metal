@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 
 import { ThemeToggle } from "./components/ThemeToggle.js";
+import ReposPage from "./pages/ReposPage.js";
 import TicketDetailPage from "./pages/TicketDetailPage.js";
 import TicketsListPage from "./pages/TicketsListPage.js";
 import WorkersPage from "./pages/WorkersPage.js";
@@ -34,6 +35,9 @@ export default function App() {
           <NavLink to="/workers" className={navClass}>
             Workers
           </NavLink>
+          <NavLink to="/repos" className={navClass}>
+            Repos
+          </NavLink>
           <span className="ml-auto">
             <ThemeToggle />
           </span>
@@ -45,6 +49,7 @@ export default function App() {
         <Route path="/tickets" element={<TicketsListPage />} />
         <Route path="/tickets/:id" element={<TicketDetailPage />} />
         <Route path="/workers" element={<WorkersPage />} />
+        <Route path="/repos" element={<ReposPage />} />
       </Routes>
     </div>
   );
