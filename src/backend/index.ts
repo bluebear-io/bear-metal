@@ -61,7 +61,7 @@ function main(): void {
   init.close();
   const { db, sqlite } = openReadWriteDb(dbPath);
   const app = createApp(db, { ingestToken: config.ingestToken });
-  const server = app.listen(port, () => logger.info({ port, dbPath }, "bear-metal dashboard backend listening"));
+  const server = app.listen(port, () => logger.info({ port, dbPath }, "🐻 bear-metal awakens from hibernation — sniffing port for tickets to maul"));
 
   let shuttingDown = false;
   function shutdown(signal: string): void {
