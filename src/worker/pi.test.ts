@@ -448,6 +448,90 @@ describe("runPiWorker", () => {
     });
   });
 
+  it("does not send a slack notification on iteration when only bot comments triggered the dispatch", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const botPrContext = makePullRequestContext();
+    botPrContext.reviewThreads[0]!.comments[0]!.author = "cursor[bot]";
+    botPrContext.unresolvedReviewThreads = botPrContext.reviewThreads;
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix",
+        prTitle: "fix",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({
+      context: makeContext({
+        state: "iteration",
+        prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+        pullRequests: [botPrContext],
+      }),
+      github: makeGithub(),
+      linear,
+      slack,
+      gitEnv: {},
+    });
+
+    expect(slack.notifyPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("sends a slack notification on iteration when at least one unresolved thread has a human comment", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const mixedPrContext = makePullRequestContext();
+    // First thread is a bot; add a second human-authored thread.
+    mixedPrContext.reviewThreads[0]!.comments[0]!.author = "baloo[bot]";
+    mixedPrContext.reviewThreads.push({
+      id: "thread-2",
+      isResolved: false,
+      path: "src/file.ts",
+      line: 2,
+      comments: [
+        {
+          id: "comment-2",
+          databaseId: 124,
+          body: "Real human concern.",
+          author: "alice",
+          url: "https://github.com/acme/widgets/pull/7#discussion_r124",
+          createdAt: "2026-06-09T00:00:00Z",
+          updatedAt: "2026-06-09T00:00:00Z",
+          path: "src/file.ts",
+          line: 2,
+          originalLine: 2,
+          diffHunk: "@@",
+        },
+      ],
+    });
+    mixedPrContext.unresolvedReviewThreads = mixedPrContext.reviewThreads;
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix",
+        prTitle: "fix",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({
+      context: makeContext({
+        state: "iteration",
+        prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+        pullRequests: [mixedPrContext],
+      }),
+      github: makeGithub(),
+      linear,
+      slack,
+      gitEnv: {},
+    });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("comments and hands the ticket back to its human owner when pending human response", async () => {
     const { runPiWorker } = await import("./pi.js");
     const commentAndHandBack = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);

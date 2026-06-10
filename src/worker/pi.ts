@@ -186,7 +186,11 @@ export async function runPiWorker(input: {
       } catch (err) {
         logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
       }
-      if (input.slack) {
+      // DEN-2329: suppress Slack notifications for bot-only iteration churn
+      // (e.g. Cursor/Baloo nits the agent auto-addresses). Always notify on
+      // new tickets, and on iterations only when at least one unresolved
+      // review thread's latest comment is from a human author.
+      if (input.slack && shouldNotifySlackForPr(input.context, pr)) {
         // The Slack client logs and swallows its own failures so a Slack outage
         // doesn't mask a successful commit/push from the rest of the pipeline.
         await input.slack.notifyPullRequest({
@@ -359,6 +363,22 @@ function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequ
     }
   }
   return out;
+}
+
+function shouldNotifySlackForPr(context: WorkerInputContext, pr: PullRequestRef): boolean {
+  if (context.state === "new") return true;
+  return unresolvedThreadsFor(context, pr).some((thread) => {
+    const latest = thread.comments[thread.comments.length - 1];
+    return latest ? isHumanAuthor(latest.author) : false;
+  });
+}
+
+// GitHub bot accounts have logins suffixed with "[bot]" (e.g. "cursor[bot]",
+// "baloo[bot]", "bear-metal[bot]"). A missing author is treated as non-human
+// since we can't attribute the comment to a person.
+function isHumanAuthor(author: string | null | undefined): boolean {
+  if (!author) return false;
+  return !author.endsWith("[bot]");
 }
 
 function unresolvedThreadsFor(context: WorkerInputContext, pr: PullRequestRef) {
