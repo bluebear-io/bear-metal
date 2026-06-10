@@ -234,11 +234,15 @@ function decideForOpenPr(
   // The granular observation owns the pull_requests row write; await it before the
   // bm_status transition so the two paths can't race on the same row.
   void (async () => {
-    await reporter?.recordPullRequestObservation(ticket, pr, status.context, null);
-    if (testsFailed) {
-      await reporter?.ciFailed(ticket, `CI checks failed on PR #${pr.number}`);
-    } else {
-      await reporter?.prOpened(ticket, pr);
+    try {
+      await reporter?.recordPullRequestObservation(ticket, pr, status.context, null);
+      if (testsFailed) {
+        await reporter?.ciFailed(ticket, `CI checks failed on PR #${pr.number}`);
+      } else {
+        await reporter?.prOpened(ticket, pr);
+      }
+    } catch (err) {
+      logger.warn({ err, ticket: ticket.identifier, pr: pr.number }, "best-effort dashboard observation failed");
     }
   })();
   const dispatch = resuming || testsFailed || hasUnresolvedComments;
