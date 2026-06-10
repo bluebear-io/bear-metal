@@ -213,6 +213,23 @@ describe("TaskQueue", () => {
     expect(slot?.latestTask.resultStatus).toBe("done");
   });
 
+  it("recoverStaleTasks never clears worker_id on released slots (so in-flight worker.complete() still works)", async () => {
+    const queue = await makeQueue();
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    await queue.acquireNext("worker-1");
+    // Scheduler releases the slot mid-flight (e.g. PR merged externally before the worker returns).
+    await queue.setSlotStatus("DEN-1", "released");
+    await sleep(20);
+
+    const recovered = await queue.recoverStaleTasks(10);
+    expect(recovered).toEqual([]);
+
+    // worker-1 must still be able to complete — recovery must not have nulled worker_id.
+    await expect(
+      queue.complete(task.id, { status: "done", prs: [] }),
+    ).resolves.toBeUndefined();
+  });
+
   it("recoverStaleTasks recovers acquired rows with NULL lastHeartbeatAt (pre-heartbeat rows)", async () => {
     const queue = await makeQueue();
     const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });

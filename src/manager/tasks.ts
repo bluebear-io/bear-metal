@@ -242,11 +242,15 @@ class SqliteTaskQueue implements TaskQueue {
     const now = this.clock.nowIso();
     // ISO 8601 (with fixed-width fields and Z suffix) sorts lexicographically as time, so a
     // plain string `<` on last_heartbeat_at matches the intended chronological comparison.
+    // slot_status = 'active' mirrors the acquireNext guard: a released slot is no longer
+    // schedulable, so clearing worker_id there would only break the in-flight worker's
+    // complete() (which requires worker_id IS NOT NULL) without enabling any new pickup.
     const rows = this.requireDb().prepare(`
       UPDATE tasks
       SET worker_id = NULL, last_heartbeat_at = NULL, updated_at = ?
       WHERE worker_id IS NOT NULL
         AND result_status IS NULL
+        AND slot_status = 'active'
         AND (last_heartbeat_at IS NULL OR last_heartbeat_at < ?)
       RETURNING id
     `).all(now, cutoff) as Array<{ id: string }>;
@@ -468,6 +472,7 @@ class PostgresTaskQueue implements TaskQueue {
         SET worker_id = NULL, last_heartbeat_at = NULL, updated_at = $1
         WHERE worker_id IS NOT NULL
           AND result_status IS NULL
+          AND slot_status = 'active'
           AND (last_heartbeat_at IS NULL OR last_heartbeat_at < $2)
         RETURNING id
       `,
