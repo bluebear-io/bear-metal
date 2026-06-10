@@ -17,7 +17,10 @@ export function upsertTicket(db: Db, p: TicketPayload): void {
     bmStatus: p.bmStatus, attemptCount: p.attemptCount, maxAttempts: p.maxAttempts,
     createdAt: new Date(p.createdAt), updatedAt: new Date(p.updatedAt), completedAt: d(p.completedAt),
   };
-  db.insert(schema.tickets).values(row).onConflictDoUpdate({ target: schema.tickets.id, set: row }).run();
+  db.insert(schema.tickets).values(row).onConflictDoUpdate({
+    target: schema.tickets.id,
+    set: { ...row, createdAt: sql`${schema.tickets.createdAt}` },
+  }).run();
 }
 
 export function upsertWorker(db: Db, p: WorkerPayload): void {

@@ -19,17 +19,17 @@ export interface WorkerProcessDeps extends WorkerIntegrations {
 export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContext) => Promise<WorkerResponse> {
   const workerLogger = deps.logger ?? logger;
   return async (ctx) => {
-    const state = ctx.pr === null ? "new" : "iteration";
-    const pr = ctx.pr === null ? null : { owner: ctx.pr.owner, repo: ctx.pr.repo, number: ctx.pr.number };
+    const state = ctx.prs.length === 0 ? "new" : "iteration";
+    const prs = ctx.prs.map((pr) => ({ owner: pr.owner, repo: pr.repo, number: pr.number }));
 
     workerLogger.info(
-      { ticket: ctx.ticket.identifier, state, hasPr: ctx.pr !== null },
+      { ticket: ctx.ticket.identifier, state, prCount: prs.length },
       "dispatching ticket to worker",
     );
     const result = await dispatch({
       state,
       ticketId: ctx.ticket.identifier,
-      pr,
+      prs,
       integrations: deps,
       packageRoot: deps.packageRoot,
     });

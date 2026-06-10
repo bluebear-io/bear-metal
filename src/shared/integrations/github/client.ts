@@ -4,6 +4,7 @@ import { Octokit, type RestEndpointMethodTypes } from "@octokit/rest";
 import type { JsonValue } from "../../json.js";
 import type { CommentCapable, Integration } from "../base.js";
 import type {
+  CheckRun,
   FailedCheckRun,
   FailedStatus,
   PRState,
@@ -142,6 +143,78 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return data.default_branch;
   }
 
+  /** Every repo the App installation can access. Used by the backfill tool to enumerate where to look for PRs. */
+  async listInstallationRepositories(): Promise<Array<{ owner: string; repo: string }>> {
+    const repos: Array<{ owner: string; repo: string }> = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.apps.listReposAccessibleToInstallation({ per_page: 100, page });
+      for (const repo of data.repositories) {
+        repos.push({ owner: repo.owner.login, repo: repo.name });
+      }
+      if (data.repositories.length < 100) {
+        break;
+      }
+      page += 1;
+    }
+    return repos;
+  }
+
+  /**
+   * Pull requests for a head branch, across all states by default. Used by the backfill tool to
+   * locate the PR(s) Linear's `gitBranchName` corresponds to, including merged and closed ones.
+   */
+  async listPullRequestsForBranch(
+    owner: string,
+    repo: string,
+    head: string,
+    state: "all" | "open" | "closed" = "all",
+  ): Promise<PullRequest[]> {
+    const prs: PullRequest[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.pulls.list({
+        owner,
+        repo,
+        head: `${owner}:${head}`,
+        state,
+        per_page: 100,
+        page,
+      });
+      for (const pr of data) {
+        prs.push(toPullRequest(pr, owner, repo));
+      }
+      if (data.length < 100) {
+        break;
+      }
+      page += 1;
+    }
+    return prs;
+  }
+
+  /** Every check run for a ref. The backfill tool keeps the latest per workflow when synthesizing ci_runs. */
+  async listCheckRunsForRef(owner: string, repo: string, ref: string): Promise<CheckRun[]> {
+    const runs: CheckRun[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.checks.listForRef({
+        owner,
+        repo,
+        ref,
+        per_page: 100,
+        page,
+      });
+      for (const run of data.check_runs) {
+        runs.push(toCheckRun(run));
+      }
+      if (data.check_runs.length < 100) {
+        break;
+      }
+      page += 1;
+    }
+    return runs;
+  }
+
   async resolveReviewThread(threadId: string): Promise<void> {
     await this.octokit.graphql(RESOLVE_REVIEW_THREAD_MUTATION, { threadId });
   }
@@ -252,6 +325,23 @@ function toPullRequest(
     draft: Boolean(pull.draft),
     merged: "merged" in pull ? pull.merged : pull.merged_at !== null,
     url: pull.html_url,
+    createdAt: pull.created_at ?? null,
+    updatedAt: pull.updated_at ?? null,
+    mergedAt: pull.merged_at ?? null,
+    closedAt: pull.closed_at ?? null,
+  };
+}
+
+function toCheckRun(run: OctokitCheckRun): CheckRun {
+  return {
+    id: run.id,
+    name: run.name,
+    status: run.status,
+    conclusion: run.conclusion ?? null,
+    url: run.html_url ?? null,
+    summary: run.output?.title ?? null,
+    startedAt: run.started_at ?? null,
+    completedAt: run.completed_at ?? null,
   };
 }
 

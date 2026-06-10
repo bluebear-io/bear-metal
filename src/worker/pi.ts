@@ -34,16 +34,24 @@ export async function runPiWorker(input: {
   let decision: DispatchResult | undefined;
   const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
 
+  // PRs accumulate across multiple wrote_code calls (one per repo in this dispatch).
+  // A pending decision (respond_*) carries the accumulated set so the manager keeps tracking them.
+  const collectedPrs: PullRequestRef[] = [];
+
   const setDecision = (next: DispatchResult) => {
-    if (decision) {
-      // Idempotent for same status.
-      if (decision.status === next.status) return;
-      // pending wins over done: code was committed but we're still blocked on a thread.
-      if (next.status === "pending") { decision = next; return; }
-      if (decision.status === "pending") return;
-      throw new Error(`Pi attempted to finish twice: ${decision.status} then ${next.status}`);
+    if (next.status === "pending") {
+      decision = next;
+    } else {
+      collectedPrs.push(...next.prs);
+      // Preserve a pending decision across subsequent wrote_code calls: once a
+      // respond_* tool has handed control back to a human, additional code
+      // pushes must not silently flip the dispatch result to "done".
+      if (decision?.status === "pending") {
+        decision = { status: "pending", prs: mergePrs(decision.prs, next.prs) };
+      } else {
+        decision = { status: "done", prs: [...collectedPrs] };
+      }
     }
-    decision = next;
   };
 
   const respondToTicketReporter = defineTool({
@@ -56,7 +64,7 @@ export async function runPiWorker(input: {
     execute: async (_toolCallId, params) => {
       logger.info({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
       await input.linear.commentAndHandBack(input.context.ticketId, params.text);
-      setDecision({ status: "pending", pr: input.context.pr });
+      setDecision({ status: "pending", prs: mergePrs(input.context.prs, collectedPrs) });
       return {
         content: [{ type: "text", text: "Posted Linear comment, relinquished delegation, and marked dispatch pending." }],
         details: {},
@@ -74,12 +82,12 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.info({ threadId: params.threadId }, "pi tool: agree_with_github_message");
-      const pr = requirePullRequest(input.context.pr);
+      const pr = requireSinglePr(input.context.prs);
       await input.github.replyToReviewThread(
         pr,
         params.threadId,
         params.text,
-        input.context.pullRequest?.unresolvedReviewThreads ?? [],
+        unresolvedThreadsFor(input.context, pr),
       );
       await input.github.resolveReviewThread(params.threadId);
       return {
@@ -99,12 +107,12 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.info({ threadId: params.threadId }, "pi tool: disagree_with_github_message");
-      const pr = requirePullRequest(input.context.pr);
+      const pr = requireSinglePr(input.context.prs);
       await input.github.replyToReviewThread(
         pr,
         params.threadId,
         params.text,
-        input.context.pullRequest?.unresolvedReviewThreads ?? [],
+        unresolvedThreadsFor(input.context, pr),
       );
       return {
         content: [{ type: "text", text: `Replied to review thread ${params.threadId} with disagreement.` }],
@@ -123,14 +131,14 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.info({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
-      const pr = requirePullRequest(input.context.pr);
+      const pr = requireSinglePr(input.context.prs);
       await input.github.replyToReviewThread(
         pr,
         params.threadId,
         params.text,
-        input.context.pullRequest?.unresolvedReviewThreads ?? [],
+        unresolvedThreadsFor(input.context, pr),
       );
-      setDecision({ status: "pending", pr: input.context.pr });
+      setDecision({ status: "pending", prs: mergePrs(input.context.prs, collectedPrs) });
       return {
         content: [{ type: "text", text: `Replied to review thread ${params.threadId} and set dispatch to pending.` }],
         details: {},
@@ -161,9 +169,18 @@ export async function runPiWorker(input: {
         { mode: 0o600 },
       );
       await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
-      const isNewPr = input.context.pr === null;
-      const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
-      setDecision({ status: "done", pr });
+      const remote = await getRemoteRef(repoRoot);
+      // Design constraint: at most one PR per (owner, repo) per dispatch.
+      // A second wrote_code call against the same repo updates the existing PR
+      // rather than creating a new branch/PR within that repo.
+      // Check collectedPrs (created earlier in this dispatch) before input.context.prs (from previous dispatch).
+      const existingPr =
+        collectedPrs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
+        input.context.prs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
+        null;
+      const isNewPr = existingPr === null;
+      const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
+      setDecision({ status: "done", prs: [pr] });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
       } catch (err) {
@@ -316,13 +333,13 @@ export async function runPiWorker(input: {
       input.context.ticketId,
       `Stopped automatically: ${limitHitReason}. Please review progress and re-delegate to continue.`,
     );
-    return { status: "pending", pr: input.context.pr };
+    return { status: "pending", prs: mergePrs(input.context.prs, collectedPrs) };
   }
 
   if (!decision) {
     if (input.context.state === "iteration") {
       // Agent disagreed with all threads and made no code changes — replies were posted, work is done.
-      decision = { status: "done", pr: input.context.pr };
+      decision = { status: "done", prs: mergePrs(input.context.prs, collectedPrs) };
     } else {
       throw new Error("Pi finished without calling a finish tool (wrote_code or respond_to_ticket_reporter)");
     }
@@ -331,11 +348,39 @@ export async function runPiWorker(input: {
   return usage ? { ...decision, usage } : decision;
 }
 
+function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequestRef[] {
+  const out: PullRequestRef[] = [...base];
+  for (const pr of collected) {
+    const replaceIdx = out.findIndex((p) => p.owner === pr.owner && p.repo === pr.repo);
+    if (replaceIdx >= 0) {
+      out[replaceIdx] = pr;
+    } else {
+      out.push(pr);
+    }
+  }
+  return out;
+}
+
+function unresolvedThreadsFor(context: WorkerInputContext, pr: PullRequestRef) {
+  // Review-thread tools run only in single-PR iterations (enforced by requireSinglePr),
+  // so we always read the threads of the sole fetched PR context.
+  const idx = context.prs.findIndex(
+    (p) => p.owner === pr.owner && p.repo === pr.repo && p.number === pr.number,
+  );
+  return context.pullRequests[idx]?.unresolvedReviewThreads ?? [];
+}
+
 async function createPullRequestForRepo(
   github: WorkerGitHub,
-  params: { repoRoot: string; prTitle: string; prBody: string; baseBranch?: string },
+  params: {
+    repoRoot: string;
+    prTitle: string;
+    prBody: string;
+    baseBranch?: string;
+    remote: { owner: string; repo: string };
+  },
 ): Promise<PullRequestRef> {
-  const remote = await getRemoteRef(params.repoRoot);
+  const { remote } = params;
   const branch = await getCurrentBranch(params.repoRoot);
   const base = params.baseBranch ?? (await github.getDefaultBranch(remote.owner, remote.repo));
   return github.createPullRequest({
@@ -348,11 +393,14 @@ async function createPullRequestForRepo(
   });
 }
 
-function requirePullRequest(pr: PullRequestRef | null): PullRequestRef {
-  if (!pr) {
+function requireSinglePr(prs: PullRequestRef[]): PullRequestRef {
+  if (prs.length === 0) {
     throw new Error("This tool requires an existing pull request");
   }
-  return pr;
+  if (prs.length > 1) {
+    throw new Error("Review-thread tools are only supported for single-PR iterations");
+  }
+  return prs[0]!;
 }
 
 function setApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: string): void {

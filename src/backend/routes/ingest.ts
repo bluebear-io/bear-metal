@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { Router, type RequestHandler } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
@@ -56,9 +57,13 @@ function asObject(body: unknown): Record<string, unknown> {
 export function createIngestRouter(db: Db, token: string): Router {
   const router = Router();
 
+  const expectedBearer = `Bearer ${token}`;
   const requireToken: RequestHandler = (req, res, next) => {
     const header = req.header("authorization") ?? "";
-    if (header !== `Bearer ${token}`) {
+    const match =
+      header.length === expectedBearer.length &&
+      timingSafeEqual(Buffer.from(header), Buffer.from(expectedBearer));
+    if (!match) {
       res.status(401).json({ error: "unauthorized" });
       return;
     }

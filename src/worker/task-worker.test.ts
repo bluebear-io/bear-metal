@@ -10,11 +10,11 @@ const logger = createLogger({ level: "silent", name: "test" });
 
 describe("TaskWorker", () => {
   it("acquires a task with its worker id and writes the dispatch result", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", pr: null, trigger: "new" as const, ticketIssueId: "lin_1" };
+    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const tasks = new FakeTaskQueue(taskRecord({ input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
       status: "done",
-      pr: { owner: "bluebear-io", repo: "bear-metal", number: 7 },
+      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 7 }],
     }));
     const worker = new TaskWorker({
       logger,
@@ -40,19 +40,19 @@ describe("TaskWorker", () => {
         taskId: "task-1",
         result: {
           status: "done",
-          pr: { owner: "bluebear-io", repo: "bear-metal", number: 7 },
+          prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 7 }],
         },
       },
     ]);
   });
 
   it("reports run lifecycle, worker rows, and progress events through the reporter", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", pr: null, trigger: "new" as const, ticketIssueId: "lin_1" };
+    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const pr = { owner: "bluebear-io", repo: "bear-metal", number: 7 };
     const tasks = new FakeTaskQueue(taskRecord({ id: "task-1", attemptNumber: 2, input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
       status: "done",
-      pr,
+      prs: [pr],
     }));
     const reporter = makeReporter();
     const worker = new TaskWorker({
@@ -98,7 +98,7 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     ticketId: "DEN-1",
     dispatchState: "new",
     attemptNumber: 1,
-    input: { state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" },
+    input: { state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" },
     workerId: null,
     resultStatus: null,
     result: null,

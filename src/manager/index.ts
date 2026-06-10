@@ -90,7 +90,7 @@ if (config.testTicketId) {
   let exitCode = 0;
   try {
     const ticket = await linear.getTicket(config.testTicketId);
-    const ctx: TicketContext = { ticket, pr: null };
+    const ctx: TicketContext = { ticket, prs: [] };
     await handler.handle(ctx, "new");
     await taskWorker.tick();
     await taskWorker.stop();

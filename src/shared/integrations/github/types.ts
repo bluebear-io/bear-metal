@@ -18,6 +18,31 @@ export interface PullRequest {
   draft: boolean;
   merged: boolean;
   url: string;
+  /**
+   * ISO timestamps populated by `GitHubIntegration` for PRs returned from the API. Optional so
+   * test fixtures don't need to fill them in — only callers that need historical context (e.g.
+   * the backfill tool) read these.
+   */
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  mergedAt?: string | null;
+  closedAt?: string | null;
+}
+
+/** Lean check-run shape mapped from the Octokit REST response at the integration boundary. */
+export interface CheckRun {
+  id: number;
+  name: string;
+  /** GitHub's check-run status field — "queued" / "in_progress" / "completed". */
+  status: string;
+  /** GitHub's check-run conclusion when completed (null while in_progress). */
+  conclusion: string | null;
+  /** Link to the run in the GitHub UI. */
+  url: string | null;
+  /** First-line summary of the result, when the check provides one. */
+  summary: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 /** Enough to locate a PR for follow-up calls (get, comment). */

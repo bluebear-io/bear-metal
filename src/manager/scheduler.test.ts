@@ -81,8 +81,8 @@ async function makeQueue(): Promise<TaskQueue> {
 
 async function seedCompletedTask(
   tasks: TaskQueue,
-  input: Pick<DispatchTaskInput, "state" | "ticketId" | "pr">,
-  result: { status: "pending" | "done"; pr: PullRequestRef | null },
+  input: Pick<DispatchTaskInput, "state" | "ticketId" | "prs">,
+  result: { status: "pending" | "done"; prs: PullRequestRef[] },
 ): Promise<void> {
   const task = await tasks.enqueue({ ...input, trigger: "new", ticketIssueId: input.ticketId.toLowerCase() });
   const acquired = await tasks.acquireNext("worker-1");
@@ -124,9 +124,16 @@ class FakeLinear implements LinearSource {
 
 class FakeGitHub implements GitHubSource {
   statusCalls: number[] = [];
-  constructor(private readonly opts: { status?: PullRequestStatus } = {}) {}
+  constructor(
+    private readonly opts: {
+      status?: PullRequestStatus;
+      statusByNumber?: Record<number, PullRequestStatus>;
+    } = {},
+  ) {}
   async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
     this.statusCalls.push(ref.number);
+    const perPr = this.opts.statusByNumber?.[ref.number];
+    if (perPr) return perPr;
     return this.opts.status ?? status(openPr(ref.number));
   }
 }
@@ -139,9 +146,9 @@ class RecordingHandler implements TicketHandler {
     this.handled.push(ctx);
     this.triggers.push(trigger);
     const task = await this.tasks.enqueue({
-      state: ctx.pr === null ? "new" : "iteration",
+      state: ctx.prs.length === 0 ? "new" : "iteration",
       ticketId: ctx.ticket.identifier,
-      pr: ctx.pr ? { owner: ctx.pr.owner, repo: ctx.pr.repo, number: ctx.pr.number } : null,
+      prs: ctx.prs.map((pr) => ({ owner: pr.owner, repo: pr.repo, number: pr.number })),
       trigger,
       ticketIssueId: ctx.ticket.id,
     });
@@ -226,7 +233,7 @@ describe("Scheduler.tick", () => {
 
   it("uses the worker-returned PR as the only known PR source for later iterations", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a") }),
@@ -240,12 +247,12 @@ describe("Scheduler.tick", () => {
     await scheduler.stop();
 
     expect(handler.handled).toHaveLength(1);
-    expect(handler.handled[0]?.pr).toEqual(openPr(7));
+    expect(handler.handled[0]?.prs).toEqual([prRef(7)]);
     const [slot] = await tasks.listTracked();
     expect(slot?.latestTask.input).toEqual({
       state: "iteration",
       ticketId: "A",
-      pr: prRef(7),
+      prs: [prRef(7)],
       trigger: "ci_failure",
       ticketIssueId: "a",
     });
@@ -286,7 +293,7 @@ describe("Scheduler.tick", () => {
 
   it("releases a ticket when its known PR is merged and hands it back to the assignee", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
     const github = new FakeGitHub({ status: status(openPr(7, { merged: true, state: "closed" })) });
     const linear = new FakeLinear([], { A: makeTicket("a") });
     const scheduler = buildScheduler({
@@ -306,7 +313,7 @@ describe("Scheduler.tick", () => {
 
   it("releases a ticket when its known PR is closed unmerged without handing it back", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
     const github = new FakeGitHub({ status: status(openPr(7, { state: "closed" })) });
     const linear = new FakeLinear([], { A: makeTicket("a") });
     const scheduler = buildScheduler({
@@ -326,7 +333,7 @@ describe("Scheduler.tick", () => {
 
   it("re-dispatches an iteration whose known PR has failed tests", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a") }),
@@ -341,12 +348,12 @@ describe("Scheduler.tick", () => {
 
     expect(await tasks.countTracked()).toBe(1);
     expect(handler.handled.at(-1)?.ticket.id).toBe("a");
-    expect(handler.handled.at(-1)?.pr?.number).toBe(7);
+    expect(handler.handled.at(-1)?.prs[0]?.number).toBe(7);
   });
 
   it("re-dispatches an iteration with actionable unresolved review comments", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a") }),
@@ -364,7 +371,7 @@ describe("Scheduler.tick", () => {
 
   it("does not re-dispatch an iteration whose unresolved threads are all from bear-metal (waiting on human)", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a") }),
@@ -383,7 +390,7 @@ describe("Scheduler.tick", () => {
 
   it("parks a tracked ticket whose delegation was relinquished, without dispatching or hitting GitHub", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const reassigned = makeTicket("a", { delegate: { id: "someone-else" } });
     const github = new FakeGitHub();
     const handler = new RecordingHandler(tasks);
@@ -407,7 +414,7 @@ describe("Scheduler.tick", () => {
 
   it("keys on delegate, not assignee: parks a ticket assigned to the agent but delegated elsewhere", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const refreshed = makeTicket("a", { assignee: { id: "user-1" }, delegate: { id: "someone-else" } });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
@@ -428,7 +435,7 @@ describe("Scheduler.tick", () => {
 
   it("resumes a parked ticket when it is reassigned back to the manager", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     await tasks.setSlotStatus("A", "parked");
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
@@ -450,7 +457,7 @@ describe("Scheduler.tick", () => {
 
   it("does not re-dispatch a no-PR active ticket on refresh", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a") }),
@@ -471,7 +478,7 @@ describe("Scheduler.tick", () => {
 
   it("does not re-dispatch a clean, open, unmerged iteration", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a") }),
@@ -490,7 +497,7 @@ describe("Scheduler.tick", () => {
 
   it("releases terminal Linear tickets even when no PR is known", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "pending", pr: null });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const terminal = makeTicket("a", { status: { name: "Done", type: "completed" } });
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: terminal }),
@@ -511,8 +518,8 @@ describe("Scheduler.tick", () => {
     for (let i = 0; i < 20; i++) {
       await seedCompletedTask(
         tasks,
-        { state: "new", ticketId: "A", pr: null },
-        { status: "done", pr: prRef(7) },
+        { state: "new", ticketId: "A", prs: [] },
+        { status: "done", prs: [prRef(7)] },
       );
     }
     const linear = new FakeLinear([], { A: makeTicket("a") });
@@ -535,8 +542,8 @@ describe("Scheduler.tick", () => {
     for (let i = 0; i < 5; i++) {
       await seedCompletedTask(
         tasks,
-        { state: "new", ticketId: "A", pr: null },
-        { status: "done", pr: prRef(7) },
+        { state: "new", ticketId: "A", prs: [] },
+        { status: "done", prs: [prRef(7)] },
       );
     }
     const linear = new FakeLinear([], { A: makeTicket("a") });
@@ -553,8 +560,8 @@ describe("Scheduler.tick", () => {
 
   it("logs and skips a completed done task with no PR while continuing other tracked slots", async () => {
     const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: null });
-    await seedCompletedTask(tasks, { state: "new", ticketId: "B", pr: null }, { status: "done", pr: prRef(7) });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [] });
+    await seedCompletedTask(tasks, { state: "new", ticketId: "B", prs: [] }, { status: "done", prs: [prRef(7)] });
     const handler = new RecordingHandler(tasks);
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a"), B: makeTicket("b") }),
@@ -569,5 +576,84 @@ describe("Scheduler.tick", () => {
 
     expect(handler.handled.map((ctx) => ctx.ticket.identifier)).toEqual(["B"]);
     expect(await tasks.countTracked()).toBe(2);
+  });
+
+  it("re-dispatches a ticket with multiple known PRs when any has failing tests", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(
+      tasks,
+      { state: "new", ticketId: "A", prs: [] },
+      { status: "done", prs: [prRef(7), prRef(8)] },
+    );
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      github: new FakeGitHub({
+        statusByNumber: {
+          7: status(openPr(7), true, false),
+          8: status(openPr(8), false, false),
+        },
+      }),
+      tasks,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(1);
+    expect(handler.handled[0]?.prs).toEqual([prRef(7), prRef(8)]);
+    expect(await tasks.countTracked()).toBe(1);
+  });
+
+  it("releases a ticket with multiple known PRs only when all are merged or closed", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(
+      tasks,
+      { state: "new", ticketId: "A", prs: [] },
+      { status: "done", prs: [prRef(7), prRef(8)] },
+    );
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({
+      linear,
+      github: new FakeGitHub({
+        statusByNumber: {
+          7: status(openPr(7, { merged: true, state: "closed" })),
+          // PR 8 still open — ticket must NOT be released yet.
+          8: status(openPr(8)),
+        },
+      }),
+      tasks,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await tasks.countTracked()).toBe(1);
+    expect(linear.handBackCalls).toEqual([]);
+
+    // Now both PRs are merged — ticket should be released and handed back.
+    const scheduler2 = buildScheduler({
+      linear,
+      github: new FakeGitHub({
+        statusByNumber: {
+          7: status(openPr(7, { merged: true, state: "closed" })),
+          8: status(openPr(8, { merged: true, state: "closed" })),
+        },
+      }),
+      tasks,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler2.tick();
+    await scheduler2.stop();
+
+    expect(await tasks.countTracked()).toBe(0);
+    expect(linear.handBackCalls).toEqual(["a"]);
   });
 });
