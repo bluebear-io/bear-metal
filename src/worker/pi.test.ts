@@ -407,6 +407,34 @@ describe("runPiWorker", () => {
     expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
   });
 
+  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const github = makeGithub();
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "feat: ship",
+        prTitle: "feat: ship",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
+      kind: "opened",
+      pr: { owner: "acme", repo: "widgets", number: 42 },
+      title: "feat: ship",
+      url: "https://github.com/acme/widgets/pull/42",
+      ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
+    });
+  });
+
   it("comments and hands the ticket back to its human owner when pending human response", async () => {
     const { runPiWorker } = await import("./pi.js");
     const commentAndHandBack = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
