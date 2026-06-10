@@ -11,6 +11,10 @@ export interface Config {
   logLevel: string;
   logPretty: boolean;
   testTicketId: string | null;
+  /** Optional Slack bot token (xoxb-...). When set together with slackNotificationChannel, PR open/update notifications are sent. */
+  slackBotToken: string | null;
+  /** Optional Slack channel id or name receiving PR notifications. */
+  slackNotificationChannel: string | null;
 }
 
 function requiredEnv(name: string): string {
@@ -65,5 +69,21 @@ export function loadConfig(): Readonly<Config> {
     logLevel: process.env.LOG_LEVEL || "info",
     logPretty: boolEnv("LOG_PRETTY", false),
     testTicketId: process.env.TEST_TICKET_ID?.trim() || null,
+    ...loadSlackConfig(),
   });
+}
+
+/**
+ * Slack is opt-in: both vars must be set to enable notifications, or both must be
+ * empty to disable them. Setting only one is a misconfiguration we surface loudly.
+ */
+function loadSlackConfig(): { slackBotToken: string | null; slackNotificationChannel: string | null } {
+  const token = process.env.SLACK_BOT_TOKEN?.trim() || null;
+  const channel = process.env.SLACK_NOTIFICATION_CHANNEL?.trim() || null;
+  if ((token && !channel) || (!token && channel)) {
+    throw new Error(
+      "SLACK_BOT_TOKEN and SLACK_NOTIFICATION_CHANNEL must be set together (or both unset to disable Slack notifications)",
+    );
+  }
+  return { slackBotToken: token, slackNotificationChannel: channel };
 }

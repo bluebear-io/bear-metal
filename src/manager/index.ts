@@ -1,6 +1,12 @@
 import "dotenv/config";
 
-import { createLogger, GitHubIntegration, LinearIntegration, type TicketContext } from "../shared/index.js";
+import {
+  createLogger,
+  GitHubIntegration,
+  LinearIntegration,
+  SlackIntegration,
+  type TicketContext,
+} from "../shared/index.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
@@ -29,6 +35,19 @@ const github = new GitHubIntegration({
   privateKey: config.githubAppPrivateKey,
   installationId: config.githubAppInstallationId,
 });
+const slack =
+  config.slackBotToken && config.slackNotificationChannel
+    ? new SlackIntegration({
+        token: config.slackBotToken,
+        channel: config.slackNotificationChannel,
+        logger: createLogger({ level: config.logLevel, name: "slack", pretty: config.logPretty }),
+      })
+    : undefined;
+if (!slack) {
+  logger.warn(
+    "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
+  );
+}
 const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
 await tasks.initialize();
 const handler = new ManagerTicketHandler({ logger, tasks });
@@ -46,7 +65,7 @@ const scheduler = new Scheduler({
 const taskWorker = new TaskWorker({
   logger,
   tasks,
-  integrations: { github, linear },
+  integrations: { github, linear, slack },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
 });

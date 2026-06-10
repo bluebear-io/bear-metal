@@ -26,7 +26,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const pr = input.pr ?? null;
   validateDispatchInputs(state, ticketId, pr);
 
-  const { github, linear } = integrations;
+  const { github, linear, slack } = integrations;
   const packageRoot = input.packageRoot ?? getPackageRoot(import.meta.url);
   const workspaceDir = workspaceForTicket(packageRoot, ticketId);
 
@@ -74,7 +74,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear, gitEnv });
+    const result = await runPiWorker({ context, github, linear, slack, gitEnv });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
