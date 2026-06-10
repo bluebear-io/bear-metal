@@ -100,3 +100,26 @@ npm test         # run unit tests
 ```bash
 docker compose up --build   # runs the manager; GET /health on $PORT
 ```
+
+## Backfill (dashboard DB)
+
+The dashboard reads from its own SQLite file (`BEAR_METAL_DB_PATH`). If you need
+to pre-populate it from history — e.g. after a fresh deploy or to recover from a
+corrupted file — run the backfill tool. It walks every Linear ticket delegated
+to the agent (across all states, including completed/canceled/merged), enriches
+each with the matching GitHub PR(s) + check runs, and writes a coherent ticket
+bundle to the dashboard DB.
+
+```bash
+# Reads Linear + GitHub credentials from the same env vars the manager uses.
+BEAR_METAL_DB_PATH=./bear-metal.db npx tsx src/backend/backfill/index.ts
+
+# Flags
+#   --dry-run      Read everything, write nothing; print the would-be summary.
+#   --limit N      Stop after N tickets (useful for testing).
+#   --verbose      Per-ticket log lines instead of just a final summary.
+```
+
+Re-runs are safe — tickets already in the DB are left untouched, including
+all of their runs / PRs / CI runs / events. Only newly-delegated tickets get
+inserted on subsequent runs.
