@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker, WorkerStatusTransition } from "./types.js";
@@ -143,9 +143,11 @@ export function getWorkersTimeline(db: Db, options: TimelineOptions): WorkerTime
   const timelines: WorkerTimeline[] = [];
 
   for (const worker of workers) {
-    // Seed: most recent transition <= windowStart establishes the status at window open.
+    // Seed: most recent transition strictly before windowStart establishes the status at window open.
+    // Strict `<` avoids double-counting a transition that lands exactly on windowStart (it is
+    // already returned by the within-window query below).
     const seed = db.select().from(schema.workerStatusTransitions)
-      .where(and(eq(schema.workerStatusTransitions.workerId, worker.id), lte(schema.workerStatusTransitions.changedAt, windowStart)))
+      .where(and(eq(schema.workerStatusTransitions.workerId, worker.id), lt(schema.workerStatusTransitions.changedAt, windowStart)))
       .orderBy(desc(schema.workerStatusTransitions.changedAt))
       .get();
     const withinWindow = db.select().from(schema.workerStatusTransitions)

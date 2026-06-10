@@ -61,7 +61,7 @@ export function seedMockData(db: Db): void {
     { id: "wst_5", workerId: "wk_2", status: "idle", changedAt: t("2026-06-09T07:00:00Z") },
     { id: "wst_6", workerId: "wk_2", status: "busy", changedAt: t("2026-06-09T08:45:00Z") },
     // worker-3: idle → busy → dead
-    { id: "wst_7", workerId: "wk_3", status: "idle", changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wst_7", workerId: "wk_3", status: "idle", changedAt: t("2026-06-09T05:00:00Z") },
     { id: "wst_8", workerId: "wk_3", status: "busy", changedAt: t("2026-06-09T05:30:00Z") },
     { id: "wst_9", workerId: "wk_3", status: "dead", changedAt: t("2026-06-09T08:40:00Z") },
   ]).run();
