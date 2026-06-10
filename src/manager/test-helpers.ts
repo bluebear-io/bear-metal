@@ -9,6 +9,7 @@ export function makeTicket(id: string, overrides: Partial<Ticket> = {}): Ticket 
     url: `https://linear.app/${id}`,
     branchName: `feature/${id.toLowerCase()}`,
     status: { name: "Todo", type: "unstarted" },
+    priority: 0,
     labels: ["bear-metal"],
     assignee: { id: "creator" },
     // Default delegate to the agent the scheduler tests run as ("user-1"), so a refreshed
@@ -19,5 +20,5 @@ export function makeTicket(id: string, overrides: Partial<Ticket> = {}): Ticket 
 }
 
 export function makeContext(id: string): TicketContext {
-  return { ticket: makeTicket(id), pr: null };
+  return { ticket: makeTicket(id), prs: [] };
 }

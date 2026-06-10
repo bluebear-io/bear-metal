@@ -1,4 +1,4 @@
-import type { BmStatus, TicketDetail, TicketListItem, WorkerListItem, WorkerTimelineResponse } from "./types.js";
+import type { BmStatus, ModelComparisonRow, TicketDetail, TicketListItem, WorkerListItem, WorkerTimelineResponse } from "./types.js";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -29,4 +29,10 @@ export async function fetchWorkers(): Promise<WorkerListItem[]> {
 
 export async function fetchWorkerTimeline(hours: number): Promise<WorkerTimelineResponse> {
   return getJson<WorkerTimelineResponse>(`/api/workers/timeline?hours=${encodeURIComponent(String(hours))}`);
+}
+
+export async function fetchModelComparison(): Promise<ModelComparisonRow[]> {
+  const body = await getJson<{ models: ModelComparisonRow[] }>("/api/models/comparison");
+
+  return body.models;
 }

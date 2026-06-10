@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
 import {
-  listTickets, getTicketDetail, listWorkers, listWorkerTimeline,
+  listTickets, getTicketDetail, listWorkers, listWorkerTimeline, listModelComparison,
   WORKER_TIMELINE_DEFAULT_HOURS, WORKER_TIMELINE_MIN_HOURS, WORKER_TIMELINE_MAX_HOURS,
 } from "../db/repository.js";
 
@@ -56,6 +56,10 @@ export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
       hours = parsed;
     }
     res.json(listWorkerTimeline(db, { hours }));
+  });
+
+  router.get("/models/comparison", (_req, res) => {
+    res.json({ models: listModelComparison(db) });
   });
 
   return router;

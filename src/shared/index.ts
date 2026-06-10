@@ -21,7 +21,6 @@ export type {
 } from "./integrations/linear/types.js";
 export {
   GitHubIntegration,
-  branchMatchesTicket,
   type GitHubIntegrationOptions,
 } from "./integrations/github/client.js";
 export type {
@@ -35,9 +34,17 @@ export type {
   ReviewThread,
   ReviewThreadComment,
 } from "./integrations/github/types.js";
+export {
+  SlackIntegration,
+  formatNotificationText,
+  type SlackIntegrationOptions,
+  type PullRequestNotification,
+  type PullRequestNotificationKind,
+} from "./integrations/slack/client.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
 export { createDashboardClient, type DashboardClient, type DashboardClientOptions } from "./dashboard/client.js";
 export type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
+  CiCheckPayload, ReviewThreadPayload, EventPayload,
   BmStatus, RunStatus, RunTrigger, StopReason, CiStatus, EventType, EventSource, WorkerStatus as DashboardWorkerStatus,
 } from "./dashboard/types.js";

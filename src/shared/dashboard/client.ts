@@ -1,6 +1,7 @@
 import type { Logger } from "../logger.js";
 import type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
+  CiCheckPayload, ReviewThreadPayload, EventPayload,
 } from "./types.js";
 
 export interface DashboardClientOptions {
@@ -16,6 +17,10 @@ export interface DashboardClient {
   upsertRun(p: RunPayload): Promise<void>;
   upsertPullRequest(p: PullRequestPayload): Promise<void>;
   upsertCiRun(p: CiRunPayload): Promise<void>;
+  /** Replace the failing checks attached to a CI run (mirrors the latest poll result). */
+  replaceCiChecks(ciRunId: string, checks: CiCheckPayload[]): Promise<void>;
+  /** Replace the review threads attached to a PR (mirrors the latest poll result). */
+  replaceReviewThreads(prId: string, threads: ReviewThreadPayload[]): Promise<void>;
   recordEvent(p: EventPayload): Promise<void>;
 }
 
@@ -51,6 +56,10 @@ export function createDashboardClient(options: DashboardClientOptions): Dashboar
     upsertRun: (p) => send("PUT", `/api/runs/${encodeURIComponent(p.id)}`, p),
     upsertPullRequest: (p) => send("PUT", `/api/pull-requests/${encodeURIComponent(p.id)}`, p),
     upsertCiRun: (p) => send("PUT", `/api/ci-runs/${encodeURIComponent(p.id)}`, p),
+    replaceCiChecks: (ciRunId, checks) =>
+      send("PUT", `/api/ci-runs/${encodeURIComponent(ciRunId)}/checks`, { checks }),
+    replaceReviewThreads: (prId, threads) =>
+      send("PUT", `/api/pull-requests/${encodeURIComponent(prId)}/review-threads`, { threads }),
     recordEvent: (p) => send("POST", `/api/events`, p),
   };
 }

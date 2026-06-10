@@ -18,13 +18,15 @@ afterEach(async () => {
 describe("TaskQueue", () => {
   it("enqueues and atomically acquires one task", async () => {
     const queue = await makeQueue();
-    const input = { state: "new" as const, ticketId: "DEN-1", pr: null, trigger: "new" as const, ticketIssueId: "lin_0" };
+    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_0" };
 
     const task = await queue.enqueue(input);
     expect(task.ticketId).toBe("DEN-1");
     expect(task.dispatchState).toBe("new");
     expect(task.workerId).toBeNull();
     expect(task.resultStatus).toBeNull();
+    expect(task.slotStatus).toBe("active");
+    expect(task.releasedAt).toBeNull();
     expect(task.input).toEqual(input);
 
     const acquired = await queue.acquireNext("worker-1");
@@ -35,33 +37,31 @@ describe("TaskQueue", () => {
     await expect(queue.acquireNext("worker-2")).resolves.toBeNull();
   });
 
-  it("records dispatch result JSON and returns completed tracked tasks", async () => {
+  it("records dispatch result JSON on completed tasks", async () => {
     const queue = await makeQueue();
-    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
-    const second = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null, trigger: "new", ticketIssueId: "lin_2" });
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
 
     await queue.acquireNext("worker-1");
     await queue.complete(first.id, {
       status: "done",
-      pr: { owner: "bluebear-io", repo: "bear-metal", number: 5 },
+      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 5 }],
     });
 
-    const completed = await queue.getCompleted([first.id, second.id]);
-    expect(completed).toHaveLength(1);
-    expect(completed[0]?.id).toBe(first.id);
-    expect(completed[0]?.resultStatus).toBe("done");
-    expect(completed[0]?.result).toEqual({
+    const [slot] = await queue.listTracked();
+    expect(slot?.latestTask.id).toBe(first.id);
+    expect(slot?.latestTask.resultStatus).toBe("done");
+    expect(slot?.latestTask.result).toEqual({
       status: "done",
-      pr: { owner: "bluebear-io", repo: "bear-metal", number: 5 },
+      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 5 }],
     });
   });
 
   it("stamps trigger and a 1-based attemptNumber per ticket", async () => {
     const queue = createTaskQueueFromDatabaseUrl("sqlite::memory:");
     await queue.initialize();
-    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
-    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: { owner: "o", repo: "r", number: 3 }, trigger: "ci_failure", ticketIssueId: "lin_1" });
-    const other = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null, trigger: "new", ticketIssueId: "lin_2" });
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", prs: [{ owner: "o", repo: "r", number: 3 }], trigger: "ci_failure", ticketIssueId: "lin_1" });
+    const other = await queue.enqueue({ state: "new", ticketId: "DEN-2", prs: [], trigger: "new", ticketIssueId: "lin_2" });
     expect(first.attemptNumber).toBe(1);
     expect(first.input.trigger).toBe("new");
     expect(first.input.ticketIssueId).toBe("lin_1");
@@ -69,5 +69,68 @@ describe("TaskQueue", () => {
     expect(second.input.trigger).toBe("ci_failure");
     expect(other.attemptNumber).toBe(1);
     await queue.close();
+  });
+
+  it("tracks the latest unreleased task row per ticket as a manager slot", async () => {
+    const queue = await makeQueue();
+    await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    const latest = await queue.enqueue({
+      state: "iteration",
+      ticketId: "DEN-1",
+      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 5 }],
+      trigger: "ci_failure",
+      ticketIssueId: "lin_1",
+    });
+
+    const tracked = await queue.listTracked();
+    expect(tracked).toHaveLength(1);
+    expect(tracked[0]?.ticketId).toBe("DEN-1");
+    expect(tracked[0]?.latestTask.id).toBe(latest.id);
+    expect(await queue.countTracked()).toBe(1);
+  });
+
+  it("assigns iteration_number=1 on the first task and increments on re-dispatch for the same ticket", async () => {
+    const queue = await makeQueue();
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    expect(first.iterationNumber).toBe(1);
+
+    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", prs: [], trigger: "delegated_back", ticketIssueId: "lin_1" });
+    expect(second.iterationNumber).toBe(2);
+
+    const otherTicket = await queue.enqueue({ state: "new", ticketId: "DEN-2", prs: [], trigger: "new", ticketIssueId: "lin_2" });
+    expect(otherTicket.iterationNumber).toBe(1);
+  });
+
+  it("reports iteration counts via getIterationCount", async () => {
+    const queue = await makeQueue();
+    expect(await queue.getIterationCount("DEN-unknown")).toBe(0);
+
+    await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    expect(await queue.getIterationCount("DEN-1")).toBe(1);
+
+    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", prs: [], trigger: "delegated_back", ticketIssueId: "lin_1" });
+    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", prs: [], trigger: "delegated_back", ticketIssueId: "lin_1" });
+    expect(await queue.getIterationCount("DEN-1")).toBe(3);
+    expect(await queue.getIterationCount("DEN-2")).toBe(0);
+  });
+
+  it("parks, resumes, and releases a ticket slot by updating the latest task row", async () => {
+    const queue = await makeQueue();
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+
+    const parked = await queue.setSlotStatus("DEN-1", "parked");
+    expect(parked.id).toBe(task.id);
+    expect(parked.slotStatus).toBe("parked");
+    expect(parked.releasedAt).toBeNull();
+    await expect(queue.acquireNext("worker-1")).resolves.toBeNull();
+
+    const active = await queue.setSlotStatus("DEN-1", "active");
+    expect(active.slotStatus).toBe("active");
+    expect((await queue.acquireNext("worker-1"))?.id).toBe(task.id);
+
+    const released = await queue.setSlotStatus("DEN-1", "released");
+    expect(released.slotStatus).toBe("released");
+    expect(released.releasedAt).toBeInstanceOf(Date);
+    expect(await queue.countTracked()).toBe(0);
   });
 });

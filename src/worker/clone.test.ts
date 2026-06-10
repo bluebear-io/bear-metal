@@ -25,18 +25,24 @@ describe("runCloneScript", () => {
     await writeFile(join(cloneTarget, "stale.txt"), "stale", "utf8");
 
     try {
-      const result = await runCloneScript({ packageRoot: root, workspaceDir });
+      const result = await runCloneScript({ packageRoot: root, workspaceDir, githubToken: "test-token" });
 
       expect(result).toEqual({
         scriptPath: join(root, "scripts", "clone-target-repos.sh"),
         workspaceDir,
         stdout: "cloned",
         stderr: "",
+        netrcDir: expect.any(String),
       });
       await expect(access(cloneTarget)).rejects.toMatchObject({ code: "ENOENT" });
       expect(commandMock.runCommand).toHaveBeenCalledWith("bash", [join(root, "scripts", "clone-target-repos.sh")], {
         cwd: workspaceDir,
         timeoutMs: 10 * 60 * 1000,
+        env: expect.objectContaining({
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
+          GIT_CONFIG_VALUE_0: "git@github.com:",
+        }),
       });
     } finally {
       await rm(root, { recursive: true, force: true });

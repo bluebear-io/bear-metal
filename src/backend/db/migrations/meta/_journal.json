@@ -12,8 +12,15 @@
     {
       "idx": 1,
       "version": "6",
+      "when": 1781079266602,
+      "tag": "0001_chemical_quasar",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
       "when": 1781045500000,
-      "tag": "0001_worker_status_transitions",
+      "tag": "0002_worker_status_transitions",
       "breakpoints": true
     }
   ]

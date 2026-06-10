@@ -1,8 +1,8 @@
-import { screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../test/utils.js";
-import type { TicketListItem } from "../api/types.js";
+import type { BmStatus, TicketListItem } from "../api/types.js";
 import TicketsListPage from "./TicketsListPage.js";
 
 const mockTicket: TicketListItem = {
@@ -35,9 +35,26 @@ const mockTicket: TicketListItem = {
   latestCiStatus: "passed",
 };
 
+function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketListItem {
+  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestPr: null, latestCiStatus: null };
+}
+
+const multipleTickets: TicketListItem[] = [
+  makeTicket("ticket_done", "DEN-1", "completed"),
+  makeTicket("ticket_progress", "DEN-2", "in_progress"),
+  makeTicket("ticket_pr", "DEN-3", "pr_open"),
+  makeTicket("ticket_ci_failed", "DEN-4", "ci_failed"),
+  makeTicket("ticket_abandoned", "DEN-5", "abandoned"),
+  makeTicket("ticket_backlog", "DEN-6", "discovered"),
+];
+
+let mockData: TicketListItem[] = [mockTicket];
+
 vi.mock("../api/queries.js", () => ({
   useTickets: () => ({
-    data: [mockTicket],
+    get data() {
+      return mockData;
+    },
     error: null,
     isFetching: false,
     isLoading: false,
@@ -46,6 +63,10 @@ vi.mock("../api/queries.js", () => ({
 }));
 
 describe("TicketsListPage", () => {
+  beforeEach(() => {
+    mockData = [mockTicket];
+  });
+
   it("renders ticket status, latest run, attempts, and PR link", () => {
     renderWithProviders(<TicketsListPage />, "/tickets");
 
@@ -58,5 +79,41 @@ describe("TicketsListPage", () => {
       "href",
       "https://github.com/blueden/bear-metal/pull/42",
     );
+  });
+
+  it("filters tickets by bm status category", () => {
+    mockData = multipleTickets;
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    const list = screen.getByRole("region", { name: "Tickets list" });
+
+    // All by default.
+    expect(within(list).getAllByRole("row")).toHaveLength(multipleTickets.length + 1); // +1 for the header row.
+
+    fireEvent.click(screen.getByRole("button", { name: /Completed/ }));
+    expect(within(list).getByRole("link", { name: "DEN-1" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "DEN-2" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /In progress/ }));
+    expect(within(list).getByRole("link", { name: "DEN-2" })).toBeVisible();
+    expect(within(list).getByRole("link", { name: "DEN-3" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "DEN-1" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Needs human/ }));
+    expect(within(list).getByRole("link", { name: "DEN-4" })).toBeVisible();
+    expect(within(list).getByRole("link", { name: "DEN-5" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "DEN-2" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Backlog/ }));
+    expect(within(list).getByRole("link", { name: "DEN-6" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "DEN-1" })).toBeNull();
+  });
+
+  it("shows empty state when filter has no matches", () => {
+    mockData = [makeTicket("ticket_done", "DEN-1", "completed")];
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    fireEvent.click(screen.getByRole("button", { name: /Backlog/ }));
+    expect(screen.getByText("No tickets match this filter.")).toBeVisible();
   });
 });

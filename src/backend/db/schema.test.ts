@@ -7,7 +7,7 @@ import * as schema from "./schema.js";
 describe("schema", () => {
   it("exports all tables", () => {
     expect(Object.keys(schema).sort()).toEqual(
-      ["ciRuns", "events", "pullRequests", "runs", "tickets", "workers", "workerStatusTransitions"].sort(),
+      ["ciChecks", "ciRuns", "events", "pullRequests", "reviewThreads", "runs", "tickets", "workers", "workerStatusTransitions"].sort(),
     );
   });
 

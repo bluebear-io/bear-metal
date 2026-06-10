@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, lt } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
-import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
+import type { Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, EventRow, Worker } from "./types.js";
+import { estimateCostUsd, modelFamily } from "../pricing.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
@@ -31,12 +32,50 @@ export interface TicketListItem extends Ticket {
   latestCiStatus: "running" | "passed" | "failed" | null;
 }
 
+/** A CI run with its individual failing checks (test/lint/type/etc.) attached. */
+export interface CiRunWithChecks extends CiRun {
+  checks: CiCheck[];
+}
+
+/** A PR row with its review threads (resolved + unresolved) attached. */
+export interface PullRequestWithThreads extends PullRequestRow {
+  reviewThreads: ReviewThreadRow[];
+}
+
+/** Per-run usage + computed cost — null when usage isn't recorded for the run. */
+export interface RunWithUsage extends Run {
+  worker: Worker | null;
+  /** Estimated cost in USD; null when the model pricing isn't in the table or tokens weren't recorded. */
+  estimatedCostUsd: number | null;
+}
+
 export interface TicketDetail {
   ticket: Ticket;
-  runs: (Run & { worker: Worker | null })[];
-  pullRequests: PullRequestRow[];
-  ciRuns: CiRun[];
+  runs: RunWithUsage[];
+  pullRequests: PullRequestWithThreads[];
+  ciRuns: CiRunWithChecks[];
   events: EventRow[];
+}
+
+export interface ModelComparisonRow {
+  family: "claude" | "gpt" | "gemini" | "other";
+  provider: string;
+  modelName: string;
+  /** All terminal runs counted (succeeded + failed + timed_out + crashed). */
+  totalRuns: number;
+  succeededRuns: number;
+  /** succeededRuns / totalRuns, 0..1. */
+  successRate: number;
+  /** Average wall-clock seconds for runs that have both started_at and ended_at. */
+  avgDurationSeconds: number | null;
+  /** Number of runs that contributed to `avgDurationSeconds` (i.e. had both started_at and ended_at). */
+  runsWithDuration: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  /** Sum of estimated cost across all runs of this model (USD). */
+  totalCostUsd: number;
+  /** Mean cost per run (USD). */
+  avgCostUsd: number;
 }
 
 export interface WorkerListItem extends Worker {
@@ -127,13 +166,92 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
 
   const runRows = db.select().from(schema.runs).where(eq(schema.runs.ticketId, id)).orderBy(schema.runs.attemptNumber).all();
   const workersById = new Map(db.select().from(schema.workers).all().map((w) => [w.id, w]));
-  const runs = runRows.map((r) => ({ ...r, worker: r.workerId ? workersById.get(r.workerId) ?? null : null }));
+  const runs: RunWithUsage[] = runRows.map((r) => ({
+    ...r,
+    worker: r.workerId ? workersById.get(r.workerId) ?? null : null,
+    estimatedCostUsd: estimateCostUsd(r.provider, r.modelName, r.promptTokens, r.completionTokens),
+  }));
 
-  const pullRequests = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
-  const ciRuns = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, id)).orderBy(schema.ciRuns.createdAt).all();
+  const prRows = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
+  const pullRequests: PullRequestWithThreads[] = prRows.map((pr) => ({
+    ...pr,
+    reviewThreads: db.select().from(schema.reviewThreads).where(eq(schema.reviewThreads.prId, pr.id)).orderBy(schema.reviewThreads.updatedAt).all(),
+  }));
+  const ciRunRows = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, id)).orderBy(schema.ciRuns.createdAt).all();
+  const ciRuns: CiRunWithChecks[] = ciRunRows.map((ci) => ({
+    ...ci,
+    checks: db.select().from(schema.ciChecks).where(eq(schema.ciChecks.ciRunId, ci.id)).orderBy(schema.ciChecks.createdAt).all(),
+  }));
   const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
 
   return { ticket, runs, pullRequests, ciRuns, events };
+}
+
+/**
+ * Aggregate efficacy stats per `(provider, model_name)` for the model comparison view (DEN-2313).
+ * Only runs with a recorded `model_name` participate — running/dispatched rows are skipped.
+ */
+export function listModelComparison(db: Db): ModelComparisonRow[] {
+  const rows = db
+    .select()
+    .from(schema.runs)
+    .where(and(isNotNull(schema.runs.modelName), isNotNull(schema.runs.provider)))
+    .all();
+
+  const buckets = new Map<string, {
+    provider: string;
+    modelName: string;
+    totalRuns: number;
+    succeededRuns: number;
+    durations: number[];
+    promptTokens: number;
+    completionTokens: number;
+    costSum: number;
+  }>();
+
+  for (const r of rows) {
+    const provider = r.provider ?? "";
+    const modelName = r.modelName ?? "";
+    if (!provider || !modelName) continue;
+    const key = `${provider}::${modelName}`;
+    let b = buckets.get(key);
+    if (!b) {
+      b = { provider, modelName, totalRuns: 0, succeededRuns: 0, durations: [], promptTokens: 0, completionTokens: 0, costSum: 0 };
+      buckets.set(key, b);
+    }
+    b.totalRuns += 1;
+    if (r.status === "succeeded") b.succeededRuns += 1;
+    if (r.startedAt && r.endedAt) {
+      const seconds = Math.max(0, (r.endedAt.getTime() - r.startedAt.getTime()) / 1000);
+      b.durations.push(seconds);
+    }
+    b.promptTokens += r.promptTokens ?? 0;
+    b.completionTokens += r.completionTokens ?? 0;
+    const cost = estimateCostUsd(provider, modelName, r.promptTokens, r.completionTokens);
+    if (cost !== null) b.costSum += cost;
+  }
+
+  const result: ModelComparisonRow[] = [];
+  for (const b of buckets.values()) {
+    const avgDuration = b.durations.length > 0 ? b.durations.reduce((s, n) => s + n, 0) / b.durations.length : null;
+    result.push({
+      family: modelFamily(b.provider, b.modelName),
+      provider: b.provider,
+      modelName: b.modelName,
+      totalRuns: b.totalRuns,
+      succeededRuns: b.succeededRuns,
+      successRate: b.totalRuns > 0 ? b.succeededRuns / b.totalRuns : 0,
+      avgDurationSeconds: avgDuration,
+      runsWithDuration: b.durations.length,
+      totalPromptTokens: b.promptTokens,
+      totalCompletionTokens: b.completionTokens,
+      totalCostUsd: b.costSum,
+      avgCostUsd: b.totalRuns > 0 ? b.costSum / b.totalRuns : 0,
+    });
+  }
+  // Sort by total cost descending so the most-used models surface first.
+  result.sort((a, b) => b.totalCostUsd - a.totalCostUsd);
+  return result;
 }
 
 export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {

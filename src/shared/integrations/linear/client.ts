@@ -40,6 +40,23 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
   }
 
+  /**
+   * Every issue delegated to the agent across all states, including completed/canceled/merged.
+   * Used by the backfill tool to reconstruct dashboard history — the active-only `findDelegatedTickets`
+   * is wrong for that purpose because it filters terminal states out.
+   */
+  async findAllDelegatedTickets(agentId: string): Promise<Ticket[]> {
+    const user = await this.client.user(agentId);
+    const issues: Issue[] = [];
+    let after: string | undefined;
+    do {
+      const page = await user.delegatedIssues({ first: 100, after });
+      issues.push(...page.nodes);
+      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
+    } while (after !== undefined);
+    return Promise.all(issues.map((issue) => this.toTicket(issue)));
+  }
+
   async getTicket(id: string): Promise<Ticket> {
     const issue = await this.client.issue(id);
     return this.toTicket(issue);
@@ -56,6 +73,14 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   }
 
   async moveTicketToInProgress(ticketId: string): Promise<void> {
+    await this.moveTicketToState(ticketId, "In Progress");
+  }
+
+  async moveTicketToInReview(ticketId: string): Promise<void> {
+    await this.moveTicketToState(ticketId, "In Review");
+  }
+
+  private async moveTicketToState(ticketId: string, stateName: string): Promise<void> {
     const issue = await this.client.issue(ticketId);
     const team = await issue.team;
     if (!team) {
@@ -64,17 +89,17 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
 
     const states = await this.client.workflowStates({
       filter: {
-        name: { eq: "In Progress" },
+        name: { eq: stateName },
         team: { id: { eq: team.id } },
       },
       first: 10,
     });
-    const inProgressState = states.nodes.find((state) => state.name === "In Progress" && state.teamId === team.id);
-    if (!inProgressState) {
-      throw new Error(`Linear team ${team.name} has no In Progress workflow state`);
+    const state = states.nodes.find((candidate) => candidate.name === stateName && candidate.teamId === team.id);
+    if (!state) {
+      throw new Error(`Linear team ${team.name} has no ${stateName} workflow state`);
     }
 
-    await issue.update({ stateId: inProgressState.id });
+    await issue.update({ stateId: state.id });
   }
 
   /**
@@ -118,9 +143,14 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       url: issue.url,
       branchName: issue.branchName,
       status: { name: state.name, type: state.type },
+      priority: issue.priority ?? 0,
       labels: labels.nodes.map((node) => node.name),
       assignee: issue.assigneeId ? { id: issue.assigneeId } : null,
       delegate: issue.delegateId ? { id: issue.delegateId } : null,
+      createdAt: issue.createdAt.toISOString(),
+      updatedAt: issue.updatedAt.toISOString(),
+      completedAt: issue.completedAt?.toISOString() ?? null,
+      canceledAt: issue.canceledAt?.toISOString() ?? null,
     };
   }
 

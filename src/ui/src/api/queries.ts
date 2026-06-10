@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchTicketDetail, fetchTickets, fetchWorkers, fetchWorkerTimeline } from "./client.js";
+import { fetchModelComparison, fetchTicketDetail, fetchTickets, fetchWorkers, fetchWorkerTimeline } from "./client.js";
 import type { BmStatus } from "./types.js";
 
 export const useTickets = (status?: BmStatus) =>
@@ -14,3 +14,7 @@ export const useWorkers = () =>
 
 export const useWorkerTimeline = (hours: number) =>
   useQuery({ queryKey: ["workerTimeline", hours], queryFn: () => fetchWorkerTimeline(hours) });
+
+export const useModelComparison = () =>
+  useQuery({ queryKey: ["models", "comparison"], queryFn: () => fetchModelComparison() });
+

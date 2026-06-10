@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import PQueue from "p-queue";
 
@@ -7,6 +6,7 @@ import type { TaskQueue, TaskRecord } from "../manager/tasks.js";
 import type { DashboardReporter } from "../manager/dashboardReporter.js";
 import { dispatch, type DispatchInput, type DispatchResult } from "./dispatch.js";
 import type { WorkerIntegrations } from "./types.js";
+import { generateWorkerName } from "./worker-name.js";
 
 export type DispatchRunner = (input: DispatchInput) => Promise<DispatchResult>;
 
@@ -38,7 +38,7 @@ export class TaskWorker {
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: TaskWorkerDeps) {
-    this.workerId = deps.workerId ?? randomUUID();
+    this.workerId = deps.workerId ?? generateWorkerName();
     this.logger = deps.logger;
     this.tasks = deps.tasks;
     this.integrations = deps.integrations;
@@ -107,9 +107,9 @@ export class TaskWorker {
     });
     await this.tasks.complete(task.id, result);
     void this.reporter?.progressById(issueId, task.id, this.workerId, `Worker finished: ${result.status}`);
-    void this.reporter?.runSucceededById(task.id, issueId, this.workerId, task.attemptNumber, trigger);
-    if (result.pr) {
-      void this.reporter?.recordPrOpenedById(issueId, result.pr, task.id);
+    void this.reporter?.runSucceededById(task.id, issueId, this.workerId, task.attemptNumber, trigger, result.usage ?? null);
+    for (const pr of result.prs) {
+      void this.reporter?.recordPrOpenedById(issueId, pr, task.id);
     }
     void this.reporter?.workerUpsert(this.workerId, this.workerName, "idle", null, this.startedAtMs);
     this.logger.info(

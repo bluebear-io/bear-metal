@@ -19,6 +19,7 @@ vi.mock("./clone.js", () => ({
       workspaceDir: dispatchMock.workspaceDir,
       stdout: "",
       stderr: "",
+      netrcDir: "/tmp/netrc",
     };
   },
 }));
@@ -26,7 +27,7 @@ vi.mock("./clone.js", () => ({
 vi.mock("./pi.js", () => ({
   runPiWorker: async (_input: { context: WorkerInputContext }): Promise<DispatchResult> => {
     dispatchMock.calls.push("pi");
-    return { status: "pending", pr: null };
+    return { status: "pending", prs: [] };
   },
 }));
 
@@ -56,16 +57,18 @@ describe("dispatch", () => {
               labels: ["bear-metal"],
               assignee: { id: "creator" },
               delegate: { id: "agent" },
+          priority: 0,
             },
             comments: [],
           })),
           moveTicketToInProgress,
+          moveTicketToInReview: vi.fn(),
           commentAndHandBack: vi.fn(),
         },
       },
     });
 
-    expect(result).toEqual({ status: "pending", pr: null });
+    expect(result).toEqual({ status: "pending", prs: [] });
     expect(moveTicketToInProgress).toHaveBeenCalledWith("DEN-1");
     expect(dispatchMock.calls.indexOf("in-progress")).toBeLessThan(dispatchMock.calls.indexOf("pi"));
   });
@@ -135,10 +138,12 @@ function makeIntegrations() {
           labels: ["bear-metal"],
           assignee: { id: "creator" },
           delegate: { id: "agent" },
+          priority: 0,
         },
         comments: [],
       })),
       moveTicketToInProgress: vi.fn(async () => {}),
+      moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
     },
   };
@@ -146,6 +151,7 @@ function makeIntegrations() {
 
 function makeGithub() {
   return {
+    getInstallationToken: vi.fn().mockResolvedValue("test-token"),
     getPullRequestContext: vi.fn(),
     resolveReviewThread: vi.fn(),
     replyToReviewThread: vi.fn(),
