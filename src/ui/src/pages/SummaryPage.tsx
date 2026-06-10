@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useSummary } from "../api/queries.js";
@@ -121,6 +121,14 @@ function PeriodPicker({ range, onPreset, onCustom }: PeriodPickerProps) {
   const [fromInput, setFromInput] = useState(dateOnly(range.from));
   const [toInput, setToInput] = useState(dateOnly(range.to));
 
+  // The picker is a controlled view over the URL: when the URL changes (preset click, back
+  // button, bookmarked link), mirror the new range into the local input state so "Apply"
+  // doesn't submit stale values.
+  useEffect(() => {
+    setFromInput(dateOnly(range.from));
+    setToInput(dateOnly(range.to));
+  }, [range.from, range.to]);
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <button type="button" className={chipClass(range.preset === "24h")} onClick={() => onPreset("24h")}>
@@ -199,8 +207,8 @@ function Card({ title, headerSlot, children }: { title: string; headerSlot?: Rea
 }
 
 interface DeltaChipProps {
-  current: number;
-  prior: number;
+  current: number | null;
+  prior: number | null;
   /** When true, lower current = better (e.g. abandoned tickets). */
   invert?: boolean;
   /** Format helper for absolute delta — defaults to integer. */
@@ -208,6 +216,11 @@ interface DeltaChipProps {
 }
 
 function DeltaChip({ current, prior, invert, format }: DeltaChipProps) {
+  // Treat "no data" as undefined rather than 0 — comparing a null current against a non-null
+  // prior used to render a misleading ↓ 80% on quiet windows.
+  if (current === null || prior === null) {
+    return <span className="text-xs text-text-muted">—</span>;
+  }
   if (prior === 0 && current === 0) {
     return <span className="text-xs text-text-muted">—</span>;
   }
@@ -296,8 +309,8 @@ function TimeCard({ block, prior }: { block: TimeBlock; prior: TimeBlock }) {
         <Stat
           label="Avg wall-clock"
           value={formatSeconds(block.avgWallClockSeconds)}
-          deltaCurrent={block.avgWallClockSeconds ?? 0}
-          deltaPrior={prior.avgWallClockSeconds ?? 0}
+          deltaCurrent={block.avgWallClockSeconds}
+          deltaPrior={prior.avgWallClockSeconds}
           invert
           deltaFormat={(d) => formatSeconds(d)}
         />
@@ -435,8 +448,9 @@ function ShippedCard({ block }: { block: { byRepo: ShippedRepoBucket[] } }) {
 interface StatProps {
   label: string;
   value: string | number;
-  deltaCurrent: number;
-  deltaPrior: number;
+  /** null = "no data this window"; DeltaChip will render a dash instead of a misleading delta. */
+  deltaCurrent: number | null;
+  deltaPrior: number | null;
   invert?: boolean;
   deltaFormat?(delta: number): string;
 }
@@ -458,8 +472,8 @@ function RatioStat({ label, current, priorVal, invert }: { label: string; curren
     <Stat
       label={label}
       value={current === null ? "—" : formatPercent(current)}
-      deltaCurrent={current ?? 0}
-      deltaPrior={priorVal ?? 0}
+      deltaCurrent={current}
+      deltaPrior={priorVal}
       invert={invert}
       deltaFormat={(d) => formatPercent(d)}
     />
@@ -471,8 +485,8 @@ function NumericStat({ label, current, priorVal, digits = 0, invert }: { label: 
     <Stat
       label={label}
       value={current === null ? "—" : current.toFixed(digits)}
-      deltaCurrent={current ?? 0}
-      deltaPrior={priorVal ?? 0}
+      deltaCurrent={current}
+      deltaPrior={priorVal}
       invert={invert}
       deltaFormat={(d) => d.toFixed(digits)}
     />

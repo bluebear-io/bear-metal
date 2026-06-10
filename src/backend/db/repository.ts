@@ -676,8 +676,10 @@ function computeShipped(tickets: Ticket[], prs: PullRequestRow[], from: Date, to
     try {
       const parsed: unknown = JSON.parse(ticket.labelsJson);
       if (Array.isArray(parsed)) labels = parsed.filter((x): x is string => typeof x === "string");
-    } catch {
-      // Malformed labelsJson — skip silently; the rest of the row is still useful.
+    } catch (err) {
+      // Malformed labelsJson — render the row without labels rather than dropping it, but log
+      // so the corruption is visible in ops dashboards instead of vanishing into a UI gap.
+      console.warn(`[summary] skipping malformed labelsJson for ticket ${ticket.id}:`, (err as Error).message);
     }
     const entry: ShippedTicket = {
       id: ticket.id,

@@ -176,4 +176,13 @@ describe("GET /api/summary", () => {
     const res = await request(app).get("/api/summary").query({ from: "garbage", to: TO });
     expect(res.status).toBe(400);
   });
+
+  it("rejects a window longer than 90 days with 400", async () => {
+    const res = await request(app).get("/api/summary").query({
+      from: "2025-01-01T00:00:00.000Z",
+      to: "2026-06-30T00:00:00.000Z",
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/90 days/);
+  });
 });
