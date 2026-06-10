@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 import { createTaskQueueFromDatabaseUrl, type TaskQueue } from "./tasks.js";
 
 const queues: TaskQueue[] = [];
@@ -132,5 +136,93 @@ describe("TaskQueue", () => {
     expect(released.slotStatus).toBe("released");
     expect(released.releasedAt).toBeInstanceOf(Date);
     expect(await queue.countTracked()).toBe(0);
+  });
+
+  it("stamps lastHeartbeatAt when a worker acquires a task", async () => {
+    const queue = await makeQueue();
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    expect(task.lastHeartbeatAt).toBeNull();
+
+    const acquired = await queue.acquireNext("worker-1");
+    expect(acquired?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("heartbeat refreshes lastHeartbeatAt for the owning worker", async () => {
+    const queue = await makeQueue();
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    const acquired = await queue.acquireNext("worker-1");
+    const first = acquired!.lastHeartbeatAt!;
+
+    await sleep(5);
+    await queue.heartbeat(task.id, "worker-1");
+    const refreshed = (await queue.listTracked())[0]?.latestTask.lastHeartbeatAt;
+    expect(refreshed).toBeInstanceOf(Date);
+    expect(refreshed!.getTime()).toBeGreaterThan(first.getTime());
+  });
+
+  it("heartbeat is a no-op when the worker_id does not match", async () => {
+    const queue = await makeQueue();
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    const acquired = await queue.acquireNext("worker-1");
+    const first = acquired!.lastHeartbeatAt!;
+
+    await sleep(5);
+    await queue.heartbeat(task.id, "worker-other");
+    const refreshed = (await queue.listTracked())[0]?.latestTask.lastHeartbeatAt;
+    expect(refreshed!.getTime()).toBe(first.getTime());
+  });
+
+  it("recoverStaleTasks releases acquired tasks past the threshold and leaves fresh ones alone", async () => {
+    const queue = await makeQueue();
+    const stale = await queue.enqueue({ state: "new", ticketId: "DEN-stale", prs: [], trigger: "new", ticketIssueId: "lin_s" });
+    const fresh = await queue.enqueue({ state: "new", ticketId: "DEN-fresh", prs: [], trigger: "new", ticketIssueId: "lin_f" });
+    await queue.acquireNext("worker-A"); // claims `stale` (FIFO by created_at)
+    await sleep(20);
+    await queue.acquireNext("worker-B"); // claims `fresh`
+
+    // Threshold of 10ms: `stale` was acquired ~20ms ago, `fresh` just now.
+    const recovered = await queue.recoverStaleTasks(10);
+    expect(recovered).toEqual([stale.id]);
+
+    // Recovered row is back in the pool and can be re-acquired.
+    const reacquired = await queue.acquireNext("worker-C");
+    expect(reacquired?.id).toBe(stale.id);
+    expect(reacquired?.workerId).toBe("worker-C");
+
+    // The fresh task stays with worker-B.
+    const freshSlot = (await queue.listTracked()).find((s) => s.ticketId === "DEN-fresh");
+    expect(freshSlot?.latestTask.workerId).toBe("worker-B");
+    expect(freshSlot?.latestTask.id).toBe(fresh.id);
+  });
+
+  it("recoverStaleTasks never resets completed tasks", async () => {
+    const queue = await makeQueue();
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    const acquired = await queue.acquireNext("worker-1");
+    await queue.complete(task.id, {
+      status: "done",
+      prs: [{ owner: "o", repo: "r", number: 1 }],
+    });
+    await sleep(20);
+
+    const recovered = await queue.recoverStaleTasks(0);
+    expect(recovered).toEqual([]);
+
+    const slot = (await queue.listTracked())[0];
+    expect(slot?.latestTask.workerId).toBe(acquired!.workerId);
+    expect(slot?.latestTask.resultStatus).toBe("done");
+  });
+
+  it("recoverStaleTasks recovers acquired rows with NULL lastHeartbeatAt (pre-heartbeat rows)", async () => {
+    const queue = await makeQueue();
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" });
+    await queue.acquireNext("worker-1");
+    // Simulate a row written before the heartbeat column existed: clear last_heartbeat_at directly.
+    // SqliteTaskQueue is private, so reach through `unknown` to its db handle just for this fixture.
+    const db = (queue as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => unknown } } }).db;
+    db.prepare("UPDATE tasks SET last_heartbeat_at = NULL WHERE id = ?").run(task.id);
+
+    const recovered = await queue.recoverStaleTasks(60_000);
+    expect(recovered).toEqual([task.id]);
   });
 });
