@@ -18,7 +18,7 @@ afterEach(async () => {
 describe("TaskQueue", () => {
   it("enqueues and atomically acquires one task", async () => {
     const queue = await makeQueue();
-    const input = { state: "new" as const, ticketId: "DEN-1", pr: null };
+    const input = { state: "new" as const, ticketId: "DEN-1", pr: null, trigger: "new" as const, ticketIssueId: "lin_0" };
 
     const task = await queue.enqueue(input);
     expect(task.ticketId).toBe("DEN-1");
@@ -39,7 +39,7 @@ describe("TaskQueue", () => {
 
   it("records dispatch result JSON on completed tasks", async () => {
     const queue = await makeQueue();
-    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
 
     await queue.acquireNext("worker-1");
     await queue.complete(first.id, {
@@ -56,13 +56,30 @@ describe("TaskQueue", () => {
     });
   });
 
+  it("stamps trigger and a 1-based attemptNumber per ticket", async () => {
+    const queue = createTaskQueueFromDatabaseUrl("sqlite::memory:");
+    await queue.initialize();
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
+    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: { owner: "o", repo: "r", number: 3 }, trigger: "ci_failure", ticketIssueId: "lin_1" });
+    const other = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null, trigger: "new", ticketIssueId: "lin_2" });
+    expect(first.attemptNumber).toBe(1);
+    expect(first.input.trigger).toBe("new");
+    expect(first.input.ticketIssueId).toBe("lin_1");
+    expect(second.attemptNumber).toBe(2);
+    expect(second.input.trigger).toBe("ci_failure");
+    expect(other.attemptNumber).toBe(1);
+    await queue.close();
+  });
+
   it("tracks the latest unreleased task row per ticket as a manager slot", async () => {
     const queue = await makeQueue();
-    await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
+    await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
     const latest = await queue.enqueue({
       state: "iteration",
       ticketId: "DEN-1",
       pr: { owner: "bluebear-io", repo: "bear-metal", number: 5 },
+      trigger: "ci_failure",
+      ticketIssueId: "lin_1",
     });
 
     const tracked = await queue.listTracked();
@@ -74,13 +91,13 @@ describe("TaskQueue", () => {
 
   it("assigns iteration_number=1 on the first task and increments on re-dispatch for the same ticket", async () => {
     const queue = await makeQueue();
-    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
+    const first = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
     expect(first.iterationNumber).toBe(1);
 
-    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null });
+    const second = await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null, trigger: "delegated_back", ticketIssueId: "lin_1" });
     expect(second.iterationNumber).toBe(2);
 
-    const otherTicket = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null });
+    const otherTicket = await queue.enqueue({ state: "new", ticketId: "DEN-2", pr: null, trigger: "new", ticketIssueId: "lin_2" });
     expect(otherTicket.iterationNumber).toBe(1);
   });
 
@@ -88,18 +105,18 @@ describe("TaskQueue", () => {
     const queue = await makeQueue();
     expect(await queue.getIterationCount("DEN-unknown")).toBe(0);
 
-    await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
+    await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
     expect(await queue.getIterationCount("DEN-1")).toBe(1);
 
-    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null });
-    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null });
+    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null, trigger: "delegated_back", ticketIssueId: "lin_1" });
+    await queue.enqueue({ state: "iteration", ticketId: "DEN-1", pr: null, trigger: "delegated_back", ticketIssueId: "lin_1" });
     expect(await queue.getIterationCount("DEN-1")).toBe(3);
     expect(await queue.getIterationCount("DEN-2")).toBe(0);
   });
 
   it("parks, resumes, and releases a ticket slot by updating the latest task row", async () => {
     const queue = await makeQueue();
-    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null });
+    const task = await queue.enqueue({ state: "new", ticketId: "DEN-1", pr: null, trigger: "new", ticketIssueId: "lin_1" });
 
     const parked = await queue.setSlotStatus("DEN-1", "parked");
     expect(parked.id).toBe(task.id);

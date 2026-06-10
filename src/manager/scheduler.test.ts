@@ -5,11 +5,13 @@ import {
   type PullRequest,
   type PullRequestRef,
   type PullRequestStatus,
+  type RunTrigger,
   type Ticket,
   type TicketContext,
   type WorkOutcome,
 } from "../shared/index.js";
 
+import type { DashboardReporter } from "./dashboardReporter.js";
 import { Scheduler, type GitHubSource, type LinearSource, type TicketHandler } from "./scheduler.js";
 import { makeTicket } from "./test-helpers.js";
 import { createTaskQueueFromDatabaseUrl, type DispatchTaskInput, type TaskQueue } from "./tasks.js";
@@ -40,6 +42,23 @@ function status(pr: PullRequest, testsFailed = false, hasActionableUnresolvedCom
   return { pr, testsFailed, hasActionableUnresolvedComments };
 }
 
+/** Captures the scheduler's best-effort reporter calls by method + ticket identifier. */
+function recordingReporter(): { calls: Array<{ method: string; ticket: string }>; reporter: DashboardReporter } {
+  const calls: Array<{ method: string; ticket: string }> = [];
+  const rec = (method: string) => (ticket: Ticket) => {
+    calls.push({ method, ticket: ticket.identifier });
+  };
+  const reporter = {
+    ticketDiscovered: rec("ticketDiscovered"),
+    ticketInProgress: rec("ticketInProgress"),
+    ciFailed: rec("ciFailed"),
+    prOpened: rec("prOpened"),
+    delegatedBack: rec("delegatedBack"),
+    ticketCompleted: rec("ticketCompleted"),
+  } as unknown as DashboardReporter;
+  return { calls, reporter };
+}
+
 async function makeQueue(): Promise<TaskQueue> {
   const queue = createTaskQueueFromDatabaseUrl("sqlite::memory:");
   await queue.initialize();
@@ -49,10 +68,10 @@ async function makeQueue(): Promise<TaskQueue> {
 
 async function seedCompletedTask(
   tasks: TaskQueue,
-  input: DispatchTaskInput,
+  input: Pick<DispatchTaskInput, "state" | "ticketId" | "pr">,
   result: { status: "pending" | "done"; pr: PullRequestRef | null },
 ): Promise<void> {
-  const task = await tasks.enqueue(input);
+  const task = await tasks.enqueue({ ...input, trigger: "new", ticketIssueId: input.ticketId.toLowerCase() });
   const acquired = await tasks.acquireNext("worker-1");
   expect(acquired?.id).toBe(task.id);
   await tasks.complete(task.id, result);
@@ -101,13 +120,17 @@ class FakeGitHub implements GitHubSource {
 
 class RecordingHandler implements TicketHandler {
   handled: TicketContext[] = [];
+  triggers: RunTrigger[] = [];
   constructor(private readonly tasks: TaskQueue) {}
-  async handle(ctx: TicketContext): Promise<WorkOutcome> {
+  async handle(ctx: TicketContext, trigger: RunTrigger): Promise<WorkOutcome> {
     this.handled.push(ctx);
+    this.triggers.push(trigger);
     const task = await this.tasks.enqueue({
       state: ctx.pr === null ? "new" : "iteration",
       ticketId: ctx.ticket.identifier,
       pr: ctx.pr ? { owner: ctx.pr.owner, repo: ctx.pr.repo, number: ctx.pr.number } : null,
+      trigger,
+      ticketIssueId: ctx.ticket.id,
     });
     return { status: "pending", taskId: task.id };
   }
@@ -119,6 +142,7 @@ function buildScheduler(deps: {
   tasks: TaskQueue;
   handler: TicketHandler;
   concurrency: number;
+  reporter?: DashboardReporter;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -129,6 +153,7 @@ function buildScheduler(deps: {
     agentId: "user-1",
     concurrency: deps.concurrency,
     pollIntervalMs: 60_000,
+    reporter: deps.reporter,
   });
 }
 
@@ -167,6 +192,25 @@ describe("Scheduler.tick", () => {
     expect(await tasks.countTracked()).toBe(2);
   });
 
+  it("reports newly admitted tickets to the dashboard reporter", async () => {
+    const tasks = await makeQueue();
+    const linear = new FakeLinear([makeTicket("a")]);
+    const { calls, reporter } = recordingReporter();
+    const scheduler = buildScheduler({
+      linear,
+      github: new FakeGitHub(),
+      tasks,
+      handler: new RecordingHandler(tasks),
+      concurrency: 1,
+      reporter,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(calls.filter((c) => c.method === "ticketDiscovered").map((c) => c.ticket)).toEqual(["A"]);
+  });
+
   it("uses the worker-returned PR as the only known PR source for later iterations", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", pr: null }, { status: "done", pr: prRef(7) });
@@ -185,7 +229,13 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(1);
     expect(handler.handled[0]?.pr).toEqual(openPr(7));
     const [slot] = await tasks.listTracked();
-    expect(slot?.latestTask.input).toEqual({ state: "iteration", ticketId: "A", pr: prRef(7) });
+    expect(slot?.latestTask.input).toEqual({
+      state: "iteration",
+      ticketId: "A",
+      pr: prRef(7),
+      trigger: "ci_failure",
+      ticketIssueId: "a",
+    });
   });
 
   it("admits nothing new when SQL slots are full", async () => {

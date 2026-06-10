@@ -1,9 +1,11 @@
-import type { Logger, TicketContext, WorkOutcome } from "../shared/index.js";
+import type { Logger, RunTrigger, TicketContext, WorkOutcome } from "../shared/index.js";
+import type { DashboardReporter } from "./dashboardReporter.js";
 import type { TaskQueue } from "./tasks.js";
 
 export interface ManagerTicketHandlerDeps {
   logger: Logger;
   tasks: TaskQueue;
+  reporter?: DashboardReporter;
 }
 
 /**
@@ -14,13 +16,15 @@ export interface ManagerTicketHandlerDeps {
 export class ManagerTicketHandler {
   private readonly logger: Logger;
   private readonly tasks: TaskQueue;
+  private readonly reporter?: DashboardReporter;
 
   constructor(deps: ManagerTicketHandlerDeps) {
     this.logger = deps.logger;
     this.tasks = deps.tasks;
+    this.reporter = deps.reporter;
   }
 
-  async handle(ctx: TicketContext): Promise<WorkOutcome> {
+  async handle(ctx: TicketContext, trigger: RunTrigger): Promise<WorkOutcome> {
     const state = ctx.pr === null ? "new" : "iteration";
     const pr = ctx.pr === null ? null : { owner: ctx.pr.owner, repo: ctx.pr.repo, number: ctx.pr.number };
     this.logger.info(
@@ -31,7 +35,10 @@ export class ManagerTicketHandler {
       state,
       ticketId: ctx.ticket.identifier,
       pr,
+      trigger,
+      ticketIssueId: ctx.ticket.id,
     });
+    void this.reporter?.runDispatched({ ticket: ctx.ticket, runId: task.id, workerId: null, attemptNumber: task.attemptNumber, trigger });
     return { status: "pending", taskId: task.id };
   }
 }

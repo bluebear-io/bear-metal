@@ -13,6 +13,7 @@
     "start": "node dist/manager/index.js",
     "dev": "tsx watch src/manager/index.ts",
     "dev:backend": "tsx watch src/backend/index.ts",
+    "dev:all": "bash scripts/dev.sh",
     "start:backend": "node dist/backend/index.js",
     "seed:mock": "tsx src/backend/mock/seed.ts",
     "db:generate": "drizzle-kit generate",

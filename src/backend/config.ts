@@ -2,6 +2,8 @@ export interface BackendConfig {
   dbPath: string;
   port: number;
   logLevel: string;
+  /** Shared secret required on write routes; empty disables the write API. */
+  ingestToken: string;
 }
 
 function positiveIntEnv(value: string | undefined, name: string, fallback: number): number {
@@ -28,5 +30,6 @@ export function loadBackendConfig(env: NodeJS.ProcessEnv = process.env): Backend
     dbPath,
     port: positiveIntEnv(env.BACKEND_PORT, "BACKEND_PORT", 3100),
     logLevel: env.LOG_LEVEL ?? "info",
+    ingestToken: env.INGEST_TOKEN ?? "",
   };
 }

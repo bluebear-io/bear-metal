@@ -10,6 +10,10 @@ export interface Config {
   port: number;
   logLevel: string;
   logPretty: boolean;
+  /** Base URL of the observability dashboard write API. Empty disables dashboard reporting. */
+  dashboardUrl: string;
+  /** Shared secret sent as a bearer token to the dashboard write API. */
+  ingestToken: string;
   testTicketId: string | null;
   /** Optional Slack bot token (xoxb-...). When set together with slackNotificationChannel, PR open/update notifications are sent. */
   slackBotToken: string | null;
@@ -68,6 +72,8 @@ export function loadConfig(): Readonly<Config> {
     port: positiveIntEnv("PORT", 3000),
     logLevel: process.env.LOG_LEVEL || "info",
     logPretty: boolEnv("LOG_PRETTY", false),
+    dashboardUrl: process.env.DASHBOARD_URL ?? "",
+    ingestToken: process.env.INGEST_TOKEN ?? "",
     testTicketId: process.env.TEST_TICKET_ID?.trim() || null,
     ...loadSlackConfig(),
   });

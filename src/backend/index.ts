@@ -3,7 +3,7 @@ import "dotenv/config";
 import Database from "better-sqlite3";
 import { createLogger } from "../shared/index.js";
 import { loadBackendConfig } from "./config.js";
-import { openReadOnlyDb } from "./db/client.js";
+import { openReadWriteDb } from "./db/client.js";
 import { createApp } from "./app.js";
 
 // Create all tables on first boot; safe to run every time (IF NOT EXISTS).
@@ -54,11 +54,13 @@ function main(): void {
   const config = loadBackendConfig();
   const logger = createLogger({ level: config.logLevel, name: "bear-metal-backend" });
   const { dbPath, port } = config;
+  // Create the file and tables out of band, then open it read-write for the sole writer.
+  // openReadWriteDb fails fast on a missing file, so this init must run first.
   const init = new Database(dbPath);
   init.exec(SCHEMA_SQL);
   init.close();
-  const { db, sqlite } = openReadOnlyDb(dbPath);
-  const app = createApp(db);
+  const { db, sqlite } = openReadWriteDb(dbPath);
+  const app = createApp(db, { ingestToken: config.ingestToken });
   const server = app.listen(port, () => logger.info({ port, dbPath }, "bear-metal dashboard backend listening"));
 
   let shuttingDown = false;
