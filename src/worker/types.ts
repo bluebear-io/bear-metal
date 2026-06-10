@@ -1,10 +1,16 @@
-import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThread } from "../shared/index.js";
+import type {
+  LinearTicketContext,
+  PullRequestContext,
+  PullRequestRef,
+  PullRequestNotification,
+  ReviewThread,
+} from "../shared/index.js";
 
 export type DispatchState = "new" | "iteration";
 
 export type DispatchResult = {
   status: "pending" | "done";
-  pr: PullRequestRef | null;
+  prs: PullRequestRef[];
 };
 
 export type { PullRequestRef };
@@ -25,6 +31,10 @@ export interface WorkerGitHub {
   }): Promise<PullRequestRef>;
 }
 
+export interface WorkerSlack {
+  notifyPullRequest(notification: PullRequestNotification): Promise<void>;
+}
+
 export interface WorkerLinear {
   getTicketContext(ticketId: string): Promise<LinearTicketContext>;
   moveTicketToInProgress(ticketId: string): Promise<void>;
@@ -35,6 +45,8 @@ export interface WorkerLinear {
 export type WorkerIntegrations = {
   github: WorkerGitHub;
   linear: WorkerLinear;
+  /** Optional — when unset, PR notifications are skipped. */
+  slack?: WorkerSlack;
 };
 
 export type CloneScriptResult = {
@@ -50,8 +62,8 @@ export type CloneScriptResult = {
 export type WorkerInputContext = {
   state: DispatchState;
   ticketId: string;
-  pr: PullRequestRef | null;
+  prs: PullRequestRef[];
   ticket: LinearTicketContext;
-  pullRequest: PullRequestContext | null;
+  pullRequests: PullRequestContext[];
   cloneScript: CloneScriptResult;
 };

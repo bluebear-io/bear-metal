@@ -73,8 +73,8 @@ describe("runPiWorker", () => {
     const linear = makeLinear();
     const context = makeContext({
       state: "iteration",
-      pr: { owner: "acme", repo: "widgets", number: 7 },
-      pullRequest: makePullRequestContext(),
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "agree_with_github_message", {
@@ -92,10 +92,10 @@ describe("runPiWorker", () => {
     await runPiWorker({ context, github, linear, gitEnv: {} });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
-      context.pr,
+      context.prs[0],
       "thread-1",
       "Fixed in commit abc123.",
-      context.pullRequest?.unresolvedReviewThreads,
+      context.pullRequests[0]?.unresolvedReviewThreads,
     );
     expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
   });
@@ -106,8 +106,8 @@ describe("runPiWorker", () => {
     const linear = makeLinear();
     const context = makeContext({
       state: "iteration",
-      pr: { owner: "acme", repo: "widgets", number: 7 },
-      pullRequest: makePullRequestContext(),
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "disagree_with_github_message", {
@@ -125,10 +125,10 @@ describe("runPiWorker", () => {
     await runPiWorker({ context, github, linear, gitEnv: {} });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
-      context.pr,
+      context.prs[0],
       "thread-1",
       "The current code already handles this path.",
-      context.pullRequest?.unresolvedReviewThreads,
+      context.pullRequests[0]?.unresolvedReviewThreads,
     );
     expect(github.resolveReviewThread).not.toHaveBeenCalled();
   });
@@ -139,8 +139,8 @@ describe("runPiWorker", () => {
     const linear = makeLinear();
     const context = makeContext({
       state: "iteration",
-      pr: { owner: "acme", repo: "widgets", number: 7 },
-      pullRequest: makePullRequestContext(),
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "respond_to_comment_writer", {
@@ -152,13 +152,13 @@ describe("runPiWorker", () => {
     const result = await runPiWorker({ context, github, linear, gitEnv: {} });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
-      context.pr,
+      context.prs[0],
       "thread-1",
       "I need clarification on the expected behavior here.",
-      context.pullRequest?.unresolvedReviewThreads,
+      context.pullRequests[0]?.unresolvedReviewThreads,
     );
     expect(github.resolveReviewThread).not.toHaveBeenCalled();
-    expect(result).toEqual({ status: "pending", pr: context.pr });
+    expect(result).toEqual({ status: "pending", prs: context.prs });
   });
 
   it("returns done when agent only disagrees with all threads and makes no code changes", async () => {
@@ -166,8 +166,8 @@ describe("runPiWorker", () => {
     const github = makeGithub();
     const context = makeContext({
       state: "iteration",
-      pr: { owner: "acme", repo: "widgets", number: 7 },
-      pullRequest: makePullRequestContext(),
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "disagree_with_github_message", {
@@ -179,7 +179,7 @@ describe("runPiWorker", () => {
 
     const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
 
-    expect(result).toEqual({ status: "done", pr: context.pr });
+    expect(result).toEqual({ status: "done", prs: context.prs });
   });
 
   it("allows respond_to_comment_writer to be called for multiple threads without crashing", async () => {
@@ -187,8 +187,8 @@ describe("runPiWorker", () => {
     const github = makeGithub();
     const context = makeContext({
       state: "iteration",
-      pr: { owner: "acme", repo: "widgets", number: 7 },
-      pullRequest: makePullRequestContext(),
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Question 1." });
@@ -198,7 +198,7 @@ describe("runPiWorker", () => {
     const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
 
     expect(github.replyToReviewThread).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ status: "pending", pr: context.pr });
+    expect(result).toEqual({ status: "pending", prs: context.prs });
   });
 
   it("returns pending when agent fixes some threads then calls respond_to_comment_writer", async () => {
@@ -206,8 +206,8 @@ describe("runPiWorker", () => {
     const github = makeGithub();
     const context = makeContext({
       state: "iteration",
-      pr: { owner: "acme", repo: "widgets", number: 7 },
-      pullRequest: makePullRequestContext(),
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "wrote_code", {
@@ -221,7 +221,31 @@ describe("runPiWorker", () => {
 
     const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
 
-    expect(result).toEqual({ status: "pending", pr: context.pr });
+    expect(result).toEqual({ status: "pending", prs: context.prs });
+  });
+
+  it("preserves pending decision when wrote_code is called after respond_to_comment_writer", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix thread 1",
+        prTitle: "fix",
+        prBody: "fix",
+      });
+    });
+
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+
+    expect(result.status).toBe("pending");
+    expect(result.prs).toEqual(context.prs);
   });
 
   it("registers respond_to_ticket_reporter and wrote_code in new task mode, not iteration tools", async () => {
@@ -260,8 +284,8 @@ describe("runPiWorker", () => {
     await runPiWorker({
       context: makeContext({
         state: "iteration",
-        pr: { owner: "acme", repo: "widgets", number: 7 },
-        pullRequest: makePullRequestContext(),
+        prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+        pullRequests: [makePullRequestContext()],
       }),
       github: makeGithub(),
       linear: makeLinear(),
@@ -288,14 +312,127 @@ describe("runPiWorker", () => {
     });
 
     const result = await runPiWorker({
-      context: makeContext({ pr: { owner: "acme", repo: "widgets", number: 7 } }),
+      context: makeContext({ prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
       github: makeGithub(),
       linear,
       gitEnv: {},
     });
 
     expect(linear.moveTicketToInReview).toHaveBeenCalledWith("DEN-1");
-    expect(result).toEqual({ status: "done", pr: { owner: "acme", repo: "widgets", number: 7 } });
+    expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
+  });
+
+  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const github = makeGithub();
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "feat: ship",
+        prTitle: "feat: ship",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
+      kind: "opened",
+      pr: { owner: "acme", repo: "widgets", number: 42 },
+      title: "feat: ship",
+      url: "https://github.com/acme/widgets/pull/42",
+      ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
+    });
+  });
+
+  it("sends a slack 'updated' notification when wrote_code runs on an existing PR", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix",
+        prTitle: "fix typo",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({
+      context: makeContext({
+        state: "iteration",
+        prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+        pullRequests: [makePullRequestContext()],
+      }),
+      github: makeGithub(),
+      linear,
+      slack,
+      gitEnv: {},
+    });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "updated",
+        pr: { owner: "acme", repo: "widgets", number: 7 },
+        url: "https://github.com/acme/widgets/pull/7",
+        ticketId: "DEN-1",
+      }),
+    );
+  });
+
+  it("does not require a slack integration to be provided", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix",
+        prTitle: "fix",
+        prBody: "body",
+      });
+    });
+
+    const result = await runPiWorker({
+      context: makeContext({ prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
+      github: makeGithub(),
+      linear,
+      gitEnv: {},
+    });
+
+    expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
+  });
+
+  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const github = makeGithub();
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "feat: ship",
+        prTitle: "feat: ship",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+
+    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
+      kind: "opened",
+      pr: { owner: "acme", repo: "widgets", number: 42 },
+      title: "feat: ship",
+      url: "https://github.com/acme/widgets/pull/42",
+      ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
+    });
   });
 
   it("comments and hands the ticket back to its human owner when pending human response", async () => {
@@ -314,7 +451,7 @@ describe("runPiWorker", () => {
     });
 
     expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", "Need a product decision.");
-    expect(result).toEqual({ status: "pending", pr: null });
+    expect(result).toEqual({ status: "pending", prs: [] });
     expect(piMock.sessionDispose).toHaveBeenCalled();
   });
 });
@@ -331,7 +468,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
   return {
     state: "new",
     ticketId: "DEN-1",
-    pr: null,
+    prs: [],
     ticket: {
       issue: {
         id: "issue-id",
@@ -348,13 +485,13 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
       },
       comments: [],
     },
-    pullRequest: null,
+    pullRequests: [],
     cloneScript: {
       scriptPath: "/tmp/script.sh",
       workspaceDir: "/tmp/workspace",
       stdout: "",
       stderr: "",
-      netrcDir: "/tmp/netrc",
+      netrcDir: "/tmp",
     },
     ...overrides,
   };

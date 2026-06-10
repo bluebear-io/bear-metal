@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
 
+import type { RunTrigger } from "../shared/index.js";
 import type { DispatchResult, DispatchState, PullRequestRef } from "../worker/index.js";
 
 export const DEFAULT_DATABASE_URL = "sqlite:./bear-metal-manager.sqlite";
@@ -11,7 +12,9 @@ export const DEFAULT_DATABASE_URL = "sqlite:./bear-metal-manager.sqlite";
 export interface DispatchTaskInput {
   state: DispatchState;
   ticketId: string;
-  pr: PullRequestRef | null;
+  prs: PullRequestRef[];
+  trigger: RunTrigger;
+  ticketIssueId: string;
 }
 
 export type SlotStatus = "active" | "parked" | "released";
@@ -20,6 +23,7 @@ export interface TaskRecord {
   id: string;
   ticketId: string;
   dispatchState: DispatchState;
+  attemptNumber: number;
   input: DispatchTaskInput;
   workerId: string | null;
   resultStatus: DispatchResult["status"] | null;
@@ -55,6 +59,7 @@ interface TaskRow {
   id: string;
   ticket_id: string;
   dispatch_state: string;
+  attempt_number: number;
   input_json: string;
   worker_id: string | null;
   result_status: string | null;
@@ -96,6 +101,7 @@ class SqliteTaskQueue implements TaskQueue {
         id TEXT PRIMARY KEY,
         ticket_id TEXT NOT NULL,
         dispatch_state TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
         input_json TEXT NOT NULL,
         worker_id TEXT NULL,
         result_status TEXT NULL,
@@ -108,6 +114,7 @@ class SqliteTaskQueue implements TaskQueue {
         iteration_number INTEGER NOT NULL DEFAULT 1
       );
     `);
+    ensureSqliteColumn(db, "attempt_number", "INTEGER NOT NULL DEFAULT 1");
     ensureSqliteColumn(db, "slot_status", "TEXT NOT NULL DEFAULT 'active'");
     ensureSqliteColumn(db, "released_at", "TEXT NULL");
     ensureSqliteColumn(db, "iteration_number", "INTEGER NOT NULL DEFAULT 1");
@@ -129,20 +136,26 @@ class SqliteTaskQueue implements TaskQueue {
     const db = this.requireDb();
     const id = randomUUID();
     const now = this.clock.nowIso();
-    // Compute iteration_number atomically via subquery so concurrent enqueues for the
-    // same ticket can't both observe the same pre-insert count (TOCTOU). Matches the
-    // Postgres path.
+    // attempt_number and iteration_number both count prior tasks for this ticket; compute each
+    // atomically via subquery so concurrent enqueues for the same ticket can't observe the same
+    // pre-insert count (TOCTOU). Matches the Postgres path.
     db.prepare(`
       INSERT INTO tasks (
         id,
         ticket_id,
         dispatch_state,
+        attempt_number,
         input_json,
         created_at,
         updated_at,
         iteration_number
-      ) VALUES (?, ?, ?, ?, ?, ?, (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = ?))
-    `).run(id, input.ticketId, input.state, JSON.stringify(input), now, now, input.ticketId);
+      ) VALUES (
+        ?, ?, ?,
+        (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = ?),
+        ?, ?, ?,
+        (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = ?)
+      )
+    `).run(id, input.ticketId, input.state, input.ticketId, JSON.stringify(input), now, now, input.ticketId);
     return rowToTask(this.getById(id));
   }
 
@@ -278,6 +291,7 @@ class PostgresTaskQueue implements TaskQueue {
         id TEXT PRIMARY KEY,
         ticket_id TEXT NOT NULL,
         dispatch_state TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
         input_json TEXT NOT NULL,
         worker_id TEXT NULL,
         result_status TEXT NULL,
@@ -307,18 +321,24 @@ class PostgresTaskQueue implements TaskQueue {
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     const id = randomUUID();
     const now = this.clock.nowIso();
+    // attempt_number and iteration_number both count prior tasks for this ticket; compute each
+    // atomically via subquery so concurrent enqueues for the same ticket can't observe the same
+    // pre-insert count (TOCTOU).
     const result = await this.pool.query<TaskRow>(
       `
         INSERT INTO tasks (
           id,
           ticket_id,
           dispatch_state,
+          attempt_number,
           input_json,
           created_at,
           updated_at,
           iteration_number
         ) VALUES (
-          $1, $2, $3, $4, $5, $6,
+          $1, $2, $3,
+          (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = $2),
+          $4, $5, $6,
           (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = $2)
         )
         RETURNING *
@@ -443,6 +463,7 @@ function rowToTask(row: TaskRow): TaskRecord {
     id: row.id,
     ticketId: row.ticket_id,
     dispatchState: parseDispatchState(row.dispatch_state),
+    attemptNumber: Number(row.attempt_number),
     input: parseTaskInput(row.input_json),
     workerId: row.worker_id,
     resultStatus,
@@ -472,32 +493,55 @@ function parseTaskInput(value: string): DispatchTaskInput {
   const parsed = parseJsonObject(value, "task input_json");
   const state = parseDispatchState(parsed.state);
   const ticketId = requireString(parsed.ticketId, "task input ticketId");
-  return { state, ticketId, pr: parsePullRequestRef(parsed.pr) };
+  return {
+    state,
+    ticketId,
+    // Backward compat: rows written before the prs[] migration have a singular `pr` field.
+    prs: Array.isArray(parsed.prs)
+      ? parsePullRequestRefs(parsed.prs, "task input prs")
+      : parsed.pr != null
+        ? [parsePullRequestRef(parsed.pr, "task input pr (legacy)")]
+        : [],
+    trigger: parseTrigger(parsed.trigger),
+    ticketIssueId: requireString(parsed.ticketIssueId, "task input ticketIssueId"),
+  };
+}
+
+function parseTrigger(value: unknown): RunTrigger {
+  if (value === "new" || value === "ci_failure" || value === "delegated_back") return value;
+  throw new Error(`Invalid run trigger: ${String(value)}`);
 }
 
 function parseDispatchResult(value: string): DispatchResult {
   const parsed = parseJsonObject(value, "task result_json");
+  // Backward compat: rows written before the prs[] migration have a singular `pr` field.
+  const prs = Array.isArray(parsed.prs)
+    ? parsePullRequestRefs(parsed.prs, "task result prs")
+    : parsed.pr != null
+      ? [parsePullRequestRef(parsed.pr, "task result pr (legacy)")]
+      : [];
   return {
     status: requireResultStatus(parsed.status),
-    pr: parsePullRequestRef(parsed.pr),
+    prs,
   };
 }
 
-function parsePullRequestRef(value: unknown): PullRequestRef | null {
-  if (value === null) {
-    return null;
+function parsePullRequestRefs(value: unknown, fieldName: string): PullRequestRef[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array`);
   }
+  return value.map((item, i) => parsePullRequestRef(item, `${fieldName}[${i}]`));
+}
+
+function parsePullRequestRef(value: unknown, fieldName: string): PullRequestRef {
   if (!isRecord(value)) {
-    throw new Error("Pull request ref must be null or an object");
+    throw new Error(`${fieldName} must be an object`);
   }
-  const owner = requireString(value.owner, "pull request owner");
-  const repo = requireString(value.repo, "pull request repo");
+  const owner = requireString(value.owner, `${fieldName}.owner`);
+  const repo = requireString(value.repo, `${fieldName}.repo`);
   const number = value.number;
-  if (typeof number !== "number") {
-    throw new Error("pull request number must be a positive integer");
-  }
-  if (!Number.isInteger(number) || number <= 0) {
-    throw new Error("pull request number must be a positive integer");
+  if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) {
+    throw new Error(`${fieldName}.number must be a positive integer`);
   }
   return { owner, repo, number };
 }

@@ -20,3 +20,23 @@ export function openReadOnlyDb(path: string): ReadOnlyDb {
   const db = drizzle(sqlite, { schema });
   return { db, sqlite };
 }
+
+/**
+ * Opens the dashboard SQLite read-write. The backend process is the SOLE writer, so the
+ * manager/worker never open this file directly (they go through the HTTP write API) — this
+ * keeps a single writer and avoids cross-process SQLite contention. Fails fast on a missing
+ * file: the DB is created/migrated out of band, never silently here.
+ */
+export function openReadWriteDb(path: string): ReadOnlyDb {
+  if (!existsSync(path)) {
+    throw new Error(`Bear Metal database file not found at "${path}"`);
+  }
+  const sqlite = new Database(path, { fileMustExist: true });
+  // The dashboard is a denormalized read model fed by best-effort, out-of-order writes (a child
+  // row can arrive before its parent). better-sqlite3 enables foreign_keys by default, which would
+  // make those out-of-order writes fail and — because writes are best-effort — silently drop rows.
+  // Disable enforcement here; the schema's FK declarations remain as relationship documentation.
+  sqlite.pragma("foreign_keys = OFF");
+  const db = drizzle(sqlite, { schema });
+  return { db, sqlite };
+}
