@@ -64,7 +64,11 @@ export function seedMockData(db: Db): void {
 
 /** CLI entry: open (or create) the configured DB file, migrate, seed. */
 function main(): void {
-  const { dbPath } = loadBackendConfig();
+  const cfg = loadBackendConfig();
+  if (cfg.dialect !== "sqlite") {
+    throw new Error(`Mock seeder against ${cfg.dialect} not yet supported by this binary (DEN-2332)`);
+  }
+  const dbPath = cfg.databaseUrl.slice("sqlite:".length);
   const created = !existsSync(dbPath);
   const sqlite = new Database(dbPath);
   const db = drizzle(sqlite, { schema });

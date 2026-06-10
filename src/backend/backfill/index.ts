@@ -185,7 +185,11 @@ async function main(): Promise<void> {
   });
   const agentId = requiredEnv("LINEAR_ASSIGNEE_ID");
 
-  const sqlite = new Database(backendConfig.dbPath);
+  if (backendConfig.dialect !== "sqlite") {
+    throw new Error(`Backfill against ${backendConfig.dialect} not yet supported by this binary (DEN-2332)`);
+  }
+  const dbPath = backendConfig.databaseUrl.slice("sqlite:".length);
+  const sqlite = new Database(dbPath);
   const db = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
 

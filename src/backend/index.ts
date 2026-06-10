@@ -53,7 +53,13 @@ const SCHEMA_SQL = `
 function main(): void {
   const config = loadBackendConfig();
   const logger = createLogger({ level: config.logLevel, name: "bear-metal-backend" });
-  const { dbPath, port } = config;
+  const { databaseUrl, dialect, port } = config;
+  if (dialect !== "sqlite") {
+    // Postgres path wired up in DEN-2332/T4. Until that lands, only SQLite is bootable.
+    throw new Error(`BEAR_METAL_DATABASE_URL dialect "${dialect}" not yet supported by this binary`);
+  }
+  const dbPath = databaseUrl.slice("sqlite:".length);
+  if (!dbPath) throw new Error(`sqlite: URL must include a path: ${databaseUrl}`);
   // Create the file and tables out of band, then open it read-write for the sole writer.
   // openReadWriteDb fails fast on a missing file, so this init must run first.
   const init = new Database(dbPath);
@@ -61,7 +67,7 @@ function main(): void {
   init.close();
   const { db, sqlite } = openReadWriteDb(dbPath);
   const app = createApp(db, { ingestToken: config.ingestToken });
-  const server = app.listen(port, () => logger.info({ port, dbPath }, "bear-metal dashboard backend listening"));
+  const server = app.listen(port, () => logger.info({ port, dbPath, dialect }, "bear-metal dashboard backend listening"));
 
   let shuttingDown = false;
   function shutdown(signal: string): void {
