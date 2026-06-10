@@ -231,10 +231,9 @@ function DeltaChip({ current, prior, invert, format }: DeltaChipProps) {
 function ThroughputCard({ block, prior }: { block: ThroughputBlock; prior: ThroughputBlock }) {
   return (
     <Card title="Throughput">
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <Stat label="Completed" value={block.completed} deltaCurrent={block.completed} deltaPrior={prior.completed} />
         <Stat label="Abandoned" value={block.abandoned} deltaCurrent={block.abandoned} deltaPrior={prior.abandoned} invert />
-        <Stat label="In progress" value={block.inProgress} deltaCurrent={block.inProgress} deltaPrior={prior.inProgress} />
         <Stat label="Discovered" value={block.discovered} deltaCurrent={block.discovered} deltaPrior={prior.discovered} />
       </div>
     </Card>

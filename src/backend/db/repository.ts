@@ -99,7 +99,6 @@ interface ListWorkerOptions {
 export interface ThroughputBlock {
   completed: number;
   abandoned: number;
-  inProgress: number;
   discovered: number;
 }
 
@@ -509,18 +508,18 @@ function inRange(date: Date | null, from: Date, to: Date): boolean {
 }
 
 function computeThroughput(tickets: Ticket[], from: Date, to: Date): ThroughputBlock {
+  // "Throughput" = work that landed a terminal state during the window. Tickets that were merely
+  // in-flight during the window aren't counted — in-progress is a state snapshot, not an
+  // accomplishment, so it doesn't belong on a per-period metric.
   let completed = 0;
   let abandoned = 0;
-  let inProgress = 0;
   let discovered = 0;
-  const inProgressStatuses = new Set<Ticket["bmStatus"]>(["dispatched", "in_progress", "pr_open", "ci_running", "ci_failed"]);
   for (const ticket of tickets) {
     if (inRange(ticket.createdAt, from, to)) discovered += 1;
     if (ticket.bmStatus === "completed" && inRange(ticket.completedAt, from, to)) completed += 1;
     else if (ticket.bmStatus === "abandoned" && inRange(ticket.updatedAt, from, to)) abandoned += 1;
-    else if (inProgressStatuses.has(ticket.bmStatus) && inRange(ticket.updatedAt, from, to)) inProgress += 1;
   }
-  return { completed, abandoned, inProgress, discovered };
+  return { completed, abandoned, discovered };
 }
 
 function computeHealth(tickets: Ticket[], ciRunsInOuter: CiRun[], from: Date, to: Date): HealthBlock {

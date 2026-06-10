@@ -140,7 +140,6 @@ export interface ModelComparisonRow {
 export interface ThroughputBlock {
   completed: number;
   abandoned: number;
-  inProgress: number;
   discovered: number;
 }
 

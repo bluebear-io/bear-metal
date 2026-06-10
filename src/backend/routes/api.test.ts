@@ -148,9 +148,9 @@ describe("GET /api/summary", () => {
     expect(res.body.throughput.prior).toEqual(expect.objectContaining({
       completed: expect.any(Number),
       abandoned: expect.any(Number),
-      inProgress: expect.any(Number),
       discovered: expect.any(Number),
     }));
+    expect(res.body.throughput).not.toHaveProperty("inProgress");
     expect(res.body.cost.prior).toEqual(expect.objectContaining({
       promptTokens: expect.any(Number),
       completionTokens: expect.any(Number),
