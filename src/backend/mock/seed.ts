@@ -17,6 +17,7 @@ export function seedMockData(db: Db): void {
   db.delete(schema.pullRequests).run();
   db.delete(schema.runs).run();
   db.delete(schema.tickets).run();
+  db.delete(schema.workerStatusTransitions).run();
   db.delete(schema.workers).run();
 
   db.insert(schema.workers).values([
@@ -48,6 +49,21 @@ export function seedMockData(db: Db): void {
   db.insert(schema.ciRuns).values([
     { id: "ci_1", ticketId: "lin_1", runId: "run_1", prId: "pr_1", status: "passed", url: "https://github.com/bluebear-io/blueden/actions/runs/1", summary: null, createdAt: t("2026-06-09T07:45:00Z"), completedAt: t("2026-06-09T07:52:00Z") },
     { id: "ci_2", ticketId: "lin_2", runId: "run_2", prId: "pr_2", status: "failed", url: "https://github.com/bluebear-io/blueden/actions/runs/2", summary: "1 failing: session_aggregator.test", createdAt: t("2026-06-09T08:25:00Z"), completedAt: t("2026-06-09T08:40:00Z") },
+  ]).run();
+
+  db.insert(schema.workerStatusTransitions).values([
+    // worker-1: idle → busy → idle → busy (current)
+    { id: "wst_1", workerId: "wk_1", status: "idle", changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wst_2", workerId: "wk_1", status: "busy", changedAt: t("2026-06-09T07:05:00Z") },
+    { id: "wst_3", workerId: "wk_1", status: "idle", changedAt: t("2026-06-09T07:55:00Z") },
+    { id: "wst_4", workerId: "wk_1", status: "busy", changedAt: t("2026-06-09T08:00:00Z") },
+    // worker-2: idle → busy (current)
+    { id: "wst_5", workerId: "wk_2", status: "idle", changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wst_6", workerId: "wk_2", status: "busy", changedAt: t("2026-06-09T08:45:00Z") },
+    // worker-3: idle → busy → dead
+    { id: "wst_7", workerId: "wk_3", status: "idle", changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wst_8", workerId: "wk_3", status: "busy", changedAt: t("2026-06-09T05:30:00Z") },
+    { id: "wst_9", workerId: "wk_3", status: "dead", changedAt: t("2026-06-09T08:40:00Z") },
   ]).run();
 
   db.insert(schema.events).values([

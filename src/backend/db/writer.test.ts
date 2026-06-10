@@ -5,6 +5,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { eq } from "drizzle-orm";
 import * as schema from "./schema.js";
 import { upsertTicket, upsertRun, upsertWorker, insertEvent } from "./writer.js";
+import { asc } from "drizzle-orm";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -28,6 +29,34 @@ describe("upsertTicket", () => {
     expect(rows[0]!.bmStatus).toBe("in_progress");
     expect(rows[0]!.labelsJson).toBe(JSON.stringify(["bear-metal"]));
     expect(rows[0]!.updatedAt).toEqual(new Date(2000));
+  });
+});
+
+describe("upsertWorker status transitions", () => {
+  const baseWorker = {
+    id: "wk_t", name: "wt", currentRunId: null, lastHeartbeatAt: null,
+    startedAt: 1000, updatedAt: 1000,
+  };
+
+  it("records the first status as a transition", () => {
+    upsertWorker(db, { ...baseWorker, status: "idle" });
+    const rows = db.select().from(schema.workerStatusTransitions).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("idle");
+    expect(rows[0]!.changedAt).toEqual(new Date(1000));
+  });
+
+  it("appends a transition only when status actually changes", () => {
+    upsertWorker(db, { ...baseWorker, status: "idle", updatedAt: 1000 });
+    upsertWorker(db, { ...baseWorker, status: "idle", updatedAt: 1500 });
+    upsertWorker(db, { ...baseWorker, status: "busy", updatedAt: 2000 });
+    upsertWorker(db, { ...baseWorker, status: "busy", updatedAt: 2500 });
+    upsertWorker(db, { ...baseWorker, status: "dead", updatedAt: 3000 });
+
+    const rows = db.select().from(schema.workerStatusTransitions)
+      .orderBy(asc(schema.workerStatusTransitions.changedAt)).all();
+    expect(rows.map((r) => r.status)).toEqual(["idle", "busy", "dead"]);
+    expect(rows.map((r) => r.changedAt.getTime())).toEqual([1000, 2000, 3000]);
   });
 });
 

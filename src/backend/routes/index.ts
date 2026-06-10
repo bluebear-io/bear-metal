@@ -1,7 +1,10 @@
 import { Router } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import { listTickets, getTicketDetail, listWorkers } from "../db/repository.js";
+import { listTickets, getTicketDetail, listWorkers, getWorkersTimeline } from "../db/repository.js";
+
+const TIMELINE_DEFAULT_HOURS = 24;
+const TIMELINE_MAX_HOURS = 72;
 
 const BM_STATUSES = schema.tickets.bmStatus.enumValues;
 type BmStatus = (typeof BM_STATUSES)[number];
@@ -37,6 +40,28 @@ export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
 
   router.get("/workers", (_req, res) => {
     res.json({ workers: listWorkers(db) });
+  });
+
+  router.get("/workers/timeline", (req, res) => {
+    const raw = req.query.hours;
+    let hours = TIMELINE_DEFAULT_HOURS;
+    if (raw !== undefined) {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > TIMELINE_MAX_HOURS) {
+        res.status(400).json({ error: `invalid hours: must be a number in (0, ${TIMELINE_MAX_HOURS}]` });
+        return;
+      }
+      hours = parsed;
+    }
+    const windowMs = hours * 60 * 60 * 1000;
+    const now = new Date();
+    const timelines = getWorkersTimeline(db, { now, windowMs });
+    res.json({
+      hours,
+      windowStart: new Date(now.getTime() - windowMs).toISOString(),
+      windowEnd: now.toISOString(),
+      workers: timelines,
+    });
   });
 
   return router;

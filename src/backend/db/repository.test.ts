@@ -4,7 +4,7 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 import { seedMockData } from "../mock/seed.js";
-import { listTickets, getTicketDetail, listWorkers } from "./repository.js";
+import { listTickets, getTicketDetail, listWorkers, getWorkersTimeline } from "./repository.js";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -89,5 +89,40 @@ describe("listWorkers", () => {
     const dead = rows.find((w) => w.id === "wk_3")!;
     expect(dead.isDead).toBe(true);
     expect(dead.isHeartbeatStale).toBe(true);
+  });
+});
+
+describe("getWorkersTimeline", () => {
+  // Anchor `now` past every seeded transition so the synthetic data is fully inside the window.
+  const now = new Date("2026-06-09T09:30:00Z");
+
+  it("reconstructs per-worker segments from recorded transitions", () => {
+    const timelines = getWorkersTimeline(db, { now, windowMs: 24 * 60 * 60 * 1000 });
+    const wk1 = timelines.find((t) => t.workerId === "wk_1")!;
+    expect(wk1.workerName).toBe("worker-1");
+    expect(wk1.segments.map((s) => s.status)).toEqual(["idle", "busy", "idle", "busy"]);
+    // Last segment is open-ended and clipped to `now`.
+    expect(wk1.segments.at(-1)!.endMs).toBe(now.getTime());
+    // Segments are non-overlapping and chronological.
+    for (let i = 1; i < wk1.segments.length; i++) {
+      expect(wk1.segments[i]!.startMs).toBeGreaterThanOrEqual(wk1.segments[i - 1]!.endMs);
+    }
+  });
+
+  it("seeds the first segment from the most recent transition before the window", () => {
+    // 1h window, starting after worker-1's last 'busy' transition (08:00 UTC).
+    const tightNow = new Date("2026-06-09T09:30:00Z");
+    const timelines = getWorkersTimeline(db, { now: tightNow, windowMs: 60 * 60 * 1000 });
+    const wk1 = timelines.find((t) => t.workerId === "wk_1")!;
+    expect(wk1.segments).toHaveLength(1);
+    expect(wk1.segments[0]!.status).toBe("busy");
+    expect(wk1.segments[0]!.startMs).toBe(tightNow.getTime() - 60 * 60 * 1000);
+    expect(wk1.segments[0]!.endMs).toBe(tightNow.getTime());
+  });
+
+  it("omits workers with no recorded transitions", () => {
+    db.delete(schema.workerStatusTransitions).run();
+    const timelines = getWorkersTimeline(db, { now, windowMs: 24 * 60 * 60 * 1000 });
+    expect(timelines).toEqual([]);
   });
 });

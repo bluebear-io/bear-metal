@@ -1,7 +1,7 @@
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lte } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
-import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
+import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker, WorkerStatusTransition } from "./types.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
@@ -51,6 +51,23 @@ export interface WorkerListItem extends Worker {
 
 interface ListWorkerOptions {
   now?: Date;
+}
+
+export interface TimelineSegment {
+  status: Worker["status"];
+  startMs: number;
+  endMs: number;
+}
+
+export interface WorkerTimeline {
+  workerId: string;
+  workerName: string;
+  segments: TimelineSegment[];
+}
+
+interface TimelineOptions {
+  now?: Date;
+  windowMs: number;
 }
 
 function toLatestRunSummary(run: Run): LatestRunSummary {
@@ -103,6 +120,56 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
   const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
 
   return { ticket, runs, pullRequests, ciRuns, events };
+}
+
+/**
+ * Returns one continuous timeline per worker over the requested window.
+ *
+ * Reconstruction rules:
+ *   - The first segment in the window starts at the last transition recorded
+ *     before the window (clipped to windowStart), so workers that haven't
+ *     changed state in a long time still render a bar.
+ *   - Each subsequent transition closes the prior segment and opens a new one.
+ *   - The final segment is open-ended and clipped to `now`.
+ *   - Workers with no transitions at all are omitted (they have no recorded history).
+ */
+export function getWorkersTimeline(db: Db, options: TimelineOptions): WorkerTimeline[] {
+  const now = options.now ?? new Date();
+  const nowMs = now.getTime();
+  const windowStartMs = nowMs - options.windowMs;
+  const windowStart = new Date(windowStartMs);
+
+  const workers = db.select().from(schema.workers).all();
+  const timelines: WorkerTimeline[] = [];
+
+  for (const worker of workers) {
+    // Seed: most recent transition <= windowStart establishes the status at window open.
+    const seed = db.select().from(schema.workerStatusTransitions)
+      .where(and(eq(schema.workerStatusTransitions.workerId, worker.id), lte(schema.workerStatusTransitions.changedAt, windowStart)))
+      .orderBy(desc(schema.workerStatusTransitions.changedAt))
+      .get();
+    const withinWindow = db.select().from(schema.workerStatusTransitions)
+      .where(and(eq(schema.workerStatusTransitions.workerId, worker.id), gte(schema.workerStatusTransitions.changedAt, windowStart)))
+      .orderBy(asc(schema.workerStatusTransitions.changedAt))
+      .all();
+
+    const ordered: WorkerStatusTransition[] = seed ? [seed, ...withinWindow] : [...withinWindow];
+    if (ordered.length === 0) continue;
+
+    const segments: TimelineSegment[] = [];
+    for (let i = 0; i < ordered.length; i++) {
+      const segStartRaw = ordered[i]!.changedAt.getTime();
+      const segStart = Math.max(segStartRaw, windowStartMs);
+      const segEnd = i + 1 < ordered.length ? ordered[i + 1]!.changedAt.getTime() : nowMs;
+      if (segEnd <= windowStartMs) continue;
+      if (segStart >= nowMs) continue;
+      segments.push({ status: ordered[i]!.status, startMs: segStart, endMs: Math.min(segEnd, nowMs) });
+    }
+    if (segments.length > 0) {
+      timelines.push({ workerId: worker.id, workerName: worker.name, segments });
+    }
+  }
+  return timelines;
 }
 
 export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {

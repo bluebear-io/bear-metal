@@ -1,5 +1,5 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "./schema.js";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
@@ -24,7 +24,21 @@ export function upsertWorker(db: Db, p: WorkerPayload): void {
     id: p.id, name: p.name, status: p.status, currentRunId: p.currentRunId,
     lastHeartbeatAt: d(p.lastHeartbeatAt), startedAt: new Date(p.startedAt), updatedAt: new Date(p.updatedAt),
   };
+  // Detect a status change vs the persisted row (or first sighting) so we can
+  // append to the Gantt timeline. We do this before the upsert so the previous
+  // status is still readable.
+  const previous = db.select({ status: schema.workers.status })
+    .from(schema.workers).where(eq(schema.workers.id, p.id)).get();
+  const statusChanged = previous?.status !== p.status;
   db.insert(schema.workers).values(row).onConflictDoUpdate({ target: schema.workers.id, set: row }).run();
+  if (statusChanged) {
+    db.insert(schema.workerStatusTransitions).values({
+      id: globalThis.crypto.randomUUID(),
+      workerId: p.id,
+      status: p.status,
+      changedAt: new Date(p.updatedAt),
+    }).run();
+  }
 }
 
 export function upsertRun(db: Db, p: RunPayload): void {

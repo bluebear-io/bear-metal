@@ -66,6 +66,38 @@ describe("GET /api/tickets/:id", () => {
   });
 });
 
+describe("GET /api/workers/timeline", () => {
+  it("returns per-worker segments for the default 24h window", async () => {
+    const res = await request(app).get("/api/workers/timeline");
+    expect(res.status).toBe(200);
+    expect(res.body.hours).toBe(24);
+    expect(typeof res.body.windowStart).toBe("string");
+    expect(typeof res.body.windowEnd).toBe("string");
+    const wk1 = res.body.workers.find((w: { workerId: string }) => w.workerId === "wk_1");
+    expect(wk1.workerName).toBe("worker-1");
+    expect(Array.isArray(wk1.segments)).toBe(true);
+    expect(wk1.segments.length).toBeGreaterThan(0);
+    expect(wk1.segments[0]).toMatchObject({
+      status: expect.any(String),
+      startMs: expect.any(Number),
+      endMs: expect.any(Number),
+    });
+  });
+
+  it("accepts a custom hours window up to 72", async () => {
+    const res = await request(app).get("/api/workers/timeline?hours=48");
+    expect(res.status).toBe(200);
+    expect(res.body.hours).toBe(48);
+  });
+
+  it("rejects an invalid hours param", async () => {
+    for (const bad of ["0", "-1", "73", "abc"]) {
+      const res = await request(app).get(`/api/workers/timeline?hours=${bad}`);
+      expect(res.status).toBe(400);
+    }
+  });
+});
+
 describe("GET /api/workers", () => {
   it("lists workers with current ticket", async () => {
     const res = await request(app).get("/api/workers");

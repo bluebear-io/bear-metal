@@ -32,6 +32,13 @@ export const workers = sqliteTable("workers", {
   updatedAt: ts("updated_at").notNull(),
 });
 
+export const workerStatusTransitions = sqliteTable("worker_status_transitions", {
+  id: text("id").primaryKey(),
+  workerId: text("worker_id").notNull().references(() => workers.id),
+  status: text("status", { enum: ["idle", "busy", "stopped", "dead"] }).notNull(),
+  changedAt: ts("changed_at").notNull(),
+});
+
 export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").notNull().references(() => tickets.id),

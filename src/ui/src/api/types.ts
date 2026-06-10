@@ -130,6 +130,25 @@ export interface TicketEvent {
   createdAt: string;
 }
 
+export interface WorkerTimelineSegment {
+  status: WorkerStatus;
+  startMs: number;
+  endMs: number;
+}
+
+export interface WorkerTimeline {
+  workerId: string;
+  workerName: string;
+  segments: WorkerTimelineSegment[];
+}
+
+export interface WorkersTimelineResponse {
+  hours: number;
+  windowStart: string;
+  windowEnd: string;
+  workers: WorkerTimeline[];
+}
+
 export interface TicketDetail {
   ticket: Ticket;
   runs: Run[];

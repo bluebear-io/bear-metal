@@ -1,10 +1,15 @@
-import { useWorkers } from "../api/queries.js";
+import { useState } from "react";
+import { useWorkers, useWorkersTimeline } from "../api/queries.js";
 import type { WorkerListItem } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
+import { WorkerTimelineGantt } from "../components/WorkerTimelineGantt.js";
 import { formatDateTime, formatDurationMs } from "../lib/format.js";
+
+const TIMELINE_RANGE_OPTIONS = [24, 48, 72] as const;
+type TimelineRange = (typeof TIMELINE_RANGE_OPTIONS)[number];
 
 const dash = "—";
 
@@ -27,12 +32,47 @@ const workerHealth = (worker: WorkerListItem): "dead" | "timed_out" | "heartbeat
 export default function WorkersPage() {
   const workersQuery = useWorkers();
   const workers = workersQuery.data ?? [];
+  const [timelineHours, setTimelineHours] = useState<TimelineRange>(24);
+  const timelineQuery = useWorkersTimeline(timelineHours);
+
+  const refreshAll = () => {
+    void workersQuery.refetch();
+    void timelineQuery.refetch();
+  };
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 sm:px-8">
       <PageHeader title="Workers">
-        <RefreshButton busy={workersQuery.isFetching} onClick={() => void workersQuery.refetch()} />
+        <RefreshButton busy={workersQuery.isFetching || timelineQuery.isFetching} onClick={refreshAll} />
       </PageHeader>
+
+      <section className="flex flex-col gap-3" aria-label="Worker state timeline">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-text-secondary">Range:</span>
+          {TIMELINE_RANGE_OPTIONS.map((hours) => {
+            const active = hours === timelineHours;
+            return (
+              <button
+                key={hours}
+                type="button"
+                onClick={() => setTimelineHours(hours)}
+                className={`rounded-md border px-2 py-1 text-xs ${active ? "border-primary text-primary" : "border-border-default text-text-secondary hover:text-text-primary"}`}
+                aria-pressed={active}
+              >
+                {hours}h
+              </button>
+            );
+          })}
+        </div>
+        <QueryBoundary
+          isLoading={timelineQuery.isLoading}
+          error={timelineQuery.error}
+          isEmpty={(timelineQuery.data?.workers.length ?? 0) === 0}
+          emptyLabel="No worker state transitions recorded for this window."
+        >
+          {timelineQuery.data ? <WorkerTimelineGantt data={timelineQuery.data} /> : null}
+        </QueryBoundary>
+      </section>
 
       <QueryBoundary
         isLoading={workersQuery.isLoading}
