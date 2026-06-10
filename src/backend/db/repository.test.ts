@@ -4,19 +4,21 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 import { seedMockData } from "../mock/seed.js";
-import { listTickets, getTicketDetail, listWorkers } from "./repository.js";
+import { createRepository, type Repository } from "./repository.js";
 
 let db: BetterSQLite3Database<typeof schema>;
+let repo: Repository;
 beforeEach(() => {
   const sqlite = new Database(":memory:");
   db = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
   seedMockData(db);
+  repo = createRepository({ dialect: "sqlite", db, schema, close: async () => undefined });
 });
 
 describe("listTickets", () => {
-  it("returns all tickets newest-first with attempt + latest PR/CI summary", () => {
-    const rows = listTickets(db);
+  it("returns all tickets newest-first with attempt + latest PR/CI summary", async () => {
+    const rows = await repo.listTickets();
     expect(rows.length).toBe(4);
     expect(rows[0]!.createdAt >= rows[1]!.createdAt).toBe(true);
     const createdAts = rows.map((r) => r.createdAt.getTime());
@@ -28,8 +30,8 @@ describe("listTickets", () => {
     expect(completed.attemptCount).toBe(1);
   });
 
-  it("includes the latest run summary for each ticket", () => {
-    const rows = listTickets(db);
+  it("includes the latest run summary for each ticket", async () => {
+    const rows = await repo.listTickets();
     const retry = rows.find((r) => r.identifier === "DEN-3002")!;
     expect(retry.latestRun).toMatchObject({
       id: "run_3",
@@ -43,15 +45,15 @@ describe("listTickets", () => {
     expect(abandoned.latestRun?.status).toBe("timed_out");
   });
 
-  it("filters by bmStatus", () => {
-    const rows = listTickets(db, { bmStatus: "abandoned" });
+  it("filters by bmStatus", async () => {
+    const rows = await repo.listTickets({ bmStatus: "abandoned" });
     expect(rows.map((r) => r.identifier)).toEqual(["DEN-3003"]);
   });
 });
 
 describe("getTicketDetail", () => {
-  it("returns the ticket with runs, PRs, CI runs, and an ordered event timeline", () => {
-    const detail = getTicketDetail(db, "lin_2")!;
+  it("returns the ticket with runs, PRs, CI runs, and an ordered event timeline", async () => {
+    const detail = (await repo.getTicketDetail("lin_2"))!;
     expect(detail.ticket.identifier).toBe("DEN-3002");
     expect(detail.runs.map((r) => r.attemptNumber)).toEqual([1, 2]);
     expect(detail.runs[1]!.worker?.name).toBe("worker-2");
@@ -61,14 +63,14 @@ describe("getTicketDetail", () => {
     expect(eventTimes).toEqual([...eventTimes].sort((a, b) => a - b));
   });
 
-  it("returns null for an unknown ticket", () => {
-    expect(getTicketDetail(db, "nope")).toBeNull();
+  it("returns null for an unknown ticket", async () => {
+    expect(await repo.getTicketDetail("nope")).toBeNull();
   });
 });
 
 describe("listWorkers", () => {
-  it("returns workers with their current ticket identifier when busy", () => {
-    const rows = listWorkers(db, { now: new Date("2026-06-09T09:01:00Z") });
+  it("returns workers with their current ticket identifier when busy", async () => {
+    const rows = await repo.listWorkers({ now: new Date("2026-06-09T09:01:00Z") });
     expect(rows.length).toBe(3);
     const busy = rows.find((w) => w.id === "wk_1")!;
     expect(busy.status).toBe("busy");

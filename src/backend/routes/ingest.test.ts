@@ -5,6 +5,7 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "../db/schema.js";
 import { createWriter } from "../db/writer.js";
+import { createRepository } from "../db/repository.js";
 import { createApp } from "../app.js";
 
 const TOKEN = "secret-123";
@@ -14,8 +15,10 @@ let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
   db = drizzle(new Database(":memory:"), { schema });
   migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
-  const writer = createWriter({ dialect: "sqlite", db, schema, close: async () => undefined });
-  app = createApp(db, { ingestToken: TOKEN, writer });
+  const handle = { dialect: "sqlite" as const, db, schema, close: async () => undefined };
+  const writer = createWriter(handle);
+  const repo = createRepository(handle);
+  app = createApp(repo, { ingestToken: TOKEN, writer });
 });
 
 const ticketBody = {

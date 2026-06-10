@@ -6,6 +6,7 @@ import { loadBackendConfig } from "./config.js";
 import { openReadWriteDb } from "./db/client.js";
 import * as schemaSqlite from "./db/schema.js";
 import { createWriter } from "./db/writer.js";
+import { createRepository } from "./db/repository.js";
 import { createApp } from "./app.js";
 
 // Create all tables on first boot; safe to run every time (IF NOT EXISTS).
@@ -68,15 +69,17 @@ function main(): void {
   init.exec(SCHEMA_SQL);
   init.close();
   const { db, sqlite } = openReadWriteDb(dbPath);
-  const writer = createWriter({
-    dialect: "sqlite",
+  const handle = {
+    dialect: "sqlite" as const,
     db,
     schema: schemaSqlite,
     close: async () => {
       sqlite.close();
     },
-  });
-  const app = createApp(db, { ingestToken: config.ingestToken, writer });
+  };
+  const writer = createWriter(handle);
+  const repo = createRepository(handle);
+  const app = createApp(repo, { ingestToken: config.ingestToken, writer });
   const server = app.listen(port, () => logger.info({ port, dbPath, dialect }, "bear-metal dashboard backend listening"));
 
   let shuttingDown = false;

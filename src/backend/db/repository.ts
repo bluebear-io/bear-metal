@@ -1,9 +1,7 @@
 import { desc, eq } from "drizzle-orm";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
+import type { DbHandle } from "./client.js";
 
-type Db = BetterSQLite3Database<typeof schema>;
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
 const WORKER_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -53,6 +51,13 @@ interface ListWorkerOptions {
   now?: Date;
 }
 
+/** Dialect-agnostic read interface backing the dashboard's GET routes. */
+export interface Repository {
+  listTickets(filter?: { bmStatus?: Ticket["bmStatus"] }): Promise<TicketListItem[]>;
+  getTicketDetail(id: string): Promise<TicketDetail | null>;
+  listWorkers(options?: ListWorkerOptions): Promise<WorkerListItem[]>;
+}
+
 function toLatestRunSummary(run: Run): LatestRunSummary {
   return {
     id: run.id,
@@ -71,76 +76,97 @@ function elapsedSince(now: Date, then: Date | null): number | null {
   return Math.max(0, now.getTime() - then.getTime());
 }
 
-export function listTickets(db: Db, filter?: { bmStatus?: Ticket["bmStatus"] }): TicketListItem[] {
-  const where = filter?.bmStatus ? eq(schema.tickets.bmStatus, filter.bmStatus) : undefined;
-  const ticketRows = db.select().from(schema.tickets).where(where).orderBy(desc(schema.tickets.createdAt)).all();
-
-  return ticketRows.map((ticket) => {
-    const latestRunRow = db.select().from(schema.runs).where(eq(schema.runs.ticketId, ticket.id)).orderBy(desc(schema.runs.attemptNumber), desc(schema.runs.createdAt)).get();
-    const prs = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, ticket.id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
-    const latestPrRow = prs[0] ?? null;
-    const ci = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, ticket.id)).orderBy(desc(schema.ciRuns.createdAt)).all();
-    return {
-      ...ticket,
-      latestRun: latestRunRow ? toLatestRunSummary(latestRunRow) : null,
-      latestPr: latestPrRow ? { number: latestPrRow.number, url: latestPrRow.url, state: latestPrRow.state, merged: latestPrRow.merged } : null,
-      // latestCiStatus = the ticket's most recent CI outcome overall (not scoped to latestPr); a ticket reuses one branch/PR so this is the dashboard's "current CI state".
-      latestCiStatus: ci[0]?.status ?? null,
-    };
-  });
-}
-
-export function getTicketDetail(db: Db, id: string): TicketDetail | null {
-  const ticket = db.select().from(schema.tickets).where(eq(schema.tickets.id, id)).get();
-  if (!ticket) return null;
-
-  const runRows = db.select().from(schema.runs).where(eq(schema.runs.ticketId, id)).orderBy(schema.runs.attemptNumber).all();
-  const workersById = new Map(db.select().from(schema.workers).all().map((w) => [w.id, w]));
-  const runs = runRows.map((r) => ({ ...r, worker: r.workerId ? workersById.get(r.workerId) ?? null : null }));
-
-  const pullRequests = db.select().from(schema.pullRequests).where(eq(schema.pullRequests.ticketId, id)).orderBy(desc(schema.pullRequests.updatedAt)).all();
-  const ciRuns = db.select().from(schema.ciRuns).where(eq(schema.ciRuns.ticketId, id)).orderBy(schema.ciRuns.createdAt).all();
-  const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
-
-  return { ticket, runs, pullRequests, ciRuns, events };
-}
-
-export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {
-  const now = options.now ?? new Date();
-  const workers = db.select().from(schema.workers).all();
-  return workers.map((w) => {
-    let currentTicketIdentifier: string | null = null;
-    let currentTicketTitle: string | null = null;
-    let currentRun: CurrentRunSummary | null = null;
-    if (w.currentRunId) {
-      const run = db.select().from(schema.runs).where(eq(schema.runs.id, w.currentRunId)).get();
-      if (run) {
-        const ticket = db.select().from(schema.tickets).where(eq(schema.tickets.id, run.ticketId)).get();
-        currentTicketIdentifier = ticket?.identifier ?? null;
-        currentTicketTitle = ticket?.title ?? null;
-        if (ticket) {
-          const runtimeMs = run.endedAt ? elapsedSince(run.endedAt, run.startedAt) : elapsedSince(now, run.startedAt);
-          currentRun = {
-            ...toLatestRunSummary(run),
-            ticketId: ticket.id,
-            ticketIdentifier: ticket.identifier,
-            ticketTitle: ticket.title,
-            runtimeMs,
-          };
-        }
+/**
+ * Drizzle's sqlite query builder is sync (`.all()`/`.get()` return rows directly); the pg builder
+ * is async (returns Promises). Both `await await sync` and `await Promise` resolve to the row data,
+ * so the implementation is written in await-everywhere style with `any` typing internally — the
+ * schema-pg parity test guarantees the row shapes match across dialects.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildRepository(db: any, t: any): Repository {
+  return {
+    async listTickets(filter) {
+      const where = filter?.bmStatus ? eq(t.tickets.bmStatus, filter.bmStatus) : undefined;
+      const ticketRows: Ticket[] = await db.select().from(t.tickets).where(where).orderBy(desc(t.tickets.createdAt));
+      const result: TicketListItem[] = [];
+      for (const ticket of ticketRows) {
+        const latestRunRow: Run | undefined = (await db.select().from(t.runs).where(eq(t.runs.ticketId, ticket.id)).orderBy(desc(t.runs.attemptNumber), desc(t.runs.createdAt)).limit(1))[0];
+        const prs: PullRequestRow[] = await db.select().from(t.pullRequests).where(eq(t.pullRequests.ticketId, ticket.id)).orderBy(desc(t.pullRequests.updatedAt));
+        const latestPrRow = prs[0] ?? null;
+        const ci: CiRun[] = await db.select().from(t.ciRuns).where(eq(t.ciRuns.ticketId, ticket.id)).orderBy(desc(t.ciRuns.createdAt));
+        result.push({
+          ...ticket,
+          latestRun: latestRunRow ? toLatestRunSummary(latestRunRow) : null,
+          latestPr: latestPrRow
+            ? { number: latestPrRow.number, url: latestPrRow.url, state: latestPrRow.state, merged: latestPrRow.merged }
+            : null,
+          // latestCiStatus = the ticket's most recent CI outcome overall (not scoped to latestPr); a ticket reuses one branch/PR so this is the dashboard's "current CI state".
+          latestCiStatus: ci[0]?.status ?? null,
+        });
       }
-    }
-    const heartbeatAgeMs = elapsedSince(now, w.lastHeartbeatAt);
-    const isTimedOut = currentRun !== null && currentRun.runtimeMs !== null && currentRun.endedAt === null && currentRun.runtimeMs >= WORKER_RUN_TIMEOUT_MS;
-    return {
-      ...w,
-      currentTicketIdentifier,
-      currentTicketTitle,
-      currentRun,
-      heartbeatAgeMs,
-      isDead: w.status === "dead",
-      isHeartbeatStale: heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_STALE_MS,
-      isTimedOut,
-    };
-  });
+      return result;
+    },
+
+    async getTicketDetail(id) {
+      const ticketRow: Ticket | undefined = (await db.select().from(t.tickets).where(eq(t.tickets.id, id)).limit(1))[0];
+      if (!ticketRow) return null;
+
+      const runRows: Run[] = await db.select().from(t.runs).where(eq(t.runs.ticketId, id)).orderBy(t.runs.attemptNumber);
+      const workerRows: Worker[] = await db.select().from(t.workers);
+      const workersById = new Map(workerRows.map((w) => [w.id, w]));
+      const runs = runRows.map((r) => ({ ...r, worker: r.workerId ? workersById.get(r.workerId) ?? null : null }));
+
+      const pullRequests: PullRequestRow[] = await db.select().from(t.pullRequests).where(eq(t.pullRequests.ticketId, id)).orderBy(desc(t.pullRequests.updatedAt));
+      const ciRuns: CiRun[] = await db.select().from(t.ciRuns).where(eq(t.ciRuns.ticketId, id)).orderBy(t.ciRuns.createdAt);
+      const events: EventRow[] = await db.select().from(t.events).where(eq(t.events.ticketId, id)).orderBy(t.events.createdAt);
+
+      return { ticket: ticketRow, runs, pullRequests, ciRuns, events };
+    },
+
+    async listWorkers(options = {}) {
+      const now = options.now ?? new Date();
+      const workers: Worker[] = await db.select().from(t.workers);
+      const result: WorkerListItem[] = [];
+      for (const w of workers) {
+        let currentTicketIdentifier: string | null = null;
+        let currentTicketTitle: string | null = null;
+        let currentRun: CurrentRunSummary | null = null;
+        if (w.currentRunId) {
+          const run: Run | undefined = (await db.select().from(t.runs).where(eq(t.runs.id, w.currentRunId)).limit(1))[0];
+          if (run) {
+            const ticket: Ticket | undefined = (await db.select().from(t.tickets).where(eq(t.tickets.id, run.ticketId)).limit(1))[0];
+            currentTicketIdentifier = ticket?.identifier ?? null;
+            currentTicketTitle = ticket?.title ?? null;
+            if (ticket) {
+              const runtimeMs = run.endedAt ? elapsedSince(run.endedAt, run.startedAt) : elapsedSince(now, run.startedAt);
+              currentRun = {
+                ...toLatestRunSummary(run),
+                ticketId: ticket.id,
+                ticketIdentifier: ticket.identifier,
+                ticketTitle: ticket.title,
+                runtimeMs,
+              };
+            }
+          }
+        }
+        const heartbeatAgeMs = elapsedSince(now, w.lastHeartbeatAt);
+        const isTimedOut = currentRun !== null && currentRun.runtimeMs !== null && currentRun.endedAt === null && currentRun.runtimeMs >= WORKER_RUN_TIMEOUT_MS;
+        result.push({
+          ...w,
+          currentTicketIdentifier,
+          currentTicketTitle,
+          currentRun,
+          heartbeatAgeMs,
+          isDead: w.status === "dead",
+          isHeartbeatStale: heartbeatAgeMs !== null && heartbeatAgeMs > HEARTBEAT_STALE_MS,
+          isTimedOut,
+        });
+      }
+      return result;
+    },
+  };
+}
+
+export function createRepository(handle: DbHandle): Repository {
+  return buildRepository(handle.db, handle.schema);
 }
