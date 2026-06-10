@@ -101,6 +101,23 @@ npm test         # run unit tests
 docker compose up --build   # runs the manager; GET /health on $PORT
 ```
 
+## Dashboard DB
+
+The dashboard backend (`src/backend/`) reads and writes its own database — separate from the
+manager's task queue. Pick the engine by URL scheme via `BEAR_METAL_DATABASE_URL`:
+
+```
+BEAR_METAL_DATABASE_URL=sqlite:./bear-metal.db                    # local dev / tests
+BEAR_METAL_DATABASE_URL=postgres://user:pass@host:5432/bear_metal # production
+```
+
+The schema is created on first connect (`CREATE TABLE IF NOT EXISTS`) — no separate migrate
+step. FK enforcement is intentionally disabled at the session level because writes are
+best-effort and can arrive out of order (a child row can land before its parent).
+
+The dashboard's `BEAR_METAL_DATABASE_URL` and the manager's `DATABASE_URL` are independent —
+they can point at the same Postgres instance (different table sets) or different ones.
+
 ## Backfill (dashboard DB)
 
 The dashboard reads from its own SQLite file (`BEAR_METAL_DB_PATH`). If you need

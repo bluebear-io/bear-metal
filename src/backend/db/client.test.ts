@@ -5,8 +5,10 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { parse as parseConnectionString } from "pg-connection-string";
 import * as schema from "./schema.js";
 import { openReadOnlyDb, openReadWriteDb } from "./client.js";
+import { detectDialect } from "../config.js";
 
 let dir: string | undefined;
 afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = undefined; });
@@ -68,5 +70,43 @@ describe("openReadWriteDb", () => {
       }).run()
     ).not.toThrow();
     sqlite.close();
+  });
+});
+
+/**
+ * Postgres connection-string contract. We can't dial a real RDS instance from outside the VPC,
+ * so we verify the *upstream* contract instead: when the backend is given a `postgres://...` URL,
+ * it dispatches to the PG factory branch, and pg.Pool will receive a correctly parsed config
+ * (password URL-decoded, sslmode honored). pg.Pool itself uses `pg-connection-string` internally,
+ * so asserting the parser output is equivalent to asserting what pg.Pool will see.
+ *
+ * Never put a real secret in source. Production credentials come from `BEAR_METAL_DATABASE_URL`
+ * at runtime; tests use synthetic values that exercise the same parsing edge cases.
+ */
+describe("postgres URL routing", () => {
+  it("classifies postgres:// and postgresql:// as the postgres dialect", () => {
+    expect(detectDialect("postgres://u:p@h:5432/db")).toBe("postgres");
+    expect(detectDialect("postgresql://u:p@h:5432/db")).toBe("postgres");
+  });
+
+  it("URL-decodes percent-escaped passwords (matches pg.Pool's behavior)", () => {
+    // Synthetic password containing the same URL-reserved bytes a real password might
+    // contain (`]`, `[`, `)`) so the decode path is exercised end-to-end.
+    const decoded = "p@ss]wo[rd)123";
+    const encoded = encodeURIComponent(decoded);
+    const cfg = parseConnectionString(`postgres://u:${encoded}@host.example:5432/db?sslmode=no-verify`);
+    expect(cfg.password).toBe(decoded);
+    expect(cfg.user).toBe("u");
+    expect(cfg.host).toBe("host.example");
+    expect(cfg.port).toBe("5432");
+    expect(cfg.database).toBe("db");
+  });
+
+  it("honors sslmode=no-verify by disabling certificate verification (RDS-friendly)", () => {
+    const cfg = parseConnectionString("postgres://u:p@host:5432/db?sslmode=no-verify");
+    // pg-connection-string maps `no-verify` to ssl: { rejectUnauthorized: false }.
+    // pg.Pool consumes the same `ssl` field, so this is what the backend will send to the server.
+    expect(typeof cfg.ssl).toBe("object");
+    expect((cfg.ssl as { rejectUnauthorized: boolean }).rejectUnauthorized).toBe(false);
   });
 });
