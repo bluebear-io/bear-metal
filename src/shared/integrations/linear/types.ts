@@ -32,6 +32,15 @@ export interface Ticket {
    * parks those that are not — Linear assigns agent work via delegation, not assignment.
    */
   delegate: { id: string } | null;
+  /**
+   * ISO timestamps populated by `LinearIntegration` for tickets returned from Linear. Optional so
+   * test fixtures that hand-construct `Ticket` values don't need to fill them in — only callers
+   * that need historical context (e.g. the backfill tool) read these.
+   */
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  completedAt?: string | null;
+  canceledAt?: string | null;
 }
 
 export interface TicketCommentUser {
