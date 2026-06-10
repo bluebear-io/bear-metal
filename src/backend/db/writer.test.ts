@@ -4,12 +4,21 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { eq } from "drizzle-orm";
 import * as schema from "./schema.js";
-import { upsertTicket, upsertRun, upsertWorker, insertEvent } from "./writer.js";
+import type { DbHandle } from "./client.js";
+import { createWriter, type Writer } from "./writer.js";
 
 let db: BetterSQLite3Database<typeof schema>;
+let writer: Writer;
 beforeEach(() => {
   db = drizzle(new Database(":memory:"), { schema });
   migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
+  const handle: DbHandle = {
+    dialect: "sqlite",
+    db,
+    schema,
+    close: async () => undefined,
+  };
+  writer = createWriter(handle);
 });
 
 const ticket = {
@@ -20,9 +29,9 @@ const ticket = {
 };
 
 describe("upsertTicket", () => {
-  it("inserts then updates the same id (idempotent)", () => {
-    upsertTicket(db, ticket);
-    upsertTicket(db, { ...ticket, bmStatus: "in_progress", updatedAt: 2000 });
+  it("inserts then updates the same id (idempotent)", async () => {
+    await writer.upsertTicket(ticket);
+    await writer.upsertTicket({ ...ticket, bmStatus: "in_progress", updatedAt: 2000 });
     const rows = db.select().from(schema.tickets).where(eq(schema.tickets.id, "lin_9")).all();
     expect(rows).toHaveLength(1);
     expect(rows[0]!.bmStatus).toBe("in_progress");
@@ -32,16 +41,16 @@ describe("upsertTicket", () => {
 });
 
 describe("upsertRun + insertEvent", () => {
-  it("persists a run and appends an event", () => {
-    upsertTicket(db, ticket);
-    upsertRun(db, {
+  it("persists a run and appends an event", async () => {
+    await writer.upsertTicket(ticket);
+    await writer.upsertRun({
       id: "run_9", ticketId: "lin_9", attemptNumber: 1, workerId: null,
       trigger: "new", status: "dispatched", contextJson: null,
       startedAt: null, endedAt: null, stopReason: null, error: null,
       promptTokens: null, completionTokens: null, modelName: null, provider: null,
       createdAt: 1500,
     });
-    insertEvent(db, {
+    await writer.insertEvent({
       ticketId: "lin_9", runId: "run_9", workerId: null, source: "manager",
       type: "dispatched", summary: "enqueued", payloadJson: null, createdAt: 1500,
     });
@@ -49,14 +58,14 @@ describe("upsertRun + insertEvent", () => {
     expect(db.select().from(schema.events).all()).toHaveLength(1);
   });
 
-  it("upsertWorker appends a status_history row only when status or currentRunId changes", () => {
-    upsertWorker(db, { id: "wk_h", name: "w", status: "idle", currentRunId: null, lastHeartbeatAt: 1000, startedAt: 1000, updatedAt: 1000 });
+  it("upsertWorker appends a status_history row only when status or currentRunId changes", async () => {
+    await writer.upsertWorker({ id: "wk_h", name: "w", status: "idle", currentRunId: null, lastHeartbeatAt: 1000, startedAt: 1000, updatedAt: 1000 });
     // Same status, same run, later heartbeat — must NOT emit a transition row.
-    upsertWorker(db, { id: "wk_h", name: "w", status: "idle", currentRunId: null, lastHeartbeatAt: 1500, startedAt: 1000, updatedAt: 1500 });
+    await writer.upsertWorker({ id: "wk_h", name: "w", status: "idle", currentRunId: null, lastHeartbeatAt: 1500, startedAt: 1000, updatedAt: 1500 });
     // Status change → 1 new row.
-    upsertWorker(db, { id: "wk_h", name: "w", status: "busy", currentRunId: "run_a", lastHeartbeatAt: 2000, startedAt: 1000, updatedAt: 2000 });
+    await writer.upsertWorker({ id: "wk_h", name: "w", status: "busy", currentRunId: "run_a", lastHeartbeatAt: 2000, startedAt: 1000, updatedAt: 2000 });
     // currentRunId change (same status) → 1 new row.
-    upsertWorker(db, { id: "wk_h", name: "w", status: "busy", currentRunId: "run_b", lastHeartbeatAt: 2500, startedAt: 1000, updatedAt: 2500 });
+    await writer.upsertWorker({ id: "wk_h", name: "w", status: "busy", currentRunId: "run_b", lastHeartbeatAt: 2500, startedAt: 1000, updatedAt: 2500 });
     const rows = db.select().from(schema.workerStatusHistory).where(eq(schema.workerStatusHistory.workerId, "wk_h")).all();
     expect(rows.map((r) => ({ status: r.status, runId: r.currentRunId, at: r.changedAt.getTime() }))).toEqual([
       { status: "idle", runId: null, at: 1000 },
@@ -65,15 +74,15 @@ describe("upsertRun + insertEvent", () => {
     ]);
   });
 
-  it("upsertRun preserves createdAt (immutable) and startedAt (set-once) across transitions", () => {
-    upsertTicket(db, ticket);
-    upsertWorker(db, { id: "wk_1", name: "w", status: "busy", currentRunId: null, lastHeartbeatAt: null, startedAt: 1000, updatedAt: 1000 }); // FK target for run.workerId
+  it("upsertRun preserves createdAt (immutable) and startedAt (set-once) across transitions", async () => {
+    await writer.upsertTicket(ticket);
+    await writer.upsertWorker({ id: "wk_1", name: "w", status: "busy", currentRunId: null, lastHeartbeatAt: null, startedAt: 1000, updatedAt: 1000 }); // FK target for run.workerId
     // dispatched: no start time, created at t0
-    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: null, trigger: "new", status: "dispatched", contextJson: null, startedAt: null, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: 1000 });
+    await writer.upsertRun({ id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: null, trigger: "new", status: "dispatched", contextJson: null, startedAt: null, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: 1000 });
     // running: sets startedAt
-    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "running", contextJson: null, startedAt: 2000, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: 2000 });
-    // succeeded: sends startedAt=null and a later createdAt — must NOT clobber
-    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: null, endedAt: 3000, stopReason: "completed", error: null, promptTokens: 1000, completionTokens: 200, modelName: "claude-sonnet-4", provider: "anthropic", createdAt: 3000 });
+    await writer.upsertRun({ id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "running", contextJson: null, startedAt: 2000, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: 2000 });
+    // succeeded: sends startedAt=null and a later createdAt — must NOT clobber; token usage from this transition lands
+    await writer.upsertRun({ id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: null, endedAt: 3000, stopReason: "completed", error: null, promptTokens: 1000, completionTokens: 200, modelName: "claude-sonnet-4", provider: "anthropic", createdAt: 3000 });
 
     const rows = db.select().from(schema.runs).where(eq(schema.runs.id, "run_lc")).all();
     expect(rows).toHaveLength(1);

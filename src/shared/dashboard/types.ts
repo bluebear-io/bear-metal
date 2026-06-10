@@ -5,7 +5,7 @@ export type BmStatus =
   | "ci_running" | "ci_failed" | "completed" | "abandoned";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
-export type RunTrigger = "new" | "ci_failure" | "delegated_back";
+export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export type StopReason = "completed" | "timeout" | "crash" | "error";
 export type CiStatus = "running" | "passed" | "failed";
 export type EventSource = "manager" | "worker" | "ci";

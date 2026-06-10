@@ -71,7 +71,7 @@ describe("ciFailed", () => {
 describe("prOpened", () => {
   it("sets pr_open and emits pr_opened (the PR row itself is owned by recordPullRequestObservation)", async () => {
     const c = fakeClient();
-    const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", state: "open" as const, draft: false, merged: false, url: "purl" };
+    const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", headSha: "sha", state: "open" as const, draft: false, merged: false, url: "purl" };
     await make(c).prOpened(ticket, pr);
     expect(c.upsertPullRequest).not.toHaveBeenCalled();
     expect(c.upsertTicket).toHaveBeenCalledWith(expect.objectContaining({ bmStatus: "pr_open" }));
@@ -80,7 +80,7 @@ describe("prOpened", () => {
 });
 
 describe("recordPullRequestObservation", () => {
-  const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", state: "open" as const, draft: false, merged: false, url: "purl" };
+  const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", headSha: "sha", state: "open" as const, draft: false, merged: false, url: "purl" };
 
   it("persists PR row, all review threads (resolved+unresolved), and skips CI when no failures", async () => {
     const c = fakeClient();
@@ -94,6 +94,7 @@ describe("recordPullRequestObservation", () => {
         { id: "t1", isResolved: false, path: "f.ts", line: 1, comments: [{ id: "c1", databaseId: 1, body: "x", author: "a", url: "u", createdAt: "t", updatedAt: "t", path: "f.ts", line: 1, originalLine: 1, diffHunk: null }] },
         { id: "t2", isResolved: true, path: "g.ts", line: 2, comments: [] },
       ],
+      mergeable: true,
     };
     await make(c).recordPullRequestObservation(ticket, pr, context, "run_5");
     expect(c.upsertPullRequest).toHaveBeenCalledWith(expect.objectContaining({ id: "o/r#7", lastRunId: "run_5" }));
@@ -121,6 +122,7 @@ describe("recordPullRequestObservation", () => {
       ],
       unresolvedReviewThreads: [],
       reviewThreads: [],
+      mergeable: true,
     };
     await make(c).recordPullRequestObservation(ticket, pr, context, null);
     expect(c.upsertCiRun).toHaveBeenCalledWith(expect.objectContaining({

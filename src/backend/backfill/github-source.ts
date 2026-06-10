@@ -30,12 +30,12 @@ export async function loadPullRequestsForBranch(
 }
 
 /**
- * Every check run on a PR's head ref. Use the PR's `headRef` (not the full sha) — `listForRef`
- * accepts branch names directly, which keeps us from needing an extra API call to resolve the sha.
+ * Every check run on a PR's head commit. Historical PR branches may be deleted, so branch names are
+ * not stable enough for this lookup.
  */
 export async function loadCheckRunsForPullRequest(
   source: GitHubSource,
   pr: PullRequest,
 ): Promise<CheckRun[]> {
-  return source.listCheckRunsForRef(pr.owner, pr.repo, pr.headRef);
+  return source.listCheckRunsForRef(pr.owner, pr.repo, pr.headSha);
 }

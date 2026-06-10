@@ -55,6 +55,7 @@ describe("worker contract", () => {
           failedStatuses: [],
           unresolvedReviewThreads: [],
           reviewThreads: [],
+          mergeable: true,
         },
       ],
       cloneScript: {

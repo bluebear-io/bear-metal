@@ -38,6 +38,7 @@ const pr = (owner: string, repo: string, number: number, head: string, merged: b
   number,
   title: `PR ${number}`,
   headRef: head,
+  headSha: `sha-${number}`,
   state: merged ? "closed" : "open",
   draft: false,
   merged,
@@ -60,12 +61,14 @@ const successCheck: CheckRun = {
 };
 
 let db: BetterSQLite3Database<typeof schema>;
+let handle: import("../db/client.js").DbHandle;
 const silent = pino({ level: "silent" });
 
 beforeEach(() => {
   const sqlite = new Database(":memory:");
   db = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
+  handle = { dialect: "sqlite", db, schema, close: async () => undefined };
 });
 
 describe("parseArgs", () => {
@@ -143,7 +146,7 @@ describe("runBackfill", () => {
     const summary = await runBackfill({
       linear,
       github,
-      db,
+      handle,
       agentId: "agent",
       options: { dryRun: false, limit: null, verbose: false, sinceDays: null },
       logger: silent,
@@ -169,7 +172,7 @@ describe("runBackfill", () => {
     const summary = await runBackfill({
       linear,
       github,
-      db,
+      handle,
       agentId: "agent",
       options: { dryRun: true, limit: null, verbose: false, sinceDays: null },
       logger: silent,
@@ -192,7 +195,7 @@ describe("runBackfill", () => {
     const summary = await runBackfill({
       linear,
       github,
-      db,
+      handle,
       agentId: "agent",
       options: { dryRun: false, limit: 2, verbose: false, sinceDays: null },
       logger: silent,

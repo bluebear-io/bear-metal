@@ -10,7 +10,7 @@ export type BmStatus =
 
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
-export type RunTrigger = "new" | "ci_failure" | "delegated_back";
+export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export type CiStatus = "running" | "passed" | "failed";
 
 export interface Ticket {
@@ -152,6 +152,96 @@ export interface ModelComparisonRow {
   totalCompletionTokens: number;
   totalCostUsd: number;
   avgCostUsd: number;
+}
+
+/* --- Period summary (GET /api/summary) ----------------------------------- */
+
+export interface ThroughputBlock {
+  completed: number;
+  abandoned: number;
+  discovered: number;
+}
+
+export interface HealthBlock {
+  successRate: number | null;
+  avgAttempts: number | null;
+  multiAttemptRate: number | null;
+  ciPassRate: number | null;
+}
+
+export interface ModelCostRow {
+  provider: string;
+  modelName: string;
+  promptTokens: number;
+  completionTokens: number;
+  estimatedUsd: number;
+}
+
+export interface CostBlock {
+  promptTokens: number;
+  completionTokens: number;
+  estimatedUsd: number;
+  byModel: ModelCostRow[];
+}
+
+export interface TimeBlock {
+  avgWallClockSeconds: number | null;
+  totalAgentSeconds: number;
+  devHoursSaved: number;
+}
+
+export interface CheckFailureRow {
+  name: string;
+  count: number;
+  latestDetailsUrl: string | null;
+}
+
+export interface TicketRef {
+  id: string;
+  identifier: string;
+  title: string;
+  url: string;
+}
+
+export interface RepoPassRow {
+  repo: string;
+  totalRuns: number;
+  passedRuns: number;
+  passRate: number;
+}
+
+export interface FailureBlock {
+  topCiCheckNames: CheckFailureRow[];
+  ticketsAtMaxAttempts: TicketRef[];
+  worstReposByCi: RepoPassRow[];
+}
+
+export interface ShippedTicket extends TicketRef {
+  labels: string[];
+  prUrl: string;
+  prNumber: number;
+  completedAt: string | null;
+}
+
+export interface ShippedRepoBucket {
+  repo: string;
+  count: number;
+  tickets: ShippedTicket[];
+}
+
+export interface ShippedBlock {
+  byRepo: ShippedRepoBucket[];
+}
+
+export interface PeriodSummary {
+  window: { from: string; to: string };
+  prior: { from: string; to: string };
+  throughput: ThroughputBlock & { prior: ThroughputBlock };
+  health: HealthBlock & { prior: HealthBlock };
+  cost: CostBlock & { prior: CostBlock };
+  time: TimeBlock & { prior: TimeBlock };
+  failures: FailureBlock;
+  shipped: ShippedBlock;
 }
 
 export interface PullRequest {

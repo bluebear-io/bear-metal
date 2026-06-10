@@ -14,6 +14,8 @@ export interface PullRequest {
   title: string;
   /** Head branch name. */
   headRef: string;
+  /** Head commit SHA. Historical branches may be deleted, so CI lookups must use this. */
+  headSha: string;
   state: PRState;
   draft: boolean;
   merged: boolean;
@@ -55,6 +57,12 @@ export interface PullRequestStatus {
   testsFailed: boolean;
   /** Any unresolved review thread whose latest comment is not from bear-metal. */
   hasActionableUnresolvedComments: boolean;
+  /**
+   * GitHub reports the PR head as conflicting with the base branch. Treated as a re-dispatch
+   * signal alongside failing checks and unresolved comments — the agent rebases / resolves
+   * the conflict and pushes a fresh head.
+   */
+  hasMergeConflicts: boolean;
   /**
    * The PR has at least one bear-metal commit AND the latest commit on the head branch is not
    * bear-metal's — a human pushed after the agent and now owns the branch. The scheduler stops
@@ -122,4 +130,11 @@ export interface PullRequestContext {
   unresolvedReviewThreads: ReviewThread[];
   /** Every review thread on the PR, resolved or not, so the dashboard can render the full conversation. */
   reviewThreads: ReviewThread[];
+  /**
+   * GitHub's `mergeable` result for the PR head against its base. `true` means clean, `false`
+   * means conflicting, `null` means GitHub hasn't finished computing it yet (next poll will
+   * usually have a definite answer). Surfaced to the worker so its iteration prompt can
+   * include conflict context.
+   */
+  mergeable: boolean | null;
 }

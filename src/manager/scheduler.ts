@@ -20,6 +20,11 @@ const TERMINAL_STATE_NAMES = ["Merged"];
 
 const MAX_ITERATIONS = 20;
 
+/** How long an acquired-but-incomplete task can go without a heartbeat before we recover it. */
+const STALE_TASK_THRESHOLD_MS = 60_000;
+/** Cadence for the stale-task sweep — independent of `pollIntervalMs` per the DEN-2333 spec. */
+const STALE_RECOVERY_INTERVAL_MS = 60_000;
+
 /** A ticket queued for dispatch this tick, carrying the reason its run was triggered. */
 interface DispatchItem {
   context: TicketContext;
@@ -74,6 +79,10 @@ export interface SchedulerDeps {
   concurrency: number;
   pollIntervalMs: number;
   reporter?: DashboardReporter;
+  /** Override the 60s stale-recovery sweep cadence; tests set this small. */
+  staleRecoveryIntervalMs?: number;
+  /** Override the 60s no-heartbeat threshold for stale recovery; tests set this small. */
+  staleTaskThresholdMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,16 +94,26 @@ export class Scheduler {
   private readonly queue: PQueue;
   /** Tickets with a handler invocation in flight — guards against double-dispatch. */
   private readonly inFlight = new Set<string>();
+  private readonly staleRecoveryIntervalMs: number;
+  private readonly staleTaskThresholdMs: number;
   private timer: NodeJS.Timeout | undefined;
+  private staleRecoveryTimer: NodeJS.Timeout | undefined;
 
   constructor(deps: SchedulerDeps) {
     this.deps = deps;
     this.queue = new PQueue({ concurrency: deps.concurrency });
+    this.staleRecoveryIntervalMs = deps.staleRecoveryIntervalMs ?? STALE_RECOVERY_INTERVAL_MS;
+    this.staleTaskThresholdMs = deps.staleTaskThresholdMs ?? STALE_TASK_THRESHOLD_MS;
   }
 
   start(): void {
     void this.safeTick();
     this.timer = setInterval(() => void this.safeTick(), this.deps.pollIntervalMs);
+    void this.safeRecoverStaleTasks();
+    this.staleRecoveryTimer = setInterval(
+      () => void this.safeRecoverStaleTasks(),
+      this.staleRecoveryIntervalMs,
+    );
   }
 
   async stop(): Promise<void> {
@@ -102,7 +121,31 @@ export class Scheduler {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    if (this.staleRecoveryTimer) {
+      clearInterval(this.staleRecoveryTimer);
+      this.staleRecoveryTimer = undefined;
+    }
     await this.queue.onIdle();
+  }
+
+  /**
+   * Sweep for acquired-but-incomplete tasks whose worker stopped heartbeating. Recovered rows
+   * are released back to the queue so another worker can pick them up on the next tick.
+   */
+  async recoverStaleTasks(): Promise<string[]> {
+    const recovered = await this.deps.tasks.recoverStaleTasks(this.staleTaskThresholdMs);
+    if (recovered.length > 0) {
+      this.deps.logger.warn({ taskIds: recovered }, "recovered stale acquired tasks");
+    }
+    return recovered;
+  }
+
+  private async safeRecoverStaleTasks(): Promise<void> {
+    try {
+      await this.recoverStaleTasks();
+    } catch (err) {
+      this.deps.logger.error({ err }, "stale task recovery failed");
+    }
   }
 
   private async safeTick(): Promise<void> {
@@ -281,6 +324,7 @@ async function evaluateTicket(
 
   const testsFailed = statuses.some((s) => s.testsFailed);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
+  const hasMergeConflicts = statuses.some((s) => s.hasMergeConflicts);
   // Report each open PR's current state (best-effort; never affects dispatch).
   void (async () => {
     try {
@@ -298,17 +342,26 @@ async function evaluateTicket(
     }
   })();
 
-  const needsWork = resuming || testsFailed || hasActionableUnresolvedComments;
+  const needsWork = resuming || testsFailed || hasMergeConflicts || hasActionableUnresolvedComments;
   if (needsWork) {
     logger.info(
-      { ticket: ticket.identifier, count: statuses.length, resuming },
+      { ticket: ticket.identifier, count: statuses.length, resuming, hasMergeConflicts },
       "pull requests need work; re-dispatching",
     );
     if (!testsFailed) {
-      void reporter?.delegatedBack(ticket, "Re-dispatched: unresolved review or resumed");
+      const summary = hasMergeConflicts
+        ? "Re-dispatched: merge conflicts on PR head"
+        : "Re-dispatched: unresolved review or resumed";
+      void reporter?.delegatedBack(ticket, summary);
     }
   }
-  const trigger: RunTrigger = testsFailed ? "ci_failure" : "delegated_back";
+  // Priority: failing checks > merge conflicts > everything else. CI is the most
+  // common re-trigger so it stays first; conflicts are the next most concrete signal.
+  const trigger: RunTrigger = testsFailed
+    ? "ci_failure"
+    : hasMergeConflicts
+      ? "merge_conflict"
+      : "delegated_back";
   return { remove: false, merged: false, context: { ticket, prs: knownPrs }, dispatch: needsWork, phase: "active", trigger };
 }
 
