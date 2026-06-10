@@ -58,7 +58,8 @@ describe("PUT /api/ci-runs/:id/checks", () => {
     await request(app).put("/api/runs/run_1").set("authorization", `Bearer ${TOKEN}`).send({
       id: "run_1", ticketId: "lin_x", attemptNumber: 1, workerId: null, trigger: "new",
       status: "running", contextJson: null, startedAt: 1, endedAt: null, stopReason: null,
-      error: null, createdAt: 1,
+      error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null,
+      createdAt: 1,
     });
     await request(app).put("/api/pull-requests/pr_1").set("authorization", `Bearer ${TOKEN}`).send({
       id: "pr_1", ticketId: "lin_x", number: 1, title: "x", headRef: "h", state: "open",

@@ -23,3 +23,8 @@ CREATE TABLE `review_threads` (
 	`updated_at` integer NOT NULL,
 	FOREIGN KEY (`pr_id`) REFERENCES `pull_requests`(`id`) ON UPDATE no action ON DELETE no action
 );
+--> statement-breakpoint
+ALTER TABLE `runs` ADD `prompt_tokens` integer;--> statement-breakpoint
+ALTER TABLE `runs` ADD `completion_tokens` integer;--> statement-breakpoint
+ALTER TABLE `runs` ADD `model_name` text;--> statement-breakpoint
+ALTER TABLE `runs` ADD `provider` text;
