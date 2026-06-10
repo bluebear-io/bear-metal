@@ -135,7 +135,15 @@ export function freeSlots(concurrency: number, activeCount: number): number {
   return Math.max(0, concurrency - activeCount);
 }
 
-/** Pick which candidate tickets to admit: not already tracked, capped at free slots. */
+/**
+ * Pick which candidate tickets to admit: not already tracked, sorted by Linear
+ * priority (Urgent → High → Medium → Low → No Priority), capped at free slots.
+ *
+ * Linear encodes priority as 1=Urgent, 2=High, 3=Medium, 4=Low, 0=No priority, so a
+ * naive ascending sort would put "No priority" first. We remap 0 to +Infinity so it
+ * sinks to the bottom. The sort is stable, preserving Linear's returned order within
+ * a single priority bucket.
+ */
 export function selectAdmissions(
   candidates: Ticket[],
   isTracked: (identifier: string) => boolean,
@@ -144,7 +152,15 @@ export function selectAdmissions(
   if (free <= 0) {
     return [];
   }
-  return candidates.filter((ticket) => !isTracked(ticket.identifier)).slice(0, free);
+  return candidates
+    .filter((ticket) => !isTracked(ticket.identifier))
+    .slice()
+    .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))
+    .slice(0, free);
+}
+
+function priorityRank(priority: number): number {
+  return priority === 0 ? Number.POSITIVE_INFINITY : priority;
 }
 
 // ---------------------------------------------------------------------------
