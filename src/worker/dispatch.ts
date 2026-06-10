@@ -26,13 +26,15 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const pr = input.pr ?? null;
   validateDispatchInputs(state, ticketId, pr);
 
-  const { github, linear } = integrations;
+  const { github, linear, slack } = integrations;
   const packageRoot = input.packageRoot ?? getPackageRoot(import.meta.url);
   const workspaceDir = workspaceForTicket(packageRoot, ticketId);
 
   await mkdir(workspaceDir, { recursive: true });
 
   logger.info({ ticketId, state, hasPr: pr !== null, workspaceDir }, "dispatch starting");
+
+  const githubToken = await github.getInstallationToken();
 
   const [ticket, pullRequest, cloneScript] = await Promise.all([
     linear.getTicketContext(ticketId).then((t) => {
@@ -45,7 +47,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
           return p;
         })
       : Promise.resolve(null),
-    runCloneScript({ packageRoot, workspaceDir }).then((r) => {
+    runCloneScript({ packageRoot, workspaceDir, githubToken }).then((r) => {
       logger.info({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
       return r;
     }),
@@ -63,12 +65,20 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   await linear.moveTicketToInProgress(ticketId);
   logger.info({ ticketId }, "linear ticket moved to in progress");
 
+  const gitEnv: NodeJS.ProcessEnv = {
+    HOME: cloneScript.netrcDir,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
+    GIT_CONFIG_VALUE_0: "git@github.com:",
+  };
+
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear });
+    const result = await runPiWorker({ context, github, linear, slack, gitEnv });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
+    await rm(cloneScript.netrcDir, { recursive: true, force: true });
     // Housekeeping: drop the checked-out blueden tree (and its nested sub-repos)
     // so disk usage doesn't grow with every ticket. The next dispatch will re-clone.
     const checkoutDir = resolve(workspaceDir, "blueden");

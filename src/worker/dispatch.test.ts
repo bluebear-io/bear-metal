@@ -19,6 +19,7 @@ vi.mock("./clone.js", () => ({
       workspaceDir: dispatchMock.workspaceDir,
       stdout: "",
       stderr: "",
+      netrcDir: "/tmp/netrc",
     };
   },
 }));
@@ -56,10 +57,12 @@ describe("dispatch", () => {
               labels: ["bear-metal"],
               assignee: { id: "creator" },
               delegate: { id: "agent" },
+          priority: 0,
             },
             comments: [],
           })),
           moveTicketToInProgress,
+          moveTicketToInReview: vi.fn(),
           commentAndHandBack: vi.fn(),
         },
       },
@@ -135,10 +138,12 @@ function makeIntegrations() {
           labels: ["bear-metal"],
           assignee: { id: "creator" },
           delegate: { id: "agent" },
+          priority: 0,
         },
         comments: [],
       })),
       moveTicketToInProgress: vi.fn(async () => {}),
+      moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
     },
   };
@@ -146,6 +151,7 @@ function makeIntegrations() {
 
 function makeGithub() {
   return {
+    getInstallationToken: vi.fn().mockResolvedValue("test-token"),
     getPullRequestContext: vi.fn(),
     resolveReviewThread: vi.fn(),
     replyToReviewThread: vi.fn(),

@@ -1,4 +1,10 @@
-import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThread } from "../shared/index.js";
+import type {
+  LinearTicketContext,
+  PullRequestContext,
+  PullRequestRef,
+  PullRequestNotification,
+  ReviewThread,
+} from "../shared/index.js";
 
 export type DispatchState = "new" | "iteration";
 
@@ -10,6 +16,7 @@ export type DispatchResult = {
 export type { PullRequestRef };
 
 export interface WorkerGitHub {
+  getInstallationToken(): Promise<string>;
   getPullRequestContext(pr: PullRequestRef): Promise<PullRequestContext>;
   resolveReviewThread(threadId: string): Promise<void>;
   replyToReviewThread(pr: PullRequestRef, threadId: string, body: string, threads: ReviewThread[]): Promise<void>;
@@ -24,15 +31,22 @@ export interface WorkerGitHub {
   }): Promise<PullRequestRef>;
 }
 
+export interface WorkerSlack {
+  notifyPullRequest(notification: PullRequestNotification): Promise<void>;
+}
+
 export interface WorkerLinear {
   getTicketContext(ticketId: string): Promise<LinearTicketContext>;
   moveTicketToInProgress(ticketId: string): Promise<void>;
+  moveTicketToInReview(ticketId: string): Promise<void>;
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
 }
 
 export type WorkerIntegrations = {
   github: WorkerGitHub;
   linear: WorkerLinear;
+  /** Optional — when unset, PR notifications are skipped. */
+  slack?: WorkerSlack;
 };
 
 export type CloneScriptResult = {
@@ -40,6 +54,9 @@ export type CloneScriptResult = {
   workspaceDir: string;
   stdout: string;
   stderr: string;
+  /** Absolute path to a private temp dir containing .netrc with GitHub token.
+   *  Caller is responsible for deleting it after the dispatch completes. */
+  netrcDir: string;
 };
 
 export type WorkerInputContext = {

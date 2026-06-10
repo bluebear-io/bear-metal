@@ -1,7 +1,8 @@
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useTickets } from "../api/queries.js";
-import type { TicketListItem } from "../api/types.js";
+import type { BmStatus, TicketListItem } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
@@ -36,9 +37,63 @@ const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
   );
 };
 
+type FilterKey = "all" | "backlog" | "in_progress" | "failed" | "completed";
+
+// Map each filter category to the set of bmStatus values it covers. "backlog" is
+// the unstarted bucket (assigned to bear-metal but not yet picked up), and
+// "failed" is the human-resolution bucket (CI failed or attempts exhausted).
+const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<BmStatus>> = {
+  backlog: ["discovered"],
+  in_progress: ["dispatched", "in_progress", "pr_open", "ci_running"],
+  failed: ["ci_failed", "abandoned"],
+  completed: ["completed"],
+};
+
+const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "backlog", label: "Backlog" },
+  { key: "in_progress", label: "In progress" },
+  { key: "failed", label: "Needs human" },
+  { key: "completed", label: "Completed" },
+];
+
+function matchesFilter(ticket: TicketListItem, filter: FilterKey): boolean {
+  if (filter === "all") {
+    return true;
+  }
+
+  return FILTER_STATUSES[filter].includes(ticket.bmStatus);
+}
+
 export default function TicketsListPage() {
   const q = useTickets();
-  const tickets = q.data ?? [];
+  const tickets = useMemo<TicketListItem[]>(() => q.data ?? [], [q.data]);
+  const [filter, setFilter] = useState<FilterKey>("all");
+
+  const counts = useMemo(() => {
+    const result: Record<FilterKey, number> = {
+      all: tickets.length,
+      backlog: 0,
+      in_progress: 0,
+      failed: 0,
+      completed: 0,
+    };
+
+    for (const ticket of tickets) {
+      for (const key of Object.keys(FILTER_STATUSES) as Array<Exclude<FilterKey, "all">>) {
+        if (FILTER_STATUSES[key].includes(ticket.bmStatus)) {
+          result[key] += 1;
+        }
+      }
+    }
+
+    return result;
+  }, [tickets]);
+
+  const visibleTickets = useMemo(
+    () => tickets.filter((ticket) => matchesFilter(ticket, filter)),
+    [tickets, filter],
+  );
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 sm:px-8">
@@ -46,11 +101,34 @@ export default function TicketsListPage() {
         <RefreshButton busy={q.isFetching} onClick={() => void q.refetch()} />
       </PageHeader>
 
+      <nav aria-label="Ticket filters" className="flex flex-wrap gap-2">
+        {FILTERS.map(({ key, label }) => {
+          const isActive = filter === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setFilter(key)}
+              aria-pressed={isActive}
+              className={
+                "rounded-full border px-3 py-1 text-sm transition " +
+                (isActive
+                  ? "border-primary bg-primary/10 text-text-primary"
+                  : "border-border-default bg-bg-card text-text-secondary hover:text-text-primary")
+              }
+            >
+              {label}
+              <span className="ml-2 text-xs text-text-muted">{counts[key]}</span>
+            </button>
+          );
+        })}
+      </nav>
+
       <QueryBoundary
         isLoading={q.isLoading}
         error={q.error}
-        isEmpty={tickets.length === 0}
-        emptyLabel="No tickets yet."
+        isEmpty={visibleTickets.length === 0}
+        emptyLabel={filter === "all" ? "No tickets yet." : "No tickets match this filter."}
       >
         <section aria-label="Tickets list" className="flex flex-col gap-3">
           <div className="overflow-x-auto rounded-md border border-border-default bg-bg-card">
@@ -68,7 +146,7 @@ export default function TicketsListPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-default">
-                {tickets.map((ticket) => (
+                {visibleTickets.map((ticket) => (
                   <tr key={ticket.id} className="align-middle">
                     <td className="whitespace-nowrap px-4 py-3">
                       <TicketLink ticket={ticket} />

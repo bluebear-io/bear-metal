@@ -26,7 +26,7 @@ describe("worker contract", () => {
     });
   });
 
-  it("builds state-specific iteration instructions", () => {
+  it("builds state-specific iteration instructions and excludes respond_to_ticket_reporter", () => {
     const context: WorkerInputContext = {
       state: "iteration",
       ticketId: "DEN-1",
@@ -43,6 +43,7 @@ describe("worker contract", () => {
           labels: ["bear-metal"],
           assignee: { id: "creator" },
           delegate: { id: "user-1" },
+          priority: 0,
         },
         comments: [],
       },
@@ -59,13 +60,56 @@ describe("worker contract", () => {
         workspaceDir: "/tmp/workspace",
         stdout: "",
         stderr: "",
+        netrcDir: "/tmp/netrc",
       },
     };
 
     const prompt = buildWorkerPrompt(context);
     expect(prompt).toMatch(/Steps for this PR iteration/);
     expect(prompt).toMatch(/agree_with_github_message/);
+    expect(prompt).toMatch(/disagree_with_github_message/);
+    expect(prompt).toMatch(/respond_to_comment_writer/);
     expect(prompt).toMatch(/Never read, write, search, or cd outside the repository root/);
     expect(prompt).toMatch(/DEN-1/);
+    expect(prompt).not.toMatch(/respond_to_ticket_reporter/);
+  });
+
+  it("builds state-specific new task instructions with respond_to_ticket_reporter", () => {
+    const context: WorkerInputContext = {
+      state: "new",
+      ticketId: "DEN-2",
+      pr: null,
+      ticket: {
+        issue: {
+          id: "issue-id",
+          identifier: "DEN-2",
+          title: "New thing",
+          description: null,
+          url: "https://linear.app/bluebear/issue/DEN-2/new-thing",
+          branchName: "feature/den-2-new-thing",
+          status: { name: "Todo", type: "unstarted" },
+          labels: ["bear-metal"],
+          assignee: { id: "creator" },
+          delegate: { id: "user-1" },
+          priority: 0,
+        },
+        comments: [],
+      },
+      pullRequest: null,
+      cloneScript: {
+        scriptPath: "/tmp/script.sh",
+        workspaceDir: "/tmp/workspace",
+        stdout: "",
+        stderr: "",
+        netrcDir: "/tmp/netrc",
+      },
+    };
+
+    const prompt = buildWorkerPrompt(context);
+    expect(prompt).toMatch(/Steps for this new task/);
+    expect(prompt).toMatch(/respond_to_ticket_reporter/);
+    expect(prompt).toMatch(/wrote_code/);
+    expect(prompt).not.toMatch(/respond_to_comment_writer/);
+    expect(prompt).not.toMatch(/agree_with_github_message/);
   });
 });
