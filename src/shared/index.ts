@@ -24,9 +24,11 @@ export {
   type GitHubIntegrationOptions,
 } from "./integrations/github/client.js";
 export type {
+  CommitAuthor,
   FailedCheckRun,
   FailedStatus,
   PullRequest,
+  PullRequestCommit,
   PullRequestContext,
   PRState,
   PullRequestRef,

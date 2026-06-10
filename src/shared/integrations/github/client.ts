@@ -9,6 +9,7 @@ import type {
   FailedStatus,
   PRState,
   PullRequest,
+  PullRequestCommit,
   PullRequestContext,
   PullRequestRef,
   PullRequestStatus,
@@ -85,9 +86,10 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 
   /** PR merge/close state plus the work signals the manager dispatches on. */
   async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
-    const [pr, context, botIdentity] = await Promise.all([
+    const [pr, context, commits, botIdentity] = await Promise.all([
       this.getPullRequest(ref),
       this.getPullRequestContext(ref),
+      this.getPullRequestCommits(ref),
       this.getBotIdentity(),
     ]);
     return {
@@ -96,8 +98,39 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
         isActionableReviewThread(thread, botIdentity),
       ),
+      humanTookOver: isHumanTakeover(commits, botIdentity),
       context,
     };
+  }
+
+  /**
+   * Commits on the PR head branch, oldest-first (the order GitHub returns).
+   * Used by the scheduler to detect a human takeover — a non-bot commit pushed after bear-metal's last one.
+   */
+  async getPullRequestCommits(ref: PullRequestRef): Promise<PullRequestCommit[]> {
+    const commits: PullRequestCommit[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.pulls.listCommits({
+        owner: ref.owner,
+        repo: ref.repo,
+        pull_number: ref.number,
+        per_page: 100,
+        page,
+      });
+      for (const commit of data) {
+        commits.push({
+          sha: commit.sha,
+          author: commit.author ? { login: commit.author.login, id: commit.author.id } : null,
+          committer: commit.committer ? { login: commit.committer.login, id: commit.committer.id } : null,
+        });
+      }
+      if (data.length < 100) {
+        break;
+      }
+      page += 1;
+    }
+    return commits;
   }
 
   async getPullRequestContext(ref: PullRequestRef): Promise<PullRequestContext> {
@@ -317,6 +350,25 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
         })),
       }));
   }
+}
+
+/**
+ * A human takeover means bear-metal already pushed at least one commit to this branch AND the
+ * latest commit on the branch is not bear-metal's — someone pushed after the agent and owns it now.
+ * If bear-metal never pushed a commit, this returns false (nothing to take over from).
+ */
+export function isHumanTakeover(commits: PullRequestCommit[], bot: BotIdentity | string): boolean {
+  if (commits.length === 0) {
+    return false;
+  }
+  const botLogin = typeof bot === "string" ? bot : bot.login;
+  const isBotCommit = (commit: PullRequestCommit): boolean =>
+    commit.author?.login === botLogin || commit.committer?.login === botLogin;
+  if (!commits.some(isBotCommit)) {
+    return false;
+  }
+  const latest = commits[commits.length - 1]!;
+  return !isBotCommit(latest);
 }
 
 /** A thread is actionable when the latest comment is not from bear-metal — i.e. it needs a response. */

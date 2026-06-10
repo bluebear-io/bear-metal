@@ -39,11 +39,17 @@ function prRef(number = 7): PullRequestRef {
   return { owner: "acme", repo: "widgets", number };
 }
 
-function status(pr: PullRequest, testsFailed = false, hasActionableUnresolvedComments = false): PullRequestStatus {
+function status(
+  pr: PullRequest,
+  testsFailed = false,
+  hasActionableUnresolvedComments = false,
+  humanTookOver = false,
+): PullRequestStatus {
   return {
     pr,
     testsFailed,
     hasActionableUnresolvedComments,
+    humanTookOver,
     context: {
       pullRequest: { head: { sha: "deadbeef" } } as unknown as JsonValue,
       headSha: "deadbeef",
@@ -124,6 +130,7 @@ class FakeLinear implements LinearSource {
 
 class FakeGitHub implements GitHubSource {
   statusCalls: number[] = [];
+  prCommentCalls: Array<{ ref: PullRequestRef; body: string }> = [];
   constructor(
     private readonly opts: {
       status?: PullRequestStatus;
@@ -135,6 +142,9 @@ class FakeGitHub implements GitHubSource {
     const perPr = this.opts.statusByNumber?.[ref.number];
     if (perPr) return perPr;
     return this.opts.status ?? status(openPr(ref.number));
+  }
+  async leaveComment(ref: PullRequestRef, body: string): Promise<void> {
+    this.prCommentCalls.push({ ref, body });
   }
 }
 
@@ -329,6 +339,31 @@ describe("Scheduler.tick", () => {
 
     expect(await tasks.countTracked()).toBe(0);
     expect(linear.handBackCalls).toEqual([]);
+  });
+
+  it("hands back a ticket when a human pushed a commit after bear-metal on an open PR", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      // testsFailed=true and hasActionableUnresolvedComments=true would normally re-dispatch —
+      // humanTookOver must short-circuit that and release the slot instead.
+      status: status(openPr(7), true, true, true),
+    });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github, tasks, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(await tasks.countTracked()).toBe(0);
+    expect(linear.handBackCalls).toEqual([]);
+    expect(linear.commentAndHandBackCalls).toHaveLength(1);
+    expect(linear.commentAndHandBackCalls[0]?.ticketId).toBe("a");
+    expect(linear.commentAndHandBackCalls[0]?.body).toMatch(/human takeover/i);
+    expect(github.prCommentCalls).toHaveLength(1);
+    expect(github.prCommentCalls[0]?.ref).toEqual(prRef(7));
   });
 
   it("re-dispatches an iteration whose known PR has failed tests", async () => {
