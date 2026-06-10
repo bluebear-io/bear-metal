@@ -44,7 +44,7 @@ describe("loadConfig", () => {
     expect(config.githubAppId).toBe(12_345);
     expect(config.githubAppInstallationId).toBe(67_890);
     expect(config.databaseUrl).toBe("sqlite:./bear-metal-manager.sqlite");
-    expect(config.workerConcurrency).toBe(2);
+    expect(config.workerConcurrency).toBe(5);
     expect(config.pollIntervalMs).toBe(60_000);
     expect(config.port).toBe(3000);
     expect(config.logLevel).toBe("info");

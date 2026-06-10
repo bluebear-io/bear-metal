@@ -20,6 +20,11 @@ type OctokitPull = RestEndpointMethodTypes["pulls"]["get"]["response"]["data"];
 type OctokitCheckRun = RestEndpointMethodTypes["checks"]["listForRef"]["response"]["data"]["check_runs"][number];
 type OctokitStatus = RestEndpointMethodTypes["repos"]["getCombinedStatusForRef"]["response"]["data"]["statuses"][number];
 
+export interface BotIdentity {
+  login: string;
+  id: string | null;
+}
+
 export interface GitHubIntegrationOptions {
   /** GitHub App credentials — the client authenticates as the installation. */
   appId: number;
@@ -31,7 +36,7 @@ export interface GitHubIntegrationOptions {
 export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
   private readonly octokit: Octokit;
-  private cachedBotLogin: string | null = null;
+  private cachedBotIdentity: BotIdentity | null = null;
 
   constructor(options: GitHubIntegrationOptions) {
     this.octokit = new Octokit({
@@ -50,14 +55,23 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
   }
 
   async getBotLogin(): Promise<string> {
-    if (!this.cachedBotLogin) {
+    return (await this.getBotIdentity()).login;
+  }
+
+  async getBotIdentity(): Promise<BotIdentity> {
+    if (!this.cachedBotIdentity) {
       const { data } = await this.octokit.apps.getAuthenticated();
       if (!data) {
         throw new Error("GitHub API returned null for authenticated app");
       }
-      this.cachedBotLogin = `${data.slug}[bot]`;
+      const token = await this.getInstallationToken();
+      const installationOctokit = new Octokit({ auth: token });
+      const viewer = await installationOctokit.graphql<{ viewer: { id: string | null } }>(
+        "query BearMetalViewer { viewer { id } }",
+      );
+      this.cachedBotIdentity = { login: `${data.slug}[bot]`, id: viewer.viewer.id };
     }
-    return this.cachedBotLogin;
+    return this.cachedBotIdentity;
   }
 
   async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {
@@ -71,16 +85,16 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 
   /** PR merge/close state plus the work signals the manager dispatches on. */
   async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
-    const [pr, context, botLogin] = await Promise.all([
+    const [pr, context, botIdentity] = await Promise.all([
       this.getPullRequest(ref),
       this.getPullRequestContext(ref),
-      this.getBotLogin(),
+      this.getBotIdentity(),
     ]);
     return {
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
-        isActionableReviewThread(thread, botLogin),
+        isActionableReviewThread(thread, botIdentity),
       ),
       context,
     };
@@ -292,6 +306,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
           databaseId: comment.databaseId,
           body: comment.body,
           author: comment.author?.login ?? null,
+          authorId: comment.author?.id ?? null,
           url: comment.url,
           createdAt: comment.createdAt,
           updatedAt: comment.updatedAt,
@@ -305,9 +320,16 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 }
 
 /** A thread is actionable when the latest comment is not from bear-metal — i.e. it needs a response. */
-export function isActionableReviewThread(thread: ReviewThread, botLogin: string): boolean {
+export function isActionableReviewThread(thread: ReviewThread, bot: BotIdentity | string): boolean {
   const latestComment = thread.comments.at(-1);
-  return latestComment?.author !== botLogin;
+  if (!latestComment) {
+    return true;
+  }
+  const botIdentity = typeof bot === "string" ? { login: bot, id: null } : bot;
+  if (latestComment.authorId && botIdentity.id) {
+    return latestComment.authorId !== botIdentity.id;
+  }
+  return latestComment.author !== botIdentity.login;
 }
 
 function toPullRequest(
@@ -370,7 +392,7 @@ type ReviewThreadsResponse = {
               id: string;
               databaseId: number | null;
               body: string;
-              author: { login: string } | null;
+              author: { login: string; id?: string | null } | null;
               url: string;
               createdAt: string;
               updatedAt: string;
@@ -401,7 +423,10 @@ const REVIEW_THREADS_QUERY = `
                 id
                 databaseId
                 body
-                author { login }
+                author {
+                  login
+                  ... on Node { id }
+                }
                 url
                 createdAt
                 updatedAt

@@ -73,6 +73,7 @@ export interface ReviewThreadComment {
   databaseId: number | null;
   body: string;
   author: string | null;
+  authorId?: string | null;
   url: string;
   createdAt: string;
   updatedAt: string;
