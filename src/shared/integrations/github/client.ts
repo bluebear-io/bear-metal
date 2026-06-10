@@ -166,6 +166,23 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
   }
 
+  /**
+   * True if the PR already has an issue comment whose body contains `marker`. Used to keep
+   * one-shot bot comments (e.g. the human-takeover handoff) idempotent across retries.
+   */
+  async hasIssueCommentWithMarker(ref: PullRequestRef, marker: string): Promise<boolean> {
+    const iterator = this.octokit.paginate.iterator(this.octokit.issues.listComments, {
+      owner: ref.owner,
+      repo: ref.repo,
+      issue_number: ref.number,
+      per_page: 100,
+    });
+    for await (const { data: page } of iterator) {
+      if (page.some((c) => typeof c.body === "string" && c.body.includes(marker))) return true;
+    }
+    return false;
+  }
+
   async createPullRequest(input: {
     owner: string;
     repo: string;

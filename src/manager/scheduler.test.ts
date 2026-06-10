@@ -146,6 +146,12 @@ class FakeGitHub implements GitHubSource {
   async leaveComment(ref: PullRequestRef, body: string): Promise<void> {
     this.prCommentCalls.push({ ref, body });
   }
+  existingMarkers: Set<string> = new Set();
+  hasMarkerCalls: Array<{ ref: PullRequestRef; marker: string }> = [];
+  async hasIssueCommentWithMarker(ref: PullRequestRef, marker: string): Promise<boolean> {
+    this.hasMarkerCalls.push({ ref, marker });
+    return this.existingMarkers.has(`${ref.number}:${marker}`);
+  }
 }
 
 class RecordingHandler implements TicketHandler {
@@ -364,6 +370,25 @@ describe("Scheduler.tick", () => {
     expect(linear.commentAndHandBackCalls[0]?.body).toMatch(/human takeover/i);
     expect(github.prCommentCalls).toHaveLength(1);
     expect(github.prCommentCalls[0]?.ref).toEqual(prRef(7));
+    expect(github.prCommentCalls[0]?.body).toContain("bear-metal:human-takeover");
+  });
+
+  it("skips re-posting the human-takeover comment when the marker is already on the PR", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7), false, false, true) });
+    github.existingMarkers.add("7:<!-- bear-metal:human-takeover -->");
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github, tasks, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(github.prCommentCalls).toHaveLength(0);
+    // Linear handoff still runs so the ticket gets released even if the PR comment was already posted on a prior attempt.
+    expect(linear.commentAndHandBackCalls).toHaveLength(1);
+    expect(await tasks.countTracked()).toBe(0);
   });
 
   it("re-dispatches an iteration whose known PR has failed tests", async () => {

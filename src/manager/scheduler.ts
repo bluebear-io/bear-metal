@@ -42,10 +42,16 @@ export interface GitHubSource {
   getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus>;
   /** Post an issue-style comment on the PR — used to explain a human-takeover handoff. */
   leaveComment(ref: PullRequestRef, body: string): Promise<void>;
+  /** True if the PR already has an issue comment containing `marker`. Used for idempotent one-shot comments. */
+  hasIssueCommentWithMarker(ref: PullRequestRef, marker: string): Promise<boolean>;
 }
 
+// Hidden marker keeps the takeover comment idempotent: if a retry sees the marker already present
+// on the PR, we skip re-posting so transient failures don't produce duplicate handoff comments.
+const HUMAN_TAKEOVER_MARKER = "<!-- bear-metal:human-takeover -->";
 const HUMAN_TAKEOVER_PR_COMMENT =
-  "\ud83d\udc3b Detected a human commit on this branch after bear-metal's last push. " +
+  HUMAN_TAKEOVER_MARKER +
+  "\n\ud83d\udc3b Detected a human commit on this branch after bear-metal's last push. " +
   "Stepping aside so I don't conflict with your work. Re-delegate the Linear ticket if you'd like me to pick it back up.";
 
 const HUMAN_TAKEOVER_LINEAR_COMMENT =
@@ -331,8 +337,18 @@ async function refreshTrackedTickets(
         } else if (decision.humanTookOverPrs && decision.humanTookOverPrs.length > 0) {
           // Human pushed a commit after bear-metal — leave a PR comment on each taken-over PR,
           // then post a Linear comment and relinquish delegation. If any call throws, leave the
-          // slot tracked so the next tick retries cleanly.
+          // slot tracked so the next tick retries cleanly. Each PR comment is gated by a hidden
+          // marker so a retry after a partial failure does not produce duplicate comments on
+          // PRs that already received the handoff.
           for (const prRef of decision.humanTookOverPrs) {
+            const alreadyCommented = await github.hasIssueCommentWithMarker(prRef, HUMAN_TAKEOVER_MARKER);
+            if (alreadyCommented) {
+              logger.debug(
+                { ticket: ticket.identifier, pr: prRef.number },
+                "human-takeover comment already present; skipping",
+              );
+              continue;
+            }
             await github.leaveComment(prRef, HUMAN_TAKEOVER_PR_COMMENT);
           }
           await linear.commentAndHandBack(ticket.id, HUMAN_TAKEOVER_LINEAR_COMMENT);
