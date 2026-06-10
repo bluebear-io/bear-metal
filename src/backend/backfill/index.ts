@@ -1,13 +1,10 @@
 import "dotenv/config";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
-import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { createLogger, type Logger } from "../../shared/index.js";
 import { GitHubIntegration, LinearIntegration } from "../../shared/index.js";
 import { loadBackendConfig } from "../config.js";
-import * as schema from "../db/schema.js";
+import { type DbHandle, openWritableDbFromUrl } from "../db/client.js";
 import { loadDelegatedTickets, type LinearSource } from "./linear-source.js";
 import { type GitHubSource, loadCheckRunsForPullRequest, loadPullRequestsForBranch } from "./github-source.js";
 import { mapTicketBundle } from "./mapper.js";
@@ -32,7 +29,7 @@ export interface BackfillSummary {
 export interface BackfillDeps {
   linear: LinearSource;
   github: GitHubSource;
-  db: BetterSQLite3Database<typeof schema>;
+  handle: DbHandle;
   agentId: string;
   options: BackfillOptions;
   logger: Logger;
@@ -46,11 +43,11 @@ export interface BackfillDeps {
  * Returns a summary the CLI prints; callers writing automated tests can also assert on it.
  */
 export async function runBackfill(deps: BackfillDeps): Promise<BackfillSummary> {
-  const { linear, github, db, agentId, options, logger } = deps;
+  const { linear, github, handle, agentId, options, logger } = deps;
   const now = deps.now ?? new Date();
 
   if (!options.dryRun) {
-    ensureBackfillWorker(db, now);
+    await ensureBackfillWorker(handle, now);
   }
 
   const allTickets = await loadDelegatedTickets(linear, { agentId });
@@ -86,7 +83,7 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillSummary> 
       continue;
     }
 
-    const result = writeBundle(db, bundle);
+    const result = await writeBundle(handle, bundle);
     if (result.written) {
       written += 1;
       if (options.verbose) {
@@ -185,12 +182,10 @@ async function main(): Promise<void> {
   });
   const agentId = requiredEnv("LINEAR_ASSIGNEE_ID");
 
-  const sqlite = new Database(backendConfig.dbPath);
-  const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
+  const handle = await openWritableDbFromUrl(backendConfig.databaseUrl);
 
   try {
-    const summary = await runBackfill({ linear, github, db, agentId, options, logger });
+    const summary = await runBackfill({ linear, github, handle, agentId, options, logger });
     logger.info(
       { fetched: summary.fetched, written: summary.written, skipped: summary.skipped, dryRun: summary.dryRun },
       summary.dryRun
@@ -198,7 +193,7 @@ async function main(): Promise<void> {
         : `Backfilled ${summary.written} tickets, skipped ${summary.skipped} existing tickets`,
     );
   } finally {
-    sqlite.close();
+    await handle.close();
   }
 }
 

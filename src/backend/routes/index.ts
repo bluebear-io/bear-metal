@@ -1,15 +1,6 @@
 import { Router } from "express";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import {
-  MAX_TICKET_PAGE_SIZE,
-  listTickets,
-  listTicketFilterOptions,
-  getTicketDetail,
-  listWorkers,
-  listModelComparison,
-  type ListTicketsOptions,
-} from "../db/repository.js";
+import { MAX_TICKET_PAGE_SIZE, type ListTicketsOptions, type Repository } from "../db/repository.js";
 
 const BM_STATUSES = schema.tickets.bmStatus.enumValues;
 type BmStatus = (typeof BM_STATUSES)[number];
@@ -64,112 +55,132 @@ function readOptionalInt(value: unknown, name: string): number | undefined {
   return n;
 }
 
-export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
+export function createRouter(repo: Repository): Router {
   const router = Router();
 
   router.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
 
-  router.get("/tickets/filters", (_req, res) => {
-    res.json(listTicketFilterOptions(db));
+  router.get("/tickets/filters", async (_req, res, next) => {
+    try {
+      res.json(await repo.listTicketFilterOptions());
+    } catch (err) {
+      next(err);
+    }
   });
 
-  router.get("/tickets", (req, res) => {
-    // Accept the legacy single `status` param alongside the new `statuses` list so existing
-    // clients keep working while the dashboard moves to the multi-select.
-    const legacyStatus = req.query.status;
-    const statusList = readList(req.query.statuses);
-    if (legacyStatus !== undefined) {
-      if (Array.isArray(legacyStatus)) {
-        res.status(400).json({ error: "status filter must be a single value; use statuses=a,b for multiple" });
+  router.get("/tickets", async (req, res, next) => {
+    try {
+      // Accept the legacy single `status` param alongside the new `statuses` list so existing
+      // clients keep working while the dashboard moves to the multi-select.
+      const legacyStatus = req.query.status;
+      const statusList = readList(req.query.statuses);
+      if (legacyStatus !== undefined) {
+        if (Array.isArray(legacyStatus)) {
+          res.status(400).json({ error: "status filter must be a single value; use statuses=a,b for multiple" });
+          return;
+        }
+        statusList.push(String(legacyStatus));
+      }
+      const invalidStatus = statusList.find((s) => !isBmStatus(s));
+      if (invalidStatus !== undefined) {
+        res.status(400).json({ error: `invalid status filter: ${invalidStatus}` });
         return;
       }
-      statusList.push(String(legacyStatus));
-    }
-    const invalidStatus = statusList.find((s) => !isBmStatus(s));
-    if (invalidStatus !== undefined) {
-      res.status(400).json({ error: `invalid status filter: ${invalidStatus}` });
-      return;
-    }
-    const bmStatuses = statusList.length > 0 ? (Array.from(new Set(statusList)) as BmStatus[]) : undefined;
+      const bmStatuses = statusList.length > 0 ? (Array.from(new Set(statusList)) as BmStatus[]) : undefined;
 
-    const stopReasonList = readList(req.query.stopReason).concat(readList(req.query.stopReasons));
-    const invalidStop = stopReasonList.find((s) => !isStopReason(s));
-    if (invalidStop !== undefined) {
-      res.status(400).json({ error: `invalid stopReason filter: ${invalidStop}` });
-      return;
-    }
-    const stopReasons = stopReasonList.length > 0 ? (Array.from(new Set(stopReasonList)) as StopReason[]) : undefined;
+      const stopReasonList = readList(req.query.stopReason).concat(readList(req.query.stopReasons));
+      const invalidStop = stopReasonList.find((s) => !isStopReason(s));
+      if (invalidStop !== undefined) {
+        res.status(400).json({ error: `invalid stopReason filter: ${invalidStop}` });
+        return;
+      }
+      const stopReasons = stopReasonList.length > 0 ? (Array.from(new Set(stopReasonList)) as StopReason[]) : undefined;
 
-    const workerIdList = readList(req.query.workerId).concat(readList(req.query.workerIds));
-    const workerIds = workerIdList.length > 0 ? Array.from(new Set(workerIdList)) : undefined;
+      const workerIdList = readList(req.query.workerId).concat(readList(req.query.workerIds));
+      const workerIds = workerIdList.length > 0 ? Array.from(new Set(workerIdList)) : undefined;
 
-    const labelList = readList(req.query.label).concat(readList(req.query.labels));
-    const labels = labelList.length > 0 ? Array.from(new Set(labelList)) : undefined;
+      const labelList = readList(req.query.label).concat(readList(req.query.labels));
+      const labels = labelList.length > 0 ? Array.from(new Set(labelList)) : undefined;
 
-    let createdFrom: Date | undefined;
-    let createdTo: Date | undefined;
-    let page: number | undefined;
-    let pageSize: number | undefined;
-    try {
-      createdFrom = readOptionalDate(req.query.createdFrom, "createdFrom");
-      createdTo = readOptionalDate(req.query.createdTo, "createdTo");
-      page = readOptionalInt(req.query.page, "page");
-      pageSize = readOptionalInt(req.query.pageSize, "pageSize");
+      let createdFrom: Date | undefined;
+      let createdTo: Date | undefined;
+      let page: number | undefined;
+      let pageSize: number | undefined;
+      try {
+        createdFrom = readOptionalDate(req.query.createdFrom, "createdFrom");
+        createdTo = readOptionalDate(req.query.createdTo, "createdTo");
+        page = readOptionalInt(req.query.page, "page");
+        pageSize = readOptionalInt(req.query.pageSize, "pageSize");
+      } catch (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      if (createdFrom && createdTo && createdFrom.getTime() > createdTo.getTime()) {
+        res.status(400).json({ error: "createdFrom must be on or before createdTo" });
+        return;
+      }
+      if (pageSize !== undefined && (pageSize < 1 || pageSize > MAX_TICKET_PAGE_SIZE)) {
+        res.status(400).json({ error: `pageSize must be between 1 and ${MAX_TICKET_PAGE_SIZE}` });
+        return;
+      }
+      if (page !== undefined && page < 1) {
+        res.status(400).json({ error: "page must be >= 1" });
+        return;
+      }
+
+      const opts: ListTicketsOptions = {
+        q: readOptionalString(req.query.q),
+        bmStatuses,
+        workerIds,
+        labels,
+        stopReasons,
+        createdFrom,
+        createdTo,
+        page,
+        pageSize,
+      };
+
+      const result = await repo.listTickets(opts);
+      res.json({
+        tickets: result.items,
+        total: result.total,
+        page: result.page,
+        pageSize: result.pageSize,
+      });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
-      return;
+      next(err);
     }
-    if (createdFrom && createdTo && createdFrom.getTime() > createdTo.getTime()) {
-      res.status(400).json({ error: "createdFrom must be on or before createdTo" });
-      return;
-    }
-    if (pageSize !== undefined && (pageSize < 1 || pageSize > MAX_TICKET_PAGE_SIZE)) {
-      res.status(400).json({ error: `pageSize must be between 1 and ${MAX_TICKET_PAGE_SIZE}` });
-      return;
-    }
-    if (page !== undefined && page < 1) {
-      res.status(400).json({ error: "page must be >= 1" });
-      return;
-    }
-
-    const opts: ListTicketsOptions = {
-      q: readOptionalString(req.query.q),
-      bmStatuses,
-      workerIds,
-      labels,
-      stopReasons,
-      createdFrom,
-      createdTo,
-      page,
-      pageSize,
-    };
-
-    const result = listTickets(db, opts);
-    res.json({
-      tickets: result.items,
-      total: result.total,
-      page: result.page,
-      pageSize: result.pageSize,
-    });
   });
 
-  router.get("/tickets/:id", (req, res) => {
-    const detail = getTicketDetail(db, req.params.id);
-    if (!detail) {
-      res.status(404).json({ error: "ticket not found" });
-      return;
+  router.get("/tickets/:id", async (req, res, next) => {
+    try {
+      const detail = await repo.getTicketDetail(req.params.id);
+      if (!detail) {
+        res.status(404).json({ error: "ticket not found" });
+        return;
+      }
+      res.json(detail);
+    } catch (err) {
+      next(err);
     }
-    res.json(detail);
   });
 
-  router.get("/workers", (_req, res) => {
-    res.json({ workers: listWorkers(db) });
+  router.get("/workers", async (_req, res, next) => {
+    try {
+      res.json({ workers: await repo.listWorkers() });
+    } catch (err) {
+      next(err);
+    }
   });
 
-  router.get("/models/comparison", (_req, res) => {
-    res.json({ models: listModelComparison(db) });
+  router.get("/models/comparison", async (_req, res, next) => {
+    try {
+      res.json({ models: await repo.listModelComparison() });
+    } catch (err) {
+      next(err);
+    }
   });
 
   return router;
