@@ -107,7 +107,13 @@ export class TaskWorker {
       packageRoot: this.packageRoot,
       runId: task.id,
       recordToolCall: reporter
-        ? (payload) => { void reporter.recordRunToolCall(payload); }
+        ? (payload) => {
+            reporter.recordRunToolCall(payload).catch((err) => {
+              // Best-effort dashboard write (DEN-2288 policy): swallow async rejections
+              // so they cannot crash the agent loop or surface as unhandled rejections.
+              this.logger.warn({ err }, "recordRunToolCall failed (ignored)");
+            });
+          }
         : undefined,
     });
     await this.tasks.complete(task.id, result);

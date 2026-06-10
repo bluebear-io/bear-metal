@@ -242,6 +242,13 @@ function createThoughtTreeRecorder(deps: ThoughtTreeRecorderDeps) {
 
   const enabled = deps.runId !== undefined && deps.recordToolCall !== undefined;
 
+  // Tracks state from onToolStart so onToolEnd can reuse the same row (id + sequence)
+  // and original startedAt when upserting. Keyed by the pi-supplied toolCallId; falls
+  // back to toolName when the agent library omits a stable id on either event.
+  interface PendingToolCall { id: string; sequence: number; startedAt: number }
+  const pendingById = new Map<string, PendingToolCall>();
+  const pendingByTool = new Map<string, PendingToolCall>();
+
   const emit = (payload: RunToolCallPayload): void => {
     if (!enabled) return;
     try {
@@ -264,28 +271,42 @@ function createThoughtTreeRecorder(deps: ThoughtTreeRecorderDeps) {
       const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
       const toolName = typeof event.toolName === "string" ? event.toolName : null;
       const paramsJson = stringify(event.args);
+      const pending: PendingToolCall = { id: toolCallId, sequence: sequence++, startedAt: now };
+      pendingById.set(toolCallId, pending);
+      if (toolName) pendingByTool.set(toolName, pending);
       emit({
-        id: toolCallId, runId: deps.runId!, sequence: sequence++,
+        id: pending.id, runId: deps.runId!, sequence: pending.sequence,
         kind: "tool_call", toolName, paramsJson,
         status: "running", resultText: null, resultSize: null,
-        thoughtText: null, startedAt: now, endedAt: null,
+        thoughtText: null, startedAt: pending.startedAt, endedAt: null,
       });
     },
     onToolEnd(event: Record<string, unknown>): void {
       if (!enabled) return;
       const now = Date.now();
-      const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
       const toolName = typeof event.toolName === "string" ? event.toolName : null;
+      const eventToolCallId = typeof event.toolCallId === "string" ? event.toolCallId : null;
+      // Correlate end → start: prefer toolCallId; fall back to toolName when the agent
+      // library doesn't echo a stable id. Only allocate a fresh row if neither matches,
+      // which avoids stranding the start-row in 'running' state.
+      let pending: PendingToolCall | undefined;
+      if (eventToolCallId) pending = pendingById.get(eventToolCallId);
+      if (!pending && toolName) pending = pendingByTool.get(toolName);
+      if (!pending) {
+        pending = { id: eventToolCallId ?? randomUUID(), sequence: sequence++, startedAt: now };
+      }
+      pendingById.delete(pending.id);
+      if (toolName && pendingByTool.get(toolName) === pending) pendingByTool.delete(toolName);
       const fullResult = stringify(event.result) ?? stringify(event.output) ?? stringify(event.content);
       const isError = event.isError === true || event.status === "error";
       const resultText = fullResult === null ? null : fullResult.slice(0, MAX_RESULT_TEXT);
       const resultSize = fullResult === null ? null : fullResult.length;
       emit({
-        id: toolCallId, runId: deps.runId!, sequence: sequence++,
+        id: pending.id, runId: deps.runId!, sequence: pending.sequence,
         kind: "tool_call", toolName, paramsJson: stringify(event.args),
         status: isError ? "error" : "success",
         resultText, resultSize, thoughtText: null,
-        startedAt: now, endedAt: now,
+        startedAt: pending.startedAt, endedAt: now,
       });
     },
     onThought(text: string): void {
