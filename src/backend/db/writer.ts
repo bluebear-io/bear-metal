@@ -51,9 +51,19 @@ export function upsertRun(db: Db, p: RunPayload): void {
  */
 export function parseRepoFromUrl(url: string): { owner: string; repo: string } {
   try {
-    const parts = new URL(url).pathname.split("/").filter(Boolean);
+    const u = new URL(url);
+    if (u.hostname !== "github.com") {
+      console.warn(`parseRepoFromUrl: non-github host in URL "${url}"`);
+      return { owner: "", repo: "" };
+    }
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length < 4 || parts[2] !== "pull") {
+      console.warn(`parseRepoFromUrl: unexpected path shape in URL "${url}"`);
+      return { owner: "", repo: "" };
+    }
     return { owner: parts[0] ?? "", repo: parts[1] ?? "" };
-  } catch {
+  } catch (err) {
+    console.warn(`parseRepoFromUrl: failed to parse URL "${url}"`, err);
     return { owner: "", repo: "" };
   }
 }

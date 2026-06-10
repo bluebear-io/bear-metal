@@ -39,6 +39,15 @@ describe("parseRepoFromUrl", () => {
   it("returns empty strings for a malformed URL", () => {
     expect(parseRepoFromUrl("not a url")).toEqual({ owner: "", repo: "" });
   });
+
+  it("returns empty strings for a non-github host", () => {
+    expect(parseRepoFromUrl("https://gitlab.com/org/proj/merge_requests/1")).toEqual({ owner: "", repo: "" });
+  });
+
+  it("returns empty strings for a github URL with unexpected path shape", () => {
+    expect(parseRepoFromUrl("https://github.com/bluebear-io/bear-metal/issues/42")).toEqual({ owner: "", repo: "" });
+    expect(parseRepoFromUrl("https://github.com/bluebear-io")).toEqual({ owner: "", repo: "" });
+  });
 });
 
 describe("upsertRun + insertEvent", () => {
