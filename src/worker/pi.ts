@@ -31,7 +31,14 @@ export async function runPiWorker(input: {
       decision = next;
     } else {
       collectedPrs.push(...next.prs);
-      decision = { status: "done", prs: [...collectedPrs] };
+      // Preserve a pending decision across subsequent wrote_code calls: once a
+      // respond_* tool has handed control back to a human, additional code
+      // pushes must not silently flip the dispatch result to "done".
+      if (decision?.status === "pending") {
+        decision = { status: "pending", prs: mergePrs(decision.prs, next.prs) };
+      } else {
+        decision = { status: "done", prs: [...collectedPrs] };
+      }
     }
   };
 
@@ -143,6 +150,9 @@ export async function runPiWorker(input: {
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
       await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
       const remote = await getRemoteRef(repoRoot);
+      // Design constraint: at most one PR per (owner, repo) per dispatch.
+      // A second wrote_code call against the same repo updates the existing PR
+      // rather than creating a new branch/PR within that repo.
       const existingPr = input.context.prs.find(
         (p) => p.owner === remote.owner && p.repo === remote.repo,
       ) ?? null;

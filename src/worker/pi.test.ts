@@ -224,6 +224,30 @@ describe("runPiWorker", () => {
     expect(result).toEqual({ status: "pending", prs: context.prs });
   });
 
+  it("preserves pending decision when wrote_code is called after respond_to_comment_writer", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
+      await executeTool(customTools, "wrote_code", {
+        repoRoot: "/tmp/workspace/blueden",
+        commitMessage: "fix thread 1",
+        prTitle: "fix",
+        prBody: "fix",
+      });
+    });
+
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+
+    expect(result.status).toBe("pending");
+    expect(result.prs).toEqual(context.prs);
+  });
+
   it("registers respond_to_ticket_reporter and wrote_code in new task mode, not iteration tools", async () => {
     const { runPiWorker } = await import("./pi.js");
     const registeredNames: string[] = [];

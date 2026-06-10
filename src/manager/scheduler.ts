@@ -382,7 +382,16 @@ async function enforceIterationLimit(
  */
 function knownPrsForSlot(slot: TaskSlot): PullRequestRef[] {
   const task = slot.latestTask;
-  return task.result?.prs ?? task.input.prs;
+  const prs = task.result?.prs ?? task.input.prs;
+  if (task.resultStatus === "done" && prs.length === 0) {
+    // A completed-done task with no PRs is an anomalous worker result.
+    // Throw so refreshTrackedTickets' catch block logs and skips this slot
+    // instead of silently treating it as a no-PR ticket.
+    throw new Error(
+      `Task ${task.id} for ticket ${slot.ticketId} completed with status "done" but produced no pull requests`,
+    );
+  }
+  return prs;
 }
 
 function isTerminalLinearTicket(ticket: Ticket): boolean {
