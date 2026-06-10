@@ -222,7 +222,9 @@ export async function runPiWorker(input: {
       if (stats.tokens.total >= MAX_WORKER_TOKENS) {
         limitHitReason = `token limit of ${MAX_WORKER_TOKENS.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
         logger.warn({ ticketId: input.context.ticketId, tokens: stats.tokens.total }, "token limit reached; aborting session");
-        void session.abort();
+        session.abort().catch((err) => {
+          logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
+        });
       }
     }
   });
@@ -232,7 +234,9 @@ export async function runPiWorker(input: {
     if (!limitHitReason) {
       limitHitReason = `time limit of 2 hours reached`;
       logger.warn({ ticketId: input.context.ticketId }, "time limit reached; aborting session");
-      void session.abort();
+      session.abort().catch((err) => {
+        logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
+      });
     }
   }, MAX_WORKER_TIME_MS);
 
@@ -243,7 +247,7 @@ export async function runPiWorker(input: {
       logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
       throw error;
     }
-    // limit abort caused the throw — handled below
+    logger.debug({ error, ticketId: input.context.ticketId }, "session.prompt() threw after limit abort (expected)");
   } finally {
     clearTimeout(timeoutHandle);
     unsubscribeLimits();
