@@ -417,6 +417,7 @@ function toPullRequest(
     number: pull.number,
     title: pull.title,
     headRef: pull.head.ref,
+    headSha: pull.head.sha,
     state: pull.state as PRState,
     draft: Boolean(pull.draft),
     merged: "merged" in pull ? pull.merged : pull.merged_at !== null,

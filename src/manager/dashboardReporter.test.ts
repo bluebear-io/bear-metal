@@ -71,7 +71,7 @@ describe("ciFailed", () => {
 describe("prOpened", () => {
   it("sets pr_open and emits pr_opened (the PR row itself is owned by recordPullRequestObservation)", async () => {
     const c = fakeClient();
-    const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", state: "open" as const, draft: false, merged: false, url: "purl" };
+    const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", headSha: "sha", state: "open" as const, draft: false, merged: false, url: "purl" };
     await make(c).prOpened(ticket, pr);
     expect(c.upsertPullRequest).not.toHaveBeenCalled();
     expect(c.upsertTicket).toHaveBeenCalledWith(expect.objectContaining({ bmStatus: "pr_open" }));
@@ -80,7 +80,7 @@ describe("prOpened", () => {
 });
 
 describe("recordPullRequestObservation", () => {
-  const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", state: "open" as const, draft: false, merged: false, url: "purl" };
+  const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", headSha: "sha", state: "open" as const, draft: false, merged: false, url: "purl" };
 
   it("persists PR row, all review threads (resolved+unresolved), and skips CI when no failures", async () => {
     const c = fakeClient();

@@ -14,6 +14,8 @@ export interface PullRequest {
   title: string;
   /** Head branch name. */
   headRef: string;
+  /** Head commit SHA. Historical branches may be deleted, so CI lookups must use this. */
+  headSha: string;
   state: PRState;
   draft: boolean;
   merged: boolean;
