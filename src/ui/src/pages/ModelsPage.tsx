@@ -24,7 +24,7 @@ const FamilyBadge = ({ family }: { family: ModelComparisonRow["family"] }) => (
  */
 const aggregateByFamily = (rows: ModelComparisonRow[]): ModelComparisonRow[] => {
   const byFamily = new Map<ModelComparisonRow["family"], ModelComparisonRow>();
-  let succeededDurationWeighted = new Map<ModelComparisonRow["family"], { sumSeconds: number; count: number }>();
+  const succeededDurationWeighted = new Map<ModelComparisonRow["family"], { sumSeconds: number; count: number }>();
   for (const row of rows) {
     const existing = byFamily.get(row.family);
     const durBucket = succeededDurationWeighted.get(row.family) ?? { sumSeconds: 0, count: 0 };
@@ -130,7 +130,7 @@ export const ModelsPage = () => {
 
       <QueryBoundary
         isLoading={query.isLoading}
-        error={query.error instanceof Error ? query.error : null}
+        error={query.error}
         isEmpty={rows.length === 0}
         emptyLabel="No model usage recorded yet"
       >

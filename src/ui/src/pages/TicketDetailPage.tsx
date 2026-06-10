@@ -380,7 +380,7 @@ export const TicketDetailPage = () => {
 
       <QueryBoundary
         isLoading={query.isLoading}
-        error={query.error instanceof Error ? query.error : null}
+        error={query.error}
         isEmpty={detail === undefined}
         emptyLabel="Ticket detail not found"
       >

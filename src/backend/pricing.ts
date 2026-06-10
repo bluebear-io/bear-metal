@@ -1,5 +1,5 @@
 /**
- * Fixed LLM pricing table used for cost estimates on the dashboard (DEN-2313).
+ * Fixed LLM pricing table used for cost estimates on the dashboard.
  *
  * Prices are in USD per 1M tokens. We intentionally keep this list small and
  * hand-curated rather than pulling from a live model registry: cost estimates
@@ -48,7 +48,7 @@ const PRICE_TABLE: PriceEntry[] = [
   { provider: "google", modelPrefix: "gemini", inputPer1M: 1.25, outputPer1M: 10 },
 ];
 
-export function getModelPrice(provider: string | null, modelName: string | null): ModelPrice | null {
+function getModelPrice(provider: string | null, modelName: string | null): ModelPrice | null {
   if (!provider || !modelName) return null;
   const p = provider.toLowerCase();
   const m = modelName.toLowerCase();
