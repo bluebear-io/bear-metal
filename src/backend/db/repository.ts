@@ -157,7 +157,7 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
 }
 
 /**
- * Aggregate efficacy stats per `(provider, model_name)` for the model comparison view (DEN-2313).
+ * Aggregate efficacy stats per `(provider, model_name)` for the model comparison view.
  * Only runs with a recorded `model_name` participate — running/dispatched rows are skipped.
  */
 export function listModelComparison(db: Db): ModelComparisonRow[] {
