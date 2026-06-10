@@ -109,7 +109,7 @@ if (config.testTicketId) {
 const app = createServer({ tasks });
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, "health server listening");
-  logger.info({ port: config.port, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+  logger.info({ port: config.port, pid: process.pid }, "🐻 Bear Metal is online — sharpening claws and queuing tickets!");
 });
 
 scheduler.start();
