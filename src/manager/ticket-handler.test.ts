@@ -91,6 +91,7 @@ class FakeTaskQueue implements TaskQueue {
       completedAt: null,
       releasedAt: null,
       iterationNumber: 1,
+      lastHeartbeatAt: null,
     };
   }
 
@@ -99,6 +100,12 @@ class FakeTaskQueue implements TaskQueue {
   }
 
   async complete(): Promise<void> {}
+
+  async heartbeat(): Promise<void> {}
+
+  async recoverStaleTasks(): Promise<string[]> {
+    return [];
+  }
 
   async listTracked() {
     return [];

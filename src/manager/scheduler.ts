@@ -20,6 +20,11 @@ const TERMINAL_STATE_NAMES = ["Merged"];
 
 const MAX_ITERATIONS = 20;
 
+/** How long an acquired-but-incomplete task can go without a heartbeat before we recover it. */
+const STALE_TASK_THRESHOLD_MS = 60_000;
+/** Cadence for the stale-task sweep — independent of `pollIntervalMs` per the DEN-2333 spec. */
+const STALE_RECOVERY_INTERVAL_MS = 60_000;
+
 /** A ticket queued for dispatch this tick, carrying the reason its run was triggered. */
 interface DispatchItem {
   context: TicketContext;
@@ -74,6 +79,10 @@ export interface SchedulerDeps {
   concurrency: number;
   pollIntervalMs: number;
   reporter?: DashboardReporter;
+  /** Override the 60s stale-recovery sweep cadence; tests set this small. */
+  staleRecoveryIntervalMs?: number;
+  /** Override the 60s no-heartbeat threshold for stale recovery; tests set this small. */
+  staleTaskThresholdMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,16 +94,26 @@ export class Scheduler {
   private readonly queue: PQueue;
   /** Tickets with a handler invocation in flight — guards against double-dispatch. */
   private readonly inFlight = new Set<string>();
+  private readonly staleRecoveryIntervalMs: number;
+  private readonly staleTaskThresholdMs: number;
   private timer: NodeJS.Timeout | undefined;
+  private staleRecoveryTimer: NodeJS.Timeout | undefined;
 
   constructor(deps: SchedulerDeps) {
     this.deps = deps;
     this.queue = new PQueue({ concurrency: deps.concurrency });
+    this.staleRecoveryIntervalMs = deps.staleRecoveryIntervalMs ?? STALE_RECOVERY_INTERVAL_MS;
+    this.staleTaskThresholdMs = deps.staleTaskThresholdMs ?? STALE_TASK_THRESHOLD_MS;
   }
 
   start(): void {
     void this.safeTick();
     this.timer = setInterval(() => void this.safeTick(), this.deps.pollIntervalMs);
+    void this.safeRecoverStaleTasks();
+    this.staleRecoveryTimer = setInterval(
+      () => void this.safeRecoverStaleTasks(),
+      this.staleRecoveryIntervalMs,
+    );
   }
 
   async stop(): Promise<void> {
@@ -102,7 +121,31 @@ export class Scheduler {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    if (this.staleRecoveryTimer) {
+      clearInterval(this.staleRecoveryTimer);
+      this.staleRecoveryTimer = undefined;
+    }
     await this.queue.onIdle();
+  }
+
+  /**
+   * Sweep for acquired-but-incomplete tasks whose worker stopped heartbeating. Recovered rows
+   * are released back to the queue so another worker can pick them up on the next tick.
+   */
+  async recoverStaleTasks(): Promise<string[]> {
+    const recovered = await this.deps.tasks.recoverStaleTasks(this.staleTaskThresholdMs);
+    if (recovered.length > 0) {
+      this.deps.logger.warn({ taskIds: recovered }, "recovered stale acquired tasks");
+    }
+    return recovered;
+  }
+
+  private async safeRecoverStaleTasks(): Promise<void> {
+    try {
+      await this.recoverStaleTasks();
+    } catch (err) {
+      this.deps.logger.error({ err }, "stale task recovery failed");
+    }
   }
 
   private async safeTick(): Promise<void> {

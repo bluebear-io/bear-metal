@@ -34,6 +34,7 @@ export interface TaskRecord {
   completedAt: Date | null;
   releasedAt: Date | null;
   iterationNumber: number;
+  lastHeartbeatAt: Date | null;
 }
 
 export interface TaskSlot {
@@ -47,6 +48,18 @@ export interface TaskQueue {
   enqueue(input: DispatchTaskInput): Promise<TaskRecord>;
   acquireNext(workerId: string): Promise<TaskRecord | null>;
   complete(taskId: string, result: DispatchResult): Promise<void>;
+  /**
+   * Refresh the heartbeat for an in-flight task. No-op when the row is missing,
+   * already completed, or no longer owned by `workerId` (e.g. recovered by
+   * `recoverStaleTasks` and re-acquired elsewhere).
+   */
+  heartbeat(taskId: string, workerId: string): Promise<void>;
+  /**
+   * Clear `worker_id` and `last_heartbeat_at` on acquired-but-incomplete tasks whose
+   * heartbeat is older than `staleAfterMs` (or NULL — covers rows acquired before this
+   * column existed). Completed rows are never touched. Returns the recovered task ids.
+   */
+  recoverStaleTasks(staleAfterMs: number): Promise<string[]>;
   listTracked(): Promise<TaskSlot[]>;
   countTracked(): Promise<number>;
   setSlotStatus(ticketId: string, status: SlotStatus): Promise<TaskRecord>;
@@ -70,6 +83,7 @@ interface TaskRow {
   completed_at: string | Date | null;
   released_at: string | Date | null;
   iteration_number: number;
+  last_heartbeat_at: string | Date | null;
 }
 
 export function createTaskQueueFromDatabaseUrl(databaseUrl: string): TaskQueue {
@@ -111,13 +125,15 @@ class SqliteTaskQueue implements TaskQueue {
         updated_at TEXT NOT NULL,
         completed_at TEXT NULL,
         released_at TEXT NULL,
-        iteration_number INTEGER NOT NULL DEFAULT 1
+        iteration_number INTEGER NOT NULL DEFAULT 1,
+        last_heartbeat_at TEXT NULL
       );
     `);
     ensureSqliteColumn(db, "attempt_number", "INTEGER NOT NULL DEFAULT 1");
     ensureSqliteColumn(db, "slot_status", "TEXT NOT NULL DEFAULT 'active'");
     ensureSqliteColumn(db, "released_at", "TEXT NULL");
     ensureSqliteColumn(db, "iteration_number", "INTEGER NOT NULL DEFAULT 1");
+    ensureSqliteColumn(db, "last_heartbeat_at", "TEXT NULL");
     db.exec(`
       DROP INDEX IF EXISTS idx_tasks_acquire;
       CREATE INDEX IF NOT EXISTS idx_tasks_acquire
@@ -184,9 +200,9 @@ class SqliteTaskQueue implements TaskQueue {
       }
       const result = db.prepare(`
         UPDATE tasks
-        SET worker_id = ?, updated_at = ?
+        SET worker_id = ?, updated_at = ?, last_heartbeat_at = ?
         WHERE id = ? AND worker_id IS NULL AND result_status IS NULL AND slot_status = 'active'
-      `).run(workerId, now, candidate.id);
+      `).run(workerId, now, now, candidate.id);
       if (result.changes !== 1) {
         throw new Error(`Failed to acquire task: ${candidate.id}`);
       }
@@ -210,6 +226,35 @@ class SqliteTaskQueue implements TaskQueue {
     if (update.changes !== 1) {
       throw new Error(`Cannot complete task that is missing, unacquired, or already completed: ${taskId}`);
     }
+  }
+
+  async heartbeat(taskId: string, workerId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    this.requireDb().prepare(`
+      UPDATE tasks
+      SET last_heartbeat_at = ?
+      WHERE id = ? AND worker_id = ? AND result_status IS NULL
+    `).run(now, taskId, workerId);
+  }
+
+  async recoverStaleTasks(staleAfterMs: number): Promise<string[]> {
+    const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
+    const now = this.clock.nowIso();
+    // ISO 8601 (with fixed-width fields and Z suffix) sorts lexicographically as time, so a
+    // plain string `<` on last_heartbeat_at matches the intended chronological comparison.
+    // slot_status = 'active' mirrors the acquireNext guard: a released slot is no longer
+    // schedulable, so clearing worker_id there would only break the in-flight worker's
+    // complete() (which requires worker_id IS NOT NULL) without enabling any new pickup.
+    const rows = this.requireDb().prepare(`
+      UPDATE tasks
+      SET worker_id = NULL, last_heartbeat_at = NULL, updated_at = ?
+      WHERE worker_id IS NOT NULL
+        AND result_status IS NULL
+        AND slot_status = 'active'
+        AND (last_heartbeat_at IS NULL OR last_heartbeat_at < ?)
+      RETURNING id
+    `).all(now, cutoff) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
   }
 
   async listTracked(): Promise<TaskSlot[]> {
@@ -301,11 +346,13 @@ class PostgresTaskQueue implements TaskQueue {
         updated_at TIMESTAMPTZ NOT NULL,
         completed_at TIMESTAMPTZ NULL,
         released_at TIMESTAMPTZ NULL,
-        iteration_number INTEGER NOT NULL DEFAULT 1
+        iteration_number INTEGER NOT NULL DEFAULT 1,
+        last_heartbeat_at TIMESTAMPTZ NULL
       );
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS slot_status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ NULL;
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_number INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE tasks ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ NULL;
       DROP INDEX IF EXISTS idx_tasks_acquire;
       CREATE INDEX IF NOT EXISTS idx_tasks_acquire
         ON tasks(created_at)
@@ -372,7 +419,7 @@ class PostgresTaskQueue implements TaskQueue {
             LIMIT 1
           )
           UPDATE tasks
-          SET worker_id = $1, updated_at = $2
+          SET worker_id = $1, updated_at = $2, last_heartbeat_at = $2
           FROM next_task
           WHERE tasks.id = next_task.id
           RETURNING tasks.*
@@ -402,6 +449,36 @@ class PostgresTaskQueue implements TaskQueue {
     if (update.rowCount !== 1) {
       throw new Error(`Cannot complete task that is missing, unacquired, or already completed: ${taskId}`);
     }
+  }
+
+  async heartbeat(taskId: string, workerId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.pool.query(
+      `
+        UPDATE tasks
+        SET last_heartbeat_at = $1
+        WHERE id = $2 AND worker_id = $3 AND result_status IS NULL
+      `,
+      [now, taskId, workerId],
+    );
+  }
+
+  async recoverStaleTasks(staleAfterMs: number): Promise<string[]> {
+    const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
+    const now = this.clock.nowIso();
+    const result = await this.pool.query<{ id: string }>(
+      `
+        UPDATE tasks
+        SET worker_id = NULL, last_heartbeat_at = NULL, updated_at = $1
+        WHERE worker_id IS NOT NULL
+          AND result_status IS NULL
+          AND slot_status = 'active'
+          AND (last_heartbeat_at IS NULL OR last_heartbeat_at < $2)
+        RETURNING id
+      `,
+      [now, cutoff],
+    );
+    return result.rows.map((r) => r.id);
   }
 
   async listTracked(): Promise<TaskSlot[]> {
@@ -474,6 +551,7 @@ function rowToTask(row: TaskRow): TaskRecord {
     completedAt: row.completed_at === null ? null : parseTimestamp(row.completed_at),
     releasedAt: row.released_at === null ? null : parseTimestamp(row.released_at),
     iterationNumber: row.iteration_number,
+    lastHeartbeatAt: row.last_heartbeat_at === null ? null : parseTimestamp(row.last_heartbeat_at),
   };
 }
 

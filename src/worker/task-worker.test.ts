@@ -78,6 +78,43 @@ describe("TaskWorker", () => {
     expect(reporter.workerUpsert).toHaveBeenLastCalledWith("worker-1", expect.any(String), "idle", null, expect.any(Number));
     expect(reporter.runCrashedById).not.toHaveBeenCalled();
   });
+
+  it("heartbeats the in-flight task on the configured interval and stops once dispatch returns", async () => {
+    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const tasks = new FakeTaskQueue(taskRecord({ id: "task-1", input }));
+
+    // Hold dispatch open so we can observe heartbeats firing while the task is in flight.
+    let resolveDispatch!: (result: DispatchResult) => void;
+    const dispatchDone = new Promise<DispatchResult>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    const runDispatch = vi.fn(() => dispatchDone);
+
+    const worker = new TaskWorker({
+      logger,
+      tasks,
+      integrations: makeIntegrations(),
+      concurrency: 1,
+      pollIntervalMs: 60_000,
+      workerId: "worker-1",
+      runDispatch,
+      heartbeatIntervalMs: 10,
+    });
+
+    await worker.tick();
+    // Give the heartbeat timer time to fire at least twice (~3 intervals).
+    await new Promise((r) => setTimeout(r, 35));
+    expect(tasks.heartbeats.length).toBeGreaterThanOrEqual(2);
+    expect(tasks.heartbeats[0]).toEqual({ taskId: "task-1", workerId: "worker-1" });
+
+    resolveDispatch({ status: "done", prs: [] });
+    await worker.stop();
+
+    const finalCount = tasks.heartbeats.length;
+    await new Promise((r) => setTimeout(r, 25));
+    // Once dispatch resolves, the heartbeat interval must be cleared.
+    expect(tasks.heartbeats.length).toBe(finalCount);
+  });
 });
 
 function makeReporter() {
@@ -108,6 +145,7 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     completedAt: null,
     releasedAt: null,
     iterationNumber: 1,
+    lastHeartbeatAt: null,
     ...overrides,
   };
 }
@@ -115,6 +153,7 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
 class FakeTaskQueue implements TaskQueue {
   acquiredBy: string[] = [];
   completed: Array<{ taskId: string; result: DispatchResult }> = [];
+  heartbeats: Array<{ taskId: string; workerId: string }> = [];
   private task: TaskRecord | null;
 
   constructor(task: TaskRecord | null) {
@@ -139,6 +178,14 @@ class FakeTaskQueue implements TaskQueue {
 
   async complete(taskId: string, result: DispatchResult): Promise<void> {
     this.completed.push({ taskId, result });
+  }
+
+  async heartbeat(taskId: string, workerId: string): Promise<void> {
+    this.heartbeats.push({ taskId, workerId });
+  }
+
+  async recoverStaleTasks(): Promise<string[]> {
+    return [];
   }
 
   async listTracked() {
