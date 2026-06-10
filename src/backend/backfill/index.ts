@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -17,6 +18,8 @@ export interface BackfillOptions {
   dryRun: boolean;
   limit: number | null;
   verbose: boolean;
+  /** Only backfill tickets whose Linear `updatedAt` is within this many days of `now`. */
+  sinceDays: number | null;
 }
 
 export interface BackfillSummary {
@@ -50,10 +53,8 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillSummary> 
     ensureBackfillWorker(db, now);
   }
 
-  const tickets = await loadDelegatedTickets(linear, {
-    agentId,
-    limit: options.limit ?? undefined,
-  });
+  const allTickets = await loadDelegatedTickets(linear, { agentId });
+  const tickets = filterAndLimit(allTickets, options, now);
   const repos = await github.listInstallationRepositories();
   logger.debug({ ticketCount: tickets.length, repoCount: repos.length }, "backfill: load complete");
 
@@ -107,7 +108,15 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillSummary> 
 
 /** Parse a vanilla `process.argv.slice(2)` into our flag set. Unknown flags are rejected loudly. */
 export function parseArgs(argv: string[]): BackfillOptions {
-  const options: BackfillOptions = { dryRun: false, limit: null, verbose: false };
+  const options: BackfillOptions = { dryRun: false, limit: null, verbose: false, sinceDays: null };
+  const readPositiveInt = (flag: string, raw: string | undefined): number => {
+    if (raw === undefined) throw new Error(`${flag} requires a number`);
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`${flag} must be a positive integer, got: ${raw}`);
+    }
+    return value;
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--dry-run") {
@@ -115,19 +124,36 @@ export function parseArgs(argv: string[]): BackfillOptions {
     } else if (arg === "--verbose") {
       options.verbose = true;
     } else if (arg === "--limit") {
-      const next = argv[i + 1];
-      if (next === undefined) throw new Error("--limit requires a number");
-      const value = Number(next);
-      if (!Number.isInteger(value) || value <= 0) {
-        throw new Error(`--limit must be a positive integer, got: ${next}`);
-      }
-      options.limit = value;
+      options.limit = readPositiveInt("--limit", argv[i + 1]);
+      i += 1;
+    } else if (arg === "--since-days") {
+      options.sinceDays = readPositiveInt("--since-days", argv[i + 1]);
       i += 1;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
   return options;
+}
+
+/** Apply `--since-days` (by Linear `updatedAt`) then `--limit`. */
+function filterAndLimit(
+  tickets: Awaited<ReturnType<typeof loadDelegatedTickets>>,
+  options: BackfillOptions,
+  now: Date,
+) {
+  let result = tickets;
+  if (options.sinceDays !== null) {
+    const cutoff = now.getTime() - options.sinceDays * 24 * 60 * 60 * 1000;
+    result = result.filter((t) => {
+      if (t.updatedAt === null || t.updatedAt === undefined) return true;
+      return new Date(t.updatedAt).getTime() >= cutoff;
+    });
+  }
+  if (options.limit !== null && result.length > options.limit) {
+    result = result.slice(0, options.limit);
+  }
+  return result;
 }
 
 function requiredEnv(name: string): string {

@@ -70,7 +70,11 @@ beforeEach(() => {
 
 describe("parseArgs", () => {
   it("defaults to no flags", () => {
-    expect(parseArgs([])).toEqual({ dryRun: false, limit: null, verbose: false });
+    expect(parseArgs([])).toEqual({ dryRun: false, limit: null, verbose: false, sinceDays: null });
+  });
+
+  it("parses --since-days N", () => {
+    expect(parseArgs(["--since-days", "7"])).toMatchObject({ sinceDays: 7 });
   });
 
   it("accepts --dry-run and --verbose", () => {
@@ -141,7 +145,7 @@ describe("runBackfill", () => {
       github,
       db,
       agentId: "agent",
-      options: { dryRun: false, limit: null, verbose: false },
+      options: { dryRun: false, limit: null, verbose: false, sinceDays: null },
       logger: silent,
     });
 
@@ -167,7 +171,7 @@ describe("runBackfill", () => {
       github,
       db,
       agentId: "agent",
-      options: { dryRun: true, limit: null, verbose: false },
+      options: { dryRun: true, limit: null, verbose: false, sinceDays: null },
       logger: silent,
     });
 
@@ -190,7 +194,7 @@ describe("runBackfill", () => {
       github,
       db,
       agentId: "agent",
-      options: { dryRun: false, limit: 2, verbose: false },
+      options: { dryRun: false, limit: 2, verbose: false, sinceDays: null },
       logger: silent,
     });
 
