@@ -59,6 +59,7 @@ const ticketDetail: TicketDetail = {
         startedAt: "2026-06-09T07:30:00.000Z",
         updatedAt: "2026-06-09T08:40:00.000Z",
       },
+      toolCalls: [],
     },
     {
       id: "run_2",
@@ -87,6 +88,7 @@ const ticketDetail: TicketDetail = {
         startedAt: "2026-06-09T08:55:00.000Z",
         updatedAt: "2026-06-09T09:18:00.000Z",
       },
+      toolCalls: [],
     },
   ],
   pullRequests: [

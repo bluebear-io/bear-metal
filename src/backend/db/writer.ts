@@ -1,7 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
-  CiCheckPayload, ReviewThreadPayload, EventPayload,
+  CiCheckPayload, ReviewThreadPayload, RunToolCallPayload, EventPayload,
 } from "../../shared/dashboard/types.js";
 import type { DbHandle } from "./client.js";
 
@@ -22,6 +22,8 @@ export interface Writer {
   replaceCiChecksForRun(ciRunId: string, payloads: CiCheckPayload[]): Promise<void>;
   /** Replace the set of review threads attached to a PR — mirrors GitHub's current thread set. */
   replaceReviewThreadsForPr(prId: string, payloads: ReviewThreadPayload[]): Promise<void>;
+  /** Replace the tool-call timeline rows attached to a run (DEN-2311). */
+  replaceRunToolCallsForRun(runId: string, payloads: RunToolCallPayload[]): Promise<void>;
   insertEvent(p: EventPayload): Promise<void>;
 }
 
@@ -173,6 +175,35 @@ export function createWriter(handle: DbHandle): Writer {
         await txAny.delete(t.reviewThreads).where(eq(t.reviewThreads.prId, prId));
         for (const p of payloads) {
           await upsertReviewThread(p);
+        }
+      });
+    },
+
+    async replaceRunToolCallsForRun(runId, payloads) {
+      // Same dialect split as replaceCiChecksForRun/replaceReviewThreadsForPr: drizzle's
+      // transaction-callback signature is sync on better-sqlite3 and async on pg.
+      const upsertRow = (p: RunToolCallPayload) => ({
+        id: p.id, runId: p.runId, sequence: p.sequence, toolName: p.toolName,
+        argsJson: p.argsJson, resultText: p.resultText, resultStatus: p.resultStatus,
+        outputSize: p.outputSize, thoughtText: p.thoughtText, createdAt: new Date(p.createdAt),
+      });
+      if (handle.dialect === "sqlite") {
+        handle.db.transaction((tx) => {
+          tx.delete(t.runToolCalls).where(eq(t.runToolCalls.runId, runId)).run();
+          for (const p of payloads) {
+            const row = upsertRow(p);
+            tx.insert(t.runToolCalls).values(row).onConflictDoUpdate({ target: t.runToolCalls.id, set: row }).run();
+          }
+        });
+        return;
+      }
+      await handle.db.transaction(async (tx) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const txAny: any = tx;
+        await txAny.delete(t.runToolCalls).where(eq(t.runToolCalls.runId, runId));
+        for (const p of payloads) {
+          const row = upsertRow(p);
+          await db.insert(t.runToolCalls).values(row).onConflictDoUpdate({ target: t.runToolCalls.id, set: row });
         }
       });
     },

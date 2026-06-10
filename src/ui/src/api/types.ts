@@ -75,6 +75,19 @@ export interface WorkerListItem extends Worker {
   isTimedOut: boolean;
 }
 
+export interface RunToolCall {
+  id: string;
+  runId: string;
+  sequence: number;
+  toolName: string;
+  argsJson: string;
+  resultText: string | null;
+  resultStatus: "ok" | "error" | "unknown" | null;
+  outputSize: number | null;
+  thoughtText: string | null;
+  createdAt: string;
+}
+
 export interface Run {
   id: string;
   ticketId: string;
@@ -95,6 +108,8 @@ export interface Run {
   estimatedCostUsd: number | null;
   createdAt: string;
   worker: Worker | null;
+  /** Ordered tool-call timeline for the thought-process visualizer (DEN-2311). */
+  toolCalls: RunToolCall[];
 }
 
 export interface ReviewThreadComment {

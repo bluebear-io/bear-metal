@@ -16,10 +16,35 @@ export interface DispatchUsage {
   provider: string;
 }
 
+/**
+ * One step of the agent's tool-call timeline (DEN-2311). Captured from the pi session
+ * transcript at run end so the dashboard can render a thought-process tree.
+ */
+export interface DispatchToolCall {
+  /** Stable id matching the assistant `tool_use` block id when available, otherwise synthesized. */
+  id: string;
+  /** 0-based position within the run. */
+  sequence: number;
+  toolName: string;
+  /** JSON-stringified tool input. */
+  argsJson: string;
+  /** JSON-stringified or plain-text tool result body. Null if the run aborted before a result arrived. */
+  resultText: string | null;
+  resultStatus: "ok" | "error" | "unknown" | null;
+  /** Character length of the untruncated `resultText`. */
+  outputSize: number | null;
+  /** Assistant text that preceded the tool_use block in the same turn. */
+  thoughtText: string | null;
+  /** ms-since-epoch when this step was recorded from the transcript. */
+  createdAt: number;
+}
+
 export type DispatchResult = {
   status: "pending" | "done";
   prs: PullRequestRef[];
   usage?: DispatchUsage;
+  /** Ordered tool-call timeline for the run; empty when no tool calls were captured. */
+  toolCalls?: DispatchToolCall[];
 };
 
 export type { PullRequestRef };

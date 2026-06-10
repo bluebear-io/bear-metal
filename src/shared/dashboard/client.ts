@@ -1,7 +1,7 @@
 import type { Logger } from "../logger.js";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
-  CiCheckPayload, ReviewThreadPayload, EventPayload,
+  CiCheckPayload, ReviewThreadPayload, RunToolCallPayload, EventPayload,
 } from "./types.js";
 
 export interface DashboardClientOptions {
@@ -21,6 +21,8 @@ export interface DashboardClient {
   replaceCiChecks(ciRunId: string, checks: CiCheckPayload[]): Promise<void>;
   /** Replace the review threads attached to a PR (mirrors the latest poll result). */
   replaceReviewThreads(prId: string, threads: ReviewThreadPayload[]): Promise<void>;
+  /** Replace the tool-call timeline rows attached to a run (DEN-2311). */
+  replaceRunToolCalls(runId: string, toolCalls: RunToolCallPayload[]): Promise<void>;
   recordEvent(p: EventPayload): Promise<void>;
 }
 
@@ -60,6 +62,8 @@ export function createDashboardClient(options: DashboardClientOptions): Dashboar
       send("PUT", `/api/ci-runs/${encodeURIComponent(ciRunId)}/checks`, { checks }),
     replaceReviewThreads: (prId, threads) =>
       send("PUT", `/api/pull-requests/${encodeURIComponent(prId)}/review-threads`, { threads }),
+    replaceRunToolCalls: (runId, toolCalls) =>
+      send("PUT", `/api/runs/${encodeURIComponent(runId)}/tool-calls`, { toolCalls }),
     recordEvent: (p) => send("POST", `/api/events`, p),
   };
 }

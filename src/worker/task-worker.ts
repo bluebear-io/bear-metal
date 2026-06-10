@@ -120,6 +120,8 @@ export class TaskWorker {
     await this.tasks.complete(task.id, result);
     void this.reporter?.progressById(issueId, task.id, this.workerId, `Worker finished: ${result.status}`);
     void this.reporter?.runSucceededById(task.id, issueId, this.workerId, task.attemptNumber, trigger, result.usage ?? null);
+    // DEN-2311: persist the agent's thought-process timeline for the dashboard's visualizer.
+    void this.reporter?.recordRunToolCallsById(task.id, result.toolCalls ?? []);
     for (const pr of result.prs) {
       void this.reporter?.recordPrOpenedById(issueId, pr, task.id);
     }

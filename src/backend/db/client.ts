@@ -68,6 +68,12 @@ const SCHEMA_SQL_SQLITE = `
     source TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL,
     payload_json TEXT, created_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS run_tool_calls (
+    id TEXT PRIMARY KEY NOT NULL, run_id TEXT NOT NULL REFERENCES runs(id),
+    sequence INTEGER NOT NULL, tool_name TEXT NOT NULL, args_json TEXT NOT NULL,
+    result_text TEXT, result_status TEXT, output_size INTEGER, thought_text TEXT,
+    created_at INTEGER NOT NULL
+  );
 `;
 
 /**
@@ -135,6 +141,12 @@ const SCHEMA_SQL_PG = `
     run_id TEXT, worker_id TEXT,
     source TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL,
     payload_json TEXT, created_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS run_tool_calls (
+    id TEXT PRIMARY KEY NOT NULL, run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL, tool_name TEXT NOT NULL, args_json TEXT NOT NULL,
+    result_text TEXT, result_status TEXT, output_size INTEGER, thought_text TEXT,
+    created_at TIMESTAMPTZ NOT NULL
   );
 `;
 
