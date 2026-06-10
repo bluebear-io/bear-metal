@@ -3,7 +3,14 @@ import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
-import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
+import type {
+  DispatchResult,
+  PullRequestRef,
+  WorkerGitHub,
+  WorkerInputContext,
+  WorkerLinear,
+  WorkerSlack,
+} from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
@@ -13,10 +20,14 @@ const logger = createLogger({
   pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
 });
 
+const MAX_WORKER_TIME_MS = 2 * 60 * 60 * 1000; // 2 hours
+const MAX_WORKER_TOKENS = 20_000_000;            // 20M tokens
+
 export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
+  slack?: WorkerSlack;
   gitEnv: NodeJS.ProcessEnv;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
@@ -148,6 +159,14 @@ export async function runPiWorker(input: {
     execute: async (_toolCallId, params) => {
       logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
+      // Refresh the .netrc token before pushing — installation tokens expire after 1 hour
+      // and pi sessions can run much longer than that.
+      const freshToken = await input.github.getInstallationToken();
+      await writeFile(
+        resolve(input.context.cloneScript.netrcDir, ".netrc"),
+        `machine github.com login x-access-token password ${freshToken}\n`,
+        { mode: 0o600 },
+      );
       await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
       const remote = await getRemoteRef(repoRoot);
       // Design constraint: at most one PR per (owner, repo) per dispatch.
@@ -156,12 +175,25 @@ export async function runPiWorker(input: {
       const existingPr = input.context.prs.find(
         (p) => p.owner === remote.owner && p.repo === remote.repo,
       ) ?? null;
+      const isNewPr = existingPr === null;
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
       setDecision({ status: "done", prs: [pr] });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
       } catch (err) {
         logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
+      }
+      if (input.slack) {
+        // The Slack client logs and swallows its own failures so a Slack outage
+        // doesn't mask a successful commit/push from the rest of the pipeline.
+        await input.slack.notifyPullRequest({
+          kind: isNewPr ? "opened" : "updated",
+          pr,
+          title: params.prTitle,
+          url: `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`,
+          ticketId: input.context.ticketId,
+          ticketUrl: input.context.ticket.issue.url,
+        });
       }
       return {
         content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
@@ -225,12 +257,44 @@ export async function runPiWorker(input: {
 
   logger.info({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
 
+  let limitHitReason: string | null = null;
+
+  // Token limit: checked after every turn.
+  const unsubscribeLimits = session.subscribe((event) => {
+    if (event.type === "turn_end" && !limitHitReason) {
+      const stats = session.getSessionStats();
+      if (stats.tokens.total >= MAX_WORKER_TOKENS) {
+        limitHitReason = `token limit of ${MAX_WORKER_TOKENS.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
+        logger.warn({ ticketId: input.context.ticketId, tokens: stats.tokens.total }, "token limit reached; aborting session");
+        session.abort().catch((err) => {
+          logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
+        });
+      }
+    }
+  });
+
+  // Time limit: fires after 2 hours regardless of turn state.
+  const timeoutHandle = setTimeout(() => {
+    if (!limitHitReason) {
+      limitHitReason = `time limit of 2 hours reached`;
+      logger.warn({ ticketId: input.context.ticketId }, "time limit reached; aborting session");
+      session.abort().catch((err) => {
+        logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
+      });
+    }
+  }, MAX_WORKER_TIME_MS);
+
   try {
     await session.prompt(prompt);
   } catch (error) {
-    logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
-    throw error;
+    if (!limitHitReason) {
+      logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
+      throw error;
+    }
+    logger.debug({ error, ticketId: input.context.ticketId }, "session.prompt() threw after limit abort (expected)");
   } finally {
+    clearTimeout(timeoutHandle);
+    unsubscribeLimits();
     const transcriptPath = resolve(workspaceDir, "session.jsonl");
     try {
       session.exportToJsonl(transcriptPath);
@@ -241,6 +305,16 @@ export async function runPiWorker(input: {
     unsubscribe();
     session.dispose();
     logger.info({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
+  }
+
+  // If a limit was hit and the worker hadn't already set a decision, hand back.
+  if (limitHitReason && !decision) {
+    logger.info({ ticketId: input.context.ticketId, reason: limitHitReason }, "limit hit without prior decision; handing back");
+    await input.linear.commentAndHandBack(
+      input.context.ticketId,
+      `Stopped automatically: ${limitHitReason}. Please review progress and re-delegate to continue.`,
+    );
+    return { status: "pending", prs: mergePrs(input.context.prs, collectedPrs) };
   }
 
   if (!decision) {

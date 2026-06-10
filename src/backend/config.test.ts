@@ -8,7 +8,7 @@ describe("loadBackendConfig", () => {
       BACKEND_PORT: "4000",
       LOG_LEVEL: "debug",
     });
-    expect(cfg).toEqual({ dbPath: "/tmp/x.db", port: 4000, logLevel: "debug" });
+    expect(cfg).toEqual({ dbPath: "/tmp/x.db", port: 4000, logLevel: "debug", ingestToken: "" });
   });
 
   it("defaults the port to 3100 when unset", () => {

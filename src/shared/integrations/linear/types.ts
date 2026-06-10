@@ -18,6 +18,12 @@ export interface Ticket {
   /** Linear-suggested git branch name (used to match a ticket to its PR). */
   branchName: string;
   status: TicketStatus;
+  /**
+   * Linear priority value. Matches Linear's encoding: 0 = No priority, 1 = Urgent,
+   * 2 = High, 3 = Medium, 4 = Low. Note the asymmetry — 0 means *unset*, not
+   * "highest". The scheduler treats 0 as the lowest-priority bucket when ordering.
+   */
+  priority: number;
   labels: string[];
   /** Human owner of the ticket (stays the creator even when an agent is delegated to it). */
   assignee: { id: string } | null;

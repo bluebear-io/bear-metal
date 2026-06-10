@@ -126,6 +126,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       url: issue.url,
       branchName: issue.branchName,
       status: { name: state.name, type: state.type },
+      priority: issue.priority ?? 0,
       labels: labels.nodes.map((node) => node.name),
       assignee: issue.assigneeId ? { id: issue.assigneeId } : null,
       delegate: issue.delegateId ? { id: issue.delegateId } : null,

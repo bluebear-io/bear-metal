@@ -1,9 +1,17 @@
 import "dotenv/config";
 
-import { createLogger, GitHubIntegration, LinearIntegration, type TicketContext } from "../shared/index.js";
+import {
+  createDashboardClient,
+  createLogger,
+  GitHubIntegration,
+  LinearIntegration,
+  SlackIntegration,
+  type TicketContext,
+} from "../shared/index.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
+import { DashboardReporter } from "./dashboardReporter.js";
 import { Scheduler } from "./scheduler.js";
 import { createServer } from "./server.js";
 import { createTaskQueueFromDatabaseUrl } from "./tasks.js";
@@ -29,9 +37,32 @@ const github = new GitHubIntegration({
   privateKey: config.githubAppPrivateKey,
   installationId: config.githubAppInstallationId,
 });
+const slack =
+  config.slackBotToken && config.slackNotificationChannel
+    ? new SlackIntegration({
+        token: config.slackBotToken,
+        channel: config.slackNotificationChannel,
+        logger: createLogger({ level: config.logLevel, name: "slack", pretty: config.logPretty }),
+      })
+    : undefined;
+if (!slack) {
+  logger.warn(
+    "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
+  );
+}
 const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
 await tasks.initialize();
-const handler = new ManagerTicketHandler({ logger, tasks });
+// Dashboard reporting is best-effort and opt-in: with no DASHBOARD_URL it stays undefined and
+// every reporter call site is a no-op. maxAttempts is a phase-1 display constant (cap not yet enforced).
+const reporter = config.dashboardUrl
+  ? new DashboardReporter({
+      client: createDashboardClient({ baseUrl: config.dashboardUrl, token: config.ingestToken, logger }),
+      logger,
+      maxAttempts: 5,
+    })
+  : undefined;
+
+const handler = new ManagerTicketHandler({ logger, tasks, reporter });
 
 const scheduler = new Scheduler({
   logger,
@@ -42,13 +73,15 @@ const scheduler = new Scheduler({
   agentId: config.linearAssigneeId,
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
+  reporter,
 });
 const taskWorker = new TaskWorker({
   logger,
   tasks,
-  integrations: { github, linear },
+  integrations: { github, linear, slack },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
+  reporter,
 });
 
 if (config.testTicketId) {
@@ -58,7 +91,7 @@ if (config.testTicketId) {
   try {
     const ticket = await linear.getTicket(config.testTicketId);
     const ctx: TicketContext = { ticket, prs: [] };
-    await handler.handle(ctx);
+    await handler.handle(ctx, "new");
     await taskWorker.tick();
     await taskWorker.stop();
     logger.info({ ticketId: config.testTicketId }, "test mode: pipeline complete");
