@@ -34,6 +34,27 @@ export interface TaskRecord {
   completedAt: Date | null;
   releasedAt: Date | null;
   iterationNumber: number;
+  /** Last time the owning worker proved liveness for this task. NULL while unacquired. */
+  workerHeartbeatAt: Date | null;
+  /** Number of times this task row has been recovered from a crashed/hung worker. */
+  reclaimCount: number;
+}
+
+export type ReclaimAction = "reclaimed" | "abandoned";
+
+export interface ReclaimResult {
+  task: TaskRecord;
+  action: ReclaimAction;
+  reason: string;
+  /** The worker that owned the row before recovery (cleared for `reclaimed`, preserved for `abandoned`). */
+  previousWorkerId: string;
+}
+
+export interface ReclaimStaleOptions {
+  /** A task is stale if its worker hasn't heartbeat within this many milliseconds. */
+  staleAfterMs: number;
+  /** After this many reclaims of the same row, give up and abandon (terminal pending + release). */
+  maxReclaims: number;
 }
 
 export interface TaskSlot {
@@ -52,6 +73,25 @@ export interface TaskQueue {
   setSlotStatus(ticketId: string, status: SlotStatus): Promise<TaskRecord>;
   /** Returns the number of tasks ever enqueued for this ticket (completed or not). */
   getIterationCount(ticketId: string): Promise<number>;
+  /**
+   * Touch the worker_heartbeat_at column to prove the owning worker is still alive.
+   * Returns false when the task is no longer owned by `workerId` or has already completed —
+   * a signal to the caller that it lost the lease (e.g. a reclaim already happened).
+   */
+  heartbeat(taskId: string, workerId: string): Promise<boolean>;
+  /**
+   * Find tasks whose worker stopped heartbeating and recover them. Rows under maxReclaims are
+   * released for re-acquire (worker_id cleared, reclaim_count incremented). Rows at or over the
+   * cap are abandoned: completed with status="pending" + slot released, so the scheduler re-admits
+   * the ticket as a fresh start and MAX_ITERATIONS eventually bounds permanent loops.
+   */
+  reclaimStaleTasks(options: ReclaimStaleOptions): Promise<ReclaimResult[]>;
+  /**
+   * Explicit crash signal from a worker whose runTask threw. Same recovery decision as
+   * `reclaimStaleTasks`, applied to a single known row. Returns null when the row is no longer
+   * owned by `workerId` or has already completed.
+   */
+  markCrashed(taskId: string, workerId: string, maxReclaims: number): Promise<ReclaimResult | null>;
   close(): Promise<void>;
 }
 
@@ -70,6 +110,8 @@ interface TaskRow {
   completed_at: string | Date | null;
   released_at: string | Date | null;
   iteration_number: number;
+  worker_heartbeat_at: string | Date | null;
+  reclaim_count: number;
 }
 
 export function createTaskQueueFromDatabaseUrl(databaseUrl: string): TaskQueue {
@@ -111,13 +153,17 @@ class SqliteTaskQueue implements TaskQueue {
         updated_at TEXT NOT NULL,
         completed_at TEXT NULL,
         released_at TEXT NULL,
-        iteration_number INTEGER NOT NULL DEFAULT 1
+        iteration_number INTEGER NOT NULL DEFAULT 1,
+        worker_heartbeat_at TEXT NULL,
+        reclaim_count INTEGER NOT NULL DEFAULT 0
       );
     `);
     ensureSqliteColumn(db, "attempt_number", "INTEGER NOT NULL DEFAULT 1");
     ensureSqliteColumn(db, "slot_status", "TEXT NOT NULL DEFAULT 'active'");
     ensureSqliteColumn(db, "released_at", "TEXT NULL");
     ensureSqliteColumn(db, "iteration_number", "INTEGER NOT NULL DEFAULT 1");
+    ensureSqliteColumn(db, "worker_heartbeat_at", "TEXT NULL");
+    ensureSqliteColumn(db, "reclaim_count", "INTEGER NOT NULL DEFAULT 0");
     db.exec(`
       DROP INDEX IF EXISTS idx_tasks_acquire;
       CREATE INDEX IF NOT EXISTS idx_tasks_acquire
@@ -184,9 +230,9 @@ class SqliteTaskQueue implements TaskQueue {
       }
       const result = db.prepare(`
         UPDATE tasks
-        SET worker_id = ?, updated_at = ?
+        SET worker_id = ?, updated_at = ?, worker_heartbeat_at = ?
         WHERE id = ? AND worker_id IS NULL AND result_status IS NULL AND slot_status = 'active'
-      `).run(workerId, now, candidate.id);
+      `).run(workerId, now, now, candidate.id);
       if (result.changes !== 1) {
         throw new Error(`Failed to acquire task: ${candidate.id}`);
       }
@@ -245,6 +291,89 @@ class SqliteTaskQueue implements TaskQueue {
     return rowToTask(this.getById(latest.id));
   }
 
+  async heartbeat(taskId: string, workerId: string): Promise<boolean> {
+    const db = this.requireDb();
+    const now = this.clock.nowIso();
+    const result = db.prepare(`
+      UPDATE tasks
+      SET worker_heartbeat_at = ?, updated_at = ?
+      WHERE id = ? AND worker_id = ? AND result_status IS NULL
+    `).run(now, now, taskId, workerId);
+    return result.changes === 1;
+  }
+
+  async reclaimStaleTasks(options: ReclaimStaleOptions): Promise<ReclaimResult[]> {
+    const db = this.requireDb();
+    const threshold = new Date(Date.now() - options.staleAfterMs).toISOString();
+    const candidates = db.prepare(`
+      SELECT id
+      FROM tasks
+      WHERE worker_id IS NOT NULL
+        AND result_status IS NULL
+        AND worker_heartbeat_at IS NOT NULL
+        AND worker_heartbeat_at < ?
+      ORDER BY worker_heartbeat_at ASC
+    `).all(threshold) as Array<{ id: string }>;
+    const out: ReclaimResult[] = [];
+    for (const candidate of candidates) {
+      const row = this.getById(candidate.id);
+      // Re-check under serial sqlite execution so a heartbeat racing in between SELECT and recovery
+      // can't be overwritten.
+      if (row.worker_id === null || row.result_status !== null) continue;
+      const heartbeat = row.worker_heartbeat_at;
+      if (heartbeat === null) continue;
+      const heartbeatMs = parseTimestamp(heartbeat).getTime();
+      if (Date.now() - heartbeatMs < options.staleAfterMs) continue;
+      const reason = `worker ${row.worker_id} heartbeat stale since ${typeof heartbeat === "string" ? heartbeat : heartbeat.toISOString()}`;
+      const recovered = this.applyRecovery(row, options.maxReclaims, reason);
+      out.push(recovered);
+    }
+    return out;
+  }
+
+  async markCrashed(taskId: string, workerId: string, maxReclaims: number): Promise<ReclaimResult | null> {
+    const row = this.requireDb().prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as TaskRow | undefined;
+    if (!row) return null;
+    if (row.worker_id !== workerId || row.result_status !== null) return null;
+    return this.applyRecovery(row, maxReclaims, `worker ${workerId} reported crash`);
+  }
+
+  /**
+   * Decide between releasing the row for re-acquire (under the cap) or abandoning it
+   * (cap reached — mark terminal pending + release the slot). Runs synchronously under
+   * sqlite's serialized execution so concurrent reclaim attempts can't both act.
+   */
+  private applyRecovery(row: TaskRow, maxReclaims: number, reason: string): ReclaimResult {
+    const db = this.requireDb();
+    const now = this.clock.nowIso();
+    const previousWorkerId = row.worker_id ?? "unknown";
+    if (row.reclaim_count + 1 < maxReclaims) {
+      const update = db.prepare(`
+        UPDATE tasks
+        SET worker_id = NULL,
+            worker_heartbeat_at = NULL,
+            reclaim_count = reclaim_count + 1,
+            updated_at = ?
+        WHERE id = ? AND worker_id IS NOT NULL AND result_status IS NULL
+      `).run(now, row.id);
+      if (update.changes !== 1) {
+        // Lost the race — someone else (heartbeat, complete, prior reclaim) changed the row.
+        throw new Error(`Failed to release stale task ${row.id} for re-acquire`);
+      }
+      return { task: rowToTask(this.getById(row.id)), action: "reclaimed", reason, previousWorkerId };
+    }
+    // Cap reached: terminal pending + release slot. The ticket stays delegated, so the next
+    // scheduler tick re-admits it as a fresh start; MAX_ITERATIONS bounds the outer loop.
+    const synthetic: DispatchResult = { status: "pending", prs: [] };
+    db.prepare(`
+      UPDATE tasks
+      SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?,
+          slot_status = 'released', released_at = ?
+      WHERE id = ? AND worker_id IS NOT NULL AND result_status IS NULL
+    `).run(synthetic.status, JSON.stringify(synthetic), now, now, now, row.id);
+    return { task: rowToTask(this.getById(row.id)), action: "abandoned", reason, previousWorkerId };
+  }
+
   async close(): Promise<void> {
     this.db?.close();
     this.db = null;
@@ -301,11 +430,15 @@ class PostgresTaskQueue implements TaskQueue {
         updated_at TIMESTAMPTZ NOT NULL,
         completed_at TIMESTAMPTZ NULL,
         released_at TIMESTAMPTZ NULL,
-        iteration_number INTEGER NOT NULL DEFAULT 1
+        iteration_number INTEGER NOT NULL DEFAULT 1,
+        worker_heartbeat_at TIMESTAMPTZ NULL,
+        reclaim_count INTEGER NOT NULL DEFAULT 0
       );
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS slot_status TEXT NOT NULL DEFAULT 'active';
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ NULL;
       ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_number INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE tasks ADD COLUMN IF NOT EXISTS worker_heartbeat_at TIMESTAMPTZ NULL;
+      ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reclaim_count INTEGER NOT NULL DEFAULT 0;
       DROP INDEX IF EXISTS idx_tasks_acquire;
       CREATE INDEX IF NOT EXISTS idx_tasks_acquire
         ON tasks(created_at)
@@ -372,7 +505,7 @@ class PostgresTaskQueue implements TaskQueue {
             LIMIT 1
           )
           UPDATE tasks
-          SET worker_id = $1, updated_at = $2
+          SET worker_id = $1, updated_at = $2, worker_heartbeat_at = $2
           FROM next_task
           WHERE tasks.id = next_task.id
           RETURNING tasks.*
@@ -444,6 +577,120 @@ class PostgresTaskQueue implements TaskQueue {
     return rowToTask(requireSingleRow(result.rows, `latest task for ticket ${ticketId}`));
   }
 
+  async heartbeat(taskId: string, workerId: string): Promise<boolean> {
+    const now = this.clock.nowIso();
+    const result = await this.pool.query(
+      `
+        UPDATE tasks
+        SET worker_heartbeat_at = $1, updated_at = $1
+        WHERE id = $2 AND worker_id = $3 AND result_status IS NULL
+      `,
+      [now, taskId, workerId],
+    );
+    return result.rowCount === 1;
+  }
+
+  async reclaimStaleTasks(options: ReclaimStaleOptions): Promise<ReclaimResult[]> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Lock candidate rows so concurrent reclaim attempts don't both act on the same row.
+      const candidates = await client.query<TaskRow>(
+        `
+          SELECT *
+          FROM tasks
+          WHERE worker_id IS NOT NULL
+            AND result_status IS NULL
+            AND worker_heartbeat_at IS NOT NULL
+            AND worker_heartbeat_at < (NOW() - ($1::bigint || ' milliseconds')::interval)
+          ORDER BY worker_heartbeat_at ASC
+          FOR UPDATE SKIP LOCKED
+        `,
+        [String(options.staleAfterMs)],
+      );
+      const out: ReclaimResult[] = [];
+      for (const row of candidates.rows) {
+        const heartbeat = row.worker_heartbeat_at;
+        if (heartbeat === null) continue;
+        const reason = `worker ${row.worker_id} heartbeat stale since ${typeof heartbeat === "string" ? heartbeat : heartbeat.toISOString()}`;
+        out.push(await this.applyRecovery(client, row, options.maxReclaims, reason));
+      }
+      await client.query("COMMIT");
+      return out;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markCrashed(taskId: string, workerId: string, maxReclaims: number): Promise<ReclaimResult | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<TaskRow>("SELECT * FROM tasks WHERE id = $1 FOR UPDATE", [taskId]);
+      const row = result.rows[0];
+      if (!row || row.worker_id !== workerId || row.result_status !== null) {
+        await client.query("COMMIT");
+        return null;
+      }
+      const recovered = await this.applyRecovery(client, row, maxReclaims, `worker ${workerId} reported crash`);
+      await client.query("COMMIT");
+      return recovered;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async applyRecovery(
+    client: pg.PoolClient,
+    row: TaskRow,
+    maxReclaims: number,
+    reason: string,
+  ): Promise<ReclaimResult> {
+    const now = this.clock.nowIso();
+    const previousWorkerId = row.worker_id ?? "unknown";
+    if (row.reclaim_count + 1 < maxReclaims) {
+      const update = await client.query<TaskRow>(
+        `
+          UPDATE tasks
+          SET worker_id = NULL,
+              worker_heartbeat_at = NULL,
+              reclaim_count = reclaim_count + 1,
+              updated_at = $1
+          WHERE id = $2 AND worker_id IS NOT NULL AND result_status IS NULL
+          RETURNING *
+        `,
+        [now, row.id],
+      );
+      const updated = update.rows[0];
+      if (!updated) {
+        throw new Error(`Failed to release stale task ${row.id} for re-acquire`);
+      }
+      return { task: rowToTask(updated), action: "reclaimed", reason, previousWorkerId };
+    }
+    const synthetic: DispatchResult = { status: "pending", prs: [] };
+    const update = await client.query<TaskRow>(
+      `
+        UPDATE tasks
+        SET result_status = $1, result_json = $2, updated_at = $3, completed_at = $3,
+            slot_status = 'released', released_at = $3
+        WHERE id = $4 AND worker_id IS NOT NULL AND result_status IS NULL
+        RETURNING *
+      `,
+      [synthetic.status, JSON.stringify(synthetic), now, row.id],
+    );
+    const updated = update.rows[0];
+    if (!updated) {
+      throw new Error(`Failed to abandon stale task ${row.id}`);
+    }
+    return { task: rowToTask(updated), action: "abandoned", reason, previousWorkerId };
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
@@ -474,6 +721,8 @@ function rowToTask(row: TaskRow): TaskRecord {
     completedAt: row.completed_at === null ? null : parseTimestamp(row.completed_at),
     releasedAt: row.released_at === null ? null : parseTimestamp(row.released_at),
     iterationNumber: row.iteration_number,
+    workerHeartbeatAt: row.worker_heartbeat_at === null || row.worker_heartbeat_at === undefined ? null : parseTimestamp(row.worker_heartbeat_at),
+    reclaimCount: Number(row.reclaim_count ?? 0),
   };
 }
 

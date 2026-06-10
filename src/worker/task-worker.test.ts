@@ -78,6 +78,35 @@ describe("TaskWorker", () => {
     expect(reporter.workerUpsert).toHaveBeenLastCalledWith("worker-1", expect.any(String), "idle", null, expect.any(Number));
     expect(reporter.runCrashedById).not.toHaveBeenCalled();
   });
+
+  it("marks the row crashed when runDispatch throws so the task isn't left acquired forever", async () => {
+    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const tasks = new FakeTaskQueue(taskRecord({ input }));
+    const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => {
+      throw new Error("boom");
+    });
+    const reporter = makeReporter();
+    const worker = new TaskWorker({
+      logger,
+      tasks,
+      integrations: makeIntegrations(),
+      concurrency: 1,
+      pollIntervalMs: 60_000,
+      workerId: "worker-1",
+      maxReclaims: 5,
+      runDispatch,
+      reporter: reporter as unknown as DashboardReporter,
+    });
+
+    await worker.tick();
+    await worker.stop();
+    // Let the .catch() microtask + markCrashed promise settle.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(reporter.runCrashedById).toHaveBeenCalledWith("task-1", "lin_1", "worker-1", 1, "new", expect.any(String));
+    expect(tasks.markCrashedCalls).toEqual([{ taskId: "task-1", workerId: "worker-1", maxReclaims: 5 }]);
+  });
 });
 
 function makeReporter() {
@@ -108,6 +137,8 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     completedAt: null,
     releasedAt: null,
     iterationNumber: 1,
+    workerHeartbeatAt: null,
+    reclaimCount: 0,
     ...overrides,
   };
 }
@@ -155,6 +186,21 @@ class FakeTaskQueue implements TaskQueue {
 
   async getIterationCount(): Promise<number> {
     return 0;
+  }
+
+  async heartbeat(): Promise<boolean> {
+    return true;
+  }
+
+  async reclaimStaleTasks() {
+    return [];
+  }
+
+  markCrashedCalls: Array<{ taskId: string; workerId: string; maxReclaims: number }> = [];
+
+  async markCrashed(taskId: string, workerId: string, maxReclaims: number) {
+    this.markCrashedCalls.push({ taskId, workerId, maxReclaims });
+    return null;
   }
 
   async close(): Promise<void> {}

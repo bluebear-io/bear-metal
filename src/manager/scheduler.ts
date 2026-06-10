@@ -74,7 +74,14 @@ export interface SchedulerDeps {
   concurrency: number;
   pollIntervalMs: number;
   reporter?: DashboardReporter;
+  /** A task whose owning worker hasn't heartbeat within this many ms is considered crashed/hung. */
+  taskStaleAfterMs?: number;
+  /** Cap on how many times a single row can be recovered before the manager abandons it. */
+  taskMaxReclaims?: number;
 }
+
+const DEFAULT_TASK_STALE_AFTER_MS = 5 * 60_000;
+const DEFAULT_TASK_MAX_RECLAIMS = 3;
 
 // ---------------------------------------------------------------------------
 // Scheduler — owns the timer, queue, and in-flight guard; composes the steps.
@@ -120,6 +127,38 @@ export class Scheduler {
    */
   async tick(): Promise<void> {
     const { tasks, linear, github, handler, logger, agentId, concurrency, reporter } = this.deps;
+
+    // Recover any tasks owned by a dead/hung worker before reading the tracked set, so the
+    // subsequent in-flight count and dispatch decisions see the fresh state.
+    try {
+      const recovered = await tasks.reclaimStaleTasks({
+        staleAfterMs: this.deps.taskStaleAfterMs ?? DEFAULT_TASK_STALE_AFTER_MS,
+        maxReclaims: this.deps.taskMaxReclaims ?? DEFAULT_TASK_MAX_RECLAIMS,
+      });
+      for (const r of recovered) {
+        logger.warn(
+          {
+            taskId: r.task.id,
+            ticketId: r.task.ticketId,
+            action: r.action,
+            reclaimCount: r.task.reclaimCount,
+            reason: r.reason,
+          },
+          "recovered stale in-flight task",
+        );
+        void reporter?.runCrashedById(
+          r.task.id,
+          r.task.input.ticketIssueId,
+          r.previousWorkerId,
+          r.task.attemptNumber,
+          r.task.input.trigger,
+          r.reason,
+        );
+      }
+    } catch (err) {
+      // One bad recovery sweep must not kill the tick; the next tick retries.
+      logger.error({ err }, "stale task recovery failed");
+    }
 
     const tracked = await tasks.listTracked();
     const inFlight = tracked.filter((s) => s.latestTask.resultStatus === null).length;
