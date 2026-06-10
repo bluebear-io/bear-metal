@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, lt } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, EventRow, Worker } from "./types.js";
@@ -76,6 +76,30 @@ export interface ModelComparisonRow {
   totalCostUsd: number;
   /** Mean cost per run (USD). */
   avgCostUsd: number;
+}
+
+export interface WorkerTimelineInterval {
+  status: Worker["status"];
+  /** The run the worker was attached to during this interval, if any. Useful for tooltips/links. */
+  currentRunId: string | null;
+  /** Inclusive interval start in epoch ms, clamped to the requested window. */
+  startMs: number;
+  /** Exclusive interval end in epoch ms. Clamped to `untilMs` for the currently-active interval. */
+  endMs: number;
+}
+
+export interface WorkerTimelineRow {
+  workerId: string;
+  name: string;
+  intervals: WorkerTimelineInterval[];
+}
+
+export interface WorkerTimelineResult {
+  /** Window start in epoch ms — echoed back so the UI can scale its time axis without recomputing. */
+  sinceMs: number;
+  /** Window end in epoch ms (typically "now"). */
+  untilMs: number;
+  workers: WorkerTimelineRow[];
 }
 
 export interface WorkerListItem extends Worker {
@@ -259,6 +283,87 @@ export function listModelComparison(db: Db): ModelComparisonRow[] {
   // Sort by total cost descending so the most-used models surface first.
   result.sort((a, b) => b.totalCostUsd - a.totalCostUsd);
   return result;
+}
+
+/**
+ * Build per-worker status intervals across `[sinceMs, untilMs)` from the append-only
+ * `worker_status_history` log. For each worker we also fetch the most recent transition that
+ * happened *before* the window so the first interval is anchored to the worker's actual state
+ * at `sinceMs`, not to its first in-window transition.
+ */
+export function listWorkerTimeline(
+  db: Db,
+  options: { sinceMs: number; untilMs: number },
+): WorkerTimelineResult {
+  const { sinceMs, untilMs } = options;
+  const workerRows = db.select().from(schema.workers).orderBy(asc(schema.workers.name)).all();
+  if (workerRows.length === 0) {
+    return { sinceMs, untilMs, workers: [] };
+  }
+
+  const since = new Date(sinceMs);
+  const until = new Date(untilMs);
+  const workerIds = workerRows.map((w) => w.id);
+
+  const inWindow = db.select().from(schema.workerStatusHistory)
+    .where(and(
+      inArray(schema.workerStatusHistory.workerId, workerIds),
+      gte(schema.workerStatusHistory.changedAt, since),
+      lt(schema.workerStatusHistory.changedAt, until),
+    ))
+    .orderBy(asc(schema.workerStatusHistory.workerId), asc(schema.workerStatusHistory.changedAt))
+    .all();
+
+  // One "anchor" transition per worker: the most recent change strictly before `sinceMs`.
+  // We fetch one query for *all* prior rows and pick the last per worker in JS — cheaper than
+  // N correlated subqueries for the typical worker pool size (handful of rows).
+  const priorRows = db.select().from(schema.workerStatusHistory)
+    .where(and(
+      inArray(schema.workerStatusHistory.workerId, workerIds),
+      lt(schema.workerStatusHistory.changedAt, since),
+    ))
+    .orderBy(asc(schema.workerStatusHistory.workerId), asc(schema.workerStatusHistory.changedAt))
+    .all();
+  const anchorByWorker = new Map<string, typeof priorRows[number]>();
+  for (const r of priorRows) anchorByWorker.set(r.workerId, r); // last write wins → most recent prior
+
+  const inWindowByWorker = new Map<string, typeof inWindow>();
+  for (const r of inWindow) {
+    const list = inWindowByWorker.get(r.workerId) ?? [];
+    list.push(r);
+    inWindowByWorker.set(r.workerId, list);
+  }
+
+  return {
+    sinceMs, untilMs,
+    workers: workerRows.map((w) => {
+      const anchor = anchorByWorker.get(w.id);
+      const within = inWindowByWorker.get(w.id) ?? [];
+      const transitions: Array<{ status: Worker["status"]; currentRunId: string | null; at: number }> = [];
+      if (anchor) {
+        // Anchor the timeline at sinceMs with the worker's status as of `sinceMs`.
+        transitions.push({ status: anchor.status, currentRunId: anchor.currentRunId, at: sinceMs });
+      }
+      for (const r of within) {
+        transitions.push({ status: r.status, currentRunId: r.currentRunId, at: r.changedAt.getTime() });
+      }
+      // No anchor and no in-window rows → fall back to the current worker row so we still show
+      // *something* for workers that haven't transitioned recently (e.g. a long-idle worker).
+      if (transitions.length === 0) {
+        transitions.push({ status: w.status, currentRunId: w.currentRunId, at: sinceMs });
+      }
+      const intervals: WorkerTimelineInterval[] = transitions.map((t, i) => {
+        const next = transitions[i + 1];
+        return {
+          status: t.status,
+          currentRunId: t.currentRunId,
+          startMs: Math.max(sinceMs, t.at),
+          endMs: next ? next.at : untilMs,
+        };
+      }).filter((iv) => iv.endMs > iv.startMs);
+      return { workerId: w.id, name: w.name, intervals };
+    }),
+  };
 }
 
 export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {

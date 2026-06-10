@@ -32,6 +32,20 @@ export const workers = sqliteTable("workers", {
   updatedAt: ts("updated_at").notNull(),
 });
 
+/**
+ * Append-only log of worker status transitions, used to render the operator dashboard's
+ * worker utilization timeline (Gantt chart). One row per `(workerId, changedAt)` insert:
+ * the writer emits a row only when the incoming status differs from the previous one, so
+ * intervals are reconstructed as `[changedAt[n], changedAt[n+1])` per worker.
+ */
+export const workerStatusHistory = sqliteTable("worker_status_history", {
+  id: text("id").primaryKey(),
+  workerId: text("worker_id").notNull().references(() => workers.id),
+  status: text("status", { enum: ["idle", "busy", "stopped", "dead"] }).notNull(),
+  currentRunId: text("current_run_id"),
+  changedAt: ts("changed_at").notNull(),
+});
+
 export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").notNull().references(() => tickets.id),

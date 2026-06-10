@@ -1,5 +1,5 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "./schema.js";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
@@ -28,7 +28,25 @@ export function upsertWorker(db: Db, p: WorkerPayload): void {
     id: p.id, name: p.name, status: p.status, currentRunId: p.currentRunId,
     lastHeartbeatAt: d(p.lastHeartbeatAt), startedAt: new Date(p.startedAt), updatedAt: new Date(p.updatedAt),
   };
-  db.insert(schema.workers).values(row).onConflictDoUpdate({ target: schema.workers.id, set: row }).run();
+  // Status timeline (DEN-2335) is reconstructed from append-only `worker_status_history` rows.
+  // Emit a transition only when (status, currentRunId) actually changes vs the previous worker
+  // row — that way idempotent heartbeats don't pollute the timeline, but every state edge is
+  // captured at `updatedAt` (the manager's authoritative transition time, not server wall clock).
+  db.transaction((tx) => {
+    const prev = tx.select({ status: schema.workers.status, currentRunId: schema.workers.currentRunId })
+      .from(schema.workers).where(eq(schema.workers.id, p.id)).get();
+    const isTransition = !prev || prev.status !== p.status || prev.currentRunId !== p.currentRunId;
+    tx.insert(schema.workers).values(row).onConflictDoUpdate({ target: schema.workers.id, set: row }).run();
+    if (isTransition) {
+      tx.insert(schema.workerStatusHistory).values({
+        id: globalThis.crypto.randomUUID(),
+        workerId: p.id,
+        status: p.status,
+        currentRunId: p.currentRunId,
+        changedAt: new Date(p.updatedAt),
+      }).run();
+    }
+  });
 }
 
 export function upsertRun(db: Db, p: RunPayload): void {

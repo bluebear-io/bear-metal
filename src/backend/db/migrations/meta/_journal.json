@@ -15,6 +15,13 @@
       "when": 1781079266602,
       "tag": "0001_chemical_quasar",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1781091296175,
+      "tag": "0002_living_proteus",
+      "breakpoints": true
     }
   ]
 }

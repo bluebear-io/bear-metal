@@ -19,12 +19,33 @@ export function seedMockData(db: Db): void {
   db.delete(schema.pullRequests).run();
   db.delete(schema.runs).run();
   db.delete(schema.tickets).run();
+  db.delete(schema.workerStatusHistory).run();
   db.delete(schema.workers).run();
 
   db.insert(schema.workers).values([
-    { id: "wk_1", name: "worker-1", status: "busy", currentRunId: "run_in_1", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T09:00:00Z") },
-    { id: "wk_2", name: "worker-2", status: "busy", currentRunId: "run_3", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T09:00:00Z") },
+    { id: "wk_1", name: "worker-1", status: "busy", currentRunId: "run_in_1", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T08:55:00Z") },
+    { id: "wk_2", name: "worker-2", status: "busy", currentRunId: "run_3", lastHeartbeatAt: t("2026-06-09T09:00:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T08:45:00Z") },
     { id: "wk_3", name: "worker-3", status: "dead", currentRunId: null, lastHeartbeatAt: t("2026-06-09T08:10:00Z"), startedAt: t("2026-06-09T07:00:00Z"), updatedAt: t("2026-06-09T08:40:00Z") },
+  ]).run();
+
+  // Mock transition history: enough rows over the last few hours to render a non-trivial Gantt
+  // chart. Each row marks the start of a new status interval; intervals run until the next row
+  // for the same worker (or "now" for the most recent row).
+  db.insert(schema.workerStatusHistory).values([
+    // wk_1: idle → busy (run_1) → idle → busy (run_2) → idle → busy (run_in_1)
+    { id: "wsh_1a", workerId: "wk_1", status: "idle", currentRunId: null, changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wsh_1b", workerId: "wk_1", status: "busy", currentRunId: "run_1", changedAt: t("2026-06-09T07:05:00Z") },
+    { id: "wsh_1c", workerId: "wk_1", status: "idle", currentRunId: null, changedAt: t("2026-06-09T07:50:00Z") },
+    { id: "wsh_1d", workerId: "wk_1", status: "busy", currentRunId: "run_2", changedAt: t("2026-06-09T08:00:00Z") },
+    { id: "wsh_1e", workerId: "wk_1", status: "idle", currentRunId: null, changedAt: t("2026-06-09T08:20:00Z") },
+    { id: "wsh_1f", workerId: "wk_1", status: "busy", currentRunId: "run_in_1", changedAt: t("2026-06-09T08:55:00Z") },
+    // wk_2: idle → busy (run_3)
+    { id: "wsh_2a", workerId: "wk_2", status: "idle", currentRunId: null, changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wsh_2b", workerId: "wk_2", status: "busy", currentRunId: "run_3", changedAt: t("2026-06-09T08:45:00Z") },
+    // wk_3: idle → busy (run_to_3) → dead
+    { id: "wsh_3a", workerId: "wk_3", status: "idle", currentRunId: null, changedAt: t("2026-06-09T07:00:00Z") },
+    { id: "wsh_3b", workerId: "wk_3", status: "busy", currentRunId: "run_to_3", changedAt: t("2026-06-09T05:30:00Z") },
+    { id: "wsh_3c", workerId: "wk_3", status: "dead", currentRunId: null, changedAt: t("2026-06-09T08:40:00Z") },
   ]).run();
 
   db.insert(schema.tickets).values([

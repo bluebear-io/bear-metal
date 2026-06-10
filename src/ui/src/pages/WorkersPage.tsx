@@ -1,10 +1,16 @@
-import { useWorkers } from "../api/queries.js";
+import { useState } from "react";
+
+import { useWorkers, useWorkerTimeline } from "../api/queries.js";
 import type { WorkerListItem } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
+import { WorkerTimeline } from "../components/WorkerTimeline.js";
 import { formatDateTime, formatDurationMs } from "../lib/format.js";
+
+const TIMELINE_RANGES = [24, 48, 72] as const;
+type TimelineRange = (typeof TIMELINE_RANGES)[number];
 
 const dash = "—";
 
@@ -27,12 +33,48 @@ const workerHealth = (worker: WorkerListItem): "dead" | "timed_out" | "heartbeat
 export default function WorkersPage() {
   const workersQuery = useWorkers();
   const workers = workersQuery.data ?? [];
+  const [timelineHours, setTimelineHours] = useState<TimelineRange>(24);
+  const timelineQuery = useWorkerTimeline(timelineHours);
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 sm:px-8">
       <PageHeader title="Workers">
-        <RefreshButton busy={workersQuery.isFetching} onClick={() => void workersQuery.refetch()} />
+        <div className="flex items-center gap-2" role="radiogroup" aria-label="Timeline range">
+          {TIMELINE_RANGES.map((h) => (
+            <button
+              key={h}
+              type="button"
+              role="radio"
+              aria-checked={timelineHours === h}
+              onClick={() => setTimelineHours(h)}
+              className={[
+                "rounded-md border px-2 py-1 text-xs font-medium transition",
+                timelineHours === h
+                  ? "border-primary text-primary"
+                  : "border-border-default text-text-secondary hover:text-text-primary",
+              ].join(" ")}
+            >
+              {h}h
+            </button>
+          ))}
+        </div>
+        <RefreshButton
+          busy={workersQuery.isFetching || timelineQuery.isFetching}
+          onClick={() => {
+            void workersQuery.refetch();
+            void timelineQuery.refetch();
+          }}
+        />
       </PageHeader>
+
+      <QueryBoundary
+        isLoading={timelineQuery.isLoading}
+        error={timelineQuery.error}
+        isEmpty={(timelineQuery.data?.workers.length ?? 0) === 0}
+        emptyLabel="No worker timeline yet."
+      >
+        {timelineQuery.data ? <WorkerTimeline data={timelineQuery.data} hours={timelineHours} /> : null}
+      </QueryBoundary>
 
       <QueryBoundary
         isLoading={workersQuery.isLoading}

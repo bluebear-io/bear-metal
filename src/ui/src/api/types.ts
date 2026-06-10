@@ -65,6 +65,25 @@ export interface CurrentRunSummary extends LatestRunSummary {
   runtimeMs: number | null;
 }
 
+export interface WorkerTimelineInterval {
+  status: WorkerStatus;
+  currentRunId: string | null;
+  startMs: number;
+  endMs: number;
+}
+
+export interface WorkerTimelineRow {
+  workerId: string;
+  name: string;
+  intervals: WorkerTimelineInterval[];
+}
+
+export interface WorkerTimelineResponse {
+  sinceMs: number;
+  untilMs: number;
+  workers: WorkerTimelineRow[];
+}
+
 export interface WorkerListItem extends Worker {
   currentTicketIdentifier: string | null;
   currentTicketTitle: string | null;

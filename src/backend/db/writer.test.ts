@@ -49,6 +49,22 @@ describe("upsertRun + insertEvent", () => {
     expect(db.select().from(schema.events).all()).toHaveLength(1);
   });
 
+  it("upsertWorker appends a status_history row only when status or currentRunId changes", () => {
+    upsertWorker(db, { id: "wk_h", name: "w", status: "idle", currentRunId: null, lastHeartbeatAt: 1000, startedAt: 1000, updatedAt: 1000 });
+    // Same status, same run, later heartbeat — must NOT emit a transition row.
+    upsertWorker(db, { id: "wk_h", name: "w", status: "idle", currentRunId: null, lastHeartbeatAt: 1500, startedAt: 1000, updatedAt: 1500 });
+    // Status change → 1 new row.
+    upsertWorker(db, { id: "wk_h", name: "w", status: "busy", currentRunId: "run_a", lastHeartbeatAt: 2000, startedAt: 1000, updatedAt: 2000 });
+    // currentRunId change (same status) → 1 new row.
+    upsertWorker(db, { id: "wk_h", name: "w", status: "busy", currentRunId: "run_b", lastHeartbeatAt: 2500, startedAt: 1000, updatedAt: 2500 });
+    const rows = db.select().from(schema.workerStatusHistory).where(eq(schema.workerStatusHistory.workerId, "wk_h")).all();
+    expect(rows.map((r) => ({ status: r.status, runId: r.currentRunId, at: r.changedAt.getTime() }))).toEqual([
+      { status: "idle", runId: null, at: 1000 },
+      { status: "busy", runId: "run_a", at: 2000 },
+      { status: "busy", runId: "run_b", at: 2500 },
+    ]);
+  });
+
   it("upsertRun preserves createdAt (immutable) and startedAt (set-once) across transitions", () => {
     upsertTicket(db, ticket);
     upsertWorker(db, { id: "wk_1", name: "w", status: "busy", currentRunId: null, lastHeartbeatAt: null, startedAt: 1000, updatedAt: 1000 }); // FK target for run.workerId

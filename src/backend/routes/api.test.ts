@@ -66,6 +66,28 @@ describe("GET /api/tickets/:id", () => {
   });
 });
 
+describe("GET /api/workers/timeline", () => {
+  it("returns one row per worker with status intervals across the window", async () => {
+    const res = await request(app).get("/api/workers/timeline?hours=72");
+    expect(res.status).toBe(200);
+    expect(typeof res.body.sinceMs).toBe("number");
+    expect(typeof res.body.untilMs).toBe("number");
+    expect(res.body.workers.map((w: { name: string }) => w.name).sort()).toEqual(["worker-1", "worker-2", "worker-3"]);
+    const w1 = res.body.workers.find((w: { name: string }) => w.name === "worker-1");
+    expect(w1.intervals.length).toBeGreaterThan(1); // seeded multiple idle/busy transitions
+    expect(w1.intervals.every((iv: { endMs: number; startMs: number }) => iv.endMs > iv.startMs)).toBe(true);
+    // Intervals must be sorted and contiguous within the window for each worker.
+    for (let i = 1; i < w1.intervals.length; i++) {
+      expect(w1.intervals[i].startMs).toBe(w1.intervals[i - 1].endMs);
+    }
+  });
+
+  it("rejects an out-of-range hours value", async () => {
+    const res = await request(app).get("/api/workers/timeline?hours=999");
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("GET /api/workers", () => {
   it("lists workers with current ticket", async () => {
     const res = await request(app).get("/api/workers");

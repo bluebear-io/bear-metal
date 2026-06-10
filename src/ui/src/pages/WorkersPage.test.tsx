@@ -5,9 +5,11 @@ import type { WorkerListItem } from "../api/types.js";
 import WorkersPage from "./WorkersPage.js";
 
 const useWorkers = vi.fn();
+const useWorkerTimeline = vi.fn();
 
 vi.mock("../api/queries.js", () => ({
   useWorkers: () => useWorkers(),
+  useWorkerTimeline: () => useWorkerTimeline(),
 }));
 
 const workers: WorkerListItem[] = [
@@ -62,6 +64,30 @@ describe("WorkersPage", () => {
   beforeEach(() => {
     useWorkers.mockReturnValue({
       data: workers,
+      error: null,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+    useWorkerTimeline.mockReturnValue({
+      data: {
+        sinceMs: Date.parse("2026-06-09T09:00:00.000Z"),
+        untilMs: Date.parse("2026-06-09T10:06:00.000Z"),
+        workers: [
+          {
+            workerId: "worker-1",
+            name: "worker-1",
+            intervals: [
+              {
+                status: "busy",
+                currentRunId: "run-1",
+                startMs: Date.parse("2026-06-09T10:00:00.000Z"),
+                endMs: Date.parse("2026-06-09T10:06:00.000Z"),
+              },
+            ],
+          },
+        ],
+      },
       error: null,
       isFetching: false,
       isLoading: false,
