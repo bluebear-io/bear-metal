@@ -137,3 +137,38 @@ export interface TicketDetail {
   ciRuns: CiRun[];
   events: TicketEvent[];
 }
+
+export interface OutcomeBreakdown {
+  total: number;
+  completed: number;
+  abandoned: number;
+  inFlight: number;
+  successRate: number;
+  abandonmentRate: number;
+}
+
+export interface AttemptsBucket {
+  attempts: number;
+  count: number;
+}
+
+export interface MttrStats {
+  sampleSize: number;
+  meanMs: number | null;
+  medianMs: number | null;
+  p90Ms: number | null;
+}
+
+export interface ThroughputPoint {
+  date: string;
+  created: number;
+  completed: number;
+}
+
+export interface AnalyticsSummary {
+  generatedAt: string;
+  outcomes: OutcomeBreakdown;
+  attemptsDistribution: AttemptsBucket[];
+  mttr: MttrStats;
+  throughput: ThroughputPoint[];
+}
