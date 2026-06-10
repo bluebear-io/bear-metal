@@ -1,7 +1,7 @@
 import { Router, type RequestHandler } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import { upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent } from "../db/writer.js";
+import { upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent, upsertRunToolCall } from "../db/writer.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 
@@ -130,6 +130,29 @@ export function createIngestRouter(db: Db, token: string): Router {
       summary: strOrNull(b, "summary"), createdAt: num(b, "createdAt"), completedAt: numOrNull(b, "completedAt"),
     });
   }));
+
+  router.put("/runs/:runId/tool-calls/:id", requireToken, (req, res) => {
+    try {
+      const b = asObject(req.body);
+      const bodyId = str(b, "id");
+      const bodyRunId = str(b, "runId");
+      if (bodyId !== req.params.id) throw new BadPayload("path id and body id must match");
+      if (bodyRunId !== req.params.runId) throw new BadPayload("path runId and body runId must match");
+      upsertRunToolCall(db, {
+        id: bodyId, runId: bodyRunId, sequence: num(b, "sequence"),
+        kind: enumVal(b, "kind", schema.runToolCalls.kind.enumValues),
+        toolName: strOrNull(b, "toolName"), paramsJson: strOrNull(b, "paramsJson"),
+        status: b.status === null ? null : enumVal(b, "status", schema.runToolCalls.status.enumValues),
+        resultText: strOrNull(b, "resultText"), resultSize: numOrNull(b, "resultSize"),
+        thoughtText: strOrNull(b, "thoughtText"),
+        startedAt: num(b, "startedAt"), endedAt: numOrNull(b, "endedAt"),
+      });
+      res.status(204).end();
+    } catch (err) {
+      if (err instanceof BadPayload) { res.status(400).json({ error: err.message }); return; }
+      throw err;
+    }
+  });
 
   router.post("/events", requireToken, handle((b) => {
     insertEvent(db, {

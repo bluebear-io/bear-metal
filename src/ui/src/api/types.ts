@@ -130,6 +130,29 @@ export interface TicketEvent {
   createdAt: string;
 }
 
+export type RunToolCallKind = "tool_call" | "thought";
+export type RunToolCallStatus = "running" | "success" | "error";
+
+export interface RunToolCallStep {
+  id: string;
+  runId: string;
+  sequence: number;
+  kind: RunToolCallKind;
+  toolName: string | null;
+  paramsJson: string | null;
+  status: RunToolCallStatus | null;
+  resultText: string | null;
+  resultSize: number | null;
+  thoughtText: string | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface RunThoughtTree {
+  runId: string;
+  steps: RunToolCallStep[];
+}
+
 export interface TicketDetail {
   ticket: Ticket;
   runs: Run[];

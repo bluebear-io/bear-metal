@@ -1,7 +1,24 @@
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
 import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
+
+export type RunToolCallRow = typeof schema.runToolCalls.$inferSelect;
+
+export interface RunThoughtTree {
+  runId: string;
+  steps: RunToolCallRow[];
+}
+
+export function getRunThoughtTree(db: BetterSQLite3Database<typeof schema>, runId: string): RunThoughtTree | null {
+  const run = db.select().from(schema.runs).where(eq(schema.runs.id, runId)).get();
+  if (!run) return null;
+  const steps = db.select().from(schema.runToolCalls)
+    .where(eq(schema.runToolCalls.runId, runId))
+    .orderBy(asc(schema.runToolCalls.sequence))
+    .all();
+  return { runId, steps };
+}
 
 type Db = BetterSQLite3Database<typeof schema>;
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;

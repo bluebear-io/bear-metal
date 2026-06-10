@@ -2,7 +2,7 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema.js";
 import type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload, RunToolCallPayload,
 } from "../../shared/dashboard/types.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
@@ -60,6 +60,32 @@ export function upsertCiRun(db: Db, p: CiRunPayload): void {
     url: p.url, summary: p.summary, createdAt: new Date(p.createdAt), completedAt: d(p.completedAt),
   };
   db.insert(schema.ciRuns).values(row).onConflictDoUpdate({ target: schema.ciRuns.id, set: row }).run();
+}
+
+export function upsertRunToolCall(db: Db, p: RunToolCallPayload): void {
+  const row = {
+    id: p.id,
+    runId: p.runId,
+    sequence: p.sequence,
+    kind: p.kind,
+    toolName: p.toolName,
+    paramsJson: p.paramsJson,
+    status: p.status,
+    resultText: p.resultText,
+    resultSize: p.resultSize,
+    thoughtText: p.thoughtText,
+    startedAt: new Date(p.startedAt),
+    endedAt: d(p.endedAt),
+  };
+  db.insert(schema.runToolCalls).values(row).onConflictDoUpdate({
+    target: schema.runToolCalls.id,
+    set: {
+      ...row,
+      // sequence + startedAt are set-once.
+      sequence: sql`${schema.runToolCalls.sequence}`,
+      startedAt: sql`${schema.runToolCalls.startedAt}`,
+    },
+  }).run();
 }
 
 export function insertEvent(db: Db, p: EventPayload): void {

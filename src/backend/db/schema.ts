@@ -76,6 +76,21 @@ export const ciRuns = sqliteTable("ci_runs", {
   completedAt: ts("completed_at"),
 });
 
+export const runToolCalls = sqliteTable("run_tool_calls", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => runs.id),
+  sequence: integer("sequence").notNull(),
+  kind: text("kind", { enum: ["tool_call", "thought"] }).notNull(),
+  toolName: text("tool_name"),
+  paramsJson: text("params_json"),
+  status: text("status", { enum: ["running", "success", "error"] }),
+  resultText: text("result_text"),
+  resultSize: integer("result_size"),
+  thoughtText: text("thought_text"),
+  startedAt: ts("started_at").notNull(),
+  endedAt: ts("ended_at"),
+});
+
 export const events = sqliteTable("events", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").references(() => tickets.id),

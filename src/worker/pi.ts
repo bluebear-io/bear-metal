@@ -1,9 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
-import type { DispatchResult, PullRequestRef, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
+import type { RunToolCallPayload } from "../shared/index.js";
+import type { DispatchResult, PullRequestRef, RunToolCallRecorder, WorkerGitHub, WorkerInputContext, WorkerLinear } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
@@ -17,6 +19,8 @@ export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
+  runId?: string;
+  recordToolCall?: RunToolCallRecorder;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
   const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
@@ -143,9 +147,17 @@ export async function runPiWorker(input: {
     ],
   });
 
+  const thoughtTreeRecorder = createThoughtTreeRecorder({
+    runId: input.runId,
+    recordToolCall: input.recordToolCall,
+  });
+
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
       logger.info({ tool: event.toolName, args: event.args }, "pi tool call");
+      thoughtTreeRecorder.onToolStart(event as unknown as Record<string, unknown>);
+    } else if (event.type === "tool_execution_end") {
+      thoughtTreeRecorder.onToolEnd(event as unknown as Record<string, unknown>);
     } else if (event.type === "turn_end") {
       const msg = event.message;
       if ("role" in msg && msg.role === "assistant" && "content" in msg) {
@@ -153,7 +165,10 @@ export async function runPiWorker(input: {
           .filter((c) => c.type === "text" && c.text)
           .map((c) => c.text!)
           .join("");
-        if (text) logger.info({ text }, "pi assistant output");
+        if (text) {
+          logger.info({ text }, "pi assistant output");
+          thoughtTreeRecorder.onThought(text);
+        }
       }
     } else if (event.type === "agent_end") {
       logger.info({ messageCount: event.messages.length }, "pi agent_end");
@@ -208,6 +223,82 @@ function requirePullRequest(pr: PullRequestRef | null): PullRequestRef {
     throw new Error("This tool requires an existing pull request");
   }
   return pr;
+}
+
+interface ThoughtTreeRecorderDeps {
+  runId?: string;
+  recordToolCall?: RunToolCallRecorder;
+}
+
+/**
+ * Emits run_tool_calls rows for the dashboard as the pi session runs. The dashboard is a
+ * best-effort read model (see DEN-2288), so we never let a recorder failure bubble into the
+ * agent loop. We key tool_call rows by the pi-supplied toolCallId so end events upsert the
+ * same row that start events created.
+ */
+function createThoughtTreeRecorder(deps: ThoughtTreeRecorderDeps) {
+  let sequence = 0;
+  const MAX_RESULT_TEXT = 10_000;
+
+  const enabled = deps.runId !== undefined && deps.recordToolCall !== undefined;
+
+  const emit = (payload: RunToolCallPayload): void => {
+    if (!enabled) return;
+    try {
+      deps.recordToolCall!(payload);
+    } catch (err) {
+      logger.warn({ err }, "thought-tree recorder threw (ignored)");
+    }
+  };
+
+  const stringify = (value: unknown): string | null => {
+    if (value === undefined || value === null) return null;
+    if (typeof value === "string") return value;
+    try { return JSON.stringify(value); } catch { return String(value); }
+  };
+
+  return {
+    onToolStart(event: Record<string, unknown>): void {
+      if (!enabled) return;
+      const now = Date.now();
+      const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
+      const toolName = typeof event.toolName === "string" ? event.toolName : null;
+      const paramsJson = stringify(event.args);
+      emit({
+        id: toolCallId, runId: deps.runId!, sequence: sequence++,
+        kind: "tool_call", toolName, paramsJson,
+        status: "running", resultText: null, resultSize: null,
+        thoughtText: null, startedAt: now, endedAt: null,
+      });
+    },
+    onToolEnd(event: Record<string, unknown>): void {
+      if (!enabled) return;
+      const now = Date.now();
+      const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : randomUUID();
+      const toolName = typeof event.toolName === "string" ? event.toolName : null;
+      const fullResult = stringify(event.result) ?? stringify(event.output) ?? stringify(event.content);
+      const isError = event.isError === true || event.status === "error";
+      const resultText = fullResult === null ? null : fullResult.slice(0, MAX_RESULT_TEXT);
+      const resultSize = fullResult === null ? null : fullResult.length;
+      emit({
+        id: toolCallId, runId: deps.runId!, sequence: sequence++,
+        kind: "tool_call", toolName, paramsJson: stringify(event.args),
+        status: isError ? "error" : "success",
+        resultText, resultSize, thoughtText: null,
+        startedAt: now, endedAt: now,
+      });
+    },
+    onThought(text: string): void {
+      if (!enabled) return;
+      const now = Date.now();
+      emit({
+        id: randomUUID(), runId: deps.runId!, sequence: sequence++,
+        kind: "thought", toolName: null, paramsJson: null,
+        status: null, resultText: null, resultSize: null,
+        thoughtText: text, startedAt: now, endedAt: now,
+      });
+    },
+  };
 }
 
 function setApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: string): void {

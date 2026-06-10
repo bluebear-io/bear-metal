@@ -34,6 +34,8 @@ describe("TaskWorker", () => {
       ...input,
       integrations: expect.any(Object),
       packageRoot: undefined,
+      runId: "task-1",
+      recordToolCall: undefined,
     });
     expect(tasks.completed).toEqual([
       {

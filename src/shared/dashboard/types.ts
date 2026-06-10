@@ -84,6 +84,24 @@ export interface CiRunPayload {
   completedAt: number | null;
 }
 
+export type RunToolCallKind = "tool_call" | "thought";
+export type RunToolCallStatus = "running" | "success" | "error";
+
+export interface RunToolCallPayload {
+  id: string;
+  runId: string;
+  sequence: number;
+  kind: RunToolCallKind;
+  toolName: string | null;
+  paramsJson: string | null;
+  status: RunToolCallStatus | null;
+  resultText: string | null;
+  resultSize: number | null;
+  thoughtText: string | null;
+  startedAt: number;
+  endedAt: number | null;
+}
+
 export interface EventPayload {
   ticketId: string | null;
   runId: string | null;

@@ -100,10 +100,15 @@ export class TaskWorker {
     if (task.input.state === "new") {
       void this.reporter?.branchCreatedById(issueId, task.id, this.workerId, `Branch for ${task.ticketId}`);
     }
+    const reporter = this.reporter;
     const result = await this.runDispatch({
       ...task.input,
       integrations: this.integrations,
       packageRoot: this.packageRoot,
+      runId: task.id,
+      recordToolCall: reporter
+        ? (payload) => { void reporter.recordRunToolCall(payload); }
+        : undefined,
     });
     await this.tasks.complete(task.id, result);
     void this.reporter?.progressById(issueId, task.id, this.workerId, `Worker finished: ${result.status}`);

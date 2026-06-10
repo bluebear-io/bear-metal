@@ -6,6 +6,7 @@ import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
+import { ThoughtTreeSection } from "../components/ThoughtTree.js";
 import { formatDateTime, formatDuration, parseLabels } from "../lib/format.js";
 
 const Field = ({ label, value }: { label: string; value: string }) => (
@@ -235,6 +236,9 @@ export const TicketDetailPage = () => {
           <div className="flex flex-col gap-6">
             <TicketSummary ticket={detail.ticket} />
             <RunsSection runs={detail.runs} />
+            <Section title="Thought tree">
+              <ThoughtTreeSection runs={detail.runs} />
+            </Section>
             <PullRequestCiSection pullRequests={detail.pullRequests} ciRuns={detail.ciRuns} />
             <TimelineSection events={detail.events} />
           </div>

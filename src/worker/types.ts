@@ -1,4 +1,6 @@
-import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThread } from "../shared/index.js";
+import type { LinearTicketContext, PullRequestContext, PullRequestRef, ReviewThread, RunToolCallPayload } from "../shared/index.js";
+
+export type RunToolCallRecorder = (payload: RunToolCallPayload) => void;
 
 export type DispatchState = "new" | "iteration";
 

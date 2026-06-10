@@ -1,5 +1,5 @@
 import type { DashboardClient, Logger, PullRequest, Ticket } from "../shared/index.js";
-import type { BmStatus, RunTrigger } from "../shared/index.js";
+import type { BmStatus, RunTrigger, RunToolCallPayload } from "../shared/index.js";
 
 export interface DashboardReporterDeps {
   client: DashboardClient;
@@ -136,5 +136,9 @@ export class DashboardReporter {
 
   async branchCreatedById(ticketId: string, runId: string, workerId: string, summary: string): Promise<void> {
     await this.client.recordEvent({ ticketId, runId, workerId, source: "worker", type: "branch_created", summary, payloadJson: null, createdAt: this.ms() });
+  }
+
+  async recordRunToolCall(payload: RunToolCallPayload): Promise<void> {
+    await this.client.recordRunToolCall(payload);
   }
 }

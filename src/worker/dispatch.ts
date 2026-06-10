@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { createLogger } from "../shared/index.js";
 import { getPackageRoot, runCloneScript, workspaceForTicket } from "./clone.js";
 import { runPiWorker } from "./pi.js";
-import type { DispatchResult, DispatchState, PullRequestRef, WorkerInputContext, WorkerIntegrations } from "./types.js";
+import type { DispatchResult, DispatchState, PullRequestRef, RunToolCallRecorder, WorkerInputContext, WorkerIntegrations } from "./types.js";
 
 export type { DispatchResult, DispatchState, PullRequestRef };
 
@@ -19,6 +19,9 @@ export interface DispatchInput {
   pr?: PullRequestRef | null;
   integrations: WorkerIntegrations;
   packageRoot?: string;
+  /** Optional pi-session runId — when present, tool calls + thoughts are streamed to the dashboard. */
+  runId?: string;
+  recordToolCall?: RunToolCallRecorder;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -65,7 +68,11 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear });
+    const result = await runPiWorker({
+      context, github, linear,
+      runId: input.runId,
+      recordToolCall: input.recordToolCall,
+    });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
