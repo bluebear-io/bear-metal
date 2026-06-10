@@ -92,6 +92,111 @@ interface ListWorkerOptions {
   now?: Date;
 }
 
+/* ------------------------------------------------------------------------- */
+/*                         Period summary types                              */
+/* ------------------------------------------------------------------------- */
+
+export interface ThroughputBlock {
+  completed: number;
+  abandoned: number;
+  inProgress: number;
+  discovered: number;
+}
+
+export interface HealthBlock {
+  /** completed / (completed + abandoned), 0..1. Null when neither happened in the window. */
+  successRate: number | null;
+  /** Mean `attemptCount` over tickets whose final state landed in the window. Null when no such ticket. */
+  avgAttempts: number | null;
+  /** Share of those tickets with attemptCount > 1. */
+  multiAttemptRate: number | null;
+  /** Among ci_runs that completed in the window, share with status='passed'. Null when no CI completed. */
+  ciPassRate: number | null;
+}
+
+export interface ModelCostRow {
+  provider: string;
+  modelName: string;
+  promptTokens: number;
+  completionTokens: number;
+  estimatedUsd: number;
+}
+
+export interface CostBlock {
+  promptTokens: number;
+  completionTokens: number;
+  estimatedUsd: number;
+  byModel: ModelCostRow[];
+}
+
+export interface TimeBlock {
+  /** Mean wall-clock from ticket.createdAt → ticket.completedAt for tickets completed in window. */
+  avgWallClockSeconds: number | null;
+  /** Sum of runs[].endedAt - startedAt across runs that ended in the window. */
+  totalAgentSeconds: number;
+  /** completedCount * DEV_HOURS_PER_TICKET. */
+  devHoursSaved: number;
+}
+
+export interface CheckFailureRow {
+  name: string;
+  count: number;
+  latestDetailsUrl: string | null;
+}
+
+export interface TicketRef {
+  id: string;
+  identifier: string;
+  title: string;
+  url: string;
+}
+
+export interface RepoPassRow {
+  repo: string;
+  totalRuns: number;
+  passedRuns: number;
+  passRate: number;
+}
+
+export interface FailureBlock {
+  topCiCheckNames: CheckFailureRow[];
+  ticketsAtMaxAttempts: TicketRef[];
+  worstReposByCi: RepoPassRow[];
+}
+
+export interface ShippedTicket extends TicketRef {
+  labels: string[];
+  prUrl: string;
+  prNumber: number;
+  completedAt: string | null;
+}
+
+export interface ShippedRepoBucket {
+  repo: string;
+  count: number;
+  tickets: ShippedTicket[];
+}
+
+export interface ShippedBlock {
+  byRepo: ShippedRepoBucket[];
+}
+
+export interface PeriodSummary {
+  window: { from: string; to: string };
+  prior: { from: string; to: string };
+  throughput: ThroughputBlock & { prior: ThroughputBlock };
+  health: HealthBlock & { prior: HealthBlock };
+  cost: CostBlock & { prior: CostBlock };
+  time: TimeBlock & { prior: TimeBlock };
+  failures: FailureBlock;
+  shipped: ShippedBlock;
+}
+
+export interface PeriodSummaryOptions {
+  from: Date;
+  to: Date;
+}
+
 /** Dialect-agnostic read interface backing the dashboard's GET routes. */
 export interface Repository {
   listTickets(filter?: { bmStatus?: Ticket["bmStatus"] }): Promise<TicketListItem[]>;
@@ -99,6 +204,8 @@ export interface Repository {
   listWorkers(options?: ListWorkerOptions): Promise<WorkerListItem[]>;
   /** Aggregate efficacy stats per (provider, model_name). Skips runs with no recorded model. */
   listModelComparison(): Promise<ModelComparisonRow[]>;
+  /** Six-cluster summary for the productivity dashboard. */
+  getPeriodSummary(options: PeriodSummaryOptions): Promise<PeriodSummary>;
 }
 
 function toLatestRunSummary(run: Run): LatestRunSummary {
@@ -333,5 +440,266 @@ export function createRepository(handle: DbHandle): Repository {
         };
       });
     },
+
+    async getPeriodSummary({ from, to }) {
+      return computePeriodSummary(db, t, from, to);
+    },
   };
+}
+
+/* ------------------------------------------------------------------------- */
+/*                       Period summary implementation                       */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * v1 dev-hours-saved heuristic — one constant for every completed ticket. DEN-2320 will replace
+ * this with a complexity-based lookup; until then a flat 4h/ticket gives the UI a meaningful number.
+ */
+const DEV_HOURS_PER_TICKET = 4;
+
+/** Repos with fewer than this many CI runs in-window are hidden from the "worst repos" board. */
+const WORST_REPO_MIN_RUNS = 3;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function computePeriodSummary(db: any, t: any, from: Date, to: Date): Promise<PeriodSummary> {
+  const durationMs = to.getTime() - from.getTime();
+  const priorFrom = new Date(from.getTime() - durationMs);
+  const priorTo = from;
+  // Outer fetch covers [priorFrom, to). Per-block computation re-filters in JS.
+  const outerFrom = priorFrom;
+  const outerTo = to;
+
+  const tickets: Ticket[] = await db.select().from(t.tickets);
+  const runs: Run[] = await db.select().from(t.runs);
+  const ciRuns: CiRun[] = await db.select().from(t.ciRuns);
+  const ciChecks: CiCheck[] = await db.select().from(t.ciChecks);
+  const prs: PullRequestRow[] = await db.select().from(t.pullRequests);
+
+  const inOuterCi = ciRuns.filter((r) => r.completedAt && r.completedAt >= outerFrom && r.completedAt < outerTo);
+  const inOuterChecks = ciChecks.filter((c) => c.createdAt >= outerFrom && c.createdAt < outerTo);
+  const inOuterRuns = runs.filter((r) => r.endedAt && r.endedAt >= outerFrom && r.endedAt < outerTo);
+
+  // Same-window blocks computed via shared helpers; failures + shipped only for the current window.
+  const throughput = computeThroughput(tickets, from, to);
+  const throughputPrior = computeThroughput(tickets, priorFrom, priorTo);
+  const health = computeHealth(tickets, inOuterCi, from, to);
+  const healthPrior = computeHealth(tickets, inOuterCi, priorFrom, priorTo);
+  const cost = computeCost(inOuterRuns, from, to);
+  const costPrior = computeCost(inOuterRuns, priorFrom, priorTo);
+  const time = computeTime(tickets, inOuterRuns, from, to);
+  const timePrior = computeTime(tickets, inOuterRuns, priorFrom, priorTo);
+
+  const failures = computeFailures(tickets, inOuterChecks, inOuterCi, prs, from, to);
+  const shipped = computeShipped(tickets, prs, from, to);
+
+  return {
+    window: { from: from.toISOString(), to: to.toISOString() },
+    prior: { from: priorFrom.toISOString(), to: priorTo.toISOString() },
+    throughput: { ...throughput, prior: throughputPrior },
+    health: { ...health, prior: healthPrior },
+    cost: { ...cost, prior: costPrior },
+    time: { ...time, prior: timePrior },
+    failures,
+    shipped,
+  };
+}
+
+function inRange(date: Date | null, from: Date, to: Date): boolean {
+  return date !== null && date >= from && date < to;
+}
+
+function computeThroughput(tickets: Ticket[], from: Date, to: Date): ThroughputBlock {
+  let completed = 0;
+  let abandoned = 0;
+  let inProgress = 0;
+  let discovered = 0;
+  const inProgressStatuses = new Set<Ticket["bmStatus"]>(["dispatched", "in_progress", "pr_open", "ci_running", "ci_failed"]);
+  for (const ticket of tickets) {
+    if (inRange(ticket.createdAt, from, to)) discovered += 1;
+    if (ticket.bmStatus === "completed" && inRange(ticket.completedAt, from, to)) completed += 1;
+    else if (ticket.bmStatus === "abandoned" && inRange(ticket.updatedAt, from, to)) abandoned += 1;
+    else if (inProgressStatuses.has(ticket.bmStatus) && inRange(ticket.updatedAt, from, to)) inProgress += 1;
+  }
+  return { completed, abandoned, inProgress, discovered };
+}
+
+function computeHealth(tickets: Ticket[], ciRunsInOuter: CiRun[], from: Date, to: Date): HealthBlock {
+  let completed = 0;
+  let abandoned = 0;
+  let attemptsSum = 0;
+  let multiAttempt = 0;
+  for (const ticket of tickets) {
+    const isCompleted = ticket.bmStatus === "completed" && inRange(ticket.completedAt, from, to);
+    const isAbandoned = ticket.bmStatus === "abandoned" && inRange(ticket.updatedAt, from, to);
+    if (!isCompleted && !isAbandoned) continue;
+    if (isCompleted) completed += 1;
+    else abandoned += 1;
+    attemptsSum += ticket.attemptCount;
+    if (ticket.attemptCount > 1) multiAttempt += 1;
+  }
+  const ticketSettled = completed + abandoned;
+  const ciWindow = ciRunsInOuter.filter((r) => r.completedAt && inRange(r.completedAt, from, to));
+  const ciPassed = ciWindow.filter((r) => r.status === "passed").length;
+  const ciCompleted = ciWindow.filter((r) => r.status === "passed" || r.status === "failed").length;
+  return {
+    successRate: ticketSettled > 0 ? completed / ticketSettled : null,
+    avgAttempts: ticketSettled > 0 ? attemptsSum / ticketSettled : null,
+    multiAttemptRate: ticketSettled > 0 ? multiAttempt / ticketSettled : null,
+    ciPassRate: ciCompleted > 0 ? ciPassed / ciCompleted : null,
+  };
+}
+
+function computeCost(runsInOuter: Run[], from: Date, to: Date): CostBlock {
+  const inWindow = runsInOuter.filter((r) => r.endedAt && inRange(r.endedAt, from, to));
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let estimatedUsd = 0;
+  const buckets = new Map<string, { provider: string; modelName: string; promptTokens: number; completionTokens: number; estimatedUsd: number }>();
+  for (const r of inWindow) {
+    const p = r.promptTokens ?? 0;
+    const c = r.completionTokens ?? 0;
+    promptTokens += p;
+    completionTokens += c;
+    const cost = estimateCostUsd(r.provider, r.modelName, r.promptTokens, r.completionTokens);
+    if (cost !== null) estimatedUsd += cost;
+    if (r.provider && r.modelName) {
+      const key = `${r.provider}::${r.modelName}`;
+      const b = buckets.get(key) ?? { provider: r.provider, modelName: r.modelName, promptTokens: 0, completionTokens: 0, estimatedUsd: 0 };
+      b.promptTokens += p;
+      b.completionTokens += c;
+      if (cost !== null) b.estimatedUsd += cost;
+      buckets.set(key, b);
+    }
+  }
+  const byModel = [...buckets.values()].sort((a, b) => b.estimatedUsd - a.estimatedUsd);
+  return { promptTokens, completionTokens, estimatedUsd, byModel };
+}
+
+function computeTime(tickets: Ticket[], runsInOuter: Run[], from: Date, to: Date): TimeBlock {
+  const wallClocks: number[] = [];
+  let completedCount = 0;
+  for (const ticket of tickets) {
+    if (ticket.bmStatus !== "completed") continue;
+    if (!inRange(ticket.completedAt, from, to)) continue;
+    completedCount += 1;
+    if (ticket.completedAt) {
+      const seconds = Math.max(0, (ticket.completedAt.getTime() - ticket.createdAt.getTime()) / 1000);
+      wallClocks.push(seconds);
+    }
+  }
+  const avgWallClockSeconds = wallClocks.length > 0
+    ? wallClocks.reduce((s, n) => s + n, 0) / wallClocks.length
+    : null;
+  let totalAgentSeconds = 0;
+  for (const r of runsInOuter) {
+    if (!r.startedAt || !r.endedAt) continue;
+    if (!inRange(r.endedAt, from, to)) continue;
+    totalAgentSeconds += Math.max(0, (r.endedAt.getTime() - r.startedAt.getTime()) / 1000);
+  }
+  return {
+    avgWallClockSeconds,
+    totalAgentSeconds,
+    devHoursSaved: completedCount * DEV_HOURS_PER_TICKET,
+  };
+}
+
+/** Extract `owner/repo` from a github.com PR URL; null on unparseable input. */
+function repoFromPrUrl(url: string): string | null {
+  const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\//i);
+  if (!m) return null;
+  return `${m[1]}/${m[2]}`;
+}
+
+function computeFailures(tickets: Ticket[], checksInOuter: CiCheck[], ciRunsInOuter: CiRun[], prs: PullRequestRow[], from: Date, to: Date): FailureBlock {
+  const inWindowChecks = checksInOuter.filter((c) => inRange(c.createdAt, from, to));
+
+  type CheckBucket = { count: number; latestAt: Date; latestDetailsUrl: string | null };
+  const checkBuckets = new Map<string, CheckBucket>();
+  for (const c of inWindowChecks) {
+    const b = checkBuckets.get(c.name) ?? { count: 0, latestAt: new Date(0), latestDetailsUrl: null };
+    b.count += 1;
+    if (c.createdAt > b.latestAt) {
+      b.latestAt = c.createdAt;
+      b.latestDetailsUrl = c.detailsUrl;
+    }
+    checkBuckets.set(c.name, b);
+  }
+  const topCiCheckNames: CheckFailureRow[] = [...checkBuckets.entries()]
+    .map(([name, b]) => ({ name, count: b.count, latestDetailsUrl: b.latestDetailsUrl }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  const ticketsAtMaxAttempts: TicketRef[] = tickets
+    .filter((ticket) => ticket.bmStatus === "abandoned" && ticket.attemptCount >= ticket.maxAttempts && inRange(ticket.updatedAt, from, to))
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+    .slice(0, 20)
+    .map((ticket) => ({ id: ticket.id, identifier: ticket.identifier, title: ticket.title, url: ticket.url }));
+
+  const prById = new Map<string, PullRequestRow>(prs.map((pr) => [pr.id, pr]));
+  type RepoBucket = { totalRuns: number; passedRuns: number };
+  const repoBuckets = new Map<string, RepoBucket>();
+  for (const r of ciRunsInOuter) {
+    if (!inRange(r.completedAt, from, to)) continue;
+    if (r.status !== "passed" && r.status !== "failed") continue;
+    const pr = r.prId ? prById.get(r.prId) : null;
+    if (!pr) continue;
+    const repo = repoFromPrUrl(pr.url);
+    if (!repo) continue;
+    const b = repoBuckets.get(repo) ?? { totalRuns: 0, passedRuns: 0 };
+    b.totalRuns += 1;
+    if (r.status === "passed") b.passedRuns += 1;
+    repoBuckets.set(repo, b);
+  }
+  const worstReposByCi: RepoPassRow[] = [...repoBuckets.entries()]
+    .filter(([, b]) => b.totalRuns >= WORST_REPO_MIN_RUNS)
+    .map(([repo, b]) => ({ repo, totalRuns: b.totalRuns, passedRuns: b.passedRuns, passRate: b.passedRuns / b.totalRuns }))
+    .sort((a, b) => a.passRate - b.passRate)
+    .slice(0, 10);
+
+  return { topCiCheckNames, ticketsAtMaxAttempts, worstReposByCi };
+}
+
+function computeShipped(tickets: Ticket[], prs: PullRequestRow[], from: Date, to: Date): ShippedBlock {
+  const completed = tickets.filter((ticket) => ticket.bmStatus === "completed" && inRange(ticket.completedAt, from, to));
+  const mergedPrByTicket = new Map<string, PullRequestRow>();
+  for (const pr of prs) {
+    if (!pr.merged) continue;
+    const existing = mergedPrByTicket.get(pr.ticketId);
+    if (!existing || pr.updatedAt > existing.updatedAt) mergedPrByTicket.set(pr.ticketId, pr);
+  }
+  type RepoBucket = { tickets: ShippedTicket[] };
+  const buckets = new Map<string, RepoBucket>();
+  for (const ticket of completed) {
+    const pr = mergedPrByTicket.get(ticket.id);
+    if (!pr) continue;
+    const repo = repoFromPrUrl(pr.url) ?? "unknown";
+    let labels: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(ticket.labelsJson);
+      if (Array.isArray(parsed)) labels = parsed.filter((x): x is string => typeof x === "string");
+    } catch {
+      // Malformed labelsJson — skip silently; the rest of the row is still useful.
+    }
+    const entry: ShippedTicket = {
+      id: ticket.id,
+      identifier: ticket.identifier,
+      title: ticket.title,
+      url: ticket.url,
+      labels,
+      prUrl: pr.url,
+      prNumber: pr.number,
+      completedAt: ticket.completedAt?.toISOString() ?? null,
+    };
+    const b = buckets.get(repo) ?? { tickets: [] };
+    b.tickets.push(entry);
+    buckets.set(repo, b);
+  }
+  const byRepo: ShippedRepoBucket[] = [...buckets.entries()]
+    .map(([repo, b]) => ({
+      repo,
+      count: b.tickets.length,
+      tickets: b.tickets.sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? "")),
+    }))
+    .sort((a, b) => b.count - a.count);
+  return { byRepo };
 }
