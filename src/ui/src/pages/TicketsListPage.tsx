@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { useTickets } from "../api/queries.js";
-import type { BmStatus, TicketListItem } from "../api/types.js";
+import { useTicketFilterOptions, useTickets } from "../api/queries.js";
+import type { BmStatus, StopReason, TicketListItem, TicketListQuery } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
@@ -57,6 +57,8 @@ const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
   { key: "completed", label: "Completed" },
 ];
 
+const PAGE_SIZE = 50;
+
 function matchesFilter(ticket: TicketListItem, filter: FilterKey): boolean {
   if (filter === "all") {
     return true;
@@ -65,10 +67,37 @@ function matchesFilter(ticket: TicketListItem, filter: FilterKey): boolean {
   return FILTER_STATUSES[filter].includes(ticket.bmStatus);
 }
 
+const selectClasses =
+  "rounded-md border border-border-default bg-bg-card px-2 py-1 text-sm text-text-primary " +
+  "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
+
 export default function TicketsListPage() {
-  const q = useTickets();
-  const tickets = q.data ?? [];
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [searchInput, setSearchInput] = useState<string>("");
+  const [appliedSearch, setAppliedSearch] = useState<string>("");
+  const [workerId, setWorkerId] = useState<string>("");
+  const [label, setLabel] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<BmStatus | "">("");
+  const [stopReason, setStopReason] = useState<StopReason | "">("");
+  const [page, setPage] = useState<number>(1);
+
+  const query = useMemo<TicketListQuery>(() => {
+    const q: TicketListQuery = { page, pageSize: PAGE_SIZE };
+    if (appliedSearch.trim()) q.q = appliedSearch.trim();
+    if (workerId) q.workerIds = [workerId];
+    if (label) q.labels = [label];
+    if (statusFilter) q.bmStatuses = [statusFilter];
+    if (stopReason) q.stopReasons = [stopReason];
+    return q;
+  }, [appliedSearch, workerId, label, statusFilter, stopReason, page]);
+
+  const ticketsQuery = useTickets(query);
+  const filtersQuery = useTicketFilterOptions();
+
+  const response = ticketsQuery.data;
+  const tickets = response?.tickets ?? [];
+  const total = response?.total ?? 0;
+  const filterOptions = filtersQuery.data;
 
   const counts = useMemo(() => {
     const result: Record<FilterKey, number> = {
@@ -95,14 +124,126 @@ export default function TicketsListPage() {
     [tickets, filter],
   );
 
+  const hasActiveServerFilter =
+    Boolean(appliedSearch.trim()) || Boolean(workerId) || Boolean(label) || Boolean(statusFilter) || Boolean(stopReason);
+  const pageSize = response?.pageSize ?? PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  const submitSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPage(1);
+    setAppliedSearch(searchInput);
+  };
+
+  const clearFilters = () => {
+    setSearchInput("");
+    setAppliedSearch("");
+    setWorkerId("");
+    setLabel("");
+    setStatusFilter("");
+    setStopReason("");
+    setPage(1);
+  };
+
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 sm:px-8">
       <PageHeader title="Tickets">
-        <RefreshButton busy={q.isFetching} onClick={() => void q.refetch()} />
+        <RefreshButton busy={ticketsQuery.isFetching} onClick={() => void ticketsQuery.refetch()} />
       </PageHeader>
 
-      <nav aria-label="Ticket filters" className="flex flex-wrap gap-2">
-        {FILTERS.map(({ key, label }) => {
+      <section aria-label="Ticket search" className="flex flex-col gap-3 rounded-md border border-border-default bg-bg-card p-3">
+        <form role="search" onSubmit={submitSearch} className="flex flex-wrap gap-2">
+          <label className="sr-only" htmlFor="ticket-search">Search tickets</label>
+          <input
+            id="ticket-search"
+            type="search"
+            placeholder="Search tickets (identifier, title, description, branch)"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            className={`${selectClasses} min-w-[20rem] flex-1`}
+          />
+          <button
+            type="submit"
+            className="rounded-md border border-primary bg-primary/10 px-3 py-1 text-sm font-medium text-text-primary hover:bg-primary/20"
+          >
+            Search
+          </button>
+          {hasActiveServerFilter ? (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-sm text-text-secondary hover:text-text-primary"
+            >
+              Clear
+            </button>
+          ) : null}
+        </form>
+
+        <div className="flex flex-wrap gap-2" aria-label="Ticket filters">
+          <label className="flex items-center gap-1 text-xs text-text-secondary">
+            Worker
+            <select
+              aria-label="Filter by worker"
+              value={workerId}
+              onChange={(e) => { setWorkerId(e.target.value); setPage(1); }}
+              className={selectClasses}
+            >
+              <option value="">Any worker</option>
+              {filterOptions?.workers.map((w) => (
+                <option key={w.id} value={w.id}>{w.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1 text-xs text-text-secondary">
+            Label
+            <select
+              aria-label="Filter by label"
+              value={label}
+              onChange={(e) => { setLabel(e.target.value); setPage(1); }}
+              className={selectClasses}
+            >
+              <option value="">Any label</option>
+              {filterOptions?.labels.map((l) => (
+                <option key={l} value={l}>{l}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1 text-xs text-text-secondary">
+            State
+            <select
+              aria-label="Filter by state"
+              value={statusFilter}
+              onChange={(e) => { setStatusFilter(e.target.value as BmStatus | ""); setPage(1); }}
+              className={selectClasses}
+            >
+              <option value="">Any state</option>
+              {(filterOptions?.bmStatuses ?? []).map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1 text-xs text-text-secondary">
+            Failure reason
+            <select
+              aria-label="Filter by failure reason"
+              value={stopReason}
+              onChange={(e) => { setStopReason(e.target.value as StopReason | ""); setPage(1); }}
+              className={selectClasses}
+            >
+              <option value="">Any reason</option>
+              {(filterOptions?.stopReasons ?? []).map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <nav aria-label="Ticket categories" className="flex flex-wrap gap-2">
+        {FILTERS.map(({ key, label: btnLabel }) => {
           const isActive = filter === key;
           return (
             <button
@@ -117,7 +258,7 @@ export default function TicketsListPage() {
                   : "border-border-default bg-bg-card text-text-secondary hover:text-text-primary")
               }
             >
-              {label}
+              {btnLabel}
               <span className="ml-2 text-xs text-text-muted">{counts[key]}</span>
             </button>
           );
@@ -125,10 +266,10 @@ export default function TicketsListPage() {
       </nav>
 
       <QueryBoundary
-        isLoading={q.isLoading}
-        error={q.error}
+        isLoading={ticketsQuery.isLoading}
+        error={ticketsQuery.error}
         isEmpty={visibleTickets.length === 0}
-        emptyLabel={filter === "all" ? "No tickets yet." : "No tickets match this filter."}
+        emptyLabel={hasActiveServerFilter || filter !== "all" ? "No tickets match these filters." : "No tickets yet."}
       >
         <section aria-label="Tickets list" className="flex flex-col gap-3">
           <div className="overflow-x-auto rounded-md border border-border-default bg-bg-card">
@@ -139,6 +280,7 @@ export default function TicketsListPage() {
                   <th scope="col" className="px-4 py-3 font-medium">Title</th>
                   <th scope="col" className="px-4 py-3 font-medium">BM status</th>
                   <th scope="col" className="px-4 py-3 font-medium">Latest run</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Worker</th>
                   <th scope="col" className="px-4 py-3 font-medium">Attempts</th>
                   <th scope="col" className="px-4 py-3 font-medium">CI</th>
                   <th scope="col" className="px-4 py-3 font-medium">PR</th>
@@ -158,6 +300,9 @@ export default function TicketsListPage() {
                     <td className="whitespace-nowrap px-4 py-3">
                       {ticket.latestRun === null ? <Dash /> : <StatusBadge status={ticket.latestRun.status} />}
                     </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-text-secondary">
+                      {ticket.latestWorkerName ?? <Dash />}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text-primary">
                       {ticket.attemptCount}/{ticket.maxAttempts}
                     </td>
@@ -175,6 +320,32 @@ export default function TicketsListPage() {
               </tbody>
             </table>
           </div>
+
+          {total > pageSize ? (
+            <nav aria-label="Tickets pagination" className="flex items-center justify-between text-sm">
+              <span className="text-text-secondary">
+                Page {page} of {totalPages} &middot; {total} tickets
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={page <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-text-secondary hover:text-text-primary disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-text-secondary hover:text-text-primary disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </nav>
+          ) : null}
         </section>
       </QueryBoundary>
     </main>

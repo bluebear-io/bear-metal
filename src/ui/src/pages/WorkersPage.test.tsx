@@ -27,6 +27,7 @@ const workers: WorkerListItem[] = [
       status: "running",
       trigger: "new",
       workerId: "worker-1",
+      stopReason: null,
       startedAt: "2026-06-09T10:00:00.000Z",
       endedAt: null,
       createdAt: "2026-06-09T10:00:00.000Z",

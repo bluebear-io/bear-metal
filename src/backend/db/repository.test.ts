@@ -16,21 +16,26 @@ beforeEach(() => {
 
 describe("listTickets", () => {
   it("returns all tickets newest-first with attempt + latest PR/CI summary", () => {
-    const rows = listTickets(db);
-    expect(rows.length).toBe(4);
-    expect(rows[0]!.createdAt >= rows[1]!.createdAt).toBe(true);
-    const createdAts = rows.map((r) => r.createdAt.getTime());
+    const { items, total, page, pageSize } = listTickets(db);
+    expect(items.length).toBe(4);
+    expect(total).toBe(4);
+    expect(page).toBe(1);
+    expect(pageSize).toBe(50);
+    expect(items[0]!.createdAt >= items[1]!.createdAt).toBe(true);
+    const createdAts = items.map((r) => r.createdAt.getTime());
     expect(createdAts).toEqual([...createdAts].sort((a, b) => b - a));
-    const completed = rows.find((r) => r.identifier === "DEN-3001")!;
+    const completed = items.find((r) => r.identifier === "DEN-3001")!;
     expect(completed.bmStatus).toBe("completed");
     expect(completed.latestPr?.number).toBe(1500);
     expect(completed.latestCiStatus).toBe("passed");
     expect(completed.attemptCount).toBe(1);
+    expect(completed.latestWorkerName).toBe("worker-1");
+    expect(completed.latestRun?.stopReason).toBe("completed");
   });
 
   it("includes the latest run summary for each ticket", () => {
-    const rows = listTickets(db);
-    const retry = rows.find((r) => r.identifier === "DEN-3002")!;
+    const { items } = listTickets(db);
+    const retry = items.find((r) => r.identifier === "DEN-3002")!;
     expect(retry.latestRun).toMatchObject({
       id: "run_3",
       attemptNumber: 2,
@@ -39,13 +44,71 @@ describe("listTickets", () => {
       workerId: "wk_2",
     });
 
-    const abandoned = rows.find((r) => r.identifier === "DEN-3003")!;
+    const abandoned = items.find((r) => r.identifier === "DEN-3003")!;
     expect(abandoned.latestRun?.status).toBe("timed_out");
+    expect(abandoned.latestRun?.stopReason).toBe("timeout");
   });
 
-  it("filters by bmStatus", () => {
-    const rows = listTickets(db, { bmStatus: "abandoned" });
-    expect(rows.map((r) => r.identifier)).toEqual(["DEN-3003"]);
+  it("filters by bmStatuses", () => {
+    const { items, total } = listTickets(db, { bmStatuses: ["abandoned"] });
+    expect(items.map((r) => r.identifier)).toEqual(["DEN-3003"]);
+    expect(total).toBe(1);
+  });
+
+  it("supports multi-value status filtering", () => {
+    const { items } = listTickets(db, { bmStatuses: ["completed", "abandoned"] });
+    expect(items.map((r) => r.identifier).sort()).toEqual(["DEN-3001", "DEN-3003"]);
+  });
+
+  it("matches the free-text query against identifier, title, description, and branch name", () => {
+    const byIdent = listTickets(db, { q: "DEN-3002" });
+    expect(byIdent.items.map((r) => r.identifier)).toEqual(["DEN-3002"]);
+
+    const byTitle = listTickets(db, { q: "csv" });
+    expect(byTitle.items.map((r) => r.identifier)).toEqual(["DEN-3004"]);
+
+    const byBranch = listTickets(db, { q: "config-v3" });
+    expect(byBranch.items.map((r) => r.identifier)).toEqual(["DEN-3003"]);
+
+    const byDescription = listTickets(db, { q: "per-key" });
+    expect(byDescription.items.map((r) => r.identifier)).toEqual(["DEN-3001"]);
+  });
+
+  it("filters by label", () => {
+    const ingest = listTickets(db, { labels: ["module:ingest"] });
+    expect(ingest.items.map((r) => r.identifier)).toEqual(["DEN-3003"]);
+    const bff = listTickets(db, { labels: ["module:bff"] });
+    expect(bff.items.map((r) => r.identifier).sort()).toEqual(["DEN-3001", "DEN-3004"]);
+  });
+
+  it("filters by latest-run worker and stop reason", () => {
+    const worker2 = listTickets(db, { workerIds: ["wk_2"] });
+    expect(worker2.items.map((r) => r.identifier)).toEqual(["DEN-3002"]);
+
+    const timedOut = listTickets(db, { stopReasons: ["timeout"] });
+    expect(timedOut.items.map((r) => r.identifier)).toEqual(["DEN-3003"]);
+  });
+
+  it("filters by createdFrom/createdTo and rejects empty windows by returning nothing", () => {
+    const recent = listTickets(db, { createdFrom: new Date("2026-06-09T08:30:00Z") });
+    expect(recent.items.map((r) => r.identifier).sort()).toEqual(["DEN-3004"]);
+
+    const window = listTickets(db, {
+      createdFrom: new Date("2026-06-09T07:00:00Z"),
+      createdTo: new Date("2026-06-09T08:30:00Z"),
+    });
+    expect(window.items.map((r) => r.identifier).sort()).toEqual(["DEN-3001", "DEN-3002"]);
+  });
+
+  it("paginates with total preserved across pages", () => {
+    const first = listTickets(db, { pageSize: 2, page: 1 });
+    expect(first.items.length).toBe(2);
+    expect(first.total).toBe(4);
+    const second = listTickets(db, { pageSize: 2, page: 2 });
+    expect(second.items.length).toBe(2);
+    expect(second.total).toBe(4);
+    const overlap = new Set([...first.items, ...second.items].map((r) => r.id));
+    expect(overlap.size).toBe(4);
   });
 });
 

@@ -31,12 +31,15 @@ export interface Ticket {
   completedAt: string | null;
 }
 
+export type StopReason = "completed" | "timeout" | "crash" | "error";
+
 export interface LatestRunSummary {
   id: string;
   attemptNumber: number;
   status: RunStatus;
   trigger: RunTrigger;
   workerId: string | null;
+  stopReason: StopReason | null;
   startedAt: string | null;
   endedAt: string | null;
   createdAt: string;
@@ -44,8 +47,36 @@ export interface LatestRunSummary {
 
 export interface TicketListItem extends Ticket {
   latestRun: LatestRunSummary | null;
+  /** Worker name for the most recent attempt; surfaced for the filter bar + list display. */
+  latestWorkerName: string | null;
   latestPr: { number: number; url: string; state: "open" | "closed"; merged: boolean } | null;
   latestCiStatus: CiStatus | null;
+}
+
+export interface TicketListResponse {
+  tickets: TicketListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface TicketFilterOptions {
+  bmStatuses: BmStatus[];
+  stopReasons: StopReason[];
+  labels: string[];
+  workers: Array<{ id: string; name: string }>;
+}
+
+export interface TicketListQuery {
+  q?: string;
+  bmStatuses?: BmStatus[];
+  workerIds?: string[];
+  labels?: string[];
+  stopReasons?: StopReason[];
+  createdFrom?: string;
+  createdTo?: string;
+  page?: number;
+  pageSize?: number;
 }
 
 export interface Worker {
