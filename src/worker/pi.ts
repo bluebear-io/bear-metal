@@ -143,6 +143,14 @@ export async function runPiWorker(input: {
     execute: async (_toolCallId, params) => {
       logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
+      // Refresh the .netrc token before pushing — installation tokens expire after 1 hour
+      // and pi sessions can run much longer than that.
+      const freshToken = await input.github.getInstallationToken();
+      await writeFile(
+        resolve(input.context.cloneScript.netrcDir, ".netrc"),
+        `machine github.com login x-access-token password ${freshToken}\n`,
+        { mode: 0o600 },
+      );
       await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
       const pr = input.context.pr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot }));
       setDecision({ status: "done", pr });
