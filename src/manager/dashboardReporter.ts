@@ -133,7 +133,7 @@ export class DashboardReporter {
     const ciRunId = `${prDbId}@${context.headSha.slice(0, 12)}`;
     const summary = ciRunSummary(context);
     await this.client.upsertCiRun({
-      id: ciRunId, ticketId: ticket.id, runId: lastRunId ?? ciRunId, prId: prDbId,
+      id: ciRunId, ticketId: ticket.id, runId: lastRunId, prId: prDbId,
       status: "failed", url: null, summary, createdAt: t, completedAt: t,
     });
     const checks: CiCheckPayload[] = [

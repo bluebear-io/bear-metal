@@ -129,7 +129,7 @@ export function createIngestRouter(db: Db, token: string): Router {
     const bodyId = str(b, "id");
     if (bodyId !== id) throw new BadPayload("path id and body id must match");
     upsertCiRun(db, {
-      id: bodyId, ticketId: str(b, "ticketId"), runId: str(b, "runId"), prId: strOrNull(b, "prId"),
+      id: bodyId, ticketId: str(b, "ticketId"), runId: strOrNull(b, "runId"), prId: strOrNull(b, "prId"),
       status: enumVal(b, "status", schema.ciRuns.status.enumValues), url: strOrNull(b, "url"),
       summary: strOrNull(b, "summary"), createdAt: num(b, "createdAt"), completedAt: numOrNull(b, "completedAt"),
     });

@@ -51,7 +51,12 @@ export async function runCloneScript(input: {
       netrcDir,
     };
   } catch (err) {
-    await rm(netrcDir, { recursive: true, force: true });
+    // Best-effort cleanup — never let a cleanup failure mask the original error.
+    try {
+      await rm(netrcDir, { recursive: true, force: true });
+    } catch {
+      /* swallow */
+    }
     throw err;
   }
 }

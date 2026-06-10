@@ -75,7 +75,7 @@ export interface PullRequestPayload {
 export interface CiRunPayload {
   id: string;
   ticketId: string;
-  runId: string;
+  runId: string | null;
   prId: string | null;
   status: CiStatus;
   url: string | null;

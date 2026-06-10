@@ -147,7 +147,7 @@ export interface CiCheck {
 export interface CiRun {
   id: string;
   ticketId: string;
-  runId: string;
+  runId: string | null;
   prId: string | null;
   status: CiStatus;
   url: string | null;

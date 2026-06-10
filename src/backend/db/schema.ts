@@ -67,7 +67,12 @@ export const pullRequests = sqliteTable("pull_requests", {
 export const ciRuns = sqliteTable("ci_runs", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").notNull().references(() => tickets.id),
-  runId: text("run_id").notNull().references(() => runs.id),
+  /**
+   * Optional link to the in-process `runs` row that produced this CI observation.
+   * Null for rows derived from PR polling (scheduler observes GitHub without an active run
+   * id), populated when a worker reports CI status against a specific run.
+   */
+  runId: text("run_id").references(() => runs.id),
   prId: text("pr_id").references(() => pullRequests.id),
   status: text("status", { enum: ["running", "passed", "failed"] }).notNull(),
   url: text("url"),

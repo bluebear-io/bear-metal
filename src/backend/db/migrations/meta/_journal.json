@@ -15,6 +15,13 @@
       "when": 1781100000000,
       "tag": "0001_granular_ci_and_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1781200000000,
+      "tag": "0002_nullable_ci_run_run_id",
+      "breakpoints": true
     }
   ]
 }
