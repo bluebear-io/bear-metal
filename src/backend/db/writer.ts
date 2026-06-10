@@ -203,7 +203,7 @@ export function createWriter(handle: DbHandle): Writer {
         await txAny.delete(t.runToolCalls).where(eq(t.runToolCalls.runId, runId));
         for (const p of payloads) {
           const row = upsertRow(p);
-          await db.insert(t.runToolCalls).values(row).onConflictDoUpdate({ target: t.runToolCalls.id, set: row });
+          await txAny.insert(t.runToolCalls).values(row).onConflictDoUpdate({ target: t.runToolCalls.id, set: row });
         }
       });
     },
