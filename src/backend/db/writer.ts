@@ -2,7 +2,8 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema.js";
 import type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
+  CiCheckPayload, ReviewThreadPayload, EventPayload,
 } from "../../shared/dashboard/types.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
@@ -35,15 +36,23 @@ export function upsertRun(db: Db, p: RunPayload): void {
     id: p.id, ticketId: p.ticketId, attemptNumber: p.attemptNumber, workerId: p.workerId,
     trigger: p.trigger, status: p.status, contextJson: p.contextJson,
     startedAt: d(p.startedAt), endedAt: d(p.endedAt), stopReason: p.stopReason, error: p.error,
+    promptTokens: p.promptTokens, completionTokens: p.completionTokens,
+    modelName: p.modelName, provider: p.provider,
     createdAt: new Date(p.createdAt),
   };
   db.insert(schema.runs).values(row).onConflictDoUpdate({
     target: schema.runs.id,
     set: {
       ...row,
-      // createdAt is immutable after insert; startedAt is set-once (never reset to null by a later transition).
+      // createdAt is immutable after insert; startedAt and the usage fields are set-once —
+      // a later transition (e.g. an out-of-order or duplicate status update) must never
+      // wipe out previously-recorded values by sending null.
       createdAt: sql`${schema.runs.createdAt}`,
       startedAt: sql`coalesce(${schema.runs.startedAt}, excluded.started_at)`,
+      promptTokens: sql`coalesce(excluded.prompt_tokens, ${schema.runs.promptTokens})`,
+      completionTokens: sql`coalesce(excluded.completion_tokens, ${schema.runs.completionTokens})`,
+      modelName: sql`coalesce(excluded.model_name, ${schema.runs.modelName})`,
+      provider: sql`coalesce(excluded.provider, ${schema.runs.provider})`,
     },
   }).run();
 }
@@ -63,6 +72,43 @@ export function upsertCiRun(db: Db, p: CiRunPayload): void {
     url: p.url, summary: p.summary, createdAt: new Date(p.createdAt), completedAt: d(p.completedAt),
   };
   db.insert(schema.ciRuns).values(row).onConflictDoUpdate({ target: schema.ciRuns.id, set: row }).run();
+}
+
+export function upsertCiCheck(db: Db, p: CiCheckPayload): void {
+  const row = {
+    id: p.id, ciRunId: p.ciRunId, source: p.source, externalId: p.externalId,
+    name: p.name, conclusion: p.conclusion, detailsUrl: p.detailsUrl, summary: p.summary,
+    annotationsJson: p.annotationsJson, createdAt: new Date(p.createdAt),
+  };
+  db.insert(schema.ciChecks).values(row).onConflictDoUpdate({ target: schema.ciChecks.id, set: row }).run();
+}
+
+/** Replace the set of failing checks attached to a CI run with `payloads` — keeps the row set in sync with the latest poll. */
+export function replaceCiChecksForRun(db: Db, ciRunId: string, payloads: CiCheckPayload[]): void {
+  db.transaction((tx) => {
+    tx.delete(schema.ciChecks).where(sql`${schema.ciChecks.ciRunId} = ${ciRunId}`).run();
+    for (const p of payloads) {
+      upsertCiCheck(tx as unknown as Db, p);
+    }
+  });
+}
+
+export function upsertReviewThread(db: Db, p: ReviewThreadPayload): void {
+  const row = {
+    id: p.id, prId: p.prId, path: p.path, line: p.line, isResolved: p.isResolved,
+    commentsJson: p.commentsJson, createdAt: new Date(p.createdAt), updatedAt: new Date(p.updatedAt),
+  };
+  db.insert(schema.reviewThreads).values(row).onConflictDoUpdate({ target: schema.reviewThreads.id, set: row }).run();
+}
+
+/** Replace the set of review threads attached to a PR with `payloads` — mirrors GitHub's current thread set. */
+export function replaceReviewThreadsForPr(db: Db, prId: string, payloads: ReviewThreadPayload[]): void {
+  db.transaction((tx) => {
+    tx.delete(schema.reviewThreads).where(sql`${schema.reviewThreads.prId} = ${prId}`).run();
+    for (const p of payloads) {
+      upsertReviewThread(tx as unknown as Db, p);
+    }
+  });
 }
 
 export function insertEvent(db: Db, p: EventPayload): void {

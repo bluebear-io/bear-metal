@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerInputContext } from "./types.js";
 
 type TestTool = { name: string; execute: (id: string, params: unknown) => Promise<unknown> };
@@ -24,6 +27,9 @@ const makeTool = (name: string) => ({
   name,
   execute: vi.fn(),
 });
+
+// Unique netrc dir per test, assigned in beforeEach; read by makeContext's fixture.
+let netrcDir: string;
 
 vi.mock("../shared/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared/index.js")>();
@@ -67,6 +73,13 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 }));
 
 describe("runPiWorker", () => {
+  // In production clone.ts creates netrcDir via mkdtemp before pi runs. Use a unique dir
+  // per test (not a shared /tmp path) so a parallel dispatch.test, whose dispatch cleanup
+  // rm's its netrcDir, can't delete ours mid-write.
+  beforeEach(async () => {
+    netrcDir = await mkdtemp(join(tmpdir(), "bear-metal-pi-test-"));
+  });
+
   it("replies to and resolves an agreed GitHub review thread", async () => {
     const { runPiWorker } = await import("./pi.js");
     const github = makeGithub();
@@ -491,7 +504,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
       workspaceDir: "/tmp/workspace",
       stdout: "",
       stderr: "",
-      netrcDir: "/tmp",
+      netrcDir,
     },
     ...overrides,
   };
@@ -518,32 +531,35 @@ function makeLinear() {
 }
 
 function makePullRequestContext() {
+  const reviewThreads = [
+    {
+      id: "thread-1",
+      isResolved: false,
+      path: "src/file.ts",
+      line: 1,
+      comments: [
+        {
+          id: "comment-1",
+          databaseId: 123,
+          body: "Please check this.",
+          author: "reviewer",
+          url: "https://github.com/acme/widgets/pull/7#discussion_r123",
+          createdAt: "2026-06-09T00:00:00Z",
+          updatedAt: "2026-06-09T00:00:00Z",
+          path: "src/file.ts",
+          line: 1,
+          originalLine: 1,
+          diffHunk: "@@",
+        },
+      ],
+    },
+  ];
   return {
     pullRequest: { number: 7 },
+    headSha: "abc123def456",
     failedCheckRuns: [],
     failedStatuses: [],
-    unresolvedReviewThreads: [
-      {
-        id: "thread-1",
-        isResolved: false,
-        path: "src/file.ts",
-        line: 1,
-        comments: [
-          {
-            id: "comment-1",
-            databaseId: 123,
-            body: "Please check this.",
-            author: "reviewer",
-            url: "https://github.com/acme/widgets/pull/7#discussion_r123",
-            createdAt: "2026-06-09T00:00:00Z",
-            updatedAt: "2026-06-09T00:00:00Z",
-            path: "src/file.ts",
-            line: 1,
-            originalLine: 1,
-            diffHunk: "@@",
-          },
-        ],
-      },
-    ],
+    unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
+    reviewThreads,
   };
 }

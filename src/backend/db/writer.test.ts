@@ -37,7 +37,9 @@ describe("upsertRun + insertEvent", () => {
     upsertRun(db, {
       id: "run_9", ticketId: "lin_9", attemptNumber: 1, workerId: null,
       trigger: "new", status: "dispatched", contextJson: null,
-      startedAt: null, endedAt: null, stopReason: null, error: null, createdAt: 1500,
+      startedAt: null, endedAt: null, stopReason: null, error: null,
+      promptTokens: null, completionTokens: null, modelName: null, provider: null,
+      createdAt: 1500,
     });
     insertEvent(db, {
       ticketId: "lin_9", runId: "run_9", workerId: null, source: "manager",
@@ -51,11 +53,11 @@ describe("upsertRun + insertEvent", () => {
     upsertTicket(db, ticket);
     upsertWorker(db, { id: "wk_1", name: "w", status: "busy", currentRunId: null, lastHeartbeatAt: null, startedAt: 1000, updatedAt: 1000 }); // FK target for run.workerId
     // dispatched: no start time, created at t0
-    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: null, trigger: "new", status: "dispatched", contextJson: null, startedAt: null, endedAt: null, stopReason: null, error: null, createdAt: 1000 });
+    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: null, trigger: "new", status: "dispatched", contextJson: null, startedAt: null, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: 1000 });
     // running: sets startedAt
-    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "running", contextJson: null, startedAt: 2000, endedAt: null, stopReason: null, error: null, createdAt: 2000 });
+    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "running", contextJson: null, startedAt: 2000, endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: 2000 });
     // succeeded: sends startedAt=null and a later createdAt — must NOT clobber
-    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: null, endedAt: 3000, stopReason: "completed", error: null, createdAt: 3000 });
+    upsertRun(db, { id: "run_lc", ticketId: "lin_9", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: null, endedAt: 3000, stopReason: "completed", error: null, promptTokens: 1000, completionTokens: 200, modelName: "claude-sonnet-4", provider: "anthropic", createdAt: 3000 });
 
     const rows = db.select().from(schema.runs).where(eq(schema.runs.id, "run_lc")).all();
     expect(rows).toHaveLength(1);

@@ -246,13 +246,22 @@ async function evaluateTicket(
 
   const testsFailed = statuses.some((s) => s.testsFailed);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
-  // Report the open PRs' current state (best-effort; never affects dispatch).
-  if (testsFailed) {
-    void reporter?.ciFailed(ticket, "CI checks failed");
-  } else {
-    const firstPr = statuses[0]?.pr;
-    if (firstPr) void reporter?.prOpened(ticket, firstPr);
-  }
+  // Report each open PR's current state (best-effort; never affects dispatch).
+  void (async () => {
+    try {
+      for (const status of statuses.filter((s) => !s.pr.merged && s.pr.state !== "closed")) {
+        await reporter?.recordPullRequestObservation(ticket, status.pr, status.context, null);
+      }
+      if (testsFailed) {
+        await reporter?.ciFailed(ticket, "CI checks failed");
+      } else {
+        const firstPr = statuses[0]?.pr;
+        if (firstPr) await reporter?.prOpened(ticket, firstPr);
+      }
+    } catch (err) {
+      logger.warn({ err, ticket: ticket.identifier }, "best-effort dashboard observation failed");
+    }
+  })();
 
   const needsWork = resuming || testsFailed || hasActionableUnresolvedComments;
   if (needsWork) {

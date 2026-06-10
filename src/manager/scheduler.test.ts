@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createLogger,
+  type JsonValue,
   type PullRequest,
   type PullRequestRef,
   type PullRequestStatus,
@@ -39,7 +40,19 @@ function prRef(number = 7): PullRequestRef {
 }
 
 function status(pr: PullRequest, testsFailed = false, hasActionableUnresolvedComments = false): PullRequestStatus {
-  return { pr, testsFailed, hasActionableUnresolvedComments };
+  return {
+    pr,
+    testsFailed,
+    hasActionableUnresolvedComments,
+    context: {
+      pullRequest: { head: { sha: "deadbeef" } } as unknown as JsonValue,
+      headSha: "deadbeef",
+      failedCheckRuns: [],
+      failedStatuses: [],
+      unresolvedReviewThreads: [],
+      reviewThreads: [],
+    },
+  };
 }
 
 /** Captures the scheduler's best-effort reporter calls by method + ticket identifier. */

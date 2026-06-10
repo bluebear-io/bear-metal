@@ -27,6 +27,28 @@ describe("createDashboardClient", () => {
     await expect(client.upsertTicket(ticket)).resolves.toBeUndefined();
   });
 
+  it("posts bulk replacement for CI checks under the run-scoped URL", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 204 } as Response);
+    const client = createDashboardClient({ baseUrl: "http://h", token: "t", logger, fetchImpl });
+    const checks = [{ id: "k1", ciRunId: "ci_1", source: "check_run" as const, externalId: "99", name: "ESLint", conclusion: "failure", detailsUrl: null, summary: null, annotationsJson: "[]", createdAt: 1 }];
+    await client.replaceCiChecks("ci_1", checks);
+    expect(fetchImpl).toHaveBeenCalledWith("http://h/api/ci-runs/ci_1/checks", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ checks }),
+    }));
+  });
+
+  it("posts bulk replacement for review threads under the PR-scoped URL", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 204 } as Response);
+    const client = createDashboardClient({ baseUrl: "http://h", token: "t", logger, fetchImpl });
+    const threads = [{ id: "t1", prId: "o/r#1", path: "f.ts", line: 1, isResolved: false, commentsJson: "[]", createdAt: 1, updatedAt: 1 }];
+    await client.replaceReviewThreads("o/r#1", threads);
+    expect(fetchImpl).toHaveBeenCalledWith("http://h/api/pull-requests/o%2Fr%231/review-threads", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ threads }),
+    }));
+  });
+
   it("swallows a network throw (best-effort, never throws)", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
     const client = createDashboardClient({ baseUrl: "http://h", token: "t", logger, fetchImpl });

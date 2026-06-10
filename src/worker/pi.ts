@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
 import type {
   DispatchResult,
+  DispatchUsage,
   PullRequestRef,
   WorkerGitHub,
   WorkerInputContext,
@@ -228,6 +229,7 @@ export async function runPiWorker(input: {
     ? [respondToTicketReporter, wroteCode]
     : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, wroteCode];
 
+  let usage: DispatchUsage | null = null;
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
@@ -288,6 +290,21 @@ export async function runPiWorker(input: {
 
   try {
     await session.prompt(prompt);
+    try {
+      const stats = session.getSessionStats();
+      const model = session.model;
+      if (model && (stats.tokens.input > 0 || stats.tokens.output > 0)) {
+        usage = {
+          promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
+          completionTokens: stats.tokens.output,
+          modelName: model.name,
+          provider: model.provider,
+        };
+        logger.info({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
+      }
+    } catch (statsError) {
+      logger.warn({ statsError }, "failed to capture pi session usage");
+    }
   } catch (error) {
     if (!limitHitReason) {
       logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
@@ -327,7 +344,8 @@ export async function runPiWorker(input: {
       throw new Error("Pi finished without calling a finish tool (wrote_code or respond_to_ticket_reporter)");
     }
   }
-  return decision;
+  // Attach LLM usage stats captured during the just-finished session (DEN-2313).
+  return usage ? { ...decision, usage } : decision;
 }
 
 function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequestRef[] {

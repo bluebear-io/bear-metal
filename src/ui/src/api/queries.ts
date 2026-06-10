@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
+import { fetchModelComparison, fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
 import type { BmStatus } from "./types.js";
 
 export const useTickets = (status?: BmStatus) =>
@@ -11,3 +11,6 @@ export const useTicketDetail = (id: string) =>
 
 export const useWorkers = () =>
   useQuery({ queryKey: ["workers"], queryFn: () => fetchWorkers() });
+
+export const useModelComparison = () =>
+  useQuery({ queryKey: ["models", "comparison"], queryFn: () => fetchModelComparison() });
