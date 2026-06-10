@@ -100,6 +100,8 @@ const SCHEMA_SQL_PG = `
     attempt_number INTEGER NOT NULL, worker_id TEXT,
     trigger TEXT NOT NULL, status TEXT NOT NULL, context_json TEXT,
     started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ, stop_reason TEXT, error TEXT,
+    prompt_tokens INTEGER, completion_tokens INTEGER,
+    model_name TEXT, provider TEXT,
     created_at TIMESTAMPTZ NOT NULL
   );
   CREATE TABLE IF NOT EXISTS pull_requests (
@@ -114,6 +116,19 @@ const SCHEMA_SQL_PG = `
     run_id TEXT NOT NULL, pr_id TEXT,
     status TEXT NOT NULL, url TEXT, summary TEXT,
     created_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ
+  );
+  CREATE TABLE IF NOT EXISTS ci_checks (
+    id TEXT PRIMARY KEY NOT NULL, ci_run_id TEXT NOT NULL,
+    source TEXT NOT NULL, external_id TEXT NOT NULL, name TEXT NOT NULL,
+    conclusion TEXT, details_url TEXT, summary TEXT,
+    annotations_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS review_threads (
+    id TEXT PRIMARY KEY NOT NULL, pr_id TEXT NOT NULL,
+    path TEXT, line INTEGER, is_resolved BOOLEAN NOT NULL,
+    comments_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL
   );
   CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT,

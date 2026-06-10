@@ -107,7 +107,7 @@ export class TaskWorker {
     });
     await this.tasks.complete(task.id, result);
     void this.reporter?.progressById(issueId, task.id, this.workerId, `Worker finished: ${result.status}`);
-    void this.reporter?.runSucceededById(task.id, issueId, this.workerId, task.attemptNumber, trigger);
+    void this.reporter?.runSucceededById(task.id, issueId, this.workerId, task.attemptNumber, trigger, result.usage ?? null);
     for (const pr of result.prs) {
       void this.reporter?.recordPrOpenedById(issueId, pr, task.id);
     }

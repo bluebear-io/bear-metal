@@ -73,7 +73,7 @@ describe("TaskWorker", () => {
     expect(reporter.workerUpsert).toHaveBeenCalledWith("worker-1", expect.any(String), "busy", "task-1", expect.any(Number));
     expect(reporter.branchCreatedById).toHaveBeenCalledWith("lin_1", "task-1", "worker-1", "Branch for DEN-1");
     expect(reporter.progressById).toHaveBeenCalledWith("lin_1", "task-1", "worker-1", "Worker finished: done");
-    expect(reporter.runSucceededById).toHaveBeenCalledWith("task-1", "lin_1", "worker-1", 2, "new");
+    expect(reporter.runSucceededById).toHaveBeenCalledWith("task-1", "lin_1", "worker-1", 2, "new", null);
     expect(reporter.recordPrOpenedById).toHaveBeenCalledWith("lin_1", pr, "task-1");
     expect(reporter.workerUpsert).toHaveBeenLastCalledWith("worker-1", expect.any(String), "idle", null, expect.any(Number));
     expect(reporter.runCrashedById).not.toHaveBeenCalled();

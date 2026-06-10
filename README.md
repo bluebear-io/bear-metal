@@ -40,7 +40,7 @@ Copy `.env.example` to `.env` and fill in the required values:
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
 | `GITHUB_APP_INSTALLATION_ID` | yes | — | installation id (numeric) |
 | `DATABASE_URL` | no | `sqlite:./bear-metal-manager.sqlite` | task queue database; supports `sqlite:<path>` and `postgres://...` |
-| `WORKER_CONCURRENCY` | no | `2` | max tickets worked in parallel |
+| `WORKER_CONCURRENCY` | no | `5` | max tickets worked in parallel |
 | `POLL_INTERVAL_MS` | no | `60000` | poll cadence |
 | `PORT` | no | `3000` | health server port |
 | `LOG_LEVEL` | no | `info` | pino log level |

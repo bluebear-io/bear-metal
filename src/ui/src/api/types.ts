@@ -87,8 +87,52 @@ export interface Run {
   endedAt: string | null;
   stopReason: "completed" | "timeout" | "crash" | "error" | null;
   error: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  modelName: string | null;
+  provider: string | null;
+  /** Estimated USD cost from the backend pricing table; null when pricing or tokens are missing. */
+  estimatedCostUsd: number | null;
   createdAt: string;
   worker: Worker | null;
+}
+
+export interface ReviewThreadComment {
+  id: string;
+  body: string;
+  author: string | null;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+  path: string | null;
+  line: number | null;
+}
+
+export interface ReviewThread {
+  id: string;
+  prId: string;
+  path: string | null;
+  line: number | null;
+  isResolved: boolean;
+  /** Raw JSON string — serialized ReviewThreadComment[]. Parsed by the renderer. */
+  commentsJson: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ModelComparisonRow {
+  family: "claude" | "gpt" | "gemini" | "other";
+  provider: string;
+  modelName: string;
+  totalRuns: number;
+  succeededRuns: number;
+  successRate: number;
+  avgDurationSeconds: number | null;
+  runsWithDuration: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  totalCostUsd: number;
+  avgCostUsd: number;
 }
 
 export interface PullRequest {
@@ -104,6 +148,21 @@ export interface PullRequest {
   lastRunId: string | null;
   createdAt: string;
   updatedAt: string;
+  reviewThreads: ReviewThread[];
+}
+
+export interface CiCheck {
+  id: string;
+  ciRunId: string;
+  source: "check_run" | "status";
+  externalId: string;
+  name: string;
+  conclusion: string | null;
+  detailsUrl: string | null;
+  summary: string | null;
+  /** Raw JSON string — serialized annotation array. Parsed by the renderer. */
+  annotationsJson: string;
+  createdAt: string;
 }
 
 export interface CiRun {
@@ -116,6 +175,7 @@ export interface CiRun {
   summary: string | null;
   createdAt: string;
   completedAt: string | null;
+  checks: CiCheck[];
 }
 
 export interface TicketEvent {

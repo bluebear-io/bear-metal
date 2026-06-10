@@ -46,6 +46,12 @@ export const runs = sqliteTable("runs", {
   endedAt: ts("ended_at"),
   stopReason: text("stop_reason", { enum: ["completed", "timeout", "crash", "error"] }),
   error: text("error"),
+  // LLM usage stats captured from the pi agent session when the run completes.
+  // Nullable: older runs and runs that crashed before any model call won't have them.
+  promptTokens: integer("prompt_tokens"),
+  completionTokens: integer("completion_tokens"),
+  modelName: text("model_name"),
+  provider: text("provider"),
   createdAt: ts("created_at").notNull(),
 });
 
@@ -74,6 +80,44 @@ export const ciRuns = sqliteTable("ci_runs", {
   summary: text("summary"),
   createdAt: ts("created_at").notNull(),
   completedAt: ts("completed_at"),
+});
+
+/**
+ * One row per failing CI check (a GitHub check_run that completed with a non-success conclusion,
+ * or a commit status that is not "success"). Lets the dashboard surface specific lint/type/test
+ * failures rather than a single CI "failed" boolean.
+ */
+export const ciChecks = sqliteTable("ci_checks", {
+  id: text("id").primaryKey(),
+  ciRunId: text("ci_run_id").notNull().references(() => ciRuns.id),
+  /** Source side of the check: GitHub check_run ("check_run") vs commit status ("status"). */
+  source: text("source", { enum: ["check_run", "status"] }).notNull(),
+  /** GitHub-side id (check_run.id or status context) — used to make rows idempotent across polls. */
+  externalId: text("external_id").notNull(),
+  name: text("name").notNull(),
+  conclusion: text("conclusion"),
+  detailsUrl: text("details_url"),
+  summary: text("summary"),
+  /** GitHub check_run.output.text annotations — line-level test/lint failures. */
+  annotationsJson: text("annotations_json").notNull().default("[]"),
+  createdAt: ts("created_at").notNull(),
+});
+
+/**
+ * One row per PR review thread (resolved or unresolved). The full comment chain is stored as JSON
+ * so the dashboard can render replies and resolution status without a second table.
+ */
+export const reviewThreads = sqliteTable("review_threads", {
+  /** GitHub GraphQL node id of the thread — stable across polls. */
+  id: text("id").primaryKey(),
+  prId: text("pr_id").notNull().references(() => pullRequests.id),
+  path: text("path"),
+  line: integer("line"),
+  isResolved: integer("is_resolved", { mode: "boolean" }).notNull(),
+  /** Serialized ReviewThreadComment[] — author/body/url/timestamps for every comment in the thread. */
+  commentsJson: text("comments_json").notNull().default("[]"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
 });
 
 export const events = sqliteTable("events", {

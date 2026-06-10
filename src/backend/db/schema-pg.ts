@@ -65,6 +65,11 @@ export const runs = pgTable("runs", {
   endedAt: ts("ended_at"),
   stopReason: text("stop_reason", { enum: ["completed", "timeout", "crash", "error"] }),
   error: text("error"),
+  // LLM usage stats from the pi agent session. Nullable for older runs and crashed runs.
+  promptTokens: integer("prompt_tokens"),
+  completionTokens: integer("completion_tokens"),
+  modelName: text("model_name"),
+  provider: text("provider"),
   createdAt: ts("created_at").notNull(),
 });
 
@@ -93,6 +98,35 @@ export const ciRuns = pgTable("ci_runs", {
   summary: text("summary"),
   createdAt: ts("created_at").notNull(),
   completedAt: ts("completed_at"),
+});
+
+/**
+ * One row per failing CI check (a GitHub check_run that completed with a non-success conclusion,
+ * or a commit status that is not "success").
+ */
+export const ciChecks = pgTable("ci_checks", {
+  id: text("id").primaryKey(),
+  ciRunId: text("ci_run_id").notNull().references(() => ciRuns.id),
+  source: text("source", { enum: ["check_run", "status"] }).notNull(),
+  externalId: text("external_id").notNull(),
+  name: text("name").notNull(),
+  conclusion: text("conclusion"),
+  detailsUrl: text("details_url"),
+  summary: text("summary"),
+  annotationsJson: text("annotations_json").notNull().default("[]"),
+  createdAt: ts("created_at").notNull(),
+});
+
+/** One row per PR review thread (resolved or unresolved). */
+export const reviewThreads = pgTable("review_threads", {
+  id: text("id").primaryKey(),
+  prId: text("pr_id").notNull().references(() => pullRequests.id),
+  path: text("path"),
+  line: integer("line"),
+  isResolved: boolean("is_resolved").notNull(),
+  commentsJson: text("comments_json").notNull().default("[]"),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull(),
 });
 
 export const events = pgTable("events", {

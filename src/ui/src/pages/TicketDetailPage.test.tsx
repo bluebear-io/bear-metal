@@ -44,6 +44,11 @@ const ticketDetail: TicketDetail = {
       endedAt: "2026-06-09T08:40:00.000Z",
       stopReason: "error",
       error: "Tests failed",
+      promptTokens: 50_000,
+      completionTokens: 2_000,
+      modelName: "claude-sonnet-4",
+      provider: "anthropic",
+      estimatedCostUsd: 0.18,
       createdAt: "2026-06-09T08:04:00.000Z",
       worker: {
         id: "worker_1",
@@ -67,6 +72,11 @@ const ticketDetail: TicketDetail = {
       endedAt: null,
       stopReason: null,
       error: null,
+      promptTokens: null,
+      completionTokens: null,
+      modelName: null,
+      provider: null,
+      estimatedCostUsd: null,
       createdAt: "2026-06-09T08:59:00.000Z",
       worker: {
         id: "worker_2",
@@ -93,6 +103,29 @@ const ticketDetail: TicketDetail = {
       lastRunId: "run_2",
       createdAt: "2026-06-09T08:45:00.000Z",
       updatedAt: "2026-06-09T09:15:00.000Z",
+      reviewThreads: [
+        {
+          id: "thr_1",
+          prId: "pr_1501",
+          path: "src/manager/scheduler.ts",
+          line: 211,
+          isResolved: false,
+          commentsJson: JSON.stringify([
+            {
+              id: "cmt_1",
+              body: "Should this guard against null PR?",
+              author: "reviewer-a",
+              url: "https://github.com/blueden/bear-metal/pull/1501#discussion_r1",
+              createdAt: "2026-06-09T08:33:00.000Z",
+              updatedAt: "2026-06-09T08:33:00.000Z",
+              path: "src/manager/scheduler.ts",
+              line: 211,
+            },
+          ]),
+          createdAt: "2026-06-09T08:33:00.000Z",
+          updatedAt: "2026-06-09T08:33:00.000Z",
+        },
+      ],
     },
   ],
   ciRuns: [
@@ -106,6 +139,22 @@ const ticketDetail: TicketDetail = {
       summary: "Unit tests failed on retry",
       createdAt: "2026-06-09T09:10:00.000Z",
       completedAt: "2026-06-09T09:18:00.000Z",
+      checks: [
+        {
+          id: "chk_eslint",
+          ciRunId: "ci_1",
+          source: "check_run",
+          externalId: "9001",
+          name: "ESLint",
+          conclusion: "failure",
+          detailsUrl: "https://github.com/blueden/bear-metal/actions/runs/1501/job/9001",
+          summary: "1 lint problem",
+          annotationsJson: JSON.stringify([
+            { path: "src/manager/scheduler.ts", start_line: 122, message: "'reporter' is defined but never used." },
+          ]),
+          createdAt: "2026-06-09T09:12:00.000Z",
+        },
+      ],
     },
   ],
   events: [
@@ -156,5 +205,11 @@ describe("TicketDetailPage", () => {
     expect(screen.getAllByText(/^failed$/i).length).toBeGreaterThan(0);
     expect(screen.getByText("Unit tests failed on retry")).toBeVisible();
     expect(screen.getByText("Worker reported failing unit tests")).toBeVisible();
+    // Granular CI check failure surfaces by name + annotation.
+    expect(screen.getByRole("link", { name: /ESLint/i })).toBeVisible();
+    expect(screen.getByText(/'reporter' is defined but never used\./)).toBeVisible();
+    // Review thread comment renders inline with resolution status.
+    expect(screen.getByText("Should this guard against null PR?")).toBeVisible();
+    expect(screen.getByText(/Needs action/i)).toBeVisible();
   });
 });

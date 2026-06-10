@@ -2,9 +2,16 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
+import {
+  commitAndPush,
+  createLogger,
+  getCurrentBranch,
+  getRemoteRef,
+  type ReviewThreadComment,
+} from "../shared/index.js";
 import type {
   DispatchResult,
+  DispatchUsage,
   PullRequestRef,
   WorkerGitHub,
   WorkerInputContext,
@@ -185,7 +192,11 @@ export async function runPiWorker(input: {
       } catch (err) {
         logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
       }
-      if (input.slack) {
+      // DEN-2329: suppress Slack notifications for bot-only iteration churn
+      // (e.g. Cursor/Baloo nits the agent auto-addresses). Always notify on
+      // new tickets, and on iterations only when at least one unresolved
+      // review thread's latest comment is from a human author.
+      if (input.slack && shouldNotifySlackForPr(input.context, pr)) {
         // The Slack client logs and swallows its own failures so a Slack outage
         // doesn't mask a successful commit/push from the rest of the pipeline.
         await input.slack.notifyPullRequest({
@@ -228,6 +239,7 @@ export async function runPiWorker(input: {
     ? [respondToTicketReporter, wroteCode]
     : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, wroteCode];
 
+  let usage: DispatchUsage | null = null;
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
@@ -288,6 +300,21 @@ export async function runPiWorker(input: {
 
   try {
     await session.prompt(prompt);
+    try {
+      const stats = session.getSessionStats();
+      const model = session.model;
+      if (model && (stats.tokens.input > 0 || stats.tokens.output > 0)) {
+        usage = {
+          promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
+          completionTokens: stats.tokens.output,
+          modelName: model.name,
+          provider: model.provider,
+        };
+        logger.info({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
+      }
+    } catch (statsError) {
+      logger.warn({ statsError }, "failed to capture pi session usage");
+    }
   } catch (error) {
     if (!limitHitReason) {
       logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
@@ -327,7 +354,8 @@ export async function runPiWorker(input: {
       throw new Error("Pi finished without calling a finish tool (wrote_code or respond_to_ticket_reporter)");
     }
   }
-  return decision;
+  // Attach LLM usage stats captured during the just-finished session (DEN-2313).
+  return usage ? { ...decision, usage } : decision;
 }
 
 function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequestRef[] {
@@ -341,6 +369,30 @@ function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequ
     }
   }
   return out;
+}
+
+function shouldNotifySlackForPr(context: WorkerInputContext, pr: PullRequestRef): boolean {
+  if (context.state === "new") return true;
+  const threads = unresolvedThreadsFor(context, pr);
+  // Iteration with no unresolved review threads ⇒ triggered by CI failure or
+  // automatic re-delegation, not by a human request. Stay quiet — humans only
+  // want pings for updates they explicitly asked for.
+  if (threads.length === 0) return false;
+  return threads.some((thread) => {
+    const latest = thread.comments[thread.comments.length - 1];
+    return latest ? isHumanAuthor(latest) : false;
+  });
+}
+
+// Authoritative signal is the GitHub GraphQL node-ID prefix on the author:
+// "U_…" = real user, "BOT_…" = GitHub App (including our own bear-metal-app,
+// whose GraphQL login is the bare slug with no "[bot]" suffix). When the
+// node ID is missing we fall back to the REST-style "<slug>[bot]" login
+// convention used by external bots like cursor[bot] / baloo[bot].
+function isHumanAuthor(comment: ReviewThreadComment): boolean {
+  if (comment.authorId) return comment.authorId.startsWith("U_");
+  if (!comment.author) return false;
+  return !comment.author.endsWith("[bot]");
 }
 
 function unresolvedThreadsFor(context: WorkerInputContext, pr: PullRequestRef) {

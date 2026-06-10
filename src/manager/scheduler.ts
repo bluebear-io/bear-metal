@@ -40,7 +40,23 @@ export interface LinearSource {
 export interface GitHubSource {
   /** Look up a known PR by ref for its merge/close state and work signals. */
   getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus>;
+  /** Post an issue-style comment on the PR — used to explain a human-takeover handoff. */
+  leaveComment(ref: PullRequestRef, body: string): Promise<void>;
+  /** True if the PR already has an issue comment containing `marker`. Used for idempotent one-shot comments. */
+  hasIssueCommentWithMarker(ref: PullRequestRef, marker: string): Promise<boolean>;
 }
+
+// Hidden marker keeps the takeover comment idempotent: if a retry sees the marker already present
+// on the PR, we skip re-posting so transient failures don't produce duplicate handoff comments.
+const HUMAN_TAKEOVER_MARKER = "<!-- bear-metal:human-takeover -->";
+const HUMAN_TAKEOVER_PR_COMMENT =
+  HUMAN_TAKEOVER_MARKER +
+  "\n\ud83d\udc3b Detected a human commit on this branch after bear-metal's last push. " +
+  "Stepping aside so I don't conflict with your work. Re-delegate the Linear ticket if you'd like me to pick it back up.";
+
+const HUMAN_TAKEOVER_LINEAR_COMMENT =
+  "Detected a commit on the PR branch made after bear-metal's last push, indicating a human takeover. " +
+  "Releasing this ticket to avoid stepping on the human's work. Re-delegate to bear-metal if you'd like me to resume.";
 
 /** The decision capability the scheduler needs (satisfied by ManagerTicketHandler). */
 export interface TicketHandler {
@@ -189,6 +205,8 @@ interface TicketDecision {
   phase: TicketPhase;
   /** Why this run is dispatched; carried into the handler. Unused when `dispatch` is false. */
   trigger: RunTrigger;
+  /** When set, a human pushed a commit after bear-metal on these open PRs — hand back with comments. */
+  humanTookOverPrs?: PullRequestRef[];
 }
 
 /**
@@ -244,15 +262,41 @@ async function evaluateTicket(
     return { remove: true, merged: anyMerged, context: { ticket, prs: knownPrs }, dispatch: false, phase: "active", trigger: "delegated_back" };
   }
 
+  const takenOver = statuses.filter((s) => s.humanTookOver && !s.pr.merged && s.pr.state !== "closed");
+  if (takenOver.length > 0) {
+    logger.warn(
+      { ticket: ticket.identifier, prs: takenOver.map((s) => s.pr.number) },
+      "human takeover detected on PR head branch; handing ticket back",
+    );
+    return {
+      remove: true,
+      merged: false,
+      context: { ticket, prs: knownPrs },
+      dispatch: false,
+      phase: "active",
+      trigger: "delegated_back",
+      humanTookOverPrs: takenOver.map((s) => ({ owner: s.pr.owner, repo: s.pr.repo, number: s.pr.number })),
+    };
+  }
+
   const testsFailed = statuses.some((s) => s.testsFailed);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
-  // Report the open PRs' current state (best-effort; never affects dispatch).
-  if (testsFailed) {
-    void reporter?.ciFailed(ticket, "CI checks failed");
-  } else {
-    const firstPr = statuses[0]?.pr;
-    if (firstPr) void reporter?.prOpened(ticket, firstPr);
-  }
+  // Report each open PR's current state (best-effort; never affects dispatch).
+  void (async () => {
+    try {
+      for (const status of statuses.filter((s) => !s.pr.merged && s.pr.state !== "closed")) {
+        await reporter?.recordPullRequestObservation(ticket, status.pr, status.context, null);
+      }
+      if (testsFailed) {
+        await reporter?.ciFailed(ticket, "CI checks failed");
+      } else {
+        const firstPr = statuses[0]?.pr;
+        if (firstPr) await reporter?.prOpened(ticket, firstPr);
+      }
+    } catch (err) {
+      logger.warn({ err, ticket: ticket.identifier }, "best-effort dashboard observation failed");
+    }
+  })();
 
   const needsWork = resuming || testsFailed || hasActionableUnresolvedComments;
   if (needsWork) {
@@ -280,8 +324,22 @@ async function refreshTrackedTickets(
   const toDispatch: DispatchItem[] = [];
   for (const slot of await tasks.listTracked()) {
     try {
-      const knownPrs = knownPrsForSlot(slot);
       const ticket = await linear.getTicket(slot.ticketId);
+      // A "pending" worker result means the worker stopped without finishing the ticket. The worker
+      // returns "pending" both when it hands the ticket back to its human owner (via
+      // commentAndHandBack — drops delegation) and when it pauses mid-run while still owning the
+      // ticket (e.g. respond_to_pr_review). Distinguish the two via the live Linear delegation:
+      // if the manager is no longer the delegate, the worker handed it back and the slot must be
+      // released; otherwise fall through to normal evaluation so PR review / parking still work.
+      if (slot.latestTask.resultStatus === "pending" && ticket.delegate?.id !== agentId) {
+        logger.info(
+          { ticket: ticket.identifier },
+          "worker handed ticket back; removed from tracking",
+        );
+        await tasks.setSlotStatus(slot.ticketId, "released");
+        continue;
+      }
+      const knownPrs = knownPrsForSlot(slot);
       const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, logger, reporter);
       if (decision.remove) {
         if (decision.merged) {
@@ -290,6 +348,26 @@ async function refreshTrackedTickets(
           await linear.handBack(ticket.id);
           logger.info({ ticket: ticket.identifier }, "handed ticket back to assignee after merge");
           void reporter?.ticketCompleted(ticket);
+        } else if (decision.humanTookOverPrs && decision.humanTookOverPrs.length > 0) {
+          // Human pushed a commit after bear-metal — leave a PR comment on each taken-over PR,
+          // then post a Linear comment and relinquish delegation. If any call throws, leave the
+          // slot tracked so the next tick retries cleanly. Each PR comment is gated by a hidden
+          // marker so a retry after a partial failure does not produce duplicate comments on
+          // PRs that already received the handoff.
+          for (const prRef of decision.humanTookOverPrs) {
+            const alreadyCommented = await github.hasIssueCommentWithMarker(prRef, HUMAN_TAKEOVER_MARKER);
+            if (alreadyCommented) {
+              logger.debug(
+                { ticket: ticket.identifier, pr: prRef.number },
+                "human-takeover comment already present; skipping",
+              );
+              continue;
+            }
+            await github.leaveComment(prRef, HUMAN_TAKEOVER_PR_COMMENT);
+          }
+          await linear.commentAndHandBack(ticket.id, HUMAN_TAKEOVER_LINEAR_COMMENT);
+          logger.info({ ticket: ticket.identifier }, "handed ticket back after human takeover");
+          void reporter?.delegatedBack(ticket, "Human takeover detected on PR branch");
         }
         await tasks.setSlotStatus(slot.ticketId, "released");
         continue;

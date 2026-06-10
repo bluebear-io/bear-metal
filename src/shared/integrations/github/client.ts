@@ -9,6 +9,7 @@ import type {
   FailedStatus,
   PRState,
   PullRequest,
+  PullRequestCommit,
   PullRequestContext,
   PullRequestRef,
   PullRequestStatus,
@@ -19,6 +20,11 @@ type OctokitPullListItem = RestEndpointMethodTypes["pulls"]["list"]["response"][
 type OctokitPull = RestEndpointMethodTypes["pulls"]["get"]["response"]["data"];
 type OctokitCheckRun = RestEndpointMethodTypes["checks"]["listForRef"]["response"]["data"]["check_runs"][number];
 type OctokitStatus = RestEndpointMethodTypes["repos"]["getCombinedStatusForRef"]["response"]["data"]["statuses"][number];
+
+export interface BotIdentity {
+  login: string;
+  id: string | null;
+}
 
 export interface GitHubIntegrationOptions {
   /** GitHub App credentials — the client authenticates as the installation. */
@@ -31,7 +37,7 @@ export interface GitHubIntegrationOptions {
 export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
   private readonly octokit: Octokit;
-  private cachedBotLogin: string | null = null;
+  private cachedBotIdentity: BotIdentity | null = null;
 
   constructor(options: GitHubIntegrationOptions) {
     this.octokit = new Octokit({
@@ -50,14 +56,23 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
   }
 
   async getBotLogin(): Promise<string> {
-    if (!this.cachedBotLogin) {
+    return (await this.getBotIdentity()).login;
+  }
+
+  async getBotIdentity(): Promise<BotIdentity> {
+    if (!this.cachedBotIdentity) {
       const { data } = await this.octokit.apps.getAuthenticated();
       if (!data) {
         throw new Error("GitHub API returned null for authenticated app");
       }
-      this.cachedBotLogin = `${data.slug}[bot]`;
+      const token = await this.getInstallationToken();
+      const installationOctokit = new Octokit({ auth: token });
+      const viewer = await installationOctokit.graphql<{ viewer: { id: string | null } }>(
+        "query BearMetalViewer { viewer { id } }",
+      );
+      this.cachedBotIdentity = { login: `${data.slug}[bot]`, id: viewer.viewer.id };
     }
-    return this.cachedBotLogin;
+    return this.cachedBotIdentity;
   }
 
   async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {
@@ -71,18 +86,51 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 
   /** PR merge/close state plus the work signals the manager dispatches on. */
   async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
-    const [pr, context, botLogin] = await Promise.all([
+    const [pr, context, commits, botIdentity] = await Promise.all([
       this.getPullRequest(ref),
       this.getPullRequestContext(ref),
-      this.getBotLogin(),
+      this.getPullRequestCommits(ref),
+      this.getBotIdentity(),
     ]);
     return {
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
-        isActionableReviewThread(thread, botLogin),
+        isActionableReviewThread(thread, botIdentity),
       ),
+      humanTookOver: isHumanTakeover(commits, botIdentity),
+      context,
     };
+  }
+
+  /**
+   * Commits on the PR head branch, oldest-first (the order GitHub returns).
+   * Used by the scheduler to detect a human takeover — a non-bot commit pushed after bear-metal's last one.
+   */
+  async getPullRequestCommits(ref: PullRequestRef): Promise<PullRequestCommit[]> {
+    const commits: PullRequestCommit[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.pulls.listCommits({
+        owner: ref.owner,
+        repo: ref.repo,
+        pull_number: ref.number,
+        per_page: 100,
+        page,
+      });
+      for (const commit of data) {
+        commits.push({
+          sha: commit.sha,
+          author: commit.author ? { login: commit.author.login, id: commit.author.id } : null,
+          committer: commit.committer ? { login: commit.committer.login, id: commit.committer.id } : null,
+        });
+      }
+      if (data.length < 100) {
+        break;
+      }
+      page += 1;
+    }
+    return commits;
   }
 
   async getPullRequestContext(ref: PullRequestRef): Promise<PullRequestContext> {
@@ -93,17 +141,19 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
     const headSha = pullRequest.head.sha;
 
-    const [failedCheckRuns, failedStatuses, unresolvedReviewThreads] = await Promise.all([
+    const [failedCheckRuns, failedStatuses, reviewThreads] = await Promise.all([
       this.getFailedCheckRuns(ref, headSha),
       this.getFailedStatuses(ref, headSha),
-      this.getUnresolvedReviewThreads(ref),
+      this.getReviewThreads(ref),
     ]);
 
     return {
       pullRequest: pullRequest as JsonValue,
+      headSha,
       failedCheckRuns,
       failedStatuses,
-      unresolvedReviewThreads,
+      unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
+      reviewThreads,
     };
   }
 
@@ -114,6 +164,23 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       issue_number: ref.number,
       body,
     });
+  }
+
+  /**
+   * True if the PR already has an issue comment whose body contains `marker`. Used to keep
+   * one-shot bot comments (e.g. the human-takeover handoff) idempotent across retries.
+   */
+  async hasIssueCommentWithMarker(ref: PullRequestRef, marker: string): Promise<boolean> {
+    const iterator = this.octokit.paginate.iterator(this.octokit.issues.listComments, {
+      owner: ref.owner,
+      repo: ref.repo,
+      issue_number: ref.number,
+      per_page: 100,
+    });
+    for await (const { data: page } of iterator) {
+      if (page.some((c) => typeof c.body === "string" && c.body.includes(marker))) return true;
+    }
+    return false;
   }
 
   async createPullRequest(input: {
@@ -269,7 +336,8 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return data.statuses.filter(isFailedStatus).map((status) => ({ status: status as JsonValue }));
   }
 
-  private async getUnresolvedReviewThreads(ref: PullRequestRef): Promise<ReviewThread[]> {
+  /** Every review thread on the PR — resolved + unresolved — so dashboards can render full conversations. */
+  private async getReviewThreads(ref: PullRequestRef): Promise<ReviewThread[]> {
     const response = await this.octokit.graphql<ReviewThreadsResponse>(REVIEW_THREADS_QUERY, {
       owner: ref.owner,
       name: ref.repo,
@@ -278,7 +346,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 
     const threads = response.repository.pullRequest.reviewThreads.nodes;
     return threads
-      .filter((thread) => !thread.isResolved)
       .map((thread) => ({
         id: thread.id,
         isResolved: thread.isResolved,
@@ -289,6 +356,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
           databaseId: comment.databaseId,
           body: comment.body,
           author: comment.author?.login ?? null,
+          authorId: comment.author?.id ?? null,
           url: comment.url,
           createdAt: comment.createdAt,
           updatedAt: comment.updatedAt,
@@ -301,10 +369,36 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
   }
 }
 
+/**
+ * A human takeover means bear-metal already pushed at least one commit to this branch AND the
+ * latest commit on the branch is not bear-metal's — someone pushed after the agent and owns it now.
+ * If bear-metal never pushed a commit, this returns false (nothing to take over from).
+ */
+export function isHumanTakeover(commits: PullRequestCommit[], bot: BotIdentity | string): boolean {
+  if (commits.length === 0) {
+    return false;
+  }
+  const botLogin = typeof bot === "string" ? bot : bot.login;
+  const isBotCommit = (commit: PullRequestCommit): boolean =>
+    commit.author?.login === botLogin || commit.committer?.login === botLogin;
+  if (!commits.some(isBotCommit)) {
+    return false;
+  }
+  const latest = commits[commits.length - 1]!;
+  return !isBotCommit(latest);
+}
+
 /** A thread is actionable when the latest comment is not from bear-metal — i.e. it needs a response. */
-export function isActionableReviewThread(thread: ReviewThread, botLogin: string): boolean {
+export function isActionableReviewThread(thread: ReviewThread, bot: BotIdentity | string): boolean {
   const latestComment = thread.comments.at(-1);
-  return latestComment?.author !== botLogin;
+  if (!latestComment) {
+    return true;
+  }
+  const botIdentity = typeof bot === "string" ? { login: bot, id: null } : bot;
+  if (latestComment.authorId && botIdentity.id) {
+    return latestComment.authorId !== botIdentity.id;
+  }
+  return latestComment.author !== botIdentity.login;
 }
 
 function toPullRequest(
@@ -367,7 +461,7 @@ type ReviewThreadsResponse = {
               id: string;
               databaseId: number | null;
               body: string;
-              author: { login: string } | null;
+              author: { login: string; id?: string | null } | null;
               url: string;
               createdAt: string;
               updatedAt: string;
@@ -398,7 +492,10 @@ const REVIEW_THREADS_QUERY = `
                 id
                 databaseId
                 body
-                author { login }
+                author {
+                  login
+                  ... on Node { id }
+                }
                 url
                 createdAt
                 updatedAt

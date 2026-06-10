@@ -17,7 +17,9 @@ const t = (iso: string) => new Date(iso);
 export function seedMockData(db: Db): void {
   // Delete in FK-safe order.
   db.delete(schema.events).run();
+  db.delete(schema.ciChecks).run();
   db.delete(schema.ciRuns).run();
+  db.delete(schema.reviewThreads).run();
   db.delete(schema.pullRequests).run();
   db.delete(schema.runs).run();
   db.delete(schema.tickets).run();
@@ -37,11 +39,11 @@ export function seedMockData(db: Db): void {
   ]).run();
 
   db.insert(schema.runs).values([
-    { id: "run_1", ticketId: "lin_1", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: t("2026-06-09T07:05:00Z"), endedAt: t("2026-06-09T07:50:00Z"), stopReason: "completed", error: null, createdAt: t("2026-06-09T07:05:00Z") },
-    { id: "run_2", ticketId: "lin_2", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: t("2026-06-09T08:00:00Z"), endedAt: t("2026-06-09T08:20:00Z"), stopReason: "completed", error: null, createdAt: t("2026-06-09T08:00:00Z") },
-    { id: "run_3", ticketId: "lin_2", attemptNumber: 2, workerId: "wk_2", trigger: "ci_failure", status: "running", contextJson: JSON.stringify({ branch: "feature/den-3002-flaky-test", note: "CI failed: 1 test" }), startedAt: t("2026-06-09T08:45:00Z"), endedAt: null, stopReason: null, error: null, createdAt: t("2026-06-09T08:45:00Z") },
-    { id: "run_to_3", ticketId: "lin_3", attemptNumber: 5, workerId: "wk_3", trigger: "delegated_back", status: "timed_out", contextJson: null, startedAt: t("2026-06-09T05:30:00Z"), endedAt: t("2026-06-09T06:00:00Z"), stopReason: "timeout", error: "exceeded 30m wall clock", createdAt: t("2026-06-09T05:30:00Z") },
-    { id: "run_in_1", ticketId: "lin_4", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "running", contextJson: null, startedAt: t("2026-06-09T08:55:00Z"), endedAt: null, stopReason: null, error: null, createdAt: t("2026-06-09T08:55:00Z") },
+    { id: "run_1", ticketId: "lin_1", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: t("2026-06-09T07:05:00Z"), endedAt: t("2026-06-09T07:50:00Z"), stopReason: "completed", error: null, promptTokens: 320_000, completionTokens: 18_000, modelName: "claude-sonnet-4", provider: "anthropic", createdAt: t("2026-06-09T07:05:00Z") },
+    { id: "run_2", ticketId: "lin_2", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "succeeded", contextJson: null, startedAt: t("2026-06-09T08:00:00Z"), endedAt: t("2026-06-09T08:20:00Z"), stopReason: "completed", error: null, promptTokens: 210_000, completionTokens: 12_500, modelName: "gpt-5", provider: "openai", createdAt: t("2026-06-09T08:00:00Z") },
+    { id: "run_3", ticketId: "lin_2", attemptNumber: 2, workerId: "wk_2", trigger: "ci_failure", status: "running", contextJson: JSON.stringify({ branch: "feature/den-3002-flaky-test", note: "CI failed: 1 test" }), startedAt: t("2026-06-09T08:45:00Z"), endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: t("2026-06-09T08:45:00Z") },
+    { id: "run_to_3", ticketId: "lin_3", attemptNumber: 5, workerId: "wk_3", trigger: "delegated_back", status: "timed_out", contextJson: null, startedAt: t("2026-06-09T05:30:00Z"), endedAt: t("2026-06-09T06:00:00Z"), stopReason: "timeout", error: "exceeded 30m wall clock", promptTokens: 450_000, completionTokens: 22_000, modelName: "gemini-2.5-pro", provider: "google", createdAt: t("2026-06-09T05:30:00Z") },
+    { id: "run_in_1", ticketId: "lin_4", attemptNumber: 1, workerId: "wk_1", trigger: "new", status: "running", contextJson: null, startedAt: t("2026-06-09T08:55:00Z"), endedAt: null, stopReason: null, error: null, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: t("2026-06-09T08:55:00Z") },
   ]).run();
 
   db.insert(schema.pullRequests).values([
@@ -51,7 +53,30 @@ export function seedMockData(db: Db): void {
 
   db.insert(schema.ciRuns).values([
     { id: "ci_1", ticketId: "lin_1", runId: "run_1", prId: "pr_1", status: "passed", url: "https://github.com/bluebear-io/blueden/actions/runs/1", summary: null, createdAt: t("2026-06-09T07:45:00Z"), completedAt: t("2026-06-09T07:52:00Z") },
-    { id: "ci_2", ticketId: "lin_2", runId: "run_2", prId: "pr_2", status: "failed", url: "https://github.com/bluebear-io/blueden/actions/runs/2", summary: "1 failing: session_aggregator.test", createdAt: t("2026-06-09T08:25:00Z"), completedAt: t("2026-06-09T08:40:00Z") },
+    { id: "ci_2", ticketId: "lin_2", runId: "run_2", prId: "pr_2", status: "failed", url: "https://github.com/bluebear-io/blueden/actions/runs/2", summary: "2 failing: ESLint, session_aggregator.test", createdAt: t("2026-06-09T08:25:00Z"), completedAt: t("2026-06-09T08:40:00Z") },
+  ]).run();
+
+  db.insert(schema.ciChecks).values([
+    { id: "chk_1", ciRunId: "ci_2", source: "check_run", externalId: "9001", name: "ESLint", conclusion: "failure", detailsUrl: "https://github.com/bluebear-io/blueden/actions/runs/2/job/9001", summary: "1 problem detected", annotationsJson: JSON.stringify([{ path: "src/manager/scheduler.ts", start_line: 122, message: "'reporter' is defined but never used.", annotation_level: "warning" }]), createdAt: t("2026-06-09T08:30:00Z") },
+    { id: "chk_2", ciRunId: "ci_2", source: "check_run", externalId: "9002", name: "unit tests", conclusion: "failure", detailsUrl: "https://github.com/bluebear-io/blueden/actions/runs/2/job/9002", summary: "session_aggregator.test failed", annotationsJson: JSON.stringify([{ path: "tests/session_aggregator.test.ts", start_line: 48, message: "Expected 3 events, got 2", annotation_level: "failure" }]), createdAt: t("2026-06-09T08:32:00Z") },
+  ]).run();
+
+  db.insert(schema.reviewThreads).values([
+    {
+      id: "thr_1", prId: "pr_2", path: "src/manager/scheduler.ts", line: 211, isResolved: false,
+      commentsJson: JSON.stringify([
+        { id: "cmt_1", body: "Should this guard against `null` PR?", author: "reviewer-a", url: "https://github.com/bluebear-io/blueden/pull/1501#discussion_r1", createdAt: "2026-06-09T08:33:00Z", updatedAt: "2026-06-09T08:33:00Z", path: "src/manager/scheduler.ts", line: 211 },
+      ]),
+      createdAt: t("2026-06-09T08:33:00Z"), updatedAt: t("2026-06-09T08:33:00Z"),
+    },
+    {
+      id: "thr_2", prId: "pr_2", path: "tests/session_aggregator.test.ts", line: 48, isResolved: true,
+      commentsJson: JSON.stringify([
+        { id: "cmt_2", body: "nit: add a comment describing the fixture.", author: "reviewer-b", url: "https://github.com/bluebear-io/blueden/pull/1501#discussion_r2", createdAt: "2026-06-09T08:34:00Z", updatedAt: "2026-06-09T08:34:00Z", path: "tests/session_aggregator.test.ts", line: 48 },
+        { id: "cmt_3", body: "Done in next push.", author: "bear-metal", url: "https://github.com/bluebear-io/blueden/pull/1501#discussion_r3", createdAt: "2026-06-09T08:36:00Z", updatedAt: "2026-06-09T08:36:00Z", path: "tests/session_aggregator.test.ts", line: 48 },
+      ]),
+      createdAt: t("2026-06-09T08:34:00Z"), updatedAt: t("2026-06-09T08:36:00Z"),
+    },
   ]).run();
 
   db.insert(schema.events).values([

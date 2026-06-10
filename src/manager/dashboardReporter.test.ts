@@ -11,6 +11,8 @@ function fakeClient() {
     upsertRun: vi.fn().mockResolvedValue(undefined),
     upsertPullRequest: vi.fn().mockResolvedValue(undefined),
     upsertCiRun: vi.fn().mockResolvedValue(undefined),
+    replaceCiChecks: vi.fn().mockResolvedValue(undefined),
+    replaceReviewThreads: vi.fn().mockResolvedValue(undefined),
     recordEvent: vi.fn().mockResolvedValue(undefined),
   } satisfies DashboardClient;
 }
@@ -67,12 +69,69 @@ describe("ciFailed", () => {
 });
 
 describe("prOpened", () => {
-  it("writes the PR row keyed owner/repo#number, sets pr_open, emits pr_opened", async () => {
+  it("sets pr_open and emits pr_opened (the PR row itself is owned by recordPullRequestObservation)", async () => {
     const c = fakeClient();
     const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", state: "open" as const, draft: false, merged: false, url: "purl" };
     await make(c).prOpened(ticket, pr);
-    expect(c.upsertPullRequest).toHaveBeenCalledWith(expect.objectContaining({ id: "o/r#7", ticketId: "lin_1", number: 7, state: "open" }));
+    expect(c.upsertPullRequest).not.toHaveBeenCalled();
     expect(c.upsertTicket).toHaveBeenCalledWith(expect.objectContaining({ bmStatus: "pr_open" }));
     expect(c.recordEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "pr_opened" }));
+  });
+});
+
+describe("recordPullRequestObservation", () => {
+  const pr = { owner: "o", repo: "r", number: 7, title: "PR", headRef: "h", state: "open" as const, draft: false, merged: false, url: "purl" };
+
+  it("persists PR row, all review threads (resolved+unresolved), and skips CI when no failures", async () => {
+    const c = fakeClient();
+    const context = {
+      pullRequest: {},
+      headSha: "abcdef1234567890",
+      failedCheckRuns: [],
+      failedStatuses: [],
+      unresolvedReviewThreads: [],
+      reviewThreads: [
+        { id: "t1", isResolved: false, path: "f.ts", line: 1, comments: [{ id: "c1", databaseId: 1, body: "x", author: "a", url: "u", createdAt: "t", updatedAt: "t", path: "f.ts", line: 1, originalLine: 1, diffHunk: null }] },
+        { id: "t2", isResolved: true, path: "g.ts", line: 2, comments: [] },
+      ],
+    };
+    await make(c).recordPullRequestObservation(ticket, pr, context, "run_5");
+    expect(c.upsertPullRequest).toHaveBeenCalledWith(expect.objectContaining({ id: "o/r#7", lastRunId: "run_5" }));
+    expect(c.replaceReviewThreads).toHaveBeenCalledWith("o/r#7", expect.arrayContaining([
+      expect.objectContaining({ id: "t1", isResolved: false, prId: "o/r#7" }),
+      expect.objectContaining({ id: "t2", isResolved: true }),
+    ]));
+    expect(c.upsertCiRun).not.toHaveBeenCalled();
+    expect(c.replaceCiChecks).not.toHaveBeenCalled();
+  });
+
+  it("persists a failed CI run keyed on PR+SHA with granular failing checks", async () => {
+    const c = fakeClient();
+    const context = {
+      pullRequest: {},
+      headSha: "abcdef1234567890",
+      failedCheckRuns: [
+        {
+          checkRun: { id: 9001, name: "ESLint", conclusion: "failure", details_url: "https://gh/job/1", output: { summary: "1 problem" } },
+          annotations: [{ path: "f.ts", start_line: 1, message: "oops" }],
+        },
+      ],
+      failedStatuses: [
+        { status: { context: "continuous-integration/jenkins", state: "failure", description: "build broke", target_url: "https://j/1" } },
+      ],
+      unresolvedReviewThreads: [],
+      reviewThreads: [],
+    };
+    await make(c).recordPullRequestObservation(ticket, pr, context, null);
+    expect(c.upsertCiRun).toHaveBeenCalledWith(expect.objectContaining({
+      id: "o/r#7@abcdef123456",
+      status: "failed",
+      prId: "o/r#7",
+      summary: expect.stringContaining("ESLint"),
+    }));
+    expect(c.replaceCiChecks).toHaveBeenCalledWith("o/r#7@abcdef123456", expect.arrayContaining([
+      expect.objectContaining({ source: "check_run", name: "ESLint", externalId: "9001", summary: "1 problem" }),
+      expect.objectContaining({ source: "status", name: "continuous-integration/jenkins", conclusion: "failure" }),
+    ]));
   });
 });

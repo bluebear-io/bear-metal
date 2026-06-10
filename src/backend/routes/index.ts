@@ -51,5 +51,13 @@ export function createRouter(repo: Repository): Router {
     }
   });
 
+  router.get("/models/comparison", async (_req, res, next) => {
+    try {
+      res.json({ models: await repo.listModelComparison() });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
 }

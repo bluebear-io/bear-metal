@@ -55,6 +55,29 @@ export interface PullRequestStatus {
   testsFailed: boolean;
   /** Any unresolved review thread whose latest comment is not from bear-metal. */
   hasActionableUnresolvedComments: boolean;
+  /**
+   * The PR has at least one bear-metal commit AND the latest commit on the head branch is not
+   * bear-metal's — a human pushed after the agent and now owns the branch. The scheduler stops
+   * iterating on a taken-over PR to avoid stepping on the human's work.
+   */
+  humanTookOver: boolean;
+  /** Full granular context (failed checks + every review thread) — fed into the dashboard. */
+  context: PullRequestContext;
+}
+
+/** Commit author/committer (GitHub user) — login + numeric user id when GitHub can match it. */
+export interface CommitAuthor {
+  login: string;
+  id: number;
+}
+
+/** A commit on a PR head branch, mapped from the Octokit REST response. */
+export interface PullRequestCommit {
+  sha: string;
+  /** GitHub user matched to the commit's author header. Null when GitHub couldn't match one. */
+  author: CommitAuthor | null;
+  /** GitHub user matched to the commit's committer header. Null when GitHub couldn't match one. */
+  committer: CommitAuthor | null;
 }
 
 export interface FailedCheckRun {
@@ -71,6 +94,7 @@ export interface ReviewThreadComment {
   databaseId: number | null;
   body: string;
   author: string | null;
+  authorId?: string | null;
   url: string;
   createdAt: string;
   updatedAt: string;
@@ -90,7 +114,12 @@ export interface ReviewThread {
 
 export interface PullRequestContext {
   pullRequest: JsonValue;
+  /** PR head commit SHA — used to key CI runs idempotently. */
+  headSha: string;
   failedCheckRuns: FailedCheckRun[];
   failedStatuses: FailedStatus[];
+  /** Subset of `reviewThreads` where isResolved=false — kept for back-compat with worker callers. */
   unresolvedReviewThreads: ReviewThread[];
+  /** Every review thread on the PR, resolved or not, so the dashboard can render the full conversation. */
+  reviewThreads: ReviewThread[];
 }

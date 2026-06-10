@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createLogger,
+  type JsonValue,
   type PullRequest,
   type PullRequestRef,
   type PullRequestStatus,
@@ -38,8 +39,26 @@ function prRef(number = 7): PullRequestRef {
   return { owner: "acme", repo: "widgets", number };
 }
 
-function status(pr: PullRequest, testsFailed = false, hasActionableUnresolvedComments = false): PullRequestStatus {
-  return { pr, testsFailed, hasActionableUnresolvedComments };
+function status(
+  pr: PullRequest,
+  testsFailed = false,
+  hasActionableUnresolvedComments = false,
+  humanTookOver = false,
+): PullRequestStatus {
+  return {
+    pr,
+    testsFailed,
+    hasActionableUnresolvedComments,
+    humanTookOver,
+    context: {
+      pullRequest: { head: { sha: "deadbeef" } } as unknown as JsonValue,
+      headSha: "deadbeef",
+      failedCheckRuns: [],
+      failedStatuses: [],
+      unresolvedReviewThreads: [],
+      reviewThreads: [],
+    },
+  };
 }
 
 /** Captures the scheduler's best-effort reporter calls by method + ticket identifier. */
@@ -111,6 +130,7 @@ class FakeLinear implements LinearSource {
 
 class FakeGitHub implements GitHubSource {
   statusCalls: number[] = [];
+  prCommentCalls: Array<{ ref: PullRequestRef; body: string }> = [];
   constructor(
     private readonly opts: {
       status?: PullRequestStatus;
@@ -122,6 +142,15 @@ class FakeGitHub implements GitHubSource {
     const perPr = this.opts.statusByNumber?.[ref.number];
     if (perPr) return perPr;
     return this.opts.status ?? status(openPr(ref.number));
+  }
+  async leaveComment(ref: PullRequestRef, body: string): Promise<void> {
+    this.prCommentCalls.push({ ref, body });
+  }
+  existingMarkers: Set<string> = new Set();
+  hasMarkerCalls: Array<{ ref: PullRequestRef; marker: string }> = [];
+  async hasIssueCommentWithMarker(ref: PullRequestRef, marker: string): Promise<boolean> {
+    this.hasMarkerCalls.push({ ref, marker });
+    return this.existingMarkers.has(`${ref.number}:${marker}`);
   }
 }
 
@@ -318,6 +347,50 @@ describe("Scheduler.tick", () => {
     expect(linear.handBackCalls).toEqual([]);
   });
 
+  it("hands back a ticket when a human pushed a commit after bear-metal on an open PR", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      // testsFailed=true and hasActionableUnresolvedComments=true would normally re-dispatch —
+      // humanTookOver must short-circuit that and release the slot instead.
+      status: status(openPr(7), true, true, true),
+    });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github, tasks, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(await tasks.countTracked()).toBe(0);
+    expect(linear.handBackCalls).toEqual([]);
+    expect(linear.commentAndHandBackCalls).toHaveLength(1);
+    expect(linear.commentAndHandBackCalls[0]?.ticketId).toBe("a");
+    expect(linear.commentAndHandBackCalls[0]?.body).toMatch(/human takeover/i);
+    expect(github.prCommentCalls).toHaveLength(1);
+    expect(github.prCommentCalls[0]?.ref).toEqual(prRef(7));
+    expect(github.prCommentCalls[0]?.body).toContain("bear-metal:human-takeover");
+  });
+
+  it("skips re-posting the human-takeover comment when the marker is already on the PR", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7), false, false, true) });
+    github.existingMarkers.add("7:<!-- bear-metal:human-takeover -->");
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({ linear, github, tasks, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(github.prCommentCalls).toHaveLength(0);
+    // Linear handoff still runs so the ticket gets released even if the PR comment was already posted on a prior attempt.
+    expect(linear.commentAndHandBackCalls).toHaveLength(1);
+    expect(await tasks.countTracked()).toBe(0);
+  });
+
   it("re-dispatches an iteration whose known PR has failed tests", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
@@ -375,7 +448,7 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(0);
   });
 
-  it("parks a tracked ticket whose delegation was relinquished, without dispatching or hitting GitHub", async () => {
+  it("releases a tracked ticket whose worker handed it back (pending + delegation dropped)", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const reassigned = makeTicket("a", { delegate: { id: "someone-else" } });
@@ -392,14 +465,12 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    const [slot] = await tasks.listTracked();
     expect(handler.handled).toHaveLength(0);
-    expect(await tasks.countTracked()).toBe(1);
-    expect(slot?.slotStatus).toBe("parked");
+    expect(await tasks.countTracked()).toBe(0);
     expect(github.statusCalls).toHaveLength(0);
   });
 
-  it("keys on delegate, not assignee: parks a ticket assigned to the agent but delegated elsewhere", async () => {
+  it("keys on delegate, not assignee: releases a pending ticket assigned to the agent but delegated elsewhere", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const refreshed = makeTicket("a", { assignee: { id: "user-1" }, delegate: { id: "someone-else" } });
@@ -415,31 +486,8 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    const [slot] = await tasks.listTracked();
     expect(handler.handled).toHaveLength(0);
-    expect(slot?.slotStatus).toBe("parked");
-  });
-
-  it("resumes a parked ticket when it is reassigned back to the manager", async () => {
-    const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
-    await tasks.setSlotStatus("A", "parked");
-    const handler = new RecordingHandler(tasks);
-    const scheduler = buildScheduler({
-      linear: new FakeLinear([], { A: makeTicket("a") }),
-      github: new FakeGitHub(),
-      tasks,
-      handler,
-      concurrency: 1,
-    });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    const [slot] = await tasks.listTracked();
-    expect(handler.handled.map((c) => c.ticket.id)).toEqual(["a"]);
-    expect(slot?.slotStatus).toBe("active");
-    expect(await tasks.countTracked()).toBe(1);
+    expect(await tasks.countTracked()).toBe(0);
   });
 
   it("does not re-dispatch a no-PR active ticket on refresh", async () => {
