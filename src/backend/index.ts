@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   const repo = createRepository(handle);
   const app = createApp(repo, { ingestToken: config.ingestToken, writer });
   // Never log the full databaseUrl — postgres:// URLs carry the password in clear text.
-  const server = app.listen(port, () => logger.info({ port, dialect }, "bear-metal dashboard backend listening"));
+  const server = app.listen(port, () => logger.info({ port, dialect }, "🐻 bear-metal dashboard is up — paws on the keyboard, eyes on the tickets"));
 
   let shuttingDown = false;
   function shutdown(signal: string): void {
