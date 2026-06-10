@@ -95,9 +95,12 @@ class FakeTaskQueue implements TaskQueue {
       workerId: null,
       resultStatus: null,
       result: null,
+      slotStatus: "active",
       createdAt: new Date(),
       updatedAt: new Date(),
       completedAt: null,
+      releasedAt: null,
+      iterationNumber: 1,
     };
   }
 
@@ -107,8 +110,20 @@ class FakeTaskQueue implements TaskQueue {
 
   async complete(): Promise<void> {}
 
-  async getCompleted(): Promise<TaskRecord[]> {
+  async listTracked() {
     return [];
+  }
+
+  async countTracked(): Promise<number> {
+    return 0;
+  }
+
+  async setSlotStatus(): Promise<TaskRecord> {
+    throw new Error("FakeTaskQueue.setSlotStatus is not used by ManagerTicketHandler tests");
+  }
+
+  async getIterationCount(): Promise<number> {
+    return 0;
   }
 
   async close(): Promise<void> {}

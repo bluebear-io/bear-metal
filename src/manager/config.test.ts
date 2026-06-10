@@ -25,6 +25,7 @@ beforeEach(() => {
     "POLL_INTERVAL_MS",
     "PORT",
     "LOG_LEVEL",
+    "TEST_TICKET_ID",
   ]) {
     delete process.env[key];
   }
@@ -47,6 +48,17 @@ describe("loadConfig", () => {
     expect(config.pollIntervalMs).toBe(60_000);
     expect(config.port).toBe(3000);
     expect(config.logLevel).toBe("info");
+    expect(config.testTicketId).toBeNull();
+  });
+
+  it("reads TEST_TICKET_ID when set", () => {
+    Object.assign(process.env, REQUIRED, { TEST_TICKET_ID: "DEN-9999" });
+    expect(loadConfig().testTicketId).toBe("DEN-9999");
+  });
+
+  it("defaults testTicketId to null when TEST_TICKET_ID is unset", () => {
+    Object.assign(process.env, REQUIRED);
+    expect(loadConfig().testTicketId).toBeNull();
   });
 
   it("restores real newlines in the App private key", () => {

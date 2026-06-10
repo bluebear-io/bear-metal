@@ -14,6 +14,7 @@ export interface Config {
   dashboardUrl: string;
   /** Shared secret sent as a bearer token to the dashboard write API. */
   ingestToken: string;
+  testTicketId: string | null;
 }
 
 function requiredEnv(name: string): string {
@@ -69,5 +70,6 @@ export function loadConfig(): Readonly<Config> {
     logPretty: boolEnv("LOG_PRETTY", false),
     dashboardUrl: process.env.DASHBOARD_URL ?? "",
     ingestToken: process.env.INGEST_TOKEN ?? "",
+    testTicketId: process.env.TEST_TICKET_ID?.trim() || null,
   });
 }

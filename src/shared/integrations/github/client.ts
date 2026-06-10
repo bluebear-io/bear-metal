@@ -3,7 +3,6 @@ import { Octokit, type RestEndpointMethodTypes } from "@octokit/rest";
 
 import type { JsonValue } from "../../json.js";
 import type { CommentCapable, Integration } from "../base.js";
-import type { Ticket } from "../linear/types.js";
 import type {
   FailedCheckRun,
   FailedStatus,
@@ -27,27 +26,11 @@ export interface GitHubIntegrationOptions {
   installationId: number;
 }
 
-interface RepoCoords {
-  owner: string;
-  repo: string;
-}
-
-/** True when a PR head branch refers to the given ticket (case-insensitive substring). */
-export function branchMatchesTicket(
-  headRef: string,
-  ticket: Pick<Ticket, "identifier" | "branchName">,
-): boolean {
-  const ref = headRef.toLowerCase();
-  return (
-    ref.includes(ticket.identifier.toLowerCase()) ||
-    ref.includes(ticket.branchName.toLowerCase())
-  );
-}
-
 /** GitHub integration. Extend with more capabilities (merge, review, ...) as needed. */
 export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
   private readonly octokit: Octokit;
+  private cachedBotLogin: string | null = null;
 
   constructor(options: GitHubIntegrationOptions) {
     this.octokit = new Octokit({
@@ -60,25 +43,20 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
   }
 
-  /**
-   * Find the open PR whose head branch refers to the ticket, across every repo the
-   * App installation can access. Returns null if none. (GitHub is queried only for
-   * active tickets, so the per-repo scan stays cheap.)
-   */
-  async findPullRequestForTicket(ticket: Ticket): Promise<PullRequest | null> {
-    for (const { owner, repo } of await this.installationRepos()) {
-      const pulls = await this.octokit.paginate(this.octokit.pulls.list, {
-        owner,
-        repo,
-        state: "open",
-        per_page: 100,
-      });
-      const match = pulls.find((pull) => branchMatchesTicket(pull.head.ref, ticket));
-      if (match) {
-        return toPullRequest(match, owner, repo);
+  async getInstallationToken(): Promise<string> {
+    const auth = (await this.octokit.auth({ type: "installation" })) as { token: string };
+    return auth.token;
+  }
+
+  async getBotLogin(): Promise<string> {
+    if (!this.cachedBotLogin) {
+      const { data } = await this.octokit.apps.getAuthenticated();
+      if (!data) {
+        throw new Error("GitHub API returned null for authenticated app");
       }
+      this.cachedBotLogin = `${data.slug}[bot]`;
     }
-    return null;
+    return this.cachedBotLogin;
   }
 
   async getPullRequest(ref: PullRequestRef): Promise<PullRequest> {
@@ -92,14 +70,17 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 
   /** PR merge/close state plus the work signals the manager dispatches on. */
   async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
-    const [pr, context] = await Promise.all([
+    const [pr, context, botLogin] = await Promise.all([
       this.getPullRequest(ref),
       this.getPullRequestContext(ref),
+      this.getBotLogin(),
     ]);
     return {
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
-      hasUnresolvedComments: context.unresolvedReviewThreads.length > 0,
+      hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
+        isActionableReviewThread(thread, botLogin),
+      ),
     };
   }
 
@@ -180,15 +161,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     );
   }
 
-  /** Every repo the App installation can access. */
-  private async installationRepos(): Promise<RepoCoords[]> {
-    const repos = await this.octokit.paginate(
-      this.octokit.apps.listReposAccessibleToInstallation,
-      { per_page: 100 },
-    );
-    return repos.map((repo) => ({ owner: repo.owner.login, repo: repo.name }));
-  }
-
   private async getFailedCheckRuns(ref: PullRequestRef, sha: string): Promise<FailedCheckRun[]> {
     const { data } = await this.octokit.checks.listForRef({
       owner: ref.owner,
@@ -254,6 +226,12 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
         })),
       }));
   }
+}
+
+/** A thread is actionable when the latest comment is not from bear-metal — i.e. it needs a response. */
+export function isActionableReviewThread(thread: ReviewThread, botLogin: string): boolean {
+  const latestComment = thread.comments.at(-1);
+  return latestComment?.author !== botLogin;
 }
 
 function toPullRequest(

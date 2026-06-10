@@ -1,3 +1,5 @@
+<img src="docs/assets/logo.png" alt="Bear Metal" width="160" />
+
 # bear-metal
 
 Background coding agent. Takes tickets from Linear, hands them to a worker that
@@ -6,9 +8,9 @@ solves them with an LLM, and opens a GitHub PR.
 ## Scope (current)
 
 This repository currently contains one package with a **manager** and **worker**.
-The manager polls Linear tickets assigned to `LINEAR_ASSIGNEE_ID`, looks up the
-GitHub PR for active tickets, and maintains an in-memory concurrency cap. It
-hands work to workers through a SQL-backed `tasks` table. The worker atomically
+The manager polls Linear tickets delegated to `LINEAR_ASSIGNEE_ID`, looks up the
+GitHub PR for active tickets with a known worker-returned PR ref, and maintains
+its concurrency slots in the SQL-backed `tasks` table. The worker atomically
 acquires a task row, gathers Linear/GitHub context, runs the repository clone
 hook, invokes Pi, and writes the dispatch result (`pending` or `done`) back to
 that task row.
@@ -61,9 +63,11 @@ tasks (
   worker_id TEXT NULL,
   result_status TEXT NULL,
   result_json TEXT NULL,
+  slot_status TEXT NOT NULL DEFAULT 'active',
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
-  completed_at TIMESTAMP NULL
+  completed_at TIMESTAMP NULL,
+  released_at TIMESTAMP NULL
 )
 ```
 
@@ -72,9 +76,11 @@ acquired. `worker_id IS NOT NULL AND result_status IS NULL` means a worker is
 running it. `result_status IS NOT NULL` is the return value from the worker's
 dispatch function, with the full dispatch result in `result_json`.
 
-Each dispatch attempt is a separate row. Completed rows are retained for
-debugging and audit history; the manager only polls task IDs held in its
-in-memory ticket store.
+Each dispatch attempt is a separate row. The latest row per `ticket_id` is also
+the manager's durable slot record while `slot_status` is `active` or `parked`;
+`released` rows no longer occupy concurrency. The manager derives the known PR
+only from the latest row's `result_json.pr` or `input_json.pr`; it does not scan
+GitHub branches or commit messages to discover PRs.
 
 ## Clone Hook
 

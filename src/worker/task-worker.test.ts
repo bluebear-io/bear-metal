@@ -102,9 +102,12 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     workerId: null,
     resultStatus: null,
     result: null,
+    slotStatus: "active",
     createdAt: new Date(),
     updatedAt: new Date(),
     completedAt: null,
+    releasedAt: null,
+    iterationNumber: 1,
     ...overrides,
   };
 }
@@ -138,8 +141,20 @@ class FakeTaskQueue implements TaskQueue {
     this.completed.push({ taskId, result });
   }
 
-  async getCompleted(): Promise<TaskRecord[]> {
+  async listTracked() {
     return [];
+  }
+
+  async countTracked(): Promise<number> {
+    return 0;
+  }
+
+  async setSlotStatus(): Promise<TaskRecord> {
+    throw new Error("FakeTaskQueue.setSlotStatus is not used by TaskWorker tests");
+  }
+
+  async getIterationCount(): Promise<number> {
+    return 0;
   }
 
   async close(): Promise<void> {}
@@ -148,6 +163,7 @@ class FakeTaskQueue implements TaskQueue {
 function makeIntegrations() {
   return {
     github: {
+      getInstallationToken: vi.fn().mockResolvedValue("test-token"),
       getPullRequestContext: vi.fn(),
       resolveReviewThread: vi.fn(),
       replyToReviewThread: vi.fn(),
@@ -157,6 +173,7 @@ function makeIntegrations() {
     linear: {
       getTicketContext: vi.fn(),
       moveTicketToInProgress: vi.fn(),
+      moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
     },
   };

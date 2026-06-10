@@ -14,7 +14,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-export function createWorkspaceGuardedTools(workspaceRoot: string): ToolDefinition[] {
+export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: NodeJS.ProcessEnv): ToolDefinition[] {
   const root = normalizeWorkspaceRoot(workspaceRoot);
   const localBash = createLocalBashOperations();
   const bashOperations: BashOperations = {
@@ -26,6 +26,8 @@ export function createWorkspaceGuardedTools(workspaceRoot: string): ToolDefiniti
           ...options.env,
           HOME: root,
           PWD: root,
+          // git credentials and SSH→HTTPS rewrite — override HOME last so .netrc is found
+          ...gitEnv,
         },
       });
     },
@@ -49,6 +51,7 @@ export function createWorkspaceGuardedTools(workspaceRoot: string): ToolDefiniti
           ...context.env,
           HOME: root,
           PWD: root,
+          ...gitEnv,
         },
       }),
     }),

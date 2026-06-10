@@ -5,8 +5,8 @@ export type RemoteRef = {
   repo: string;
 };
 
-export async function commitAndPush(repoRoot: string, commitMessage: string): Promise<void> {
-  const branch = (await git(["branch", "--show-current"], repoRoot)).stdout.trim();
+export async function commitAndPush(repoRoot: string, commitMessage: string, env?: NodeJS.ProcessEnv): Promise<void> {
+  const branch = (await git(["branch", "--show-current"], repoRoot, env)).stdout.trim();
   if (!branch) {
     throw new Error(`Could not determine current git branch in ${repoRoot}`);
   }
@@ -19,9 +19,9 @@ export async function commitAndPush(repoRoot: string, commitMessage: string): Pr
     throw new Error(`wrote_code called but ${repoRoot} has no git changes`);
   }
 
-  await git(["add", "-A"], repoRoot);
-  await git(["commit", "-m", commitMessage], repoRoot);
-  await git(["push", "-u", "origin", "HEAD"], repoRoot);
+  await git(["add", "-A"], repoRoot, env);
+  await git(["commit", "-m", commitMessage], repoRoot, env);
+  await git(["push", "-u", "origin", "HEAD"], repoRoot, env);
 }
 
 export async function getCurrentBranch(repoRoot: string): Promise<string> {
@@ -47,6 +47,6 @@ export function parseGitHubRemote(remoteUrl: string): RemoteRef {
   throw new Error(`Unsupported GitHub remote URL: ${remoteUrl}`);
 }
 
-function git(args: string[], cwd: string) {
-  return runCommand("git", args, { cwd, timeoutMs: 5 * 60 * 1000 });
+function git(args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+  return runCommand("git", args, { cwd, timeoutMs: 5 * 60 * 1000, env: env ? { ...process.env, ...env } : undefined });
 }

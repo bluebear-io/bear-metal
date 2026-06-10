@@ -10,6 +10,7 @@ export type DispatchResult = {
 export type { PullRequestRef };
 
 export interface WorkerGitHub {
+  getInstallationToken(): Promise<string>;
   getPullRequestContext(pr: PullRequestRef): Promise<PullRequestContext>;
   resolveReviewThread(threadId: string): Promise<void>;
   replyToReviewThread(pr: PullRequestRef, threadId: string, body: string, threads: ReviewThread[]): Promise<void>;
@@ -27,6 +28,7 @@ export interface WorkerGitHub {
 export interface WorkerLinear {
   getTicketContext(ticketId: string): Promise<LinearTicketContext>;
   moveTicketToInProgress(ticketId: string): Promise<void>;
+  moveTicketToInReview(ticketId: string): Promise<void>;
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
 }
 
@@ -40,6 +42,9 @@ export type CloneScriptResult = {
   workspaceDir: string;
   stdout: string;
   stderr: string;
+  /** Absolute path to a private temp dir containing .netrc with GitHub token.
+   *  Caller is responsible for deleting it after the dispatch completes. */
+  netrcDir: string;
 };
 
 export type WorkerInputContext = {

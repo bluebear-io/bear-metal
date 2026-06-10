@@ -16,7 +16,7 @@ function fakeClient() {
 }
 const ticket: Ticket = {
   id: "lin_1", identifier: "DEN-1", title: "t", description: null, url: "u", branchName: "b",
-  status: { name: "Todo", type: "unstarted" }, labels: ["bear-metal"], assignee: null, delegate: { id: "agent" },
+  status: { name: "Todo", type: "unstarted" }, priority: 0, labels: ["bear-metal"], assignee: null, delegate: { id: "agent" },
 };
 const make = (c: DashboardClient) => new DashboardReporter({ client: c, logger, maxAttempts: 5, now: () => new Date(1000) });
 
