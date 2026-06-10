@@ -127,7 +127,8 @@ async function main(): Promise<void> {
   const handle = await openWritableDbFromUrl(cfg.databaseUrl);
   try {
     await seedMockDataViaHandle(handle);
-    console.log(`Seeded mock data into ${cfg.databaseUrl}`);
+    // Never log the databaseUrl — postgres:// URLs carry the password in clear text.
+    console.log(`Seeded mock data (${cfg.dialect})`);
   } finally {
     await handle.close();
   }

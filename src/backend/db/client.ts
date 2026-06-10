@@ -71,8 +71,15 @@ const SCHEMA_SQL_SQLITE = `
 `;
 
 /**
- * Postgres mirror of the SQLite bootstrap. Timestamps use TIMESTAMPTZ (matches Drizzle's
- * `timestamp({withTimezone, mode:date})` in schema-pg.ts), booleans use BOOLEAN.
+ * Postgres mirror of the SQLite bootstrap. Timestamps use TIMESTAMPTZ, booleans use BOOLEAN.
+ *
+ * Unlike SQLite, this DDL declares **no** FK constraints — the dashboard's writer is best-effort
+ * and arrives out of order (a child row can land before its parent). On SQLite we sidestep that
+ * with `pragma foreign_keys = OFF`; on Postgres the equivalent (`SET session_replication_role`)
+ * requires superuser or rds_superuser privilege the runtime account typically lacks. Rather than
+ * silently breaking when that privilege is missing, we omit the FK declarations here. The
+ * `.references(...)` calls in `schema-pg.ts` remain for Drizzle's type-side relationship inference
+ * but produce no runtime constraint.
  */
 const SCHEMA_SQL_PG = `
   CREATE TABLE IF NOT EXISTS tickets (
@@ -89,28 +96,28 @@ const SCHEMA_SQL_PG = `
     started_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL
   );
   CREATE TABLE IF NOT EXISTS runs (
-    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL REFERENCES tickets(id),
-    attempt_number INTEGER NOT NULL, worker_id TEXT REFERENCES workers(id),
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL,
+    attempt_number INTEGER NOT NULL, worker_id TEXT,
     trigger TEXT NOT NULL, status TEXT NOT NULL, context_json TEXT,
     started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ, stop_reason TEXT, error TEXT,
     created_at TIMESTAMPTZ NOT NULL
   );
   CREATE TABLE IF NOT EXISTS pull_requests (
-    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL REFERENCES tickets(id),
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL,
     number INTEGER NOT NULL, title TEXT NOT NULL, head_ref TEXT NOT NULL,
     state TEXT NOT NULL, draft BOOLEAN NOT NULL, merged BOOLEAN NOT NULL,
-    url TEXT NOT NULL, last_run_id TEXT REFERENCES runs(id),
+    url TEXT NOT NULL, last_run_id TEXT,
     created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL
   );
   CREATE TABLE IF NOT EXISTS ci_runs (
-    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL REFERENCES tickets(id),
-    run_id TEXT NOT NULL REFERENCES runs(id), pr_id TEXT REFERENCES pull_requests(id),
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT NOT NULL,
+    run_id TEXT NOT NULL, pr_id TEXT,
     status TEXT NOT NULL, url TEXT, summary TEXT,
     created_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ
   );
   CREATE TABLE IF NOT EXISTS events (
-    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT REFERENCES tickets(id),
-    run_id TEXT REFERENCES runs(id), worker_id TEXT REFERENCES workers(id),
+    id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT,
+    run_id TEXT, worker_id TEXT,
     source TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL,
     payload_json TEXT, created_at TIMESTAMPTZ NOT NULL
   );
@@ -155,17 +162,8 @@ export async function openWritableDbFromUrl(databaseUrl: string): Promise<DbHand
   } finally {
     init.release();
   }
-  // PG's equivalent of `pragma foreign_keys = OFF` is `session_replication_role = replica`, which
-  // takes effect per-session. Drizzle's connection pool reuses connections, so set it on each
-  // acquired client. The simplest reliable hook is the pool's `connect` event — fires once per
-  // physical connection added to the pool.
-  pool.on("connect", (client) => {
-    void client.query("SET session_replication_role = 'replica'").catch(() => {
-      // Best-effort: if the role can't be elevated (e.g. on a read-replica), the writer will
-      // raise an FK error on out-of-order inserts, which the caller already surfaces. We don't
-      // want a noisy log here in tests.
-    });
-  });
+  // No `SET session_replication_role` here — SCHEMA_SQL_PG omits FK constraints entirely so
+  // out-of-order writes don't need session-level FK disabling. See the SCHEMA_SQL_PG comment.
   const db = drizzlePg(pool, { schema: schemaPg });
   return {
     dialect: "postgres",
@@ -196,10 +194,23 @@ export async function openReadOnlyDbFromUrl(databaseUrl: string): Promise<DbHand
       },
     };
   }
+  // Enforce read-only at session level, and fail loudly if the SET doesn't take effect — a
+  // silent fallback to read-write would violate the caller's expectation. The first acquired
+  // connection is probed synchronously below; subsequent connections set the same flag on
+  // their `connect` event and surface failures via the pool's `error` listener so they aren't
+  // discarded.
   const pool = new pg.Pool({ connectionString: databaseUrl });
   pool.on("connect", (client) => {
-    void client.query("SET default_transaction_read_only = on").catch(() => undefined);
+    client.query("SET default_transaction_read_only = on").catch((err) => {
+      pool.emit("error", err, client);
+    });
   });
+  const probe = await pool.connect();
+  try {
+    await probe.query("SET default_transaction_read_only = on");
+  } finally {
+    probe.release();
+  }
   const db = drizzlePg(pool, { schema: schemaPg });
   return {
     dialect: "postgres",

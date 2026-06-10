@@ -15,18 +15,22 @@ async function main(): Promise<void> {
   const writer = createWriter(handle);
   const repo = createRepository(handle);
   const app = createApp(repo, { ingestToken: config.ingestToken, writer });
-  const server = app.listen(port, () =>
-    logger.info({ port, databaseUrl, dialect }, "bear-metal dashboard backend listening"),
-  );
+  // Never log the full databaseUrl — postgres:// URLs carry the password in clear text.
+  const server = app.listen(port, () => logger.info({ port, dialect }, "bear-metal dashboard backend listening"));
 
   let shuttingDown = false;
   function shutdown(signal: string): void {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, "shutting down");
-    server.close(async () => {
-      await handle.close();
-      process.exit(0);
+    // `server.close()`'s callback is invoked synchronously and its return value is ignored.
+    // If we ran `await handle.close()` inside the callback, `process.exit` could fire before the
+    // PG pool's drain completed. Sequence the two awaits manually instead.
+    server.close(() => {
+      handle
+        .close()
+        .catch((err) => logger.error({ err }, "error closing DB handle"))
+        .finally(() => process.exit(0));
     });
   }
 
