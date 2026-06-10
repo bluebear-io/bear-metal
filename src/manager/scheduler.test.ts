@@ -388,7 +388,7 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(0);
   });
 
-  it("parks a tracked ticket whose delegation was relinquished, without dispatching or hitting GitHub", async () => {
+  it("releases a tracked ticket whose worker handed it back (pending + delegation dropped)", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const reassigned = makeTicket("a", { delegate: { id: "someone-else" } });
@@ -405,14 +405,12 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    const [slot] = await tasks.listTracked();
     expect(handler.handled).toHaveLength(0);
-    expect(await tasks.countTracked()).toBe(1);
-    expect(slot?.slotStatus).toBe("parked");
+    expect(await tasks.countTracked()).toBe(0);
     expect(github.statusCalls).toHaveLength(0);
   });
 
-  it("keys on delegate, not assignee: parks a ticket assigned to the agent but delegated elsewhere", async () => {
+  it("keys on delegate, not assignee: releases a pending ticket assigned to the agent but delegated elsewhere", async () => {
     const tasks = await makeQueue();
     await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
     const refreshed = makeTicket("a", { assignee: { id: "user-1" }, delegate: { id: "someone-else" } });
@@ -428,31 +426,8 @@ describe("Scheduler.tick", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    const [slot] = await tasks.listTracked();
     expect(handler.handled).toHaveLength(0);
-    expect(slot?.slotStatus).toBe("parked");
-  });
-
-  it("resumes a parked ticket when it is reassigned back to the manager", async () => {
-    const tasks = await makeQueue();
-    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
-    await tasks.setSlotStatus("A", "parked");
-    const handler = new RecordingHandler(tasks);
-    const scheduler = buildScheduler({
-      linear: new FakeLinear([], { A: makeTicket("a") }),
-      github: new FakeGitHub(),
-      tasks,
-      handler,
-      concurrency: 1,
-    });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    const [slot] = await tasks.listTracked();
-    expect(handler.handled.map((c) => c.ticket.id)).toEqual(["a"]);
-    expect(slot?.slotStatus).toBe("active");
-    expect(await tasks.countTracked()).toBe(1);
+    expect(await tasks.countTracked()).toBe(0);
   });
 
   it("does not re-dispatch a no-PR active ticket on refresh", async () => {
