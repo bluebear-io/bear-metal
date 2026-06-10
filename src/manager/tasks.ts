@@ -365,12 +365,16 @@ class SqliteTaskQueue implements TaskQueue {
     // Cap reached: terminal pending + release slot. The ticket stays delegated, so the next
     // scheduler tick re-admits it as a fresh start; MAX_ITERATIONS bounds the outer loop.
     const synthetic: DispatchResult = { status: "pending", prs: [] };
-    db.prepare(`
+    const abandon = db.prepare(`
       UPDATE tasks
       SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?,
           slot_status = 'released', released_at = ?
       WHERE id = ? AND worker_id IS NOT NULL AND result_status IS NULL
     `).run(synthetic.status, JSON.stringify(synthetic), now, now, now, row.id);
+    if (abandon.changes !== 1) {
+      // Lost the race — someone else (heartbeat, complete, prior reclaim) changed the row.
+      throw new Error(`Failed to abandon stale task ${row.id}`);
+    }
     return { task: rowToTask(this.getById(row.id)), action: "abandoned", reason, previousWorkerId };
   }
 
