@@ -324,8 +324,22 @@ async function refreshTrackedTickets(
   const toDispatch: DispatchItem[] = [];
   for (const slot of await tasks.listTracked()) {
     try {
-      const knownPrs = knownPrsForSlot(slot);
       const ticket = await linear.getTicket(slot.ticketId);
+      // A "pending" worker result means the worker stopped without finishing the ticket. The worker
+      // returns "pending" both when it hands the ticket back to its human owner (via
+      // commentAndHandBack — drops delegation) and when it pauses mid-run while still owning the
+      // ticket (e.g. respond_to_pr_review). Distinguish the two via the live Linear delegation:
+      // if the manager is no longer the delegate, the worker handed it back and the slot must be
+      // released; otherwise fall through to normal evaluation so PR review / parking still work.
+      if (slot.latestTask.resultStatus === "pending" && ticket.delegate?.id !== agentId) {
+        logger.info(
+          { ticket: ticket.identifier },
+          "worker handed ticket back; removed from tracking",
+        );
+        await tasks.setSlotStatus(slot.ticketId, "released");
+        continue;
+      }
+      const knownPrs = knownPrsForSlot(slot);
       const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, logger, reporter);
       if (decision.remove) {
         if (decision.merged) {
