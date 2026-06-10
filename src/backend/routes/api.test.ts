@@ -6,6 +6,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "../db/schema.js";
 import { seedMockData } from "../mock/seed.js";
 import { createApp } from "../app.js";
+import { createRepository } from "../db/repository.js";
 
 let app: ReturnType<typeof createApp>;
 beforeAll(() => {
@@ -13,7 +14,8 @@ beforeAll(() => {
   const db: BetterSQLite3Database<typeof schema> = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
   seedMockData(db);
-  app = createApp(db);
+  const repo = createRepository({ dialect: "sqlite", db, schema, close: async () => undefined });
+  app = createApp(repo);
 });
 
 describe("GET /api/health", () => {

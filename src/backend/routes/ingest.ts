@@ -1,14 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router, type RequestHandler } from "express";
-import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import {
-  upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent,
-  replaceCiChecksForRun, replaceReviewThreadsForPr,
-} from "../db/writer.js";
+import type { Writer } from "../db/writer.js";
 import type { CiCheckPayload, ReviewThreadPayload } from "../../shared/dashboard/types.js";
-
-type Db = BetterSQLite3Database<typeof schema>;
 
 class BadPayload extends Error {}
 
@@ -54,7 +48,7 @@ function asObject(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-export function createIngestRouter(db: Db, token: string): Router {
+export function createIngestRouter(writer: Writer, token: string): Router {
   const router = Router();
 
   const expectedBearer = `Bearer ${token}`;
@@ -70,23 +64,24 @@ export function createIngestRouter(db: Db, token: string): Router {
     next();
   };
 
-  const handle = (fn: (body: Record<string, unknown>, id?: string) => void): RequestHandler => (req, res) => {
-    try {
-      fn(asObject(req.body), req.params.id);
-      res.status(204).end();
-    } catch (err) {
-      if (err instanceof BadPayload) {
-        res.status(400).json({ error: err.message });
-        return;
+  const handle = (fn: (body: Record<string, unknown>, id?: string) => Promise<void>): RequestHandler =>
+    async (req, res, next) => {
+      try {
+        await fn(asObject(req.body), req.params.id);
+        res.status(204).end();
+      } catch (err) {
+        if (err instanceof BadPayload) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        next(err);
       }
-      throw err;
-    }
-  };
+    };
 
-  router.put("/tickets/:id", requireToken, handle((b, id) => {
+  router.put("/tickets/:id", requireToken, handle(async (b, id) => {
     const bodyId = str(b, "id");
     if (bodyId !== id) throw new BadPayload("path id and body id must match");
-    upsertTicket(db, {
+    await writer.upsertTicket({
       id: bodyId, identifier: str(b, "identifier"), title: str(b, "title"),
       description: strOrNull(b, "description"), url: str(b, "url"), branchName: str(b, "branchName"),
       linearStatusName: str(b, "linearStatusName"), linearStatusType: str(b, "linearStatusType"),
@@ -96,20 +91,20 @@ export function createIngestRouter(db: Db, token: string): Router {
     });
   }));
 
-  router.put("/workers/:id", requireToken, handle((b, id) => {
+  router.put("/workers/:id", requireToken, handle(async (b, id) => {
     const bodyId = str(b, "id");
     if (bodyId !== id) throw new BadPayload("path id and body id must match");
-    upsertWorker(db, {
+    await writer.upsertWorker({
       id: bodyId, name: str(b, "name"), status: enumVal(b, "status", schema.workers.status.enumValues),
       currentRunId: strOrNull(b, "currentRunId"), lastHeartbeatAt: numOrNull(b, "lastHeartbeatAt"),
       startedAt: num(b, "startedAt"), updatedAt: num(b, "updatedAt"),
     });
   }));
 
-  router.put("/runs/:id", requireToken, handle((b, id) => {
+  router.put("/runs/:id", requireToken, handle(async (b, id) => {
     const bodyId = str(b, "id");
     if (bodyId !== id) throw new BadPayload("path id and body id must match");
-    upsertRun(db, {
+    await writer.upsertRun({
       id: bodyId, ticketId: str(b, "ticketId"), attemptNumber: num(b, "attemptNumber"),
       workerId: strOrNull(b, "workerId"), trigger: enumVal(b, "trigger", schema.runs.trigger.enumValues),
       status: enumVal(b, "status", schema.runs.status.enumValues), contextJson: strOrNull(b, "contextJson"),
@@ -124,10 +119,10 @@ export function createIngestRouter(db: Db, token: string): Router {
     });
   }));
 
-  router.put("/pull-requests/:id", requireToken, handle((b, id) => {
+  router.put("/pull-requests/:id", requireToken, handle(async (b, id) => {
     const bodyId = str(b, "id");
     if (bodyId !== id) throw new BadPayload("path id and body id must match");
-    upsertPullRequest(db, {
+    await writer.upsertPullRequest({
       id: bodyId, ticketId: str(b, "ticketId"), number: num(b, "number"), title: str(b, "title"),
       headRef: str(b, "headRef"), state: enumVal(b, "state", schema.pullRequests.state.enumValues),
       draft: bool(b, "draft"), merged: bool(b, "merged"), url: str(b, "url"),
@@ -135,17 +130,17 @@ export function createIngestRouter(db: Db, token: string): Router {
     });
   }));
 
-  router.put("/ci-runs/:id", requireToken, handle((b, id) => {
+  router.put("/ci-runs/:id", requireToken, handle(async (b, id) => {
     const bodyId = str(b, "id");
     if (bodyId !== id) throw new BadPayload("path id and body id must match");
-    upsertCiRun(db, {
+    await writer.upsertCiRun({
       id: bodyId, ticketId: str(b, "ticketId"), runId: str(b, "runId"), prId: strOrNull(b, "prId"),
       status: enumVal(b, "status", schema.ciRuns.status.enumValues), url: strOrNull(b, "url"),
       summary: strOrNull(b, "summary"), createdAt: num(b, "createdAt"), completedAt: numOrNull(b, "completedAt"),
     });
   }));
 
-  router.put("/ci-runs/:id/checks", requireToken, handle((b, id) => {
+  router.put("/ci-runs/:id/checks", requireToken, handle(async (b, id) => {
     if (!id) throw new BadPayload("missing ci run id");
     const list = b.checks;
     if (!Array.isArray(list)) throw new BadPayload("checks must be an array");
@@ -167,10 +162,10 @@ export function createIngestRouter(db: Db, token: string): Router {
         createdAt: num(c, "createdAt"),
       };
     });
-    replaceCiChecksForRun(db, id, payloads);
+    await writer.replaceCiChecksForRun(id, payloads);
   }));
 
-  router.put("/pull-requests/:id/review-threads", requireToken, handle((b, id) => {
+  router.put("/pull-requests/:id/review-threads", requireToken, handle(async (b, id) => {
     if (!id) throw new BadPayload("missing pull request id");
     const list = b.threads;
     if (!Array.isArray(list)) throw new BadPayload("threads must be an array");
@@ -198,11 +193,11 @@ export function createIngestRouter(db: Db, token: string): Router {
         updatedAt: num(t, "updatedAt"),
       };
     });
-    replaceReviewThreadsForPr(db, id, payloads);
+    await writer.replaceReviewThreadsForPr(id, payloads);
   }));
 
-  router.post("/events", requireToken, handle((b) => {
-    insertEvent(db, {
+  router.post("/events", requireToken, handle(async (b) => {
+    await writer.insertEvent({
       ticketId: strOrNull(b, "ticketId"), runId: strOrNull(b, "runId"), workerId: strOrNull(b, "workerId"),
       source: enumVal(b, "source", schema.events.source.enumValues),
       type: enumVal(b, "type", schema.events.type.enumValues),

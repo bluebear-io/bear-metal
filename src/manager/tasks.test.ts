@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 import { createTaskQueueFromDatabaseUrl, type TaskQueue } from "./tasks.js";
 
 const queues: TaskQueue[] = [];
@@ -237,4 +241,5 @@ describe("TaskQueue", () => {
     expect(released.releasedAt).toBeInstanceOf(Date);
     expect(await queue.countTracked()).toBe(0);
   });
+
 });

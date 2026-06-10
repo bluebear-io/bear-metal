@@ -84,12 +84,14 @@ function makeBundle(id: string, withPr = true): RowBundle {
 }
 
 let db: BetterSQLite3Database<typeof schema>;
+let handle: import("../db/client.js").DbHandle;
 
-beforeEach(() => {
+beforeEach(async () => {
   const sqlite = new Database(":memory:");
   db = drizzle(sqlite, { schema });
   migrate(db, { migrationsFolder: "./src/backend/db/migrations" });
-  ensureBackfillWorker(db, T("2026-06-10T00:00:00Z"));
+  handle = { dialect: "sqlite", db, schema, close: async () => undefined };
+  await ensureBackfillWorker(handle, T("2026-06-10T00:00:00Z"));
 });
 
 describe("ensureBackfillWorker", () => {
@@ -100,8 +102,8 @@ describe("ensureBackfillWorker", () => {
     expect(rows[0]?.status).toBe("stopped");
   });
 
-  it("updates the timestamps on subsequent calls without raising", () => {
-    ensureBackfillWorker(db, T("2026-06-11T00:00:00Z"));
+  it("updates the timestamps on subsequent calls without raising", async () => {
+    await ensureBackfillWorker(handle, T("2026-06-11T00:00:00Z"));
     const rows = db.select().from(schema.workers).all();
     expect(rows).toHaveLength(1);
     expect(rows[0]?.updatedAt.toISOString()).toBe("2026-06-11T00:00:00.000Z");
@@ -109,8 +111,8 @@ describe("ensureBackfillWorker", () => {
 });
 
 describe("writeBundle", () => {
-  it("writes the full bundle on first call", () => {
-    const result = writeBundle(db, makeBundle("lin_a"));
+  it("writes the full bundle on first call", async () => {
+    const result = await writeBundle(handle, makeBundle("lin_a"));
     expect(result.written).toBe(true);
     expect(db.select().from(schema.tickets).all()).toHaveLength(1);
     expect(db.select().from(schema.runs).all()).toHaveLength(1);
@@ -118,9 +120,9 @@ describe("writeBundle", () => {
     expect(db.select().from(schema.events).all()).toHaveLength(1);
   });
 
-  it("returns written=false when the ticket already exists and inserts nothing", () => {
-    writeBundle(db, makeBundle("lin_a"));
-    const second = writeBundle(db, makeBundle("lin_a"));
+  it("returns written=false when the ticket already exists and inserts nothing", async () => {
+    await writeBundle(handle, makeBundle("lin_a"));
+    const second = await writeBundle(handle, makeBundle("lin_a"));
     expect(second.written).toBe(false);
     expect(db.select().from(schema.tickets).all()).toHaveLength(1);
     expect(db.select().from(schema.runs).all()).toHaveLength(1);
@@ -128,15 +130,15 @@ describe("writeBundle", () => {
     expect(db.select().from(schema.events).all()).toHaveLength(1);
   });
 
-  it("writes a different ticket independently when one already exists", () => {
-    writeBundle(db, makeBundle("lin_a"));
-    const second = writeBundle(db, makeBundle("lin_b"));
+  it("writes a different ticket independently when one already exists", async () => {
+    await writeBundle(handle, makeBundle("lin_a"));
+    const second = await writeBundle(handle, makeBundle("lin_b"));
     expect(second.written).toBe(true);
     expect(db.select().from(schema.tickets).all()).toHaveLength(2);
   });
 
-  it("inserts ticket-only bundles (no PR/CI/events) cleanly", () => {
-    const result = writeBundle(db, makeBundle("lin_c", false));
+  it("inserts ticket-only bundles (no PR/CI/events) cleanly", async () => {
+    const result = await writeBundle(handle, makeBundle("lin_c", false));
     expect(result.written).toBe(true);
     expect(db.select().from(schema.tickets).all()).toHaveLength(1);
     expect(db.select().from(schema.runs).all()).toHaveLength(0);
