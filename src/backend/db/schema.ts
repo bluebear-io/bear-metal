@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { index, sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 
 const ts = (name: string) => integer(name, { mode: "timestamp_ms" });
 
@@ -39,7 +39,9 @@ export const workerStatusTransitions = sqliteTable("worker_status_transitions", 
   workerId: text("worker_id").notNull().references(() => workers.id),
   status: text("status", { enum: ["idle", "busy", "stopped", "dead"] }).notNull(),
   changedAt: ts("changed_at").notNull(),
-});
+}, (t) => [
+  index("worker_status_transitions_worker_id_changed_at_idx").on(t.workerId, t.changedAt),
+]);
 
 export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),

@@ -6,4 +6,4 @@ CREATE TABLE `worker_status_transitions` (
 	FOREIGN KEY (`worker_id`) REFERENCES `workers`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
-CREATE INDEX `worker_status_transitions_worker_id_changed_at_idx` ON `worker_status_transitions` (`worker_id`, `changed_at`);
+CREATE INDEX `worker_status_transitions_worker_id_changed_at_idx` ON `worker_status_transitions` (`worker_id`,`changed_at`);

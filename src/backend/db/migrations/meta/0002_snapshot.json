@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b7daaf4e-0b39-4869-b263-a479a6b5e58e",
-  "prevId": "3b7083d0-4e11-4477-944e-dbc3b499fb92",
+  "id": "bb45614f-5396-400f-af99-d5a95022c011",
+  "prevId": "b7daaf4e-0b39-4869-b263-a479a6b5e58e",
   "tables": {
     "ci_checks": {
       "name": "ci_checks",
@@ -789,6 +789,67 @@
       },
       "indexes": {},
       "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "worker_status_transitions": {
+      "name": "worker_status_transitions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "changed_at": {
+          "name": "changed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "worker_status_transitions_worker_id_changed_at_idx": {
+          "name": "worker_status_transitions_worker_id_changed_at_idx",
+          "columns": [
+            "worker_id",
+            "changed_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "worker_status_transitions_worker_id_workers_id_fk": {
+          "name": "worker_status_transitions_worker_id_workers_id_fk",
+          "tableFrom": "worker_status_transitions",
+          "tableTo": "workers",
+          "columnsFrom": [
+            "worker_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
