@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import express, { type Express } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./db/schema.js";
+import type { Writer } from "./db/writer.js";
 import { authStub } from "./middleware/auth.js";
 import { createRouter } from "./routes/index.js";
 import { createIngestRouter } from "./routes/ingest.js";
@@ -14,6 +15,8 @@ const UI_DIST = join(__dirname, "../../ui-dist");
 export interface AppOptions {
   /** Shared secret enabling the write (ingest) API. Empty/omitted → read-only server. */
   ingestToken?: string;
+  /** Dialect-agnostic Writer used by the ingest router. Required iff `ingestToken` is set. */
+  writer?: Writer;
 }
 
 // DB is injected so tests can pass a seeded in-memory DB. A non-empty ingestToken mounts the write API.
@@ -22,7 +25,10 @@ export function createApp(db: BetterSQLite3Database<typeof schema>, options: App
   app.use(express.json());
   app.use(authStub);
   if (options.ingestToken) {
-    app.use("/api", createIngestRouter(db, options.ingestToken));
+    if (!options.writer) {
+      throw new Error("createApp: options.writer is required when ingestToken is set");
+    }
+    app.use("/api", createIngestRouter(options.writer, options.ingestToken));
   }
   app.use("/api", createRouter(db));
   app.use(express.static(UI_DIST));

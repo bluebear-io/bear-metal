@@ -4,6 +4,8 @@ import Database from "better-sqlite3";
 import { createLogger } from "../shared/index.js";
 import { loadBackendConfig } from "./config.js";
 import { openReadWriteDb } from "./db/client.js";
+import * as schemaSqlite from "./db/schema.js";
+import { createWriter } from "./db/writer.js";
 import { createApp } from "./app.js";
 
 // Create all tables on first boot; safe to run every time (IF NOT EXISTS).
@@ -66,7 +68,15 @@ function main(): void {
   init.exec(SCHEMA_SQL);
   init.close();
   const { db, sqlite } = openReadWriteDb(dbPath);
-  const app = createApp(db, { ingestToken: config.ingestToken });
+  const writer = createWriter({
+    dialect: "sqlite",
+    db,
+    schema: schemaSqlite,
+    close: async () => {
+      sqlite.close();
+    },
+  });
+  const app = createApp(db, { ingestToken: config.ingestToken, writer });
   const server = app.listen(port, () => logger.info({ port, dbPath, dialect }, "bear-metal dashboard backend listening"));
 
   let shuttingDown = false;
