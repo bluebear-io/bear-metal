@@ -133,12 +133,19 @@ export function createIngestRouter(db: Db, token: string): Router {
 
   // Param name is :id (not :runId) so the shared handle() wrapper — which reads req.params.id —
   // sees the path value. Body still carries `runId` to match the dashboard payload contract.
+  // Per-line cap guards the read-model SQLite file from a runaway agent dumping multi-MB blobs;
+  // pino lines in this codebase are always well under 16 KB.
+  const MAX_LOG_MESSAGE_LEN = 16_000;
   router.post("/runs/:id/logs", requireToken, handle((b, id) => {
     const bodyRunId = str(b, "runId");
     if (bodyRunId !== id) throw new BadPayload("path runId and body runId must match");
+    const message = str(b, "message");
+    if (message.length > MAX_LOG_MESSAGE_LEN) {
+      throw new BadPayload(`message must be \u2264 ${MAX_LOG_MESSAGE_LEN} characters`);
+    }
     insertRunLog(db, {
       runId: bodyRunId,
-      message: str(b, "message"),
+      message,
       level: enumVal(b, "level", schema.runLogs.level.enumValues),
       timestamp: num(b, "timestamp"),
     });

@@ -91,6 +91,13 @@ describe("POST /api/runs/:runId/logs", () => {
     const res = await request(app).post("/api/runs/run_x/logs").set("authorization", `Bearer ${TOKEN}`).send({ ...logBody, level: "bogus" });
     expect(res.status).toBe(400);
   });
+
+  it("rejects an oversized message with 400", async () => {
+    await seedRun();
+    const huge = "x".repeat(16_001);
+    const res = await request(app).post("/api/runs/run_x/logs").set("authorization", `Bearer ${TOKEN}`).send({ ...logBody, message: huge });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe("POST /api/events", () => {
