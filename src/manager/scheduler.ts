@@ -324,6 +324,7 @@ async function evaluateTicket(
 
   const testsFailed = statuses.some((s) => s.testsFailed);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
+  const hasMergeConflicts = statuses.some((s) => s.hasMergeConflicts);
   // Report each open PR's current state (best-effort; never affects dispatch).
   void (async () => {
     try {
@@ -341,17 +342,26 @@ async function evaluateTicket(
     }
   })();
 
-  const needsWork = resuming || testsFailed || hasActionableUnresolvedComments;
+  const needsWork = resuming || testsFailed || hasMergeConflicts || hasActionableUnresolvedComments;
   if (needsWork) {
     logger.info(
-      { ticket: ticket.identifier, count: statuses.length, resuming },
+      { ticket: ticket.identifier, count: statuses.length, resuming, hasMergeConflicts },
       "pull requests need work; re-dispatching",
     );
     if (!testsFailed) {
-      void reporter?.delegatedBack(ticket, "Re-dispatched: unresolved review or resumed");
+      const summary = hasMergeConflicts
+        ? "Re-dispatched: merge conflicts on PR head"
+        : "Re-dispatched: unresolved review or resumed";
+      void reporter?.delegatedBack(ticket, summary);
     }
   }
-  const trigger: RunTrigger = testsFailed ? "ci_failure" : "delegated_back";
+  // Priority: failing checks > merge conflicts > everything else. CI is the most
+  // common re-trigger so it stays first; conflicts are the next most concrete signal.
+  const trigger: RunTrigger = testsFailed
+    ? "ci_failure"
+    : hasMergeConflicts
+      ? "merge_conflict"
+      : "delegated_back";
   return { remove: false, merged: false, context: { ticket, prs: knownPrs }, dispatch: needsWork, phase: "active", trigger };
 }
 

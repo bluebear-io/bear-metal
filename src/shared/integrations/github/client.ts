@@ -98,6 +98,9 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
         isActionableReviewThread(thread, botIdentity),
       ),
+      // GitHub returns null while it's still recomputing the merge after a push — don't trigger
+      // re-dispatch on null, the next poll will see a definite value.
+      hasMergeConflicts: context.mergeable === false,
       humanTookOver: isHumanTakeover(commits, botIdentity),
       context,
     };
@@ -154,6 +157,8 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       failedStatuses,
       unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
       reviewThreads,
+      // pullRequest.mergeable is typed `boolean | null | undefined`; normalize to boolean|null.
+      mergeable: pullRequest.mergeable ?? null,
     };
   }
 

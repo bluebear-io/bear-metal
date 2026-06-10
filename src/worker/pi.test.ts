@@ -714,5 +714,6 @@ function makePullRequestContext() {
     failedStatuses: [],
     unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
     reviewThreads,
+    mergeable: true,
   };
 }
