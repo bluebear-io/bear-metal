@@ -52,6 +52,47 @@ describe("PUT /api/tickets/:id", () => {
   });
 });
 
+describe("POST /api/runs/:runId/logs", () => {
+  const runBody = {
+    id: "run_x", ticketId: "lin_x", attemptNumber: 1, workerId: null,
+    trigger: "new", status: "running", contextJson: null,
+    startedAt: 1000, endedAt: null, stopReason: null, error: null, createdAt: 1000,
+  };
+  const logBody = { runId: "run_x", message: "hello", level: "info", timestamp: 1500 };
+
+  async function seedRun(): Promise<void> {
+    await request(app).put("/api/tickets/lin_x").set("authorization", `Bearer ${TOKEN}`).send(ticketBody);
+    await request(app).put("/api/runs/run_x").set("authorization", `Bearer ${TOKEN}`).send(runBody);
+  }
+
+  it("rejects without a token", async () => {
+    const res = await request(app).post("/api/runs/run_x/logs").send(logBody);
+    expect(res.status).toBe(401);
+  });
+
+  it("appends a log line and surfaces it through GET", async () => {
+    await seedRun();
+    const post = await request(app).post("/api/runs/run_x/logs").set("authorization", `Bearer ${TOKEN}`).send(logBody);
+    expect(post.status).toBe(204);
+    const get = await request(app).get("/api/runs/run_x/logs");
+    expect(get.status).toBe(200);
+    expect(get.body.logs).toHaveLength(1);
+    expect(get.body.logs[0]).toMatchObject({ runId: "run_x", message: "hello", level: "info" });
+  });
+
+  it("rejects a mismatched runId with 400", async () => {
+    await seedRun();
+    const res = await request(app).post("/api/runs/other/logs").set("authorization", `Bearer ${TOKEN}`).send(logBody);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an invalid level with 400", async () => {
+    await seedRun();
+    const res = await request(app).post("/api/runs/run_x/logs").set("authorization", `Bearer ${TOKEN}`).send({ ...logBody, level: "bogus" });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("POST /api/events", () => {
   it("appends an event", async () => {
     await request(app).put("/api/tickets/lin_x").set("authorization", `Bearer ${TOKEN}`).send(ticketBody);

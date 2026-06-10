@@ -12,6 +12,7 @@ function fakeClient() {
     upsertPullRequest: vi.fn().mockResolvedValue(undefined),
     upsertCiRun: vi.fn().mockResolvedValue(undefined),
     recordEvent: vi.fn().mockResolvedValue(undefined),
+    recordRunLog: vi.fn().mockResolvedValue(undefined),
   } satisfies DashboardClient;
 }
 const ticket: Ticket = {

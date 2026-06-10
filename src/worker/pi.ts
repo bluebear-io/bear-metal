@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef } from "../shared/index.js";
+import { commitAndPush, createLogger, getCurrentBranch, getRemoteRef, type Logger } from "../shared/index.js";
 import type {
   DispatchResult,
   PullRequestRef,
@@ -14,7 +14,7 @@ import type {
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
-const logger = createLogger({
+const defaultLogger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
   name: "worker:pi",
   pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
@@ -29,7 +29,9 @@ export async function runPiWorker(input: {
   linear: WorkerLinear;
   slack?: WorkerSlack;
   gitEnv: NodeJS.ProcessEnv;
+  logger?: Logger;
 }): Promise<DispatchResult> {
+  const logger = input.logger ?? defaultLogger;
   let decision: DispatchResult | undefined;
   const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
 
@@ -342,6 +344,6 @@ function setApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: s
   if (apiKey) {
     authStorage.setRuntimeApiKey(provider, apiKey);
   } else {
-    logger.warn({ provider, envName }, "API key not set; this provider will be unavailable to the pi agent");
+    defaultLogger.warn({ provider, envName }, "API key not set; this provider will be unavailable to the pi agent");
   }
 }

@@ -130,6 +130,16 @@ export interface TicketEvent {
   createdAt: string;
 }
 
+export type RunLogLevel = "debug" | "info" | "warn" | "error";
+
+export interface RunLog {
+  id: string;
+  runId: string;
+  message: string;
+  level: RunLogLevel;
+  timestamp: string;
+}
+
 export interface TicketDetail {
   ticket: Ticket;
   runs: Run[];

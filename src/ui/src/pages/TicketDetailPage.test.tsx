@@ -9,6 +9,7 @@ import { TicketDetailPage } from "./TicketDetailPage.js";
 
 vi.mock("../api/queries.js", () => ({
   useTicketDetail: vi.fn(),
+  useRunLogs: vi.fn(() => ({ data: [], isLoading: false, isFetching: false, error: null })),
 }));
 
 const mockUseTicketDetail = vi.mocked(useTicketDetail);

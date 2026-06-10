@@ -84,6 +84,15 @@ export interface CiRunPayload {
   completedAt: number | null;
 }
 
+export type RunLogLevel = "debug" | "info" | "warn" | "error";
+
+export interface RunLogPayload {
+  runId: string;
+  message: string;
+  level: RunLogLevel;
+  timestamp: number;
+}
+
 export interface EventPayload {
   ticketId: string | null;
   runId: string | null;

@@ -1,7 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "./schema.js";
-import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker } from "./types.js";
+import type { Ticket, Run, PullRequestRow, CiRun, EventRow, Worker, RunLog } from "./types.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
@@ -103,6 +103,10 @@ export function getTicketDetail(db: Db, id: string): TicketDetail | null {
   const events = db.select().from(schema.events).where(eq(schema.events.ticketId, id)).orderBy(schema.events.createdAt).all();
 
   return { ticket, runs, pullRequests, ciRuns, events };
+}
+
+export function listRunLogs(db: Db, runId: string): RunLog[] {
+  return db.select().from(schema.runLogs).where(eq(schema.runLogs.runId, runId)).orderBy(schema.runLogs.timestamp).all();
 }
 
 export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerListItem[] {

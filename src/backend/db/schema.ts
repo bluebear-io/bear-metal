@@ -76,6 +76,14 @@ export const ciRuns = sqliteTable("ci_runs", {
   completedAt: ts("completed_at"),
 });
 
+export const runLogs = sqliteTable("run_logs", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => runs.id),
+  message: text("message").notNull(),
+  level: text("level", { enum: ["debug", "info", "warn", "error"] }).notNull(),
+  timestamp: ts("timestamp").notNull(),
+});
+
 export const events = sqliteTable("events", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").references(() => tickets.id),

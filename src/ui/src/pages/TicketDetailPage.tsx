@@ -5,6 +5,7 @@ import type { CiRun, PullRequest, Run, Ticket, TicketEvent } from "../api/types.
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
+import { RunLogPanel } from "../components/RunLogPanel.js";
 import { StatusBadge } from "../components/StatusBadge.js";
 import { formatDateTime, formatDuration, parseLabels } from "../lib/format.js";
 
@@ -70,41 +71,34 @@ const TicketSummary = ({ ticket }: { ticket: Ticket }) => {
   );
 };
 
+const RunCard = ({ run }: { run: Run }) => (
+  <div className="flex flex-col gap-3 rounded-md border border-border-default bg-bg-card p-4">
+    <div className="grid gap-3 sm:grid-cols-[auto_auto_minmax(0,1fr)_auto] sm:items-center">
+      <span className="text-sm font-medium">Attempt {run.attemptNumber}</span>
+      <StatusBadge status={run.status} />
+      <span className="text-sm text-text-secondary">
+        <span className="mr-3">Trigger: {run.trigger.replaceAll("_", " ")}</span>
+        <span className="mr-3">Worker: {run.worker?.name ?? "—"}</span>
+        <span>Duration: {formatDuration(run.startedAt, run.endedAt)}</span>
+      </span>
+      <span className="text-xs text-text-muted">{[run.stopReason, run.error].filter(Boolean).join(": ") || "—"}</span>
+    </div>
+    <RunLogPanel runId={run.id} />
+  </div>
+);
+
 const RunsSection = ({ runs }: { runs: Run[] }) => (
   <Section title="Runs">
     {runs.length === 0 ? (
       <p className="text-sm text-text-muted">No runs</p>
     ) : (
-      <div className="overflow-x-auto rounded-md border border-border-default bg-bg-card">
-        <table className="min-w-full divide-y divide-border-default text-left text-sm">
-          <thead className="text-xs uppercase text-text-muted">
-            <tr>
-              <th className="px-3 py-2 font-medium">Attempt</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">Trigger</th>
-              <th className="px-3 py-2 font-medium">Worker</th>
-              <th className="px-3 py-2 font-medium">Duration</th>
-              <th className="px-3 py-2 font-medium">Stop / error</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-default">
-            {runs.map((run) => (
-              <tr key={run.id}>
-                <td className="whitespace-nowrap px-3 py-2 font-medium">Attempt {run.attemptNumber}</td>
-                <td className="whitespace-nowrap px-3 py-2">
-                  <StatusBadge status={run.status} />
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{run.trigger.replaceAll("_", " ")}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{run.worker?.name ?? "—"}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">
-                  {formatDuration(run.startedAt, run.endedAt)}
-                </td>
-                <td className="min-w-48 px-3 py-2 text-text-secondary">{[run.stopReason, run.error].filter(Boolean).join(": ") || "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <ul className="flex flex-col gap-3">
+        {runs.map((run) => (
+          <li key={run.id}>
+            <RunCard run={run} />
+          </li>
+        ))}
+      </ul>
     )}
   </Section>
 );

@@ -4,7 +4,7 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { eq } from "drizzle-orm";
 import * as schema from "./schema.js";
-import { upsertTicket, upsertRun, upsertWorker, insertEvent } from "./writer.js";
+import { upsertTicket, upsertRun, upsertWorker, insertEvent, insertRunLog } from "./writer.js";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -45,6 +45,21 @@ describe("upsertRun + insertEvent", () => {
     });
     expect(db.select().from(schema.runs).all()).toHaveLength(1);
     expect(db.select().from(schema.events).all()).toHaveLength(1);
+  });
+
+  it("insertRunLog persists a log line bound to its run", () => {
+    upsertTicket(db, ticket);
+    upsertRun(db, {
+      id: "run_log", ticketId: "lin_9", attemptNumber: 1, workerId: null,
+      trigger: "new", status: "running", contextJson: null,
+      startedAt: 1000, endedAt: null, stopReason: null, error: null, createdAt: 1000,
+    });
+    insertRunLog(db, { runId: "run_log", message: "hi", level: "info", timestamp: 1234 });
+    const rows = db.select().from(schema.runLogs).where(eq(schema.runLogs.runId, "run_log")).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.message).toBe("hi");
+    expect(rows[0]!.level).toBe("info");
+    expect(rows[0]!.timestamp).toEqual(new Date(1234));
   });
 
   it("upsertRun preserves createdAt (immutable) and startedAt (set-once) across transitions", () => {

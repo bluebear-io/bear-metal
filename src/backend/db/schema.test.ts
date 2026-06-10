@@ -5,9 +5,9 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 
 describe("schema", () => {
-  it("exports all six tables", () => {
+  it("exports all seven tables", () => {
     expect(Object.keys(schema).sort()).toEqual(
-      ["ciRuns", "events", "pullRequests", "runs", "tickets", "workers"].sort(),
+      ["ciRuns", "events", "pullRequests", "runLogs", "runs", "tickets", "workers"].sort(),
     );
   });
 

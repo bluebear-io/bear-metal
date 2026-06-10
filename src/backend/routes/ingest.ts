@@ -1,7 +1,7 @@
 import { Router, type RequestHandler } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import { upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent } from "../db/writer.js";
+import { upsertTicket, upsertWorker, upsertRun, upsertPullRequest, upsertCiRun, insertEvent, insertRunLog } from "../db/writer.js";
 
 type Db = BetterSQLite3Database<typeof schema>;
 
@@ -128,6 +128,19 @@ export function createIngestRouter(db: Db, token: string): Router {
       id: bodyId, ticketId: str(b, "ticketId"), runId: str(b, "runId"), prId: strOrNull(b, "prId"),
       status: enumVal(b, "status", schema.ciRuns.status.enumValues), url: strOrNull(b, "url"),
       summary: strOrNull(b, "summary"), createdAt: num(b, "createdAt"), completedAt: numOrNull(b, "completedAt"),
+    });
+  }));
+
+  // Param name is :id (not :runId) so the shared handle() wrapper — which reads req.params.id —
+  // sees the path value. Body still carries `runId` to match the dashboard payload contract.
+  router.post("/runs/:id/logs", requireToken, handle((b, id) => {
+    const bodyRunId = str(b, "runId");
+    if (bodyRunId !== id) throw new BadPayload("path runId and body runId must match");
+    insertRunLog(db, {
+      runId: bodyRunId,
+      message: str(b, "message"),
+      level: enumVal(b, "level", schema.runLogs.level.enumValues),
+      timestamp: num(b, "timestamp"),
     });
   }));
 

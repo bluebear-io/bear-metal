@@ -1,7 +1,7 @@
 import { hostname } from "node:os";
 import PQueue from "p-queue";
 
-import type { Logger } from "../shared/index.js";
+import { createTeeLogger, type Logger } from "../shared/index.js";
 import type { TaskQueue, TaskRecord } from "../manager/tasks.js";
 import type { DashboardReporter } from "../manager/dashboardReporter.js";
 import { dispatch, type DispatchInput, type DispatchResult } from "./dispatch.js";
@@ -100,10 +100,23 @@ export class TaskWorker {
     if (task.input.state === "new") {
       void this.reporter?.branchCreatedById(issueId, task.id, this.workerId, `Branch for ${task.ticketId}`);
     }
+    // Tee every dispatch log line to the dashboard so the UI's RunLogPanel can replay them.
+    // The sink is fire-and-forget; dashboard outages must never break the worker loop.
+    const reporter = this.reporter;
+    const runLogger = createTeeLogger({
+      level: process.env.LOG_LEVEL ?? "info",
+      name: "worker:run",
+      bindings: { runId: task.id, ticketId: issueId, workerId: this.workerId },
+      sink: ({ level, message, timestamp }) => {
+        if (!reporter) return;
+        void reporter.runLog(task.id, message, level, timestamp);
+      },
+    });
     const result = await this.runDispatch({
       ...task.input,
       integrations: this.integrations,
       packageRoot: this.packageRoot,
+      logger: runLogger,
     });
     await this.tasks.complete(task.id, result);
     void this.reporter?.progressById(issueId, task.id, this.workerId, `Worker finished: ${result.status}`);

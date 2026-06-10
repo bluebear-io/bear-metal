@@ -1,6 +1,6 @@
 import type { Logger } from "../logger.js";
 import type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload, EventPayload, RunLogPayload,
 } from "./types.js";
 
 export interface DashboardClientOptions {
@@ -17,6 +17,7 @@ export interface DashboardClient {
   upsertPullRequest(p: PullRequestPayload): Promise<void>;
   upsertCiRun(p: CiRunPayload): Promise<void>;
   recordEvent(p: EventPayload): Promise<void>;
+  recordRunLog(p: RunLogPayload): Promise<void>;
 }
 
 /**
@@ -52,5 +53,6 @@ export function createDashboardClient(options: DashboardClientOptions): Dashboar
     upsertPullRequest: (p) => send("PUT", `/api/pull-requests/${encodeURIComponent(p.id)}`, p),
     upsertCiRun: (p) => send("PUT", `/api/ci-runs/${encodeURIComponent(p.id)}`, p),
     recordEvent: (p) => send("POST", `/api/events`, p),
+    recordRunLog: (p) => send("POST", `/api/runs/${encodeURIComponent(p.runId)}/logs`, p),
   };
 }

@@ -1,13 +1,13 @@
 import { mkdir, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { createLogger } from "../shared/index.js";
+import { createLogger, type Logger } from "../shared/index.js";
 import { getPackageRoot, runCloneScript, workspaceForTicket } from "./clone.js";
 import { runPiWorker } from "./pi.js";
 import type { DispatchResult, DispatchState, PullRequestRef, WorkerInputContext, WorkerIntegrations } from "./types.js";
 
 export type { DispatchResult, DispatchState, PullRequestRef };
 
-const logger = createLogger({
+const defaultLogger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
   name: "worker:dispatch",
   pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
@@ -19,10 +19,13 @@ export interface DispatchInput {
   pr?: PullRequestRef | null;
   integrations: WorkerIntegrations;
   packageRoot?: string;
+  /** Tee'd logger bound to the active runId; falls back to the module logger when absent. */
+  logger?: Logger;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const { state, ticketId, integrations } = input;
+  const logger = input.logger ?? defaultLogger;
   const pr = input.pr ?? null;
   validateDispatchInputs(state, ticketId, pr);
 
@@ -74,7 +77,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear, slack, gitEnv });
+    const result = await runPiWorker({ context, github, linear, slack, gitEnv, logger });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
