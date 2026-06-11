@@ -20,8 +20,8 @@ describe("worker contract", () => {
       owner: "bluebear-io",
       repo: "bear-metal",
     });
-    expect(parseGitHubRemote("https://github.com/Blue-Bear-Security/handler.git")).toEqual({
-      owner: "Blue-Bear-Security",
+    expect(parseGitHubRemote("https://github.com/bluebear-io/handler.git")).toEqual({
+      owner: "bluebear-io",
       repo: "handler",
     });
   });
