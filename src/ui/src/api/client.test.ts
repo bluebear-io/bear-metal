@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
-import type { TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import { buildTicketsPath, fetchTicketDetail, fetchTicketFilters, fetchTickets, fetchWorkers } from "./client.js";
+import type { TicketDetail, TicketFilterOptions, TicketListItem, WorkerListItem } from "./types.js";
 
 const mockFetch = (body: unknown, init?: { ok?: boolean; status?: number }) => {
   const response = {
@@ -35,10 +35,12 @@ const ticket: TicketListItem = {
     status: "failed",
     trigger: "new",
     workerId: "worker_1",
+    stopReason: "error",
     startedAt: "2026-06-09T10:01:00.000Z",
     endedAt: "2026-06-09T10:04:00.000Z",
     createdAt: "2026-06-09T10:01:00.000Z",
   },
+  latestWorkerName: "runner-1",
   latestPr: { number: 14, url: "https://github.com/acme/repo/pull/14", state: "open", merged: false },
   latestCiStatus: "failed",
 };
@@ -67,6 +69,7 @@ const worker: WorkerListItem = {
     status: "running",
     trigger: "new",
     workerId: "worker_1",
+    stopReason: null,
     startedAt: "2026-06-09T10:01:00.000Z",
     endedAt: null,
     createdAt: "2026-06-09T10:01:00.000Z",
@@ -86,20 +89,52 @@ describe("api client", () => {
     vi.unstubAllGlobals();
   });
 
-  it("fetchTickets returns tickets and passes the status query", async () => {
-    mockFetch({ tickets: [ticket] });
+  it("fetchTickets returns the paginated body and passes the legacy status query", async () => {
+    const body = { tickets: [ticket], total: 1, page: 1, pageSize: 50 };
+    mockFetch(body);
 
-    await expect(fetchTickets("abandoned")).resolves.toEqual([ticket]);
+    await expect(fetchTickets("abandoned")).resolves.toEqual(body);
 
     expect(fetch).toHaveBeenCalledWith("/api/tickets?status=abandoned");
   });
 
   it("fetchTickets calls the ticket collection path without a status", async () => {
-    mockFetch({ tickets: [] });
+    const body = { tickets: [], total: 0, page: 1, pageSize: 50 };
+    mockFetch(body);
 
-    await expect(fetchTickets()).resolves.toEqual([]);
+    await expect(fetchTickets()).resolves.toEqual(body);
 
     expect(fetch).toHaveBeenCalledWith("/api/tickets");
+  });
+
+  it("buildTicketsPath serializes search + filter + pagination params", () => {
+    expect(
+      buildTicketsPath({
+        q: "flaky",
+        bmStatuses: ["completed", "abandoned"],
+        workerIds: ["wk_1"],
+        labels: ["bear-metal"],
+        stopReasons: ["timeout"],
+        page: 2,
+        pageSize: 25,
+      }),
+    ).toBe(
+      "/api/tickets?q=flaky&statuses=completed&statuses=abandoned&workerId=wk_1&label=bear-metal&stopReason=timeout&page=2&pageSize=25",
+    );
+    expect(buildTicketsPath()).toBe("/api/tickets");
+  });
+
+  it("fetchTicketFilters returns the dropdown body", async () => {
+    const filters: TicketFilterOptions = {
+      bmStatuses: ["completed"],
+      stopReasons: ["timeout"],
+      labels: ["bear-metal"],
+      workers: [{ id: "wk_1", name: "worker-1" }],
+    };
+    mockFetch(filters);
+
+    await expect(fetchTicketFilters()).resolves.toEqual(filters);
+    expect(fetch).toHaveBeenCalledWith("/api/tickets/filters");
   });
 
   it("fetchTicketDetail returns the detail body", async () => {

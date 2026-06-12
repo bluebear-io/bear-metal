@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, between, desc, eq, gte, inArray, isNotNull, lte, or, sql } from "drizzle-orm";
 import type {
   Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, RunToolCallRow, EventRow, Worker,
 } from "./types.js";
@@ -8,12 +8,20 @@ import { estimateCostUsd, modelFamily } from "../pricing.js";
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
 const WORKER_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
+export const DEFAULT_TICKET_PAGE_SIZE = 50;
+export const MAX_TICKET_PAGE_SIZE = 200;
+
+type BmStatus = Ticket["bmStatus"];
+type StopReason = NonNullable<Run["stopReason"]>;
+
 export interface LatestRunSummary {
   id: string;
   attemptNumber: number;
   status: Run["status"];
   trigger: Run["trigger"];
   workerId: string | null;
+  /** Stop reason recorded on the latest run; null while the run is in flight or never reached a terminal state. */
+  stopReason: Run["stopReason"];
   startedAt: Date | null;
   endedAt: Date | null;
   createdAt: Date;
@@ -28,8 +36,48 @@ export interface CurrentRunSummary extends LatestRunSummary {
 
 export interface TicketListItem extends Ticket {
   latestRun: LatestRunSummary | null;
+  /** Name of the worker that ran the most recent attempt — convenience for the dashboard filter dropdown. */
+  latestWorkerName: string | null;
   latestPr: { number: number; url: string; state: PullRequestRow["state"]; merged: boolean } | null;
   latestCiStatus: "running" | "passed" | "failed" | null;
+}
+
+export interface ListTicketsOptions {
+  /** Free-text search across identifier, title, description, and branch name (case-insensitive substring). */
+  q?: string;
+  /** Restrict to tickets currently in one of the given bear-metal statuses. */
+  bmStatuses?: BmStatus[];
+  /** Restrict to tickets whose latest run was executed by one of these workers. */
+  workerIds?: string[];
+  /** Restrict to tickets that carry any of these Linear labels (case-sensitive exact label match inside labelsJson). */
+  labels?: string[];
+  /** Restrict to tickets whose latest run ended with one of these stop reasons. */
+  stopReasons?: StopReason[];
+  /** Lower bound (inclusive) on ticket createdAt. */
+  createdFrom?: Date;
+  /** Upper bound (inclusive) on ticket createdAt. */
+  createdTo?: Date;
+  /** 1-indexed page number; values < 1 are clamped to 1. */
+  page?: number;
+  /** Page size; clamped between 1 and {@link MAX_TICKET_PAGE_SIZE}. */
+  pageSize?: number;
+}
+
+export interface ListTicketsResult {
+  items: TicketListItem[];
+  /** Total tickets matching the filters, before pagination. */
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface TicketFilterOptions {
+  bmStatuses: BmStatus[];
+  stopReasons: StopReason[];
+  /** Distinct labels seen across every ticket's `labelsJson`. */
+  labels: string[];
+  /** All known workers — used to populate the worker filter dropdown. */
+  workers: Array<{ id: string; name: string }>;
 }
 
 /** A CI run with its individual failing checks (test/lint/type/etc.) attached. */
@@ -200,7 +248,8 @@ export interface PeriodSummaryOptions {
 
 /** Dialect-agnostic read interface backing the dashboard's GET routes. */
 export interface Repository {
-  listTickets(filter?: { bmStatus?: Ticket["bmStatus"] }): Promise<TicketListItem[]>;
+  listTickets(options?: ListTicketsOptions): Promise<ListTicketsResult>;
+  listTicketFilterOptions(): Promise<TicketFilterOptions>;
   getTicketDetail(id: string): Promise<TicketDetail | null>;
   listWorkers(options?: ListWorkerOptions): Promise<WorkerListItem[]>;
   /** Aggregate efficacy stats per (provider, model_name). Skips runs with no recorded model. */
@@ -216,6 +265,7 @@ function toLatestRunSummary(run: Run): LatestRunSummary {
     status: run.status,
     trigger: run.trigger,
     workerId: run.workerId,
+    stopReason: run.stopReason,
     startedAt: run.startedAt,
     endedAt: run.endedAt,
     createdAt: run.createdAt,
@@ -226,6 +276,22 @@ function elapsedSince(now: Date, then: Date | null): number | null {
   if (!then) return null;
   return Math.max(0, now.getTime() - then.getTime());
 }
+
+function clampPageSize(value: number | undefined): number {
+  if (!value || !Number.isFinite(value) || value < 1) return DEFAULT_TICKET_PAGE_SIZE;
+  return Math.min(Math.floor(value), MAX_TICKET_PAGE_SIZE);
+}
+
+function clampPage(value: number | undefined): number {
+  if (!value || !Number.isFinite(value) || value < 1) return 1;
+  return Math.floor(value);
+}
+
+// SQLite LIKE is case-insensitive for ASCII by default, which is enough for our identifier/title fields.
+function likeEscape(raw: string): string {
+  return raw.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 
 /**
  * Drizzle's sqlite query builder is sync (`.all()`/`.get()` return rows directly); the pg builder
@@ -240,15 +306,61 @@ export function createRepository(handle: DbHandle): Repository {
   const t: any = handle.schema;
 
   return {
-    async listTickets(filter) {
-      const where = filter?.bmStatus ? eq(t.tickets.bmStatus, filter.bmStatus) : undefined;
+    async listTickets(options = {}) {
+      const page = clampPage(options.page);
+      const pageSize = clampPageSize(options.pageSize);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const conditions: any[] = [];
+      if (options.bmStatuses && options.bmStatuses.length > 0) {
+        conditions.push(inArray(t.tickets.bmStatus, options.bmStatuses));
+      }
+      if (options.createdFrom && options.createdTo) {
+        conditions.push(between(t.tickets.createdAt, options.createdFrom, options.createdTo));
+      } else if (options.createdFrom) {
+        conditions.push(gte(t.tickets.createdAt, options.createdFrom));
+      } else if (options.createdTo) {
+        conditions.push(lte(t.tickets.createdAt, options.createdTo));
+      }
+      if (options.q && options.q.trim().length > 0) {
+        const needle = `%${likeEscape(options.q.trim())}%`;
+        // drizzle's like() does not emit an ESCAPE clause; without ESCAPE our backslash-escaped
+        // % and _ would still be treated as wildcards. Bind the escape char as a parameter so
+        // SQLite receives a true single-character ESCAPE expression.
+        const escapeChar = "\\";
+        const searchClause = or(
+          sql`${t.tickets.identifier} LIKE ${needle} ESCAPE ${escapeChar}`,
+          sql`${t.tickets.title} LIKE ${needle} ESCAPE ${escapeChar}`,
+          sql`${t.tickets.description} LIKE ${needle} ESCAPE ${escapeChar}`,
+          sql`${t.tickets.branchName} LIKE ${needle} ESCAPE ${escapeChar}`,
+        );
+        if (searchClause) conditions.push(searchClause);
+      }
+      if (options.labels && options.labels.length > 0) {
+        // labelsJson is stored as a serialized array like `["bear-metal","module:bff"]`.
+        // `LIKE '%"<label>"%' ESCAPE '\\'` matches the quoted token without needing json_each;
+        // the explicit ESCAPE makes likeEscape() actually neutralise % and _ in the label.
+        // We also mirror JSON.stringify's encoding of `\` and `"` so a label like `a"b` finds
+        // its JSON-escaped form `a\"b` in storage.
+        const escapeChar = "\\";
+        const labelClauses = options.labels.map((label: string) => {
+          const jsonEncoded = label.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          return sql`${t.tickets.labelsJson} LIKE ${`%"${likeEscape(jsonEncoded)}"%`} ESCAPE ${escapeChar}`;
+        });
+        const labelClause = labelClauses.length === 1 ? labelClauses[0] : or(...labelClauses);
+        if (labelClause) conditions.push(labelClause);
+      }
+
+      const where = conditions.length > 0 ? and(...conditions) : undefined;
       const ticketRows: Ticket[] = await db.select().from(t.tickets).where(where).orderBy(desc(t.tickets.createdAt));
-      if (ticketRows.length === 0) return [];
+      if (ticketRows.length === 0) {
+        return { items: [], total: 0, page, pageSize };
+      }
 
       // One query per child table; group + reduce in JS. Order matters: each `latest*` pick relies
       // on ORDER BY (run: attemptNumber desc then createdAt desc; PR: updatedAt desc; CI: createdAt desc).
       // The first row seen per ticketId wins.
-      const ticketIds = ticketRows.map((row) => row.id);
+      const ticketIds = ticketRows.map((row: Ticket) => row.id);
       const runRows: Run[] = await db.select().from(t.runs).where(inArray(t.runs.ticketId, ticketIds))
         .orderBy(desc(t.runs.attemptNumber), desc(t.runs.createdAt));
       const prRows: PullRequestRow[] = await db.select().from(t.pullRequests).where(inArray(t.pullRequests.ticketId, ticketIds))
@@ -263,13 +375,30 @@ export function createRepository(handle: DbHandle): Repository {
       const latestCiByTicket = new Map<string, CiRun>();
       for (const c of ciRows) if (!latestCiByTicket.has(c.ticketId)) latestCiByTicket.set(c.ticketId, c);
 
-      return ticketRows.map((ticket) => {
+      // Worker-name enrichment uses a single round-trip; the dashboard only ever has a handful of workers.
+      const workerNameById = new Map<string, string>();
+      if (latestRunByTicket.size > 0) {
+        const workerIds = Array.from(
+          new Set(
+            Array.from(latestRunByTicket.values())
+              .map((r: Run) => r.workerId)
+              .filter((id): id is string => id !== null),
+          ),
+        );
+        if (workerIds.length > 0) {
+          const workerRows: Worker[] = await db.select().from(t.workers).where(inArray(t.workers.id, workerIds));
+          for (const w of workerRows) workerNameById.set(w.id, w.name);
+        }
+      }
+
+      const enriched: TicketListItem[] = ticketRows.map((ticket: Ticket) => {
         const latestRunRow = latestRunByTicket.get(ticket.id) ?? null;
         const latestPrRow = latestPrByTicket.get(ticket.id) ?? null;
         const latestCi = latestCiByTicket.get(ticket.id) ?? null;
         return {
           ...ticket,
           latestRun: latestRunRow ? toLatestRunSummary(latestRunRow) : null,
+          latestWorkerName: latestRunRow?.workerId ? workerNameById.get(latestRunRow.workerId) ?? null : null,
           latestPr: latestPrRow
             ? { number: latestPrRow.number, url: latestPrRow.url, state: latestPrRow.state, merged: latestPrRow.merged }
             : null,
@@ -278,6 +407,57 @@ export function createRepository(handle: DbHandle): Repository {
           latestCiStatus: latestCi?.status ?? null,
         };
       });
+
+      // Filters that depend on the latest run live in JS so they ride on the same join we already built.
+      // For the dashboard's scale (a few hundred archived tickets) this is cheaper than chasing a SQL window function.
+      const workerFilter = options.workerIds && options.workerIds.length > 0 ? new Set(options.workerIds) : null;
+      const stopReasonFilter = options.stopReasons && options.stopReasons.length > 0 ? new Set<StopReason>(options.stopReasons) : null;
+      const filtered = enriched.filter((row) => {
+        if (workerFilter && (row.latestRun?.workerId == null || !workerFilter.has(row.latestRun.workerId))) {
+          return false;
+        }
+        if (stopReasonFilter && (row.latestRun?.stopReason == null || !stopReasonFilter.has(row.latestRun.stopReason))) {
+          return false;
+        }
+        return true;
+      });
+
+      const total = filtered.length;
+      const start = (page - 1) * pageSize;
+      const items = filtered.slice(start, start + pageSize);
+      return { items, total, page, pageSize };
+    },
+
+    async listTicketFilterOptions() {
+      const labelRows = await db.select({ labelsJson: t.tickets.labelsJson }).from(t.tickets);
+      const labels = new Set<string>();
+      for (const { labelsJson } of labelRows) {
+        try {
+          const parsed = JSON.parse(labelsJson) as unknown;
+          if (Array.isArray(parsed)) {
+            for (const v of parsed) if (typeof v === "string" && v.length > 0) labels.add(v);
+          }
+        } catch (err) {
+          // Malformed labelsJson should be caught by the upstream writer's validation, but log
+          // here so a regression in that validation is observable instead of silently invisible.
+          console.warn("Skipping malformed labelsJson for ticket filter dropdown", err);
+        }
+      }
+
+      const stopRows = await db.select({ stopReason: t.runs.stopReason }).from(t.runs).where(isNotNull(t.runs.stopReason));
+      const stopReasons = new Set<string>();
+      for (const { stopReason } of stopRows) {
+        if (stopReason) stopReasons.add(stopReason);
+      }
+
+      const workers = await db.select({ id: t.workers.id, name: t.workers.name }).from(t.workers).orderBy(t.workers.name);
+
+      return {
+        bmStatuses: [...t.tickets.bmStatus.enumValues] as BmStatus[],
+        stopReasons: Array.from(stopReasons).sort() as StopReason[],
+        labels: Array.from(labels).sort(),
+        workers,
+      };
     },
 
     async getTicketDetail(id) {
