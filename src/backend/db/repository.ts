@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import type {
   Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, RunToolCallRow, EventRow, Worker,
+  WorkerStateTransitionRow,
 } from "./types.js";
 import type { DbHandle } from "./client.js";
 import { estimateCostUsd, modelFamily } from "../pricing.js";
@@ -198,6 +199,34 @@ export interface PeriodSummaryOptions {
   to: Date;
 }
 
+/* ------------------------------------------------------------------------- */
+/*                         Worker timeline types                             */
+/* ------------------------------------------------------------------------- */
+
+export interface WorkerTimelineSpan {
+  status: Worker["status"];
+  /** Span start, clamped to the requested window's `from` when the span began earlier. */
+  startedAt: Date;
+  /** Span end. Null for the currently-open span (interpreted by the UI as "now"). */
+  endedAt: Date | null;
+}
+
+export interface WorkerTimelineRow {
+  workerId: string;
+  workerName: string;
+  spans: WorkerTimelineSpan[];
+}
+
+export interface WorkerTimelineOptions {
+  from: Date;
+  to: Date;
+}
+
+export interface WorkerTimeline {
+  window: { from: Date; to: Date };
+  workers: WorkerTimelineRow[];
+}
+
 /** Dialect-agnostic read interface backing the dashboard's GET routes. */
 export interface Repository {
   listTickets(filter?: { bmStatus?: Ticket["bmStatus"] }): Promise<TicketListItem[]>;
@@ -207,6 +236,8 @@ export interface Repository {
   listModelComparison(): Promise<ModelComparisonRow[]>;
   /** Six-cluster summary for the productivity dashboard. */
   getPeriodSummary(options: PeriodSummaryOptions): Promise<PeriodSummary>;
+  /** Worker status spans overlapping [from, to) for the worker utilization Gantt (DEN-2335). */
+  getWorkerTimeline(options: WorkerTimelineOptions): Promise<WorkerTimeline>;
 }
 
 function toLatestRunSummary(run: Run): LatestRunSummary {
@@ -454,6 +485,33 @@ export function createRepository(handle: DbHandle): Repository {
 
     async getPeriodSummary({ from, to }) {
       return computePeriodSummary(db, t, from, to);
+    },
+
+    async getWorkerTimeline({ from, to }) {
+      const workers: Worker[] = await db.select().from(t.workers).orderBy(t.workers.name);
+      // A span overlaps [from, to) iff (endedAt IS NULL OR endedAt > from) AND startedAt < to.
+      const rows: WorkerStateTransitionRow[] = await db.select().from(t.workerStateTransitions)
+        .where(and(
+          lt(t.workerStateTransitions.startedAt, to),
+          or(isNull(t.workerStateTransitions.endedAt), gte(t.workerStateTransitions.endedAt, from)),
+        ))
+        .orderBy(t.workerStateTransitions.workerId, t.workerStateTransitions.startedAt);
+      const spansByWorker = new Map<string, WorkerTimelineSpan[]>();
+      for (const row of rows) {
+        // Clamp span start to the window edge so the UI can render directly without re-clipping.
+        const startedAt = row.startedAt < from ? from : row.startedAt;
+        const list = spansByWorker.get(row.workerId) ?? [];
+        list.push({ status: row.status, startedAt, endedAt: row.endedAt });
+        spansByWorker.set(row.workerId, list);
+      }
+      return {
+        window: { from, to },
+        workers: workers.map((w) => ({
+          workerId: w.id,
+          workerName: w.name,
+          spans: spansByWorker.get(w.id) ?? [],
+        })),
+      };
     },
   };
 }

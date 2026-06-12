@@ -144,6 +144,23 @@ export const runToolCalls = sqliteTable("run_tool_calls", {
   createdAt: ts("created_at").notNull(),
 });
 
+/**
+ * Append-only log of worker `status` transitions, used to render the worker-utilization
+ * Gantt chart (DEN-2335). Each row is one contiguous span in a single status: a new row is
+ * opened on every transition (and on first-seen) with `endedAt = null`; the previously open
+ * row for the worker is closed by setting its `endedAt` to the transition time. This keeps the
+ * timeline reconstructable from a single range scan on (workerId, startedAt) without replaying
+ * the full `events` log.
+ */
+export const workerStateTransitions = sqliteTable("worker_state_transitions", {
+  id: text("id").primaryKey(),
+  workerId: text("worker_id").notNull().references(() => workers.id),
+  status: text("status", { enum: ["idle", "busy", "stopped", "dead"] }).notNull(),
+  startedAt: ts("started_at").notNull(),
+  endedAt: ts("ended_at"),
+  createdAt: ts("created_at").notNull(),
+});
+
 export const events = sqliteTable("events", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").references(() => tickets.id),

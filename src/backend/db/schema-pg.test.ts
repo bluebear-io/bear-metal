@@ -21,6 +21,7 @@ type SqliteSelect = {
   pullRequests: typeof schemaSqlite.pullRequests.$inferSelect;
   ciRuns: typeof schemaSqlite.ciRuns.$inferSelect;
   events: typeof schemaSqlite.events.$inferSelect;
+  workerStateTransitions: typeof schemaSqlite.workerStateTransitions.$inferSelect;
 };
 
 type PgSelect = {
@@ -30,6 +31,7 @@ type PgSelect = {
   pullRequests: typeof schemaPg.pullRequests.$inferSelect;
   ciRuns: typeof schemaPg.ciRuns.$inferSelect;
   events: typeof schemaPg.events.$inferSelect;
+  workerStateTransitions: typeof schemaPg.workerStateTransitions.$inferSelect;
 };
 
 type SqliteInsert = {
@@ -39,6 +41,7 @@ type SqliteInsert = {
   pullRequests: typeof schemaSqlite.pullRequests.$inferInsert;
   ciRuns: typeof schemaSqlite.ciRuns.$inferInsert;
   events: typeof schemaSqlite.events.$inferInsert;
+  workerStateTransitions: typeof schemaSqlite.workerStateTransitions.$inferInsert;
 };
 
 type PgInsert = {
@@ -48,6 +51,7 @@ type PgInsert = {
   pullRequests: typeof schemaPg.pullRequests.$inferInsert;
   ciRuns: typeof schemaPg.ciRuns.$inferInsert;
   events: typeof schemaPg.events.$inferInsert;
+  workerStateTransitions: typeof schemaPg.workerStateTransitions.$inferInsert;
 };
 
 // Compile-time assertions — failing checks become TS errors at typecheck time.
@@ -64,6 +68,7 @@ describe("schema-pg parity", () => {
   it("declares matching enum values for each enum column", () => {
     expect(schemaPg.tickets.bmStatus.enumValues).toEqual(schemaSqlite.tickets.bmStatus.enumValues);
     expect(schemaPg.workers.status.enumValues).toEqual(schemaSqlite.workers.status.enumValues);
+    expect(schemaPg.workerStateTransitions.status.enumValues).toEqual(schemaSqlite.workerStateTransitions.status.enumValues);
     expect(schemaPg.runs.trigger.enumValues).toEqual(schemaSqlite.runs.trigger.enumValues);
     expect(schemaPg.runs.status.enumValues).toEqual(schemaSqlite.runs.status.enumValues);
     expect(schemaPg.runs.stopReason.enumValues).toEqual(schemaSqlite.runs.stopReason.enumValues);

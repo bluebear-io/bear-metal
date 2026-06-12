@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
   CiCheckPayload, ReviewThreadPayload, RunToolCallPayload, EventPayload,
@@ -82,7 +82,45 @@ export function createWriter(handle: DbHandle): Writer {
         id: p.id, name: p.name, status: p.status, currentRunId: p.currentRunId,
         lastHeartbeatAt: d(p.lastHeartbeatAt), startedAt: new Date(p.startedAt), updatedAt: new Date(p.updatedAt),
       };
+      // Find the worker's currently open state-transition row (if any) before writing. A row with
+      // ended_at = null represents the current span; if the incoming status differs we close it
+      // and open a new one, so the timeline is reconstructable from a single range scan (DEN-2335).
+      const openRows: { id: string; status: string; startedAt: Date }[] = await db
+        .select({ id: t.workerStateTransitions.id, status: t.workerStateTransitions.status, startedAt: t.workerStateTransitions.startedAt })
+        .from(t.workerStateTransitions)
+        .where(and(eq(t.workerStateTransitions.workerId, p.id), isNull(t.workerStateTransitions.endedAt)));
+      const current = openRows[0] ?? null;
+      const updatedAtDate = new Date(p.updatedAt);
+
       await db.insert(t.workers).values(row).onConflictDoUpdate({ target: t.workers.id, set: row });
+
+      if (current === null) {
+        // First-seen worker: open the initial span at startedAt so the Gantt chart includes the
+        // entire history rather than only post-transition state.
+        await db.insert(t.workerStateTransitions).values({
+          id: globalThis.crypto.randomUUID(),
+          workerId: p.id,
+          status: p.status,
+          startedAt: new Date(p.startedAt),
+          endedAt: null,
+          createdAt: updatedAtDate,
+        });
+      } else if (current.status !== p.status) {
+        // Close the prior open span at the new transition time and open a new one. Out-of-order
+        // updates where updatedAt < startedAt are clamped to startedAt so endedAt >= startedAt.
+        const transitionAt = updatedAtDate.getTime() < current.startedAt.getTime() ? current.startedAt : updatedAtDate;
+        await db.update(t.workerStateTransitions)
+          .set({ endedAt: transitionAt })
+          .where(eq(t.workerStateTransitions.id, current.id));
+        await db.insert(t.workerStateTransitions).values({
+          id: globalThis.crypto.randomUUID(),
+          workerId: p.id,
+          status: p.status,
+          startedAt: transitionAt,
+          endedAt: null,
+          createdAt: updatedAtDate,
+        });
+      }
     },
 
     async upsertRun(p) {

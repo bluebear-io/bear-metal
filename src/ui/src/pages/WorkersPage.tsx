@@ -1,10 +1,19 @@
-import { useWorkers } from "../api/queries.js";
+import { useMemo, useState } from "react";
+import { useWorkers, useWorkerTimeline } from "../api/queries.js";
 import type { WorkerListItem } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
+import { WorkerTimelineChart } from "../components/WorkerTimelineChart.js";
 import { formatDateTime, formatDurationMs } from "../lib/format.js";
+
+const TIMELINE_WINDOWS = [
+  { label: "24h", hours: 24 },
+  { label: "48h", hours: 48 },
+  { label: "72h", hours: 72 },
+] as const;
+type TimelineHours = (typeof TIMELINE_WINDOWS)[number]["hours"];
 
 const dash = "—";
 
@@ -27,12 +36,65 @@ const workerHealth = (worker: WorkerListItem): "dead" | "timed_out" | "heartbeat
 export default function WorkersPage() {
   const workersQuery = useWorkers();
   const workers = workersQuery.data ?? [];
+  const [timelineHours, setTimelineHours] = useState<TimelineHours>(24);
+  // Recompute the timeline window only when the selection changes — keeps the query key stable
+  // across re-renders so React Query caches it instead of refetching on every render.
+  const timelineRange = useMemo(() => {
+    const to = new Date();
+    const from = new Date(to.getTime() - timelineHours * 60 * 60 * 1000);
+    return { from, to };
+  }, [timelineHours]);
+  const timelineQuery = useWorkerTimeline(timelineRange);
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 sm:px-8">
       <PageHeader title="Workers">
-        <RefreshButton busy={workersQuery.isFetching} onClick={() => void workersQuery.refetch()} />
+        <RefreshButton
+          busy={workersQuery.isFetching || timelineQuery.isFetching}
+          onClick={() => {
+            void workersQuery.refetch();
+            void timelineQuery.refetch();
+          }}
+        />
       </PageHeader>
+
+      <section className="flex flex-col gap-3 rounded-md border border-border-default bg-bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-text-primary">Worker utilization</h2>
+          <div role="radiogroup" aria-label="Timeline window" className="flex gap-1">
+            {TIMELINE_WINDOWS.map((w) => (
+              <button
+                key={w.hours}
+                type="button"
+                role="radio"
+                aria-checked={timelineHours === w.hours}
+                onClick={() => setTimelineHours(w.hours)}
+                className={`rounded-md border px-2 py-1 text-xs ${
+                  timelineHours === w.hours
+                    ? "border-border-default bg-bg-muted text-text-primary"
+                    : "border-transparent text-text-secondary hover:bg-bg-muted"
+                }`}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <QueryBoundary
+          isLoading={timelineQuery.isLoading}
+          error={timelineQuery.error}
+          isEmpty={(timelineQuery.data?.workers.length ?? 0) === 0}
+          emptyLabel="No worker timeline data."
+        >
+          {timelineQuery.data ? (
+            <WorkerTimelineChart
+              workers={timelineQuery.data.workers}
+              windowFromIso={timelineQuery.data.window.from}
+              windowToIso={timelineQuery.data.window.to}
+            />
+          ) : null}
+        </QueryBoundary>
+      </section>
 
       <QueryBoundary
         isLoading={workersQuery.isLoading}

@@ -68,6 +68,34 @@ describe("GET /api/tickets/:id", () => {
   });
 });
 
+describe("GET /api/workers/timeline", () => {
+  it("returns the worker timeline with an ISO window and a row per worker", async () => {
+    const res = await request(app).get("/api/workers/timeline");
+    expect(res.status).toBe(200);
+    expect(res.body.window.from).toMatch(/T.*Z$/);
+    expect(res.body.window.to).toMatch(/T.*Z$/);
+    expect(res.body.workers.length).toBe(3);
+    for (const w of res.body.workers) {
+      expect(typeof w.workerId).toBe("string");
+      expect(typeof w.workerName).toBe("string");
+      expect(Array.isArray(w.spans)).toBe(true);
+    }
+  });
+
+  it("rejects from >= to", async () => {
+    const now = new Date().toISOString();
+    const res = await request(app).get(`/api/workers/timeline?from=${encodeURIComponent(now)}&to=${encodeURIComponent(now)}`);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a window larger than the 7-day cap", async () => {
+    const to = new Date("2026-06-09T00:00:00Z").toISOString();
+    const from = new Date("2026-05-01T00:00:00Z").toISOString();
+    const res = await request(app).get(`/api/workers/timeline?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("GET /api/workers", () => {
   it("lists workers with current ticket", async () => {
     const res = await request(app).get("/api/workers");

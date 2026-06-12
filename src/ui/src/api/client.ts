@@ -1,4 +1,4 @@
-import type { BmStatus, ModelComparisonRow, PeriodSummary, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import type { BmStatus, ModelComparisonRow, PeriodSummary, TicketDetail, TicketListItem, WorkerListItem, WorkerTimeline } from "./types.js";
 
 export interface SummaryRange {
   from: Date;
@@ -30,6 +30,16 @@ export async function fetchWorkers(): Promise<WorkerListItem[]> {
   const body = await getJson<{ workers: WorkerListItem[] }>("/api/workers");
 
   return body.workers;
+}
+
+export interface WorkerTimelineRange {
+  from: Date;
+  to: Date;
+}
+
+export async function fetchWorkerTimeline(range: WorkerTimelineRange): Promise<WorkerTimeline> {
+  const params = new URLSearchParams({ from: range.from.toISOString(), to: range.to.toISOString() });
+  return getJson<WorkerTimeline>(`/api/workers/timeline?${params.toString()}`);
 }
 
 export async function fetchModelComparison(): Promise<ModelComparisonRow[]> {
