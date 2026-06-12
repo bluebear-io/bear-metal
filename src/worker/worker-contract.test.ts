@@ -114,7 +114,7 @@ describe("worker contract", () => {
     const prompt = buildWorkerPrompt(context);
     expect(prompt).toMatch(/Steps for this new task/);
     expect(prompt).toMatch(/respond_to_ticket_reporter/);
-    expect(prompt).toMatch(/wrote_code/);
+    expect(prompt).toMatch(/push_for_review/);
     expect(prompt).toMatch(/docs\/plans\/DEN-2\.md/);
     expect(prompt).not.toMatch(/respond_to_comment_writer/);
     expect(prompt).not.toMatch(/agree_with_github_message/);

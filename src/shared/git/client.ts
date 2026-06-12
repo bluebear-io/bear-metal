@@ -5,22 +5,28 @@ export type RemoteRef = {
   repo: string;
 };
 
-export async function commitAndPush(repoRoot: string, commitMessage: string, env?: NodeJS.ProcessEnv): Promise<void> {
+export async function push(repoRoot: string, env?: NodeJS.ProcessEnv): Promise<void> {
   const branch = (await git(["branch", "--show-current"], repoRoot, env)).stdout.trim();
   if (!branch) {
     throw new Error(`Could not determine current git branch in ${repoRoot}`);
   }
   if (branch === "main" || branch === "master") {
-    throw new Error(`Refusing to commit task changes directly on ${branch}; create or check out a task branch first`);
+    throw new Error(`Refusing to push task changes directly on ${branch}; create or check out a task branch first`);
   }
 
-  const status = (await git(["status", "--porcelain"], repoRoot)).stdout.trim();
-  if (!status) {
-    throw new Error(`wrote_code called but ${repoRoot} has no git changes`);
+  // Check for unpushed commits. If no upstream exists yet (first push), allow unconditionally.
+  try {
+    const unpushed = (await git(["log", "@{u}..HEAD", "--oneline"], repoRoot, env)).stdout.trim();
+    if (!unpushed) {
+      throw new Error(`push_for_review called but ${repoRoot} has no unpushed commits`);
+    }
+  } catch (err) {
+    // If the error is about a missing upstream, allow the push (first push on this branch).
+    if (!(err instanceof Error && err.message.includes("no upstream"))) {
+      throw err;
+    }
   }
 
-  await git(["add", "-A"], repoRoot, env);
-  await git(["commit", "-m", commitMessage], repoRoot, env);
   await git(["push", "-u", "origin", "HEAD"], repoRoot, env);
 }
 

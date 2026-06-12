@@ -25,6 +25,7 @@ type OctokitStatus = RestEndpointMethodTypes["repos"]["getCombinedStatusForRef"]
 export interface BotIdentity {
   login: string;
   id: string | null;
+  numericId: number;
 }
 
 export interface GitHubIntegrationOptions {
@@ -71,7 +72,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       const viewer = await installationOctokit.graphql<{ viewer: { id: string | null } }>(
         "query BearMetalViewer { viewer { id } }",
       );
-      this.cachedBotIdentity = { login: `${data.slug}[bot]`, id: viewer.viewer.id };
+      this.cachedBotIdentity = { login: `${data.slug}[bot]`, id: viewer.viewer.id, numericId: data.id };
     }
     return this.cachedBotIdentity;
   }

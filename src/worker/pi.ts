@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-  commitAndPush,
+  push,
   createLogger,
   getCurrentBranch,
   getRemoteRef,
@@ -48,7 +48,7 @@ export async function runPiWorker(input: {
   let decision: DispatchResult | undefined;
   const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
 
-  // PRs accumulate across multiple wrote_code calls (one per repo in this dispatch).
+  // PRs accumulate across multiple push_for_review calls (one per repo in this dispatch).
   // A pending decision (respond_*) carries the accumulated set so the manager keeps tracking them.
   const collectedPrs: PullRequestRef[] = [];
 
@@ -70,7 +70,7 @@ export async function runPiWorker(input: {
       decision = next;
     } else {
       collectedPrs.push(...next.prs);
-      // Preserve a pending decision across subsequent wrote_code calls: once a
+      // Preserve a pending decision across subsequent push_for_review calls: once a
       // respond_* tool has handed control back to a human, additional code
       // pushes must not silently flip the dispatch result to "done".
       if (decision?.status === "pending") {
@@ -213,19 +213,18 @@ export async function runPiWorker(input: {
     },
   });
 
-  const wroteCode = defineTool({
-    name: "wrote_code",
-    label: "Wrote code",
-    description: "Commit, push, and create or update the pull request for a repository with completed code changes.",
+  const pushForReview = defineTool({
+    name: "push_for_review",
+    label: "Push for review",
+    description: "Push and create or update the pull request for a repository with completed code changes.",
     parameters: Type.Object({
       repoRoot: Type.String({ description: "Absolute path to the git repository root containing the changes." }),
-      commitMessage: Type.String({ description: "Commit message to use." }),
       prTitle: Type.String({ description: "Pull request title to use when creating a new PR." }),
       prBody: Type.String({ description: "Pull request body to use when creating a new PR." }),
       baseBranch: Type.Optional(Type.String({ description: "Base branch for a new PR. Defaults to repository default branch." })),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
+      logger.info({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
       // Refresh the .netrc token before pushing — installation tokens expire after 1 hour
       // and pi sessions can run much longer than that.
@@ -235,10 +234,10 @@ export async function runPiWorker(input: {
         `machine github.com login x-access-token password ${freshToken}\n`,
         { mode: 0o600 },
       );
-      await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
+      await push(repoRoot, input.gitEnv);
       const remote = await getRemoteRef(repoRoot);
       // Design constraint: at most one PR per (owner, repo) per dispatch.
-      // A second wrote_code call against the same repo updates the existing PR
+      // A second push_for_review call against the same repo updates the existing PR
       // rather than creating a new branch/PR within that repo.
       // Check collectedPrs (created earlier in this dispatch) before input.context.prs (from previous dispatch).
       const existingPr =
@@ -270,7 +269,7 @@ export async function runPiWorker(input: {
         });
       }
       return {
-        content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
+        content: [{ type: "text", text: `Pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
         details: { pr },
       };
     },
@@ -295,11 +294,11 @@ export async function runPiWorker(input: {
 
   const isNew = input.context.state === "new";
   const stateTools = isNew
-    ? (["respond_to_ticket_reporter", "wrote_code"] as const)
-    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "wrote_code"] as const);
+    ? (["respond_to_ticket_reporter", "push_for_review"] as const)
+    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "push_for_review"] as const);
   const stateCustomTools = isNew
-    ? [respondToTicketReporter, wroteCode]
-    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, wroteCode];
+    ? [respondToTicketReporter, pushForReview]
+    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
 
   let usage: DispatchUsage | null = null;
   let toolCalls: DispatchToolCall[] = [];
@@ -422,7 +421,7 @@ export async function runPiWorker(input: {
       // Agent disagreed with all threads and made no code changes — replies were posted, work is done.
       decision = { status: "done", prs: mergePrs(input.context.prs, collectedPrs) };
     } else {
-      throw new Error("Pi finished without calling a finish tool (wrote_code or respond_to_ticket_reporter)");
+      throw new Error("Pi finished without calling a finish tool (push_for_review or respond_to_ticket_reporter)");
     }
   }
   // Attach LLM usage stats captured during the just-finished session (DEN-2313).

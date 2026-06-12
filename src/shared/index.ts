@@ -1,7 +1,7 @@
 export { createLogger, type Logger, type LoggerOptions } from "./logger.js";
 export type { JsonValue } from "./json.js";
 export {
-  commitAndPush,
+  push,
   getCurrentBranch,
   getRemoteRef,
   parseGitHubRemote,
@@ -22,6 +22,7 @@ export type {
 export {
   GitHubIntegration,
   type GitHubIntegrationOptions,
+  type BotIdentity,
 } from "./integrations/github/client.js";
 export type {
   CommitAuthor,

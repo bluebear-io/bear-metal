@@ -13,7 +13,7 @@ export function buildWorkerPrompt(
   const finishToolsSection = isNew
     ? [
         "IMPORTANT: You must complete this task by calling EITHER:",
-        "- `wrote_code` — after you implement and commit the changes.",
+        "- `push_for_review` — after you implement and commit the changes.",
         "- `respond_to_ticket_reporter` — if you cannot proceed and need human input.",
         "",
         "Do NOT call both. Do NOT output a text response to signal completion.",
@@ -27,8 +27,8 @@ export function buildWorkerPrompt(
         "- `mark_github_message_completed` — if the comment needs no action (informational, FYI, already handled).",
         "",
         "Every entry in `openComments` must be handled — leaving one unhandled causes a re-dispatch loop.",
-        "If you made ANY code changes, you must call `wrote_code` before exiting.",
-        "Do NOT output a text response to signal completion. The only valid way to finish is calling the above tools for each open comment, plus `wrote_code` if you wrote code.",
+        "If you made ANY code changes, you must call `push_for_review` before exiting.",
+        "Do NOT output a text response to signal completion. The only valid way to finish is calling the above tools for each open comment, plus `push_for_review` if you wrote code.",
       ];
 
   const taskInstructions = isNew
@@ -37,15 +37,15 @@ export function buildWorkerPrompt(
         "2. Create a branch following the repository's branching strategy.",
         `3. Write a plan file describing the intended changes, the files you expect to touch, and the verification strategy, all according to the repository standards. If no plan path is specified in the repository standards, create it at \`${planFallback}\`. Commit it together with the code so it ships as part of the PR.`,
         "4. Implement the changes.",
-        "5. Call `wrote_code` to commit, push, and open the PR.",
+        "5. Commit your changes via git, then call `push_for_review` to push and open the PR.",
         "   OR call `respond_to_ticket_reporter` if you are blocked.",
       ]
     : [
         "1. Check out the existing PR branch.",
-        "2. If any PR context has `mergeable: false`, the head branch conflicts with its base. Rebase / merge the base branch into the PR head, resolve the conflicts, and push.",
+        "2. If any PR context has `mergeable: false`, the head branch conflicts with its base. Rebase / merge the base branch into the PR head, resolve the conflicts.",
         "3. For each failed check: read the code and logs, find the root cause, fix it.",
         "4. For each open comment: read the context and respond using the tools above.",
-        "5. Call `wrote_code` once all code changes are done.",
+        "5. Call `push_for_review` once all code changes are done.",
       ];
 
   const blockerNote = isNew

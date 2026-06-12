@@ -18,7 +18,7 @@ const piMock = vi.hoisted(() => ({
 }));
 
 const gitMock = vi.hoisted(() => ({
-  commitAndPush: vi.fn(async () => {}),
+  push: vi.fn(async () => {}),
   getCurrentBranch: vi.fn(async () => "feature/den-1"),
   getRemoteRef: vi.fn(async () => ({ owner: "acme", repo: "widgets" })),
 }));
@@ -35,7 +35,7 @@ vi.mock("../shared/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared/index.js")>();
   return {
     ...actual,
-    commitAndPush: gitMock.commitAndPush,
+    push: gitMock.push,
     getCurrentBranch: gitMock.getCurrentBranch,
     getRemoteRef: gitMock.getRemoteRef,
   };
@@ -93,9 +93,8 @@ describe("runPiWorker", () => {
       await executeTool(customTools, "agree_with_github_message", {
         id: "thread-1",
       });
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -126,9 +125,8 @@ describe("runPiWorker", () => {
         id: "thread-1",
         text: "The current code already handles this path.",
       });
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -222,9 +220,8 @@ describe("runPiWorker", () => {
       pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix thread 1",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -236,7 +233,7 @@ describe("runPiWorker", () => {
     expect(result).toEqual({ status: "pending", prs: context.prs });
   });
 
-  it("preserves pending decision when wrote_code is called after respond_to_comment_writer", async () => {
+  it("preserves pending decision when push_for_review is called after respond_to_comment_writer", async () => {
     const { runPiWorker } = await import("./pi.js");
     const github = makeGithub();
     const context = makeContext({
@@ -246,9 +243,8 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix thread 1",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -351,7 +347,7 @@ describe("runPiWorker", () => {
     expect(github.replyToReviewThread).not.toHaveBeenCalled();
   });
 
-  it("registers respond_to_ticket_reporter and wrote_code in new task mode, not iteration tools", async () => {
+  it("registers respond_to_ticket_reporter and push_for_review in new task mode, not iteration tools", async () => {
     const { runPiWorker } = await import("./pi.js");
     const registeredNames: string[] = [];
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
@@ -367,7 +363,7 @@ describe("runPiWorker", () => {
     });
 
     expect(registeredNames).toContain("respond_to_ticket_reporter");
-    expect(registeredNames).toContain("wrote_code");
+    expect(registeredNames).toContain("push_for_review");
     expect(registeredNames).not.toContain("agree_with_github_message");
     expect(registeredNames).not.toContain("disagree_with_github_message");
     expect(registeredNames).not.toContain("respond_to_comment_writer");
@@ -399,7 +395,7 @@ describe("runPiWorker", () => {
     expect(registeredNames).toContain("disagree_with_github_message");
     expect(registeredNames).toContain("respond_to_comment_writer");
     expect(registeredNames).toContain("mark_github_message_completed");
-    expect(registeredNames).toContain("wrote_code");
+    expect(registeredNames).toContain("push_for_review");
     expect(registeredNames).not.toContain("respond_to_ticket_reporter");
   });
 
@@ -407,9 +403,8 @@ describe("runPiWorker", () => {
     const { runPiWorker } = await import("./pi.js");
     const linear = makeLinear();
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -426,7 +421,7 @@ describe("runPiWorker", () => {
     expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
   });
 
-  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
+  it("sends a slack 'opened' notification on a new PR after push_for_review", async () => {
     const { runPiWorker } = await import("./pi.js");
     const linear = makeLinear();
     const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
@@ -434,9 +429,8 @@ describe("runPiWorker", () => {
     github.getDefaultBranch.mockResolvedValue("main");
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "feat: ship",
         prTitle: "feat: ship",
         prBody: "body",
       });
@@ -454,14 +448,13 @@ describe("runPiWorker", () => {
     });
   });
 
-  it("sends a slack 'updated' notification when wrote_code runs on an existing PR", async () => {
+  it("sends a slack 'updated' notification when push_for_review runs on an existing PR", async () => {
     const { runPiWorker } = await import("./pi.js");
     const linear = makeLinear();
     const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix typo",
         prBody: "body",
       });
@@ -493,9 +486,8 @@ describe("runPiWorker", () => {
     const { runPiWorker } = await import("./pi.js");
     const linear = makeLinear();
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "body",
       });
@@ -511,7 +503,7 @@ describe("runPiWorker", () => {
     expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
   });
 
-  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
+  it("sends a slack 'opened' notification on a new PR after push_for_review", async () => {
     const { runPiWorker } = await import("./pi.js");
     const linear = makeLinear();
     const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
@@ -519,9 +511,8 @@ describe("runPiWorker", () => {
     github.getDefaultBranch.mockResolvedValue("main");
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "feat: ship",
         prTitle: "feat: ship",
         prBody: "body",
       });
@@ -548,9 +539,8 @@ describe("runPiWorker", () => {
     botPrContext.reviewThreads[0]!.comments[0]!.authorId = "BOT_cursor";
     botPrContext.unresolvedReviewThreads = botPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "body",
       });
@@ -603,9 +593,8 @@ describe("runPiWorker", () => {
     });
     mixedPrContext.unresolvedReviewThreads = mixedPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "body",
       });
@@ -634,9 +623,8 @@ describe("runPiWorker", () => {
     prContext.reviewThreads = [];
     prContext.unresolvedReviewThreads = [];
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "body",
       });
@@ -668,9 +656,8 @@ describe("runPiWorker", () => {
     ownBotPrContext.reviewThreads[0]!.comments[0]!.authorId = "BOT_kgDOEWhZZw";
     ownBotPrContext.unresolvedReviewThreads = ownBotPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
+      await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
         prTitle: "fix",
         prBody: "body",
       });
@@ -756,6 +743,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
 function makeGithub() {
   return {
     getInstallationToken: vi.fn().mockResolvedValue("test-token"),
+    getBotIdentity: vi.fn().mockResolvedValue({ login: "bear-metal-app[bot]", id: "bot-id", numericId: 12345 }),
     getPullRequestContext: vi.fn(),
     resolveReviewThread: vi.fn(),
     replyToReviewThread: vi.fn(),

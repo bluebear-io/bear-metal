@@ -4,6 +4,7 @@ import type {
   PullRequestRef,
   PullRequestNotification,
   ReviewThread,
+  BotIdentity,
 } from "../shared/index.js";
 
 export type DispatchState = "new" | "iteration";
@@ -51,6 +52,7 @@ export type { PullRequestRef };
 
 export interface WorkerGitHub {
   getInstallationToken(): Promise<string>;
+  getBotIdentity(): Promise<BotIdentity>;
   getPullRequestContext(pr: PullRequestRef): Promise<PullRequestContext>;
   resolveReviewThread(threadId: string): Promise<void>;
   replyToReviewThread(pr: PullRequestRef, threadId: string, body: string, threads: ReviewThread[]): Promise<void>;

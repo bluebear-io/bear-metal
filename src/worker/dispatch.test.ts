@@ -152,6 +152,7 @@ function makeIntegrations() {
 function makeGithub() {
   return {
     getInstallationToken: vi.fn().mockResolvedValue("test-token"),
+    getBotIdentity: vi.fn().mockResolvedValue({ login: "bear-metal-app[bot]", id: "bot-id", numericId: 12345 }),
     getPullRequestContext: vi.fn(),
     resolveReviewThread: vi.fn(),
     replyToReviewThread: vi.fn(),

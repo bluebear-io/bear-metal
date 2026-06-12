@@ -42,7 +42,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   const githubToken = await github.getInstallationToken();
 
-  const [ticket, rawPullRequests, cloneScript] = await Promise.all([
+  const [ticket, rawPullRequests, cloneScript, botIdentity] = await Promise.all([
     linear.getTicketContext(ticketId).then((t) => {
       logger.info({ ticketId }, "linear ticket fetched");
       return t;
@@ -58,6 +58,10 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     runCloneScript({ packageRoot, workspaceDir, githubToken }).then((r) => {
       logger.info({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
       return r;
+    }),
+    github.getBotIdentity().then((identity) => {
+      logger.info({ login: identity.login }, "bot identity fetched");
+      return identity;
     }),
   ]);
 
@@ -86,11 +90,16 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   await linear.moveTicketToInProgress(ticketId);
   logger.info({ ticketId }, "linear ticket moved to in progress");
 
+  const botEmail = `${botIdentity.numericId}+${botIdentity.login}@users.noreply.github.com`;
   const gitEnv: NodeJS.ProcessEnv = {
     HOME: cloneScript.netrcDir,
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
     GIT_CONFIG_VALUE_0: "git@github.com:",
+    GIT_AUTHOR_NAME: botIdentity.login,
+    GIT_AUTHOR_EMAIL: botEmail,
+    GIT_COMMITTER_NAME: botIdentity.login,
+    GIT_COMMITTER_EMAIL: botEmail,
   };
 
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
