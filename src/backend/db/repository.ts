@@ -340,10 +340,13 @@ export function createRepository(handle: DbHandle): Repository {
         // labelsJson is stored as a serialized array like `["bear-metal","module:bff"]`.
         // `LIKE '%"<label>"%' ESCAPE '\\'` matches the quoted token without needing json_each;
         // the explicit ESCAPE makes likeEscape() actually neutralise % and _ in the label.
+        // We also mirror JSON.stringify's encoding of `\` and `"` so a label like `a"b` finds
+        // its JSON-escaped form `a\"b` in storage.
         const escapeChar = "\\";
-        const labelClauses = options.labels.map((label: string) =>
-          sql`${t.tickets.labelsJson} LIKE ${`%"${likeEscape(label)}"%`} ESCAPE ${escapeChar}`,
-        );
+        const labelClauses = options.labels.map((label: string) => {
+          const jsonEncoded = label.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          return sql`${t.tickets.labelsJson} LIKE ${`%"${likeEscape(jsonEncoded)}"%`} ESCAPE ${escapeChar}`;
+        });
         const labelClause = labelClauses.length === 1 ? labelClauses[0] : or(...labelClauses);
         if (labelClause) conditions.push(labelClause);
       }
