@@ -48,7 +48,6 @@ const ticketDetail: TicketDetail = {
       completionTokens: 2_000,
       modelName: "claude-sonnet-4",
       provider: "anthropic",
-      estimatedCostUsd: 0.18,
       createdAt: "2026-06-09T08:04:00.000Z",
       worker: {
         id: "worker_1",
@@ -77,7 +76,6 @@ const ticketDetail: TicketDetail = {
       completionTokens: null,
       modelName: null,
       provider: null,
-      estimatedCostUsd: null,
       createdAt: "2026-06-09T08:59:00.000Z",
       worker: {
         id: "worker_2",

@@ -16,7 +16,7 @@ import type {
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
-import { formatCostUsd, formatPercent, formatSeconds, formatTokens } from "../lib/format.js";
+import { formatPercent, formatSeconds, formatTokens } from "../lib/format.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -268,21 +268,20 @@ function HealthCard({ block, prior }: { block: HealthBlock; prior: HealthBlock }
 
 function CostCard({ block, prior }: { block: CostBlock; prior: CostBlock }) {
   return (
-    <Card title="Cost & LLM usage">
+    <Card title="LLM usage">
       <div className="grid grid-cols-2 gap-3">
         <Stat
-          label="Estimated cost"
-          value={formatCostUsd(block.estimatedUsd)}
-          deltaCurrent={block.estimatedUsd}
-          deltaPrior={prior.estimatedUsd}
-          invert
-          deltaFormat={(d) => formatCostUsd(d)}
+          label="Input tokens"
+          value={formatTokens(block.promptTokens)}
+          deltaCurrent={block.promptTokens}
+          deltaPrior={prior.promptTokens}
+          deltaFormat={(d) => formatTokens(d)}
         />
         <Stat
-          label="Total tokens"
-          value={formatTokens(block.promptTokens + block.completionTokens)}
-          deltaCurrent={block.promptTokens + block.completionTokens}
-          deltaPrior={prior.promptTokens + prior.completionTokens}
+          label="Output tokens"
+          value={formatTokens(block.completionTokens)}
+          deltaCurrent={block.completionTokens}
+          deltaPrior={prior.completionTokens}
           deltaFormat={(d) => formatTokens(d)}
         />
       </div>
@@ -292,7 +291,7 @@ function CostCard({ block, prior }: { block: CostBlock; prior: CostBlock }) {
             <li key={`${row.provider}::${row.modelName}`} className="flex items-center justify-between gap-2 py-1.5">
               <span className="truncate text-text-primary">{row.modelName}</span>
               <span className="text-text-secondary">
-                {formatTokens(row.promptTokens + row.completionTokens)} · {formatCostUsd(row.estimatedUsd)}
+                {formatTokens(row.promptTokens + row.completionTokens)}
               </span>
             </li>
           ))}

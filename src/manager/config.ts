@@ -1,3 +1,11 @@
+export type DatabaseDialect = "sqlite" | "postgres";
+
+export function detectDialect(databaseUrl: string): DatabaseDialect {
+  if (databaseUrl.startsWith("sqlite:")) return "sqlite";
+  if (databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://")) return "postgres";
+  throw new Error(`Unsupported DATABASE_URL scheme: ${databaseUrl}`);
+}
+
 export interface Config {
   linearApiToken: string;
   linearAssigneeId: string;
@@ -7,13 +15,9 @@ export interface Config {
   databaseUrl: string;
   workerConcurrency: number;
   pollIntervalMs: number;
-  port: number;
+  backendPort: number;
   logLevel: string;
   logPretty: boolean;
-  /** Base URL of the observability dashboard write API. Empty disables dashboard reporting. */
-  dashboardUrl: string;
-  /** Shared secret sent as a bearer token to the dashboard write API. */
-  ingestToken: string;
   testTicketId: string | null;
   /** Optional Slack bot token (xoxb-...). When set together with slackNotificationChannel, PR open/update notifications are sent. */
   slackBotToken: string | null;
@@ -72,14 +76,12 @@ export function loadConfig(): Readonly<Config> {
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
     githubAppPrivateKey: requiredEnv("GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n"),
     githubAppInstallationId: requiredPositiveIntEnv("GITHUB_APP_INSTALLATION_ID"),
-    databaseUrl: process.env.DATABASE_URL || "sqlite:./bear-metal-manager.sqlite",
+    databaseUrl: process.env.DATABASE_URL || "sqlite:./data/bear-metal.sqlite",
     workerConcurrency: positiveIntEnv("WORKER_CONCURRENCY", 5),
     pollIntervalMs: positiveIntEnv("POLL_INTERVAL_MS", 60_000),
-    port: positiveIntEnv("PORT", 3000),
+    backendPort: positiveIntEnv("BACKEND_PORT", 3100),
     logLevel: process.env.LOG_LEVEL || "info",
     logPretty: boolEnv("LOG_PRETTY", false),
-    dashboardUrl: process.env.DASHBOARD_URL ?? "",
-    ingestToken: process.env.INGEST_TOKEN ?? "",
     testTicketId: process.env.TEST_TICKET_ID?.trim() || null,
     taskHeartbeatIntervalMs: positiveIntEnv("TASK_HEARTBEAT_INTERVAL_MS", 30_000),
     taskStaleAfterMs: positiveIntEnv("TASK_STALE_AFTER_MS", 5 * 60_000),

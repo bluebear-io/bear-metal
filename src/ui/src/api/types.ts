@@ -135,8 +135,6 @@ export interface Run {
   completionTokens: number | null;
   modelName: string | null;
   provider: string | null;
-  /** Estimated USD cost from the backend pricing table; null when pricing or tokens are missing. */
-  estimatedCostUsd: number | null;
   createdAt: string;
   worker: Worker | null;
   /** Ordered tool-call timeline for the thought-process visualizer (DEN-2311). */
@@ -177,8 +175,6 @@ export interface ModelComparisonRow {
   runsWithDuration: number;
   totalPromptTokens: number;
   totalCompletionTokens: number;
-  totalCostUsd: number;
-  avgCostUsd: number;
 }
 
 /* --- Period summary (GET /api/summary) ----------------------------------- */
@@ -201,13 +197,11 @@ export interface ModelCostRow {
   modelName: string;
   promptTokens: number;
   completionTokens: number;
-  estimatedUsd: number;
 }
 
 export interface CostBlock {
   promptTokens: number;
   completionTokens: number;
-  estimatedUsd: number;
   byModel: ModelCostRow[];
 }
 

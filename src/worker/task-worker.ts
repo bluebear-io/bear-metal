@@ -1,9 +1,8 @@
-import { hostname } from "node:os";
+import { randomUUID } from "node:crypto";
 import PQueue from "p-queue";
 
 import type { Logger } from "../shared/index.js";
-import type { TaskQueue, TaskRecord } from "../manager/tasks.js";
-import type { DashboardReporter } from "../manager/dashboardReporter.js";
+import type { DbClient, TaskRecord } from "../db/client.js";
 import { dispatch, type DispatchInput, type DispatchResult } from "./dispatch.js";
 import type { WorkerIntegrations } from "./types.js";
 import { generateWorkerName } from "./worker-name.js";
@@ -12,14 +11,13 @@ export type DispatchRunner = (input: DispatchInput) => Promise<DispatchResult>;
 
 export interface TaskWorkerDeps {
   logger: Logger;
-  tasks: TaskQueue;
+  db: DbClient;
   integrations: WorkerIntegrations;
   concurrency: number;
   pollIntervalMs: number;
   workerId?: string;
   packageRoot?: string;
   runDispatch?: DispatchRunner;
-  reporter?: DashboardReporter;
   /** How often to refresh the per-task heartbeat row. Falls back to a derived value if unset. */
   heartbeatIntervalMs?: number;
   /** After this many crash/stale recoveries of the same row, abandon it. */
@@ -32,15 +30,13 @@ const DEFAULT_MAX_RECLAIMS = 3;
 export class TaskWorker {
   readonly workerId: string;
   private readonly logger: Logger;
-  private readonly tasks: TaskQueue;
+  private readonly db: DbClient;
   private readonly integrations: WorkerIntegrations;
   private readonly queue: PQueue;
   private readonly concurrency: number;
   private readonly pollIntervalMs: number;
   private readonly packageRoot: string | undefined;
   private readonly runDispatch: DispatchRunner;
-  private readonly reporter: DashboardReporter | undefined;
-  private readonly workerName: string;
   private readonly startedAtMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly maxReclaims: number;
@@ -49,14 +45,12 @@ export class TaskWorker {
   constructor(deps: TaskWorkerDeps) {
     this.workerId = deps.workerId ?? generateWorkerName();
     this.logger = deps.logger;
-    this.tasks = deps.tasks;
+    this.db = deps.db;
     this.integrations = deps.integrations;
     this.concurrency = deps.concurrency;
     this.pollIntervalMs = deps.pollIntervalMs;
     this.packageRoot = deps.packageRoot;
     this.runDispatch = deps.runDispatch ?? dispatch;
-    this.reporter = deps.reporter;
-    this.workerName = `${hostname()}/${process.pid}`;
     this.startedAtMs = Date.now();
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.maxReclaims = deps.maxReclaims ?? DEFAULT_MAX_RECLAIMS;
@@ -64,7 +58,6 @@ export class TaskWorker {
   }
 
   start(): void {
-    void this.reporter?.workerUpsert(this.workerId, this.workerName, "idle", null, this.startedAtMs);
     void this.safeTick();
     this.timer = setInterval(() => void this.safeTick(), this.pollIntervalMs);
   }
@@ -79,18 +72,28 @@ export class TaskWorker {
 
   async tick(): Promise<void> {
     while (this.queue.pending + this.queue.size < this.concurrency) {
-      const task = await this.tasks.acquireNext(this.workerId);
+      const task = await this.db.acquireNext(this.workerId);
       if (!task) {
         return;
       }
       void this.queue.add(() => this.runTask(task)).catch((err) => {
         this.logger.error({ err, taskId: task.id, ticketId: task.ticketId, workerId: this.workerId }, "SQL task failed");
-        void this.reporter?.runCrashedById(task.id, task.input.ticketIssueId, this.workerId, task.attemptNumber, task.input.trigger, String(err));
-        void this.reporter?.workerUpsert(this.workerId, this.workerName, "idle", null, this.startedAtMs);
+        void this.db.upsertRunCrashed(task.id, String(err));
+        void this.db.recordEvent({
+          id: randomUUID(),
+          ticketId: task.ticketId,
+          runId: task.id,
+          workerId: this.workerId,
+          source: "worker",
+          type: "worker_crashed",
+          summary: String(err),
+          payloadJson: null,
+          createdAt: new Date().toISOString(),
+        });
         // Release the row immediately so we don't have to wait for stale-heartbeat recovery on the
         // manager side. If the cap is reached the row is abandoned (terminal pending + slot released)
         // and the scheduler re-admits the ticket as a fresh start next tick.
-        void this.tasks.markCrashed(task.id, this.workerId, this.maxReclaims).then((res) => {
+        void this.db.markCrashed(task.id, this.workerId, this.maxReclaims).then((res) => {
           if (res) {
             this.logger.warn(
               { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId, action: res.action, reclaimCount: res.task.reclaimCount },
@@ -117,18 +120,26 @@ export class TaskWorker {
       { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId },
       "SQL task acquired",
     );
-    const issueId = task.input.ticketIssueId;
-    const trigger = task.input.trigger;
-    void this.reporter?.runStartedById(task.id, issueId, this.workerId, task.attemptNumber, trigger);
-    void this.reporter?.workerUpsert(this.workerId, this.workerName, "busy", task.id, this.startedAtMs);
-    if (task.input.state === "new") {
-      void this.reporter?.branchCreatedById(issueId, task.id, this.workerId, `Branch for ${task.ticketId}`);
+    const workerStartedAt = new Date().toISOString();
+    void this.db.upsertRunStarted(task.id, this.workerId, workerStartedAt);
+    if (task.input?.state === "new") {
+      void this.db.recordEvent({
+        id: randomUUID(),
+        ticketId: task.ticketId,
+        runId: task.id,
+        workerId: this.workerId,
+        source: "worker",
+        type: "branch_created",
+        summary: `Branch for ${task.ticketId ?? "unknown"}`,
+        payloadJson: null,
+        createdAt: new Date().toISOString(),
+      });
     }
     // Periodic heartbeat proves liveness so the manager's stale-task recovery doesn't reclaim a row
     // owned by a still-running worker. A failed heartbeat (returns false) signals that the lease was
     // lost to a reclaim — we log loudly; runTask still continues but its complete() will fail.
     const heartbeat = setInterval(() => {
-      void this.tasks.heartbeat(task.id, this.workerId).then((ok) => {
+      void this.db.heartbeat(task.id, this.workerId).then((ok) => {
         if (!ok) {
           this.logger.warn(
             { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId },
@@ -142,22 +153,60 @@ export class TaskWorker {
     let result: DispatchResult;
     try {
       result = await this.runDispatch({
-        ...task.input,
+        ...task.input!,
         integrations: this.integrations,
         packageRoot: this.packageRoot,
       });
+    } catch (err) {
+      void this.db.upsertRunCrashed(task.id, String(err));
+      void this.db.recordEvent({
+        id: randomUUID(),
+        ticketId: task.ticketId,
+        runId: task.id,
+        workerId: this.workerId,
+        source: "worker",
+        type: "worker_crashed",
+        summary: String(err),
+        payloadJson: null,
+        createdAt: new Date().toISOString(),
+      });
+      throw err;
     } finally {
       clearInterval(heartbeat);
     }
-    await this.tasks.complete(task.id, result);
-    void this.reporter?.progressById(issueId, task.id, this.workerId, `Worker finished: ${result.status}`);
-    void this.reporter?.runSucceededById(task.id, issueId, this.workerId, task.attemptNumber, trigger, result.usage ?? null);
+    await this.db.complete(task.id, result);
+    // The writes below are intentionally fire-and-forget: complete() has already released the task
+    // so the scheduler can move on. A crash between here and the event/usage/toolCalls writes means
+    // the dashboard misses one run's supplementary data — accepted trade-off vs. blocking the slot.
+    void this.db.recordEvent({
+      id: randomUUID(),
+      ticketId: task.ticketId,
+      runId: task.id,
+      workerId: this.workerId,
+      source: "worker",
+      type: "progress",
+      summary: `Worker finished: ${result.status}`,
+      payloadJson: null,
+      createdAt: new Date().toISOString(),
+    });
+    void this.db.upsertRunSucceeded(task.id, result.usage ?? null);
     // DEN-2311: persist the agent's thought-process timeline for the dashboard's visualizer.
-    void this.reporter?.recordRunToolCallsById(task.id, result.toolCalls ?? []);
-    for (const pr of result.prs) {
-      void this.reporter?.recordPrOpenedById(issueId, pr, task.id);
+    if (result.toolCalls && result.toolCalls.length > 0) {
+      void this.db.upsertToolCalls(task.id, JSON.stringify(result.toolCalls));
     }
-    void this.reporter?.workerUpsert(this.workerId, this.workerName, "idle", null, this.startedAtMs);
+    for (const pr of result.prs) {
+      void this.db.recordEvent({
+        id: randomUUID(),
+        ticketId: task.ticketId,
+        runId: task.id,
+        workerId: null,
+        source: "worker",
+        type: "pr_opened",
+        summary: `PR #${pr.number} opened`,
+        payloadJson: JSON.stringify(pr),
+        createdAt: new Date().toISOString(),
+      });
+    }
     this.logger.info(
       { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId, resultStatus: result.status },
       "SQL task completed",

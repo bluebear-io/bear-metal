@@ -23,7 +23,7 @@ describe("selectAdmissions", () => {
   });
 
   it("skips already-active tickets", () => {
-    const isActive = (identifier: string) => identifier === "A";
+    const isActive = (id: string) => id === "a";
     expect(selectAdmissions(candidates, isActive, 2).map((t) => t.id)).toEqual(["b", "c"]);
   });
 

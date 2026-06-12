@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import PQueue from "p-queue";
 
 import type {
@@ -10,8 +11,7 @@ import type {
   WorkOutcome,
 } from "../shared/index.js";
 
-import type { DashboardReporter } from "./dashboardReporter.js";
-import type { TaskQueue, TaskSlot } from "./tasks.js";
+import type { DbClient, TaskSlot } from "../db/client.js";
 
 type TicketPhase = "active" | "parked";
 
@@ -51,7 +51,7 @@ export interface GitHubSource {
 const HUMAN_TAKEOVER_MARKER = "<!-- bear-metal:human-takeover -->";
 const HUMAN_TAKEOVER_PR_COMMENT =
   HUMAN_TAKEOVER_MARKER +
-  "\n\ud83d\udc3b Detected a human commit on this branch after bear-metal's last push. " +
+  "\n🐻 Detected a human commit on this branch after bear-metal's last push. " +
   "Stepping aside so I don't conflict with your work. Re-delegate the Linear ticket if you'd like me to pick it back up.";
 
 const HUMAN_TAKEOVER_LINEAR_COMMENT =
@@ -67,13 +67,12 @@ export interface SchedulerDeps {
   logger: Logger;
   linear: LinearSource;
   github: GitHubSource;
-  tasks: TaskQueue;
+  db: DbClient;
   handler: TicketHandler;
   /** Linear user id of the agent the manager runs as; it works tickets delegated to this id. */
   agentId: string;
   concurrency: number;
   pollIntervalMs: number;
-  reporter?: DashboardReporter;
   /** A task whose owning worker hasn't heartbeat within this many ms is considered crashed/hung. */
   taskStaleAfterMs?: number;
   /** Cap on how many times a single row can be recovered before the manager abandons it. */
@@ -126,12 +125,12 @@ export class Scheduler {
    * free SQL slots, then enqueue one worker task per eligible dispatch.
    */
   async tick(): Promise<void> {
-    const { tasks, linear, github, handler, logger, agentId, concurrency, reporter } = this.deps;
+    const { db, linear, github, handler, logger, agentId, concurrency } = this.deps;
 
     // Recover any tasks owned by a dead/hung worker before reading the tracked set, so the
     // subsequent in-flight count and dispatch decisions see the fresh state.
     try {
-      const recovered = await tasks.reclaimStaleTasks({
+      const recovered = await db.reclaimStaleTasks({
         staleAfterMs: this.deps.taskStaleAfterMs ?? DEFAULT_TASK_STALE_AFTER_MS,
         maxReclaims: this.deps.taskMaxReclaims ?? DEFAULT_TASK_MAX_RECLAIMS,
       });
@@ -146,39 +145,42 @@ export class Scheduler {
           },
           "recovered stale in-flight task",
         );
-        void reporter?.runCrashedById(
-          r.task.id,
-          r.task.input.ticketIssueId,
-          r.previousWorkerId,
-          r.task.attemptNumber,
-          r.task.input.trigger,
-          r.reason,
-        );
+        void db.upsertRunCrashed(r.task.id, r.reason);
+        void db.recordEvent({
+          id: randomUUID(),
+          ticketId: r.task.ticketId,
+          runId: r.task.id,
+          workerId: r.previousWorkerId,
+          source: "manager",
+          type: "worker_crashed",
+          summary: r.reason,
+          payloadJson: null,
+          createdAt: new Date().toISOString(),
+        });
       }
     } catch (err) {
       // One bad recovery sweep must not kill the tick; the next tick retries.
       logger.error({ err }, "stale task recovery failed");
     }
 
-    const tracked = await tasks.listTracked();
+    const tracked = await db.listTracked();
     const inFlight = tracked.filter((s) => s.latestTask.resultStatus === null).length;
     logger.info({ tracked: tracked.length, inFlight }, "poll tick started");
 
-    const refreshed = await refreshTrackedTickets(tasks, linear, github, agentId, logger, reporter);
+    const refreshed = await refreshTrackedTickets(db, linear, github, agentId, logger);
     const admitted = await admitNewTickets(
-      tasks,
+      db,
       linear,
       agentId,
       freeSlots(concurrency, inFlight),
       logger,
-      reporter,
     );
 
     const toDispatch = [...refreshed, ...admitted];
-    const eligible = await enforceIterationLimit(toDispatch, tasks, linear, logger);
+    const eligible = await enforceIterationLimit(toDispatch, db, linear, logger);
     await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
-    const trackedAfter = await tasks.listTracked();
+    const trackedAfter = await db.listTracked();
     logger.info(
       {
         tracked: trackedAfter.length,
@@ -211,14 +213,14 @@ export function freeSlots(concurrency: number, activeCount: number): number {
  */
 export function selectAdmissions(
   candidates: Ticket[],
-  isTracked: (identifier: string) => boolean,
+  isTracked: (id: string) => boolean,
   free: number,
 ): Ticket[] {
   if (free <= 0) {
     return [];
   }
   return candidates
-    .filter((ticket) => !isTracked(ticket.identifier))
+    .filter((ticket) => !isTracked(ticket.id))
     .slice()
     .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))
     .slice(0, free);
@@ -262,8 +264,8 @@ async function evaluateTicket(
   prevPhase: TicketPhase,
   agentId: string,
   github: GitHubSource,
+  db: DbClient,
   logger: Logger,
-  reporter?: DashboardReporter,
 ): Promise<TicketDecision> {
   if (isTerminalLinearTicket(ticket)) {
     logger.info(
@@ -326,13 +328,62 @@ async function evaluateTicket(
   void (async () => {
     try {
       for (const status of statuses.filter((s) => !s.pr.merged && s.pr.state !== "closed")) {
-        await reporter?.recordPullRequestObservation(ticket, status.pr, status.context, null);
+        const pr = status.pr;
+        const prDbId = `${pr.owner}/${pr.repo}#${pr.number}`;
+        void db.upsertPullRequest(prDbId, ticket.id, {
+          number: pr.number,
+          title: pr.title,
+          headRef: pr.headRef,
+          state: pr.state,
+          draft: pr.draft,
+          merged: pr.merged,
+          url: pr.url,
+          lastRunId: null,
+          reviewThreadsJson: JSON.stringify(status.context.reviewThreads.map((t) => ({
+            id: t.id,
+            path: t.path,
+            line: t.line,
+            isResolved: t.isResolved,
+            commentsJson: JSON.stringify(t.comments),
+          }))),
+        });
+        if (testsFailed) {
+          const ciRunId = `${prDbId}@${status.context.headSha.slice(0, 12)}`;
+          void db.upsertCiRun(ciRunId, ticket.id, null, prDbId, "failed", null, ciRunSummary(status.context), JSON.stringify([
+            ...status.context.failedCheckRuns.map((cr) => toCheckRow(ciRunId, cr)),
+            ...status.context.failedStatuses.map((s) => toStatusRow(ciRunId, s)),
+          ]));
+        }
       }
       if (testsFailed) {
-        await reporter?.ciFailed(ticket, "CI checks failed");
+        void db.upsertTicketCiFailed(ticket.id);
+        void db.recordEvent({
+          id: randomUUID(),
+          ticketId: ticket.id,
+          runId: null,
+          workerId: null,
+          source: "ci",
+          type: "ci_failed",
+          summary: "CI checks failed",
+          payloadJson: null,
+          createdAt: new Date().toISOString(),
+        });
       } else {
         const firstPr = statuses[0]?.pr;
-        if (firstPr) await reporter?.prOpened(ticket, firstPr);
+        if (firstPr) {
+          void db.upsertTicketPrOpen(ticket.id);
+          void db.recordEvent({
+            id: randomUUID(),
+            ticketId: ticket.id,
+            runId: null,
+            workerId: null,
+            source: "manager",
+            type: "pr_opened",
+            summary: `PR #${firstPr.number} opened`,
+            payloadJson: null,
+            createdAt: new Date().toISOString(),
+          });
+        }
       }
     } catch (err) {
       logger.warn({ err, ticket: ticket.identifier }, "best-effort dashboard observation failed");
@@ -349,7 +400,18 @@ async function evaluateTicket(
       const summary = hasMergeConflicts
         ? "Re-dispatched: merge conflicts on PR head"
         : "Re-dispatched: unresolved review or resumed";
-      void reporter?.delegatedBack(ticket, summary);
+      void db.upsertTicketDelegatedBack(ticket.id);
+      void db.recordEvent({
+        id: randomUUID(),
+        ticketId: ticket.id,
+        runId: null,
+        workerId: null,
+        source: "manager",
+        type: "delegated_back",
+        summary,
+        payloadJson: null,
+        createdAt: new Date().toISOString(),
+      });
     }
   }
   // Priority: failing checks > merge conflicts > everything else. CI is the most
@@ -364,17 +426,16 @@ async function evaluateTicket(
 
 /** Step 1 — refresh tracked SQL slots, release resolved slots, collect those needing dispatch. */
 async function refreshTrackedTickets(
-  tasks: TaskQueue,
+  db: DbClient,
   linear: LinearSource,
   github: GitHubSource,
   agentId: string,
   logger: Logger,
-  reporter?: DashboardReporter,
 ): Promise<DispatchItem[]> {
   const toDispatch: DispatchItem[] = [];
-  for (const slot of await tasks.listTracked()) {
+  for (const slot of await db.listTracked()) {
     try {
-      const ticket = await linear.getTicket(slot.ticketId);
+      const ticket = await linear.getTicket(slot.ticketId!);
       // A "pending" worker result means the worker stopped without finishing the ticket. The worker
       // returns "pending" both when it hands the ticket back to its human owner (via
       // commentAndHandBack — drops delegation) and when it pauses mid-run while still owning the
@@ -386,18 +447,29 @@ async function refreshTrackedTickets(
           { ticket: ticket.identifier },
           "worker handed ticket back; removed from tracking",
         );
-        await tasks.setSlotStatus(slot.ticketId, "released");
+        await db.setSlotStatus(slot.ticketId!, "released");
         continue;
       }
       const knownPrs = knownPrsForSlot(slot);
-      const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, logger, reporter);
+      const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, db, logger);
       if (decision.remove) {
         if (decision.merged) {
           // PR merged — relinquish the agent's delegation so the ticket returns to its human assignee.
           // If this throws, leave the slot tracked so the next tick retries.
           await linear.handBack(ticket.id);
           logger.info({ ticket: ticket.identifier }, "handed ticket back to assignee after merge");
-          void reporter?.ticketCompleted(ticket);
+          void db.upsertTicketCompleted(ticket.id);
+          void db.recordEvent({
+            id: randomUUID(),
+            ticketId: ticket.id,
+            runId: null,
+            workerId: null,
+            source: "manager",
+            type: "ticket_completed",
+            summary: `Completed ${ticket.identifier}`,
+            payloadJson: null,
+            createdAt: new Date().toISOString(),
+          });
         } else if (decision.humanTookOverPrs && decision.humanTookOverPrs.length > 0) {
           // Human pushed a commit after bear-metal — leave a PR comment on each taken-over PR,
           // then post a Linear comment and relinquish delegation. If any call throws, leave the
@@ -417,18 +489,29 @@ async function refreshTrackedTickets(
           }
           await linear.commentAndHandBack(ticket.id, HUMAN_TAKEOVER_LINEAR_COMMENT);
           logger.info({ ticket: ticket.identifier }, "handed ticket back after human takeover");
-          void reporter?.delegatedBack(ticket, "Human takeover detected on PR branch");
+          void db.upsertTicketDelegatedBack(ticket.id);
+          void db.recordEvent({
+            id: randomUUID(),
+            ticketId: ticket.id,
+            runId: null,
+            workerId: null,
+            source: "manager",
+            type: "delegated_back",
+            summary: "Human takeover detected on PR branch",
+            payloadJson: null,
+            createdAt: new Date().toISOString(),
+          });
         }
-        await tasks.setSlotStatus(slot.ticketId, "released");
+        await db.setSlotStatus(slot.ticketId!, "released");
         continue;
       }
 
       if (slot.slotStatus !== decision.phase) {
-        await tasks.setSlotStatus(slot.ticketId, decision.phase);
+        await db.setSlotStatus(slot.ticketId!, decision.phase);
       }
       // Delegated, tracked, no PR yet — it's being worked but has nothing to show. (Parked tickets stay quiet.)
       if (decision.phase === "active" && decision.context.prs.length === 0) {
-        void reporter?.ticketInProgress(ticket, 0);
+        void db.upsertTicketInProgress(ticket.id, 0);
       }
       if (decision.dispatch) {
         if (slot.latestTask.resultStatus === null) {
@@ -449,23 +532,32 @@ async function refreshTrackedTickets(
 
 /** Step 2 — admit newly delegated non-terminal tickets into free slots. */
 async function admitNewTickets(
-  tasks: TaskQueue,
+  db: DbClient,
   linear: LinearSource,
   agentId: string,
   free: number,
   logger: Logger,
-  reporter?: DashboardReporter,
 ): Promise<DispatchItem[]> {
   if (free <= 0) {
     return [];
   }
-  const [candidates, tracked] = await Promise.all([linear.findDelegatedTickets(agentId), tasks.listTracked()]);
+  const [candidates, tracked] = await Promise.all([linear.findDelegatedTickets(agentId), db.listTracked()]);
   const trackedTicketIds = new Set(tracked.map((slot) => slot.ticketId));
-  const admitted = selectAdmissions(candidates, (identifier) => trackedTicketIds.has(identifier), free);
+  const admitted = selectAdmissions(candidates, (id) => trackedTicketIds.has(id), free);
   const contexts: DispatchItem[] = [];
   for (const ticket of admitted) {
     const context: TicketContext = { ticket, prs: [] };
-    void reporter?.ticketDiscovered(ticket);
+    await db.upsertTicketDiscovered({
+      id: ticket.id,
+      identifier: ticket.identifier,
+      title: ticket.title,
+      description: ticket.description,
+      url: ticket.url,
+      branchName: ticket.branchName,
+      linearStatusName: ticket.status.name,
+      linearStatusType: ticket.status.type,
+      labels: ticket.labels,
+    });
     logger.info({ ticket: ticket.identifier }, "picked up ticket");
     contexts.push({ context, trigger: "new" });
   }
@@ -520,16 +612,16 @@ async function runHandler(
  */
 async function enforceIterationLimit(
   items: DispatchItem[],
-  tasks: TaskQueue,
+  db: DbClient,
   linear: LinearSource,
   logger: Logger,
 ): Promise<DispatchItem[]> {
   const eligible: DispatchItem[] = [];
   for (const item of items) {
     const ctx = item.context;
-    // Tasks are keyed by ticket identifier (e.g. "DEN-123"); Linear APIs by ticket id (UUID).
+    // Tasks are keyed by ticket UUID (ticket.id); Linear APIs also use the UUID.
     try {
-      const count = await tasks.getIterationCount(ctx.ticket.identifier);
+      const count = await db.getIterationCount(ctx.ticket.id);
       if (count >= MAX_ITERATIONS) {
         logger.warn(
           { ticket: ctx.ticket.identifier, count },
@@ -539,7 +631,7 @@ async function enforceIterationLimit(
           ctx.ticket.id,
           `Reached the maximum iteration limit of ${MAX_ITERATIONS}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
         );
-        await tasks.setSlotStatus(ctx.ticket.identifier, "released");
+        await db.setSlotStatus(ctx.ticket.id, "released");
       } else {
         eligible.push(item);
       }
@@ -562,7 +654,7 @@ async function enforceIterationLimit(
  */
 function knownPrsForSlot(slot: TaskSlot): PullRequestRef[] {
   const task = slot.latestTask;
-  const prs = task.result?.prs ?? task.input.prs;
+  const prs = task.result?.prs ?? task.input?.prs ?? [];
   if (task.resultStatus === "done" && prs.length === 0) {
     // A completed-done task with no PRs is an anomalous worker result.
     // Throw so refreshTrackedTickets' catch block logs and skips this slot
@@ -576,4 +668,71 @@ function knownPrsForSlot(slot: TaskSlot): PullRequestRef[] {
 
 function isTerminalLinearTicket(ticket: Ticket): boolean {
   return TERMINAL_STATE_TYPES.includes(ticket.status.type) || TERMINAL_STATE_NAMES.includes(ticket.status.name);
+}
+
+// ---------------------------------------------------------------------------
+// CI helper types and functions (ported from dashboardReporter.ts)
+// ---------------------------------------------------------------------------
+
+import type { FailedCheckRun, FailedStatus, JsonValue, PullRequestContext } from "../shared/index.js";
+
+function ciRunSummary(context: PullRequestContext): string {
+  const failedNames = context.failedCheckRuns
+    .map((failed) => {
+      const cr = failed.checkRun as Record<string, JsonValue>;
+      return String(readField(cr, "name") ?? "check");
+    })
+    .concat(
+      context.failedStatuses.map((failed) => {
+        const status = failed.status as Record<string, JsonValue>;
+        return String(readField(status, "context") ?? "status");
+      }),
+    );
+  return failedNames.length === 0 ? "CI failed" : `${failedNames.length} failing: ${failedNames.join(", ")}`;
+}
+
+function toCheckRow(ciRunId: string, failed: FailedCheckRun): Record<string, unknown> {
+  const cr = failed.checkRun as Record<string, JsonValue>;
+  const externalId = String(readField(cr, "id") ?? "");
+  const name = String(readField(cr, "name") ?? "check");
+  const conclusion = stringOrNull(readField(cr, "conclusion"));
+  const detailsUrl = stringOrNull(readField(cr, "details_url") ?? readField(cr, "html_url"));
+  return {
+    id: `${ciRunId}:check_run:${externalId}`,
+    ciRunId,
+    source: "check_run",
+    externalId,
+    name,
+    conclusion,
+    detailsUrl,
+    annotationsJson: JSON.stringify(failed.annotations),
+  };
+}
+
+function toStatusRow(ciRunId: string, failed: FailedStatus): Record<string, unknown> {
+  const status = failed.status as Record<string, JsonValue>;
+  const externalId = String(readField(status, "context") ?? "");
+  const conclusion = stringOrNull(readField(status, "state"));
+  return {
+    id: `${ciRunId}:status:${externalId}`,
+    ciRunId,
+    source: "status",
+    externalId,
+    name: externalId || "status",
+    conclusion,
+    detailsUrl: stringOrNull(readField(status, "target_url")),
+    annotationsJson: "[]",
+  };
+}
+
+function readField(o: Record<string, JsonValue> | undefined, key: string): JsonValue | undefined {
+  if (!o) return undefined;
+  const v = o[key];
+  return v === undefined ? undefined : v;
+}
+
+function stringOrNull(v: JsonValue | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "string") return v;
+  return String(v);
 }

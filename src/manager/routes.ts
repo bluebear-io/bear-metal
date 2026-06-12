@@ -1,10 +1,9 @@
 import { Router } from "express";
-import * as schema from "../db/schema.js";
-import { MAX_TICKET_PAGE_SIZE, type ListTicketsOptions, type Repository } from "../db/repository.js";
+import { MAX_TICKET_PAGE_SIZE, type DbClient, type ListTicketsOptions } from "../db/client.js";
 
-const BM_STATUSES = schema.tickets.bmStatus.enumValues;
+const BM_STATUSES = ["discovered", "dispatched", "in_progress", "pr_open", "ci_running", "ci_failed", "completed", "abandoned"] as const;
 type BmStatus = (typeof BM_STATUSES)[number];
-const STOP_REASONS = schema.runs.stopReason.enumValues;
+const STOP_REASONS = ["completed", "timeout", "crash", "error"] as const;
 type StopReason = (typeof STOP_REASONS)[number];
 
 function isBmStatus(v: unknown): v is BmStatus {
@@ -58,7 +57,7 @@ function readOptionalInt(value: unknown, name: string): number | undefined {
   return n;
 }
 
-export function createRouter(repo: Repository): Router {
+export function createRouter(db: DbClient): Router {
   const router = Router();
 
   router.get("/health", (_req, res) => {
@@ -67,7 +66,7 @@ export function createRouter(repo: Repository): Router {
 
   router.get("/tickets/filters", async (_req, res, next) => {
     try {
-      res.json(await repo.listTicketFilterOptions());
+      res.json(await db.listTicketFilterOptions());
     } catch (err) {
       next(err);
     }
@@ -145,7 +144,7 @@ export function createRouter(repo: Repository): Router {
         pageSize,
       };
 
-      const result = await repo.listTickets(opts);
+      const result = await db.listTickets(opts);
       res.json({
         tickets: result.items,
         total: result.total,
@@ -159,7 +158,7 @@ export function createRouter(repo: Repository): Router {
 
   router.get("/tickets/:id", async (req, res, next) => {
     try {
-      const detail = await repo.getTicketDetail(req.params.id);
+      const detail = await db.getTicketDetail(req.params.id);
       if (!detail) {
         res.status(404).json({ error: "ticket not found" });
         return;
@@ -172,7 +171,7 @@ export function createRouter(repo: Repository): Router {
 
   router.get("/workers", async (_req, res, next) => {
     try {
-      res.json({ workers: await repo.listWorkers() });
+      res.json({ workers: await db.listWorkers() });
     } catch (err) {
       next(err);
     }
@@ -180,7 +179,7 @@ export function createRouter(repo: Repository): Router {
 
   router.get("/models/comparison", async (_req, res, next) => {
     try {
-      res.json({ models: await repo.listModelComparison() });
+      res.json({ models: await db.listModelComparison() });
     } catch (err) {
       next(err);
     }
@@ -207,7 +206,7 @@ export function createRouter(repo: Repository): Router {
         res.status(400).json({ error: `summary window must be ${MAX_SUMMARY_WINDOW_DAYS} days or less` });
         return;
       }
-      const summary = await repo.getPeriodSummary({ from, to });
+      const summary = await db.getPeriodSummary({ from, to });
       res.json(summary);
     } catch (err) {
       next(err);

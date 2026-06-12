@@ -45,7 +45,6 @@ export {
   type PullRequestNotificationKind,
 } from "./integrations/slack/client.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
-export { createDashboardClient, type DashboardClient, type DashboardClientOptions } from "./dashboard/client.js";
 export type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
   CiCheckPayload, ReviewThreadPayload, RunToolCallPayload, EventPayload,

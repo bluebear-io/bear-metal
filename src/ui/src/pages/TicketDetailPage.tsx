@@ -17,7 +17,7 @@ import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
-import { formatCostUsd, formatDateTime, formatDuration, formatTokens, parseLabels } from "../lib/format.js";
+import { formatDateTime, formatDuration, formatTokens, parseLabels } from "../lib/format.js";
 
 const Field = ({ label, value }: { label: string; value: string }) => (
   <div className="min-w-0">
@@ -98,7 +98,6 @@ const RunsSection = ({ runs }: { runs: Run[] }) => (
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Prompt</th>
               <th className="px-3 py-2 font-medium">Completion</th>
-              <th className="px-3 py-2 font-medium">Cost</th>
               <th className="px-3 py-2 font-medium">Stop / error</th>
             </tr>
           </thead>
@@ -121,7 +120,6 @@ const RunsSection = ({ runs }: { runs: Run[] }) => (
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.promptTokens)}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.completionTokens)}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatCostUsd(run.estimatedCostUsd)}</td>
                 <td className="min-w-48 px-3 py-2 text-text-secondary">{[run.stopReason, run.error].filter(Boolean).join(": ") || "—"}</td>
               </tr>
             ))}

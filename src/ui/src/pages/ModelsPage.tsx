@@ -3,7 +3,7 @@ import type { ModelComparisonRow } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
-import { formatCostUsd, formatPercent, formatSeconds, formatTokens } from "../lib/format.js";
+import { formatPercent, formatSeconds, formatTokens } from "../lib/format.js";
 
 const FAMILY_LABEL: Record<ModelComparisonRow["family"], string> = {
   claude: "Claude",
@@ -48,8 +48,6 @@ const aggregateByFamily = (rows: ModelComparisonRow[]): ModelComparisonRow[] => 
         runsWithDuration: row.runsWithDuration,
         totalPromptTokens: row.totalPromptTokens,
         totalCompletionTokens: row.totalCompletionTokens,
-        totalCostUsd: row.totalCostUsd,
-        avgCostUsd: 0,
       });
     } else {
       existing.totalRuns += row.totalRuns;
@@ -57,16 +55,14 @@ const aggregateByFamily = (rows: ModelComparisonRow[]): ModelComparisonRow[] => 
       existing.runsWithDuration += row.runsWithDuration;
       existing.totalPromptTokens += row.totalPromptTokens;
       existing.totalCompletionTokens += row.totalCompletionTokens;
-      existing.totalCostUsd += row.totalCostUsd;
     }
   }
   for (const [family, agg] of byFamily) {
     agg.successRate = agg.totalRuns > 0 ? agg.succeededRuns / agg.totalRuns : 0;
-    agg.avgCostUsd = agg.totalRuns > 0 ? agg.totalCostUsd / agg.totalRuns : 0;
     const dur = succeededDurationWeighted.get(family);
     agg.avgDurationSeconds = dur && dur.count > 0 ? dur.sumSeconds / dur.count : null;
   }
-  return Array.from(byFamily.values()).sort((a, b) => b.totalCostUsd - a.totalCostUsd);
+  return Array.from(byFamily.values()).sort((a, b) => (b.totalPromptTokens + b.totalCompletionTokens) - (a.totalPromptTokens + a.totalCompletionTokens));
 };
 
 const ModelRow = ({ row }: { row: ModelComparisonRow }) => (
@@ -80,9 +76,7 @@ const ModelRow = ({ row }: { row: ModelComparisonRow }) => (
     <td className="whitespace-nowrap px-3 py-2 text-right text-text-secondary">{formatPercent(row.successRate)}</td>
     <td className="whitespace-nowrap px-3 py-2 text-right text-text-secondary">{formatSeconds(row.avgDurationSeconds)}</td>
     <td className="whitespace-nowrap px-3 py-2 text-right text-text-secondary">{formatTokens(row.totalPromptTokens)}</td>
-    <td className="whitespace-nowrap px-3 py-2 text-right text-text-secondary">{formatTokens(row.totalCompletionTokens)}</td>
-    <td className="whitespace-nowrap px-3 py-2 text-right text-text-secondary">{formatCostUsd(row.avgCostUsd)}</td>
-    <td className="whitespace-nowrap px-3 py-2 text-right font-medium text-text-primary">{formatCostUsd(row.totalCostUsd)}</td>
+    <td className="whitespace-nowrap px-3 py-2 text-right font-medium text-text-primary">{formatTokens(row.totalCompletionTokens)}</td>
   </tr>
 );
 
@@ -102,10 +96,8 @@ const ModelTable = ({ rows, title }: { rows: ModelComparisonRow[]; title: string
               <th className="px-3 py-2 text-right font-medium">Runs</th>
               <th className="px-3 py-2 text-right font-medium">Success</th>
               <th className="px-3 py-2 text-right font-medium">Avg time</th>
-              <th className="px-3 py-2 text-right font-medium">Prompt</th>
-              <th className="px-3 py-2 text-right font-medium">Completion</th>
-              <th className="px-3 py-2 text-right font-medium">Avg $/run</th>
-              <th className="px-3 py-2 text-right font-medium">Total $</th>
+              <th className="px-3 py-2 text-right font-medium">Input tokens</th>
+              <th className="px-3 py-2 text-right font-medium">Output tokens</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border-default">

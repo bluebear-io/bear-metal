@@ -1,5 +1,5 @@
 services:
-  # The monolith: manager + worker (in-process) + shared, one container.
+  # The monolith: manager + worker + UI/API server, one container.
   manager:
     build:
       context: .
@@ -7,24 +7,10 @@ services:
     env_file:
       - .env
     ports:
-      - "${PORT:-3000}:${PORT:-3000}"
+      - "${BACKEND_PORT:-3100}:${BACKEND_PORT:-3100}"
     restart: unless-stopped
     volumes:
       # Persist in-progress repo workspaces across container restarts
       - ./workspace:/app/workspace
       # Persist SQLite database across container restarts
-      - ./data:/app/data
-
-  # Read-only dashboard backend — serves the React UI at / and API at /api
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    env_file:
-      - .env
-    command: ["node", "dist/backend/index.js"]
-    ports:
-      - "80:${BACKEND_PORT:-3100}"
-    restart: unless-stopped
-    volumes:
       - ./data:/app/data

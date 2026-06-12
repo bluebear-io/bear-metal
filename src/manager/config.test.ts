@@ -23,7 +23,7 @@ beforeEach(() => {
     "DATABASE_URL",
     "WORKER_CONCURRENCY",
     "POLL_INTERVAL_MS",
-    "PORT",
+    "BACKEND_PORT",
     "LOG_LEVEL",
     "TEST_TICKET_ID",
   ]) {
@@ -43,10 +43,10 @@ describe("loadConfig", () => {
     expect(config.linearAssigneeId).toBe("user-1");
     expect(config.githubAppId).toBe(12_345);
     expect(config.githubAppInstallationId).toBe(67_890);
-    expect(config.databaseUrl).toBe("sqlite:./bear-metal-manager.sqlite");
+    expect(config.databaseUrl).toBe("sqlite:./bear-metal.sqlite");
     expect(config.workerConcurrency).toBe(5);
     expect(config.pollIntervalMs).toBe(60_000);
-    expect(config.port).toBe(3000);
+    expect(config.backendPort).toBe(3100);
     expect(config.logLevel).toBe("info");
     expect(config.testTicketId).toBeNull();
   });
