@@ -8,7 +8,6 @@ import {
   type TicketContext,
 } from "../shared/index.js";
 import { SqlDbClient } from "../db/client.js";
-import { createCommentStoreFromDatabaseUrl } from "../worker/comment-store.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { createApp } from "./app.js";
@@ -51,7 +50,6 @@ if (!slack) {
 }
 const db = new SqlDbClient(config.databaseUrl);
 await db.initSchema();
-const commentStore = await createCommentStoreFromDatabaseUrl(config.databaseUrl);
 
 const handler = new ManagerTicketHandler({ logger, db });
 
@@ -70,7 +68,7 @@ const scheduler = new Scheduler({
 const taskWorker = new TaskWorker({
   logger,
   db,
-  integrations: { github, linear, slack, commentStore },
+  integrations: { github, linear, slack, commentStore: db },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
   heartbeatIntervalMs: config.taskHeartbeatIntervalMs,

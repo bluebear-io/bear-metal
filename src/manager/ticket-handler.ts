@@ -23,7 +23,7 @@ export class ManagerTicketHandler {
 
   async handle(ctx: TicketContext, trigger: RunTrigger): Promise<WorkOutcome> {
     const state = ctx.prs.length === 0 ? "new" : "iteration";
-    this.logger.info(
+    this.logger.debug(
       { ticket: ctx.ticket.identifier, state, prCount: ctx.prs.length },
       "enqueueing ticket task",
     );

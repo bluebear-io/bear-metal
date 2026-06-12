@@ -130,7 +130,7 @@ export class TaskWorker {
         workerId: this.workerId,
         source: "worker",
         type: "branch_created",
-        summary: `Branch for ${task.ticketId ?? "unknown"}`,
+        summary: `Branch for ${task.input?.ticketId ?? task.ticketId ?? "unknown"}`,
         payloadJson: null,
         createdAt: new Date().toISOString(),
       });
@@ -156,6 +156,9 @@ export class TaskWorker {
         ...task.input!,
         integrations: this.integrations,
         packageRoot: this.packageRoot,
+        onToolCallProgress: (calls) => {
+          void this.db.upsertToolCalls(task.id, JSON.stringify(calls));
+        },
       });
     } catch (err) {
       void this.db.upsertRunCrashed(task.id, String(err));

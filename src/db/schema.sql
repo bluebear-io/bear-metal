@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- ticket state (mutable)
   bm_status TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 5,
   ticket_completed_at TEXT,
 
   -- task queue columns
@@ -73,7 +72,6 @@ ALTER TABLE tasks ADD COLUMN ticket_linear_status_type TEXT;
 ALTER TABLE tasks ADD COLUMN ticket_labels_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE tasks ADD COLUMN bm_status TEXT;
 ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE tasks ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 5;
 ALTER TABLE tasks ADD COLUMN ticket_completed_at TEXT;
 ALTER TABLE tasks ADD COLUMN dispatch_state TEXT;
 ALTER TABLE tasks ADD COLUMN input_json TEXT;
@@ -184,3 +182,22 @@ ALTER TABLE events ADD COLUMN type TEXT NOT NULL DEFAULT '';
 ALTER TABLE events ADD COLUMN summary TEXT NOT NULL DEFAULT '';
 ALTER TABLE events ADD COLUMN payload_json TEXT;
 ALTER TABLE events ADD COLUMN created_at TEXT;
+
+-- ---------------------------------------------------------------------------
+-- completed_issue_comments
+-- Idempotency guard: tracks PR review comments the worker has already acted on.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS completed_issue_comments (
+  owner TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  pr_number INTEGER NOT NULL,
+  comment_id TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (owner, repo, pr_number, comment_id)
+);
+
+ALTER TABLE completed_issue_comments ADD COLUMN owner TEXT NOT NULL DEFAULT '';
+ALTER TABLE completed_issue_comments ADD COLUMN repo TEXT NOT NULL DEFAULT '';
+ALTER TABLE completed_issue_comments ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE completed_issue_comments ADD COLUMN comment_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE completed_issue_comments ADD COLUMN completed_at TEXT NOT NULL DEFAULT '';

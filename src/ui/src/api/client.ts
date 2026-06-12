@@ -1,5 +1,6 @@
 import type {
   BmStatus,
+  Config,
   ModelComparisonRow,
   PeriodSummary,
   TicketDetail,
@@ -85,4 +86,8 @@ export async function fetchModelComparison(): Promise<ModelComparisonRow[]> {
 export async function fetchSummary(range: SummaryRange): Promise<PeriodSummary> {
   const params = new URLSearchParams({ from: range.from.toISOString(), to: range.to.toISOString() });
   return getJson<PeriodSummary>(`/api/summary?${params.toString()}`);
+}
+
+export async function fetchConfig(): Promise<Config> {
+  return getJson<Config>("/api/config");
 }

@@ -26,7 +26,6 @@ export interface TicketPayload {
   labels: string[];
   bmStatus: BmStatus;
   attemptCount: number;
-  maxAttempts: number;
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;

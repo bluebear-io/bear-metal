@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
-import { useTicketFilterOptions, useTickets } from "../api/queries.js";
+import { useConfig, useTicketFilterOptions, useTickets } from "../api/queries.js";
 import type { BmStatus, StopReason, TicketListItem, TicketListQuery } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
@@ -12,12 +12,15 @@ import { formatDateTime } from "../lib/format.js";
 const Dash = () => <span className="text-text-muted">-</span>;
 
 const TicketLink = ({ ticket }: { ticket: TicketListItem }) => (
-  <Link
-    to={`/tickets/${ticket.id}`}
+  <a
+    href={ticket.url}
     className="font-medium text-primary transition hover:text-text-primary hover:underline"
+    target="_blank"
+    rel="noreferrer"
+    onClick={(e) => e.stopPropagation()}
   >
     {ticket.identifier}
-  </Link>
+  </a>
 );
 
 const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
@@ -31,6 +34,7 @@ const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
       className="font-medium text-primary transition hover:text-text-primary hover:underline"
       target="_blank"
       rel="noreferrer"
+      onClick={(e) => e.stopPropagation()}
     >
       #{ticket.latestPr.number}
     </a>
@@ -64,6 +68,7 @@ const selectClasses =
   "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
 
 export default function TicketsListPage() {
+  const navigate = useNavigate();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [searchInput, setSearchInput] = useState<string>("");
   const [appliedSearch, setAppliedSearch] = useState<string>("");
@@ -92,6 +97,7 @@ export default function TicketsListPage() {
 
   const ticketsQuery = useTickets(query);
   const filtersQuery = useTicketFilterOptions();
+  const configQuery = useConfig();
 
   const response = ticketsQuery.data;
   const tickets = response?.tickets ?? [];
@@ -273,7 +279,11 @@ export default function TicketsListPage() {
               </thead>
               <tbody className="divide-y divide-border-default">
                 {visibleTickets.map((ticket) => (
-                  <tr key={ticket.id} className="align-middle">
+                  <tr
+                    key={ticket.id}
+                    className="align-middle cursor-pointer hover:bg-bg-page"
+                    onClick={() => navigate(`/tickets/${ticket.id}`)}
+                  >
                     <td className="whitespace-nowrap px-4 py-3">
                       <TicketLink ticket={ticket} />
                     </td>
@@ -288,7 +298,7 @@ export default function TicketsListPage() {
                       {ticket.latestWorkerName ?? <Dash />}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text-primary">
-                      {ticket.attemptCount}/{ticket.maxAttempts}
+                      {ticket.attemptCount}/{configQuery.data?.maxIterations ?? "?"}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
                       {ticket.latestCiStatus === null ? <Dash /> : <StatusBadge status={ticket.latestCiStatus} />}

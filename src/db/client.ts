@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
 import { detectDialect, type DatabaseDialect } from "../manager/config.js";
+import { MAX_ITERATIONS } from "../manager/constants.js";
 function modelFamily(provider: string | null, modelName: string | null): "claude" | "gpt" | "gemini" | "other" {
   const p = (provider ?? "").toLowerCase();
   const m = (modelName ?? "").toLowerCase();
@@ -37,6 +38,7 @@ export type BmStatus =
   | "ci_running" | "ci_failed" | "completed" | "abandoned";
 
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
+export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export type StopReason = "completed" | "timeout" | "crash" | "error";
 
@@ -54,7 +56,6 @@ export interface TaskRow {
   ticket_labels_json: string;
   bm_status: string | null;
   attempt_count: number;
-  max_attempts: number;
   ticket_completed_at: string | null;
   dispatch_state: string | null;
   input_json: string | null;
@@ -188,7 +189,6 @@ export interface TicketListItem {
   ticketLabelsJson: string;
   bmStatus: BmStatus | null;
   attemptCount: number;
-  maxAttempts: number;
   ticketCompletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -330,6 +330,11 @@ export interface TicketDetail {
 export interface WorkerListItem {
   id: string;
   name: string;
+  status: WorkerStatus;
+  currentRunId: string | null;
+  lastHeartbeatAt: string | null;
+  startedAt: string;
+  updatedAt: string;
   currentTicketIdentifier: string | null;
   currentTicketTitle: string | null;
   currentRun: CurrentRunSummary | null;
@@ -537,6 +542,10 @@ export interface DbClient {
   // Events
   recordEvent(event: EventInput): Promise<void>;
 
+  // Comment store
+  markCompleted(pr: PullRequestRef, commentId: string): Promise<void>;
+  getCompleted(pr: PullRequestRef): Promise<Set<string>>;
+
   // Task queue
   enqueue(input: DispatchTaskInput): Promise<TaskRecord>;
   acquireNext(workerId: string): Promise<TaskRecord | null>;
@@ -725,7 +734,6 @@ function rowToTicketListItem(row: TaskRow): TicketListItem {
     ticketLabelsJson: row.ticket_labels_json ?? "[]",
     bmStatus: (row.bm_status as BmStatus | null),
     attemptCount: Number(row.attempt_count ?? 0),
-    maxAttempts: Number(row.max_attempts ?? 5),
     ticketCompletedAt: parseTimestamp(row.ticket_completed_at),
     createdAt: parseTimestampRequired(row.created_at, "created_at"),
     updatedAt: parseTimestampRequired(row.updated_at, "updated_at"),
@@ -782,7 +790,6 @@ interface PeriodTaskRow {
   ticket_labels_json: string;
   bm_status: string | null;
   attempt_count: number;
-  max_attempts: number;
   ticket_completed_at: string | null;
   run_status: string | null;
   started_at: string | null;
@@ -954,7 +961,7 @@ function computeFailures(
     .slice(0, 10);
 
   const ticketsAtMaxAttempts: TicketRef[] = tasks
-    .filter((t) => t.bm_status === "abandoned" && Number(t.attempt_count) >= Number(t.max_attempts) && inRange(parseTimestamp(t.updated_at), from, to))
+    .filter((t) => t.bm_status === "abandoned" && Number(t.attempt_count) >= MAX_ITERATIONS && inRange(parseTimestamp(t.updated_at), from, to))
     .sort((a, b) => (parseTimestamp(b.updated_at)?.getTime() ?? 0) - (parseTimestamp(a.updated_at)?.getTime() ?? 0))
     .slice(0, 20)
     .map((t) => ({ id: t.id, identifier: t.ticket_identifier ?? "", title: t.ticket_title ?? "", url: t.ticket_url ?? "" }));
@@ -1156,8 +1163,8 @@ export class SqlDbClient implements DbClient {
       await this.run(
         `INSERT INTO tasks (id, ticket_id, ticket_identifier, ticket_title, ticket_description,
            ticket_url, ticket_branch_name, ticket_linear_status_name, ticket_linear_status_type,
-           ticket_labels_json, bm_status, attempt_count, max_attempts, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 0, 5, ?, ?)`,
+           ticket_labels_json, bm_status, attempt_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 0, ?, ?)`,
         [randomUUID(), ticket.id, ticket.identifier, ticket.title, ticket.description,
          ticket.url, ticket.branchName, ticket.linearStatusName, ticket.linearStatusType,
          JSON.stringify(ticket.labels), now, now],
@@ -1364,16 +1371,42 @@ export class SqlDbClient implements DbClient {
       return rowToTaskRecord(rows[0]);
     }
 
-    // No discovered row — insert a new one
+    // No discovered row — insert a new one, copying ticket metadata from the most recent
+    // existing row so identifier/title remain visible in the UI across iteration re-dispatches.
+    const metaRows = await this.query<{
+      ticket_identifier: string | null;
+      ticket_title: string | null;
+      ticket_description: string | null;
+      ticket_url: string | null;
+      ticket_branch_name: string | null;
+      ticket_linear_status_name: string | null;
+      ticket_linear_status_type: string | null;
+      ticket_labels_json: string | null;
+    }>(
+      `SELECT ticket_identifier, ticket_title, ticket_description, ticket_url, ticket_branch_name,
+              ticket_linear_status_name, ticket_linear_status_type, ticket_labels_json
+       FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [input.ticketIssueId],
+    );
+    const meta = metaRows[0];
     const id = randomUUID();
     await this.run(
-      `INSERT INTO tasks (id, ticket_id, dispatch_state, attempt_number, input_json,
+      `INSERT INTO tasks (id, ticket_id, ticket_identifier, ticket_title, ticket_description,
+         ticket_url, ticket_branch_name, ticket_linear_status_name, ticket_linear_status_type,
+         ticket_labels_json, dispatch_state, attempt_number, input_json,
          trigger, slot_status, created_at, updated_at, iteration_number)
-       VALUES (?, ?, ?, (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = ?),
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = ?),
          ?, ?, 'active', ?, ?,
          (SELECT COUNT(*) + 1 FROM tasks WHERE ticket_id = ?))`,
-      [id, input.ticketIssueId, input.state, input.ticketIssueId, JSON.stringify(input),
-       input.trigger, now, now, input.ticketIssueId],
+      [id, input.ticketIssueId,
+       meta?.ticket_identifier ?? null, meta?.ticket_title ?? null,
+       meta?.ticket_description ?? null, meta?.ticket_url ?? null,
+       meta?.ticket_branch_name ?? null, meta?.ticket_linear_status_name ?? null,
+       meta?.ticket_linear_status_type ?? null, meta?.ticket_labels_json ?? "[]",
+       input.state, input.ticketIssueId, JSON.stringify(input),
+       input.trigger, now, now,
+       input.ticketIssueId],
     );
     const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE id = ?`, [id]);
     if (!rows[0]) throw new Error(`Task not found after insert: ${id}`);
@@ -2180,9 +2213,16 @@ export class SqlDbClient implements DbClient {
         };
       }
 
+      const isActive = w.run_status === "running" || w.run_status === "dispatched";
+      const status: WorkerStatus = isActive ? "busy" : "idle";
       return {
         id: w.worker_id,
         name: w.worker_id,
+        status,
+        currentRunId: isActive ? w.id : null,
+        lastHeartbeatAt: w.worker_heartbeat_at,
+        startedAt: w.worker_started_at ?? w.updated_at,
+        updatedAt: w.updated_at,
         currentTicketIdentifier: w.ticket_identifier,
         currentTicketTitle: w.ticket_title,
         currentRun,
@@ -2274,7 +2314,7 @@ export class SqlDbClient implements DbClient {
     const [allTasks, allCiRuns, allPrs] = await Promise.all([
       this.query<PeriodTaskRow>(
         `SELECT id, ticket_id, ticket_identifier, ticket_title, ticket_url, ticket_labels_json,
-           bm_status, attempt_count, max_attempts, ticket_completed_at,
+           bm_status, attempt_count, ticket_completed_at,
            run_status, started_at, ended_at, prompt_tokens, completion_tokens,
            model_name, provider, created_at, updated_at
          FROM tasks
@@ -2337,5 +2377,27 @@ export class SqlDbClient implements DbClient {
       failures,
       shipped,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Comment store
+  // -------------------------------------------------------------------------
+
+  async markCompleted(pr: PullRequestRef, commentId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `INSERT INTO completed_issue_comments (owner, repo, pr_number, comment_id, completed_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+      [pr.owner, pr.repo, pr.number, commentId, now],
+    );
+  }
+
+  async getCompleted(pr: PullRequestRef): Promise<Set<string>> {
+    const rows = await this.query<{ comment_id: string }>(
+      `SELECT comment_id FROM completed_issue_comments WHERE owner = ? AND repo = ? AND pr_number = ?`,
+      [pr.owner, pr.repo, pr.number],
+    );
+    return new Set(rows.map((r) => r.comment_id));
   }
 }

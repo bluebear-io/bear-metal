@@ -25,7 +25,6 @@ const ticket: TicketListItem = {
   labelsJson: "[]",
   bmStatus: "abandoned",
   attemptCount: 1,
-  maxAttempts: 3,
   createdAt: "2026-06-09T10:00:00.000Z",
   updatedAt: "2026-06-09T10:05:00.000Z",
   completedAt: null,

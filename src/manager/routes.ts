@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { MAX_TICKET_PAGE_SIZE, type DbClient, type ListTicketsOptions } from "../db/client.js";
+import { MAX_TICKET_PAGE_SIZE, type DbClient, type ListTicketsOptions, type TicketListItem } from "../db/client.js";
+import { MAX_ITERATIONS } from "./constants.js";
 
 const BM_STATUSES = ["discovered", "dispatched", "in_progress", "pr_open", "ci_running", "ci_failed", "completed", "abandoned"] as const;
 type BmStatus = (typeof BM_STATUSES)[number];
@@ -57,11 +58,37 @@ function readOptionalInt(value: unknown, name: string): number | undefined {
   return n;
 }
 
+function serializeTicket(item: TicketListItem) {
+  return {
+    id: item.ticketId,
+    identifier: item.ticketIdentifier,
+    title: item.ticketTitle,
+    description: item.ticketDescription,
+    url: item.ticketUrl,
+    branchName: item.ticketBranchName,
+    linearStatusName: item.ticketLinearStatusName,
+    linearStatusType: item.ticketLinearStatusType,
+    labelsJson: item.ticketLabelsJson,
+    bmStatus: item.bmStatus,
+    attemptCount: item.attemptCount,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    latestRun: item.latestRun,
+    latestWorkerName: item.latestWorkerName,
+    latestPr: item.latestPr,
+    latestCiStatus: item.latestCiStatus,
+  };
+}
+
 export function createRouter(db: DbClient): Router {
   const router = Router();
 
   router.get("/health", (_req, res) => {
     res.json({ status: "ok" });
+  });
+
+  router.get("/config", (_req, res) => {
+    res.json({ maxIterations: MAX_ITERATIONS });
   });
 
   router.get("/tickets/filters", async (_req, res, next) => {
@@ -146,7 +173,7 @@ export function createRouter(db: DbClient): Router {
 
       const result = await db.listTickets(opts);
       res.json({
-        tickets: result.items,
+        tickets: result.items.map(serializeTicket),
         total: result.total,
         page: result.page,
         pageSize: result.pageSize,
@@ -163,7 +190,7 @@ export function createRouter(db: DbClient): Router {
         res.status(404).json({ error: "ticket not found" });
         return;
       }
-      res.json(detail);
+      res.json({ ...detail, ticket: serializeTicket(detail.ticket) });
     } catch (err) {
       next(err);
     }

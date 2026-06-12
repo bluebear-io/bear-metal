@@ -18,7 +18,8 @@ type TicketPhase = "active" | "parked";
 const TERMINAL_STATE_TYPES = ["completed", "canceled"];
 const TERMINAL_STATE_NAMES = ["Merged"];
 
-const MAX_ITERATIONS = 20;
+export { MAX_ITERATIONS } from "./constants.js";
+import { MAX_ITERATIONS } from "./constants.js";
 
 /** A ticket queued for dispatch this tick, carrying the reason its run was triggered. */
 interface DispatchItem {
@@ -165,7 +166,7 @@ export class Scheduler {
 
     const tracked = await db.listTracked();
     const inFlight = tracked.filter((s) => s.latestTask.resultStatus === null).length;
-    logger.info({ tracked: tracked.length, inFlight }, "poll tick started");
+    logger.debug({ tracked: tracked.length, inFlight }, "poll tick started");
 
     const refreshed = await refreshTrackedTickets(db, linear, github, agentId, logger);
     const admitted = await admitNewTickets(
@@ -181,7 +182,7 @@ export class Scheduler {
     await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
     const trackedAfter = await db.listTracked();
-    logger.info(
+    logger.debug(
       {
         tracked: trackedAfter.length,
         inFlight: trackedAfter.filter((s) => s.latestTask.resultStatus === null).length,
@@ -268,7 +269,7 @@ async function evaluateTicket(
   logger: Logger,
 ): Promise<TicketDecision> {
   if (isTerminalLinearTicket(ticket)) {
-    logger.info(
+    logger.debug(
       { ticket: ticket.identifier, statusName: ticket.status.name, statusType: ticket.status.type },
       "linear ticket is terminal; releasing slot",
     );
@@ -280,6 +281,7 @@ async function evaluateTicket(
       { ticket: ticket.identifier, delegate: ticket.delegate?.id ?? null },
       "ticket not delegated to manager; parking",
     );
+
     return { remove: false, merged: false, context: { ticket, prs: knownPrs }, dispatch: false, phase: "parked", trigger: "new" };
   }
 
@@ -292,11 +294,21 @@ async function evaluateTicket(
     return { remove: false, merged: false, context: { ticket, prs: [] }, dispatch: resuming, phase: "active", trigger: "delegated_back" };
   }
 
-  const statuses = await Promise.all(knownPrs.map((pr) => github.getPullRequestStatus(pr)));
+  // Filter out issue comments already handled by the worker before computing hasActionableIssueComments.
+  // Without this the manager loops: GitHub still shows the comments even after the worker marks them
+  // complete in our DB, causing hasActionableIssueComments to stay true every tick forever.
+  const statuses = await Promise.all(
+    knownPrs.map(async (pr) => {
+      const raw = await github.getPullRequestStatus(pr);
+      const completedIds = await db.getCompleted(pr);
+      const unhandled = raw.context.issueComments.filter((c) => !completedIds.has(c.id));
+      return { ...raw, hasActionableIssueComments: unhandled.length > 0 };
+    }),
+  );
 
   if (statuses.every((s) => s.pr.merged || s.pr.state === "closed")) {
     const anyMerged = statuses.some((s) => s.pr.merged);
-    logger.info(
+    logger.debug(
       { ticket: ticket.identifier, count: statuses.length, anyMerged },
       "all pull requests resolved; releasing ticket",
     );
@@ -392,7 +404,7 @@ async function evaluateTicket(
 
   const needsWork = resuming || testsFailed || hasMergeConflicts || hasActionableUnresolvedComments || hasActionableIssueComments;
   if (needsWork) {
-    logger.info(
+    logger.debug(
       { ticket: ticket.identifier, count: statuses.length, resuming, hasMergeConflicts },
       "pull requests need work; re-dispatching",
     );
@@ -595,7 +607,7 @@ async function runHandler(
   const id = context.ticket.identifier;
   try {
     const outcome = await handler.handle(context, trigger);
-    logger.info(
+    logger.debug(
       { ticket: context.ticket.identifier, taskId: outcome.taskId ?? null, status: outcome.status },
       "ticket handling queued",
     );

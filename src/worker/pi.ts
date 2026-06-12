@@ -44,6 +44,7 @@ export async function runPiWorker(input: {
   slack?: WorkerSlack;
   commentStore?: WorkerCommentStore;
   gitEnv: NodeJS.ProcessEnv;
+  onToolCallProgress?: (calls: DispatchToolCall[]) => void;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
   const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
@@ -89,7 +90,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact comment body to post to Linear." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
+      logger.debug({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
       await input.linear.commentAndHandBack(input.context.ticketId, params.text);
       setDecision({ status: "pending", prs: mergePrs(input.context.prs, collectedPrs) });
       return {
@@ -111,7 +112,7 @@ export async function runPiWorker(input: {
       if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
       const pr = requireSinglePr(input.context.prs);
       if (kind === "thread") {
-        logger.info({ threadId: params.id }, "pi tool: agree_with_github_message (thread)");
+        logger.debug({ threadId: params.id }, "pi tool: agree_with_github_message (thread)");
         await input.github.replyToReviewThread(pr, params.id, "Fixed.", unresolvedThreadsFor(input.context, pr));
         await input.github.resolveReviewThread(params.id);
         return {
@@ -119,7 +120,7 @@ export async function runPiWorker(input: {
           details: {},
         };
       } else {
-        logger.info({ issueCommentId: params.id }, "pi tool: agree_with_github_message (issue comment)");
+        logger.debug({ issueCommentId: params.id }, "pi tool: agree_with_github_message (issue comment)");
         await input.commentStore?.markCompleted(pr, params.id);
         return {
           content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
@@ -142,14 +143,14 @@ export async function runPiWorker(input: {
       if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
       const pr = requireSinglePr(input.context.prs);
       if (kind === "thread") {
-        logger.info({ threadId: params.id }, "pi tool: disagree_with_github_message (thread)");
+        logger.debug({ threadId: params.id }, "pi tool: disagree_with_github_message (thread)");
         await input.github.replyToReviewThread(pr, params.id, params.text, unresolvedThreadsFor(input.context, pr));
         return {
           content: [{ type: "text", text: `Replied to review thread ${params.id} with disagreement.` }],
           details: {},
         };
       } else {
-        logger.info({ issueCommentId: params.id }, "pi tool: disagree_with_github_message (issue comment)");
+        logger.debug({ issueCommentId: params.id }, "pi tool: disagree_with_github_message (issue comment)");
         await input.github.leaveComment(pr, params.text);
         await input.commentStore?.markCompleted(pr, params.id);
         return {
@@ -171,14 +172,14 @@ export async function runPiWorker(input: {
       const kind = commentMap.get(params.id);
       if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
       if (kind === "thread") {
-        logger.info({ threadId: params.id }, "pi tool: mark_github_message_completed (thread)");
+        logger.debug({ threadId: params.id }, "pi tool: mark_github_message_completed (thread)");
         await input.github.resolveReviewThread(params.id);
         return {
           content: [{ type: "text", text: `Resolved review thread ${params.id}.` }],
           details: {},
         };
       } else {
-        logger.info({ issueCommentId: params.id }, "pi tool: mark_github_message_completed (issue comment)");
+        logger.debug({ issueCommentId: params.id }, "pi tool: mark_github_message_completed (issue comment)");
         await input.commentStore?.markCompleted(requireSinglePr(input.context.prs), params.id);
         return {
           content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
@@ -197,7 +198,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact reply body to post to the review thread." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
+      logger.debug({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
       const pr = requireSinglePr(input.context.prs);
       await input.github.replyToReviewThread(
         pr,
@@ -224,7 +225,7 @@ export async function runPiWorker(input: {
       baseBranch: Type.Optional(Type.String({ description: "Base branch for a new PR. Defaults to repository default branch." })),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
+      logger.debug({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
       // Refresh the .netrc token before pushing — installation tokens expire after 1 hour
       // and pi sessions can run much longer than that.
@@ -290,7 +291,7 @@ export async function runPiWorker(input: {
     writeFile(resolve(workspaceDir, "context.json"), JSON.stringify(input.context, null, 2), "utf8"),
     writeFile(resolve(workspaceDir, "prompt.txt"), prompt, "utf8"),
   ]);
-  logger.info({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
+  logger.debug({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
 
   const isNew = input.context.state === "new";
   const stateTools = isNew
@@ -301,7 +302,11 @@ export async function runPiWorker(input: {
     : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
 
   let usage: DispatchUsage | null = null;
-  let toolCalls: DispatchToolCall[] = [];
+  const toolCalls: DispatchToolCall[] = [];
+  // Maps toolCallId → pending args/thought while the tool is executing
+  const pendingArgs = new Map<string, { args: unknown; thought: string | null }>();
+  let currentThought: string | null = null;
+  let toolCallSequence = 0;
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
@@ -316,30 +321,45 @@ export async function runPiWorker(input: {
 
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
-      logger.info({ tool: event.toolName, args: event.args }, "pi tool call");
+      logger.debug({ tool: event.toolName, args: event.args }, "pi tool call");
+      pendingArgs.set(event.toolCallId, { args: event.args, thought: currentThought });
+    } else if (event.type === "tool_execution_end") {
+      const pending = pendingArgs.get(event.toolCallId);
+      pendingArgs.delete(event.toolCallId);
+      const rawResult = renderResultContent(event.result);
+      const outputSize = rawResult.length;
+      const truncated = rawResult.length > MAX_TOOL_CALL_RESULT_CHARS
+        ? `${rawResult.slice(0, MAX_TOOL_CALL_RESULT_CHARS)}… [truncated, ${rawResult.length - MAX_TOOL_CALL_RESULT_CHARS} more chars]`
+        : rawResult;
+      toolCalls.push({
+        id: event.toolCallId,
+        sequence: toolCallSequence++,
+        toolName: event.toolName,
+        argsJson: safeStringify(pending?.args ?? {}),
+        resultText: truncated || null,
+        resultStatus: event.isError ? "error" : "ok",
+        outputSize,
+        thoughtText: pending?.thought ?? null,
+        createdAt: Date.now(),
+      });
+      input.onToolCallProgress?.(toolCalls);
     } else if (event.type === "turn_end") {
       const msg = event.message;
-      if ("role" in msg && msg.role === "assistant" && "content" in msg) {
-        const text = (msg.content as Array<{ type: string; text?: string }>)
-          .filter((c) => c.type === "text" && c.text)
-          .map((c) => c.text!)
-          .join("");
-        if (text) logger.info({ text }, "pi assistant output");
+      if (isRecord(msg) && msg.role === "assistant") {
+        const blocks = contentBlocks(msg as { content: unknown });
+        const text = blocks
+          .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && (b as { text: string }).text.length > 0)
+          .map((b) => (b as { text: string }).text)
+          .join("\n").trim();
+        currentThought = text || null;
+        if (text) logger.debug({ text }, "pi assistant output");
       }
     } else if (event.type === "agent_end") {
-      logger.info({ messageCount: event.messages.length }, "pi agent_end");
-      // DEN-2311: build the thought-process timeline from the full message history. Doing it
-      // here (rather than incrementally on tool_execution_start/end) lets us pair each
-      // assistant tool_use with its matching tool_result regardless of ordering quirks.
-      try {
-        toolCalls = extractToolCalls(event.messages as unknown as ReadonlyArray<unknown>);
-      } catch (err) {
-        logger.warn({ err }, "failed to extract pi tool calls from transcript");
-      }
+      logger.debug({ messageCount: event.messages.length }, "pi agent_end");
     }
   });
 
-  logger.info({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
+  logger.debug({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
 
   let limitHitReason: string | null = null;
 
@@ -380,7 +400,7 @@ export async function runPiWorker(input: {
           modelName: model.name,
           provider: model.provider,
         };
-        logger.info({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
+        logger.debug({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
       }
     } catch (statsError) {
       logger.warn({ statsError }, "failed to capture pi session usage");
@@ -397,13 +417,13 @@ export async function runPiWorker(input: {
     const transcriptPath = resolve(workspaceDir, "session.jsonl");
     try {
       session.exportToJsonl(transcriptPath);
-      logger.info({ transcriptPath }, "pi session transcript saved");
+      logger.debug({ transcriptPath }, "pi session transcript saved");
     } catch (exportError) {
       logger.warn({ exportError }, "failed to export session transcript");
     }
     unsubscribe();
     session.dispose();
-    logger.info({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
+    logger.debug({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
   }
 
   // If a limit was hit and the worker hadn't already set a decision, hand back.
@@ -426,7 +446,6 @@ export async function runPiWorker(input: {
   }
   // Attach LLM usage stats captured during the just-finished session (DEN-2313).
   const withUsage = usage ? { ...decision, usage } : decision;
-  // Attach the tool-call timeline (DEN-2311). Empty array when no tool calls were captured.
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
 }
 
@@ -442,41 +461,63 @@ export async function runPiWorker(input: {
  * this file: malformed entries are skipped rather than crashing the worker.
  */
 function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] {
-  // Pass 1: index tool_result blocks by their tool_use_id so we can pair them up in one go.
+  // Pass 1: index tool results by their tool call id.
+  // The SDK uses its own internal message format (role:"toolResult", toolCallId, isError)
+  // rather than the Anthropic API wire format (role:"user" with tool_result content blocks).
+  // We handle both so extraction is resilient to future SDK changes.
   const resultsById = new Map<string, { text: string; status: "ok" | "error" }>();
   for (const msg of messages) {
-    if (!isMessage(msg) || msg.role !== "user") continue;
-    for (const block of contentBlocks(msg)) {
-      if (!isRecord(block) || block.type !== "tool_result") continue;
-      const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
+    if (!isRecord(msg)) continue;
+
+    // SDK internal format: standalone ToolResultMessage
+    if (msg.role === "toolResult") {
+      const id = typeof msg.toolCallId === "string" ? msg.toolCallId : null;
       if (!id) continue;
-      const text = renderResultContent(block.content);
-      const status: "ok" | "error" = block.is_error === true ? "error" : "ok";
+      const text = renderResultContent((msg as { content: unknown }).content);
+      const status: "ok" | "error" = msg.isError === true ? "error" : "ok";
       resultsById.set(id, { text, status });
+      continue;
+    }
+
+    // Anthropic API wire format fallback: user message with tool_result content blocks
+    if (msg.role === "user") {
+      for (const block of contentBlocks(msg as { content: unknown })) {
+        if (!isRecord(block) || block.type !== "tool_result") continue;
+        const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
+        if (!id) continue;
+        const text = renderResultContent(block.content);
+        const status: "ok" | "error" = block.is_error === true ? "error" : "ok";
+        resultsById.set(id, { text, status });
+      }
     }
   }
 
-  // Pass 2: emit a step per assistant tool_use, in transcript order, attaching the latest
-  // assistant text block in the same message as the step's thought.
+  // Pass 2: emit a step per tool call in transcript order, attaching the preceding
+  // assistant text as the thought. Handles both SDK format (type:"toolCall", arguments)
+  // and Anthropic API wire format (type:"tool_use", input).
   const steps: DispatchToolCall[] = [];
   let sequence = 0;
   for (const msg of messages) {
-    if (!isMessage(msg) || msg.role !== "assistant") continue;
-    const blocks = contentBlocks(msg);
-    // Collect text blocks first so a tool_use later in the same message inherits the thought
-    // even if the SDK emits text after the tool_use (defensive: tested ordering is text-first).
+    if (!isRecord(msg) || msg.role !== "assistant") continue;
+    const blocks = contentBlocks(msg as { content: unknown });
+    // Collect text blocks first so a tool_use/toolCall later in the same message inherits
+    // the thought even if the SDK emits text after the tool block.
     const thought = blocks
       .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && b.text.length > 0)
       .map((b) => (b as { text: string }).text)
       .join("\n")
       .trim() || null;
     for (const block of blocks) {
-      if (!isRecord(block) || block.type !== "tool_use") continue;
+      if (!isRecord(block)) continue;
+      // SDK format: type === "toolCall"; Anthropic API wire format: type === "tool_use"
+      if (block.type !== "toolCall" && block.type !== "tool_use") continue;
       const id = typeof block.id === "string" && block.id.length > 0
         ? block.id
         : `tc_${sequence}`;
       const toolName = typeof block.name === "string" ? block.name : "unknown";
-      const argsJson = safeStringify(block.input);
+      // SDK format uses "arguments"; Anthropic API wire format uses "input"
+      const args = block.arguments !== undefined ? block.arguments : block.input;
+      const argsJson = safeStringify(args);
       const result = resultsById.get(id) ?? null;
       const rawResult = result?.text ?? null;
       const outputSize = rawResult === null ? null : rawResult.length;

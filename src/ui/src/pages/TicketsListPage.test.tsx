@@ -17,7 +17,6 @@ const mockTicket: TicketListItem = {
   labelsJson: "[]",
   bmStatus: "completed",
   attemptCount: 1,
-  maxAttempts: 5,
   createdAt: "2026-06-09T10:00:00.000Z",
   updatedAt: "2026-06-09T10:05:00.000Z",
   completedAt: "2026-06-09T10:04:00.000Z",
@@ -69,7 +68,10 @@ vi.mock("../api/queries.js", () => ({
     lastQuery.value = q;
     return {
       get data() {
-        return makeResponse(mockTickets);
+        const tickets = q.bmStatuses
+          ? mockTickets.filter((t) => q.bmStatuses!.includes(t.bmStatus))
+          : mockTickets;
+        return makeResponse(tickets);
       },
       error: null,
       isFetching: false,
@@ -79,6 +81,12 @@ vi.mock("../api/queries.js", () => ({
   },
   useTicketFilterOptions: () => ({
     data: filterOptions,
+    error: null,
+    isLoading: false,
+    isFetching: false,
+  }),
+  useConfig: () => ({
+    data: { maxIterations: 5 },
     error: null,
     isLoading: false,
     isFetching: false,
@@ -96,7 +104,7 @@ describe("TicketsListPage", () => {
 
     expect(screen.getByRole("heading", { name: "Tickets" })).toBeVisible();
     const list = screen.getByRole("region", { name: "Tickets list" });
-    expect(within(list).getByRole("link", { name: "DEN-2271" })).toHaveAttribute("href", "/tickets/ticket_1");
+    expect(within(list).getByRole("link", { name: "DEN-2271" })).toHaveAttribute("href", "https://linear.app/blueden/issue/DEN-2271");
     expect(within(list).getByText("completed")).toBeVisible();
     expect(within(list).getByText("succeeded")).toBeVisible();
     expect(within(list).getByText("1/5")).toBeVisible();

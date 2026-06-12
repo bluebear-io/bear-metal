@@ -11,6 +11,7 @@ vi.mock("./api/client.js", () => ({
   fetchTicketFilters: vi.fn().mockResolvedValue({ bmStatuses: [], stopReasons: [], labels: [], workers: [] }),
   fetchWorkers: vi.fn().mockResolvedValue([]),
   fetchModelComparison: vi.fn().mockResolvedValue([]),
+  fetchConfig: vi.fn().mockResolvedValue({ maxIterations: 5 }),
   buildTicketsPath: vi.fn().mockReturnValue("/api/tickets"),
 }));
 
@@ -37,7 +38,10 @@ describe("App", () => {
   it("toggles the document theme class", async () => {
     renderWithProviders(<App />, "/");
 
-    await userEvent.click(screen.getByRole("button", { name: "Toggle theme" }));
+    // Starts in "system" state; first click → "light"
+    await userEvent.click(screen.getByRole("button", { name: "System theme" }));
+    // Second click → "dark"
+    await userEvent.click(screen.getByRole("button", { name: "Light theme" }));
     expect(document.documentElement).toHaveClass("dark");
   });
 });

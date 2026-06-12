@@ -29,11 +29,11 @@ describe("TaskWorker", () => {
     await worker.stop();
 
     expect(db.acquiredBy).toEqual(["worker-1"]);
-    expect(runDispatch).toHaveBeenCalledWith({
+    expect(runDispatch).toHaveBeenCalledWith(expect.objectContaining({
       ...input,
       integrations: expect.any(Object),
       packageRoot: undefined,
-    });
+    }));
     expect(db.completed).toEqual([
       {
         taskId: "task-1",

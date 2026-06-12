@@ -6,6 +6,7 @@ import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
   DispatchState,
+  DispatchToolCall,
   PullRequestRef,
   WorkerInputContext,
   WorkerIntegrations,
@@ -25,6 +26,7 @@ export interface DispatchInput {
   prs?: PullRequestRef[];
   integrations: WorkerIntegrations;
   packageRoot?: string;
+  onToolCallProgress?: (calls: DispatchToolCall[]) => void;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -38,29 +40,29 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   await mkdir(workspaceDir, { recursive: true });
 
-  logger.info({ ticketId, state, prCount: prs.length, workspaceDir }, "dispatch starting");
+  logger.debug({ ticketId, state, prCount: prs.length, workspaceDir }, "dispatch starting");
 
   const githubToken = await github.getInstallationToken();
 
   const [ticket, rawPullRequests, cloneScript, botIdentity] = await Promise.all([
     linear.getTicketContext(ticketId).then((t) => {
-      logger.info({ ticketId }, "linear ticket fetched");
+      logger.debug({ ticketId }, "linear ticket fetched");
       return t;
     }),
     Promise.all(
       prs.map((pr) =>
         github.getPullRequestContext(pr).then((p) => {
-          logger.info({ owner: pr.owner, repo: pr.repo, number: pr.number }, "github PR context fetched");
+          logger.debug({ owner: pr.owner, repo: pr.repo, number: pr.number }, "github PR context fetched");
           return p;
         }),
       ),
     ),
     runCloneScript({ packageRoot, workspaceDir, githubToken }).then((r) => {
-      logger.info({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
+      logger.debug({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
       return r;
     }),
     github.getBotIdentity().then((identity) => {
-      logger.info({ login: identity.login }, "bot identity fetched");
+      logger.debug({ login: identity.login }, "bot identity fetched");
       return identity;
     }),
   ]);
@@ -88,7 +90,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   };
 
   await linear.moveTicketToInProgress(ticketId);
-  logger.info({ ticketId }, "linear ticket moved to in progress");
+  logger.debug({ ticketId }, "linear ticket moved to in progress");
 
   const botEmail = `${botIdentity.numericId}+${botIdentity.login}@users.noreply.github.com`;
   const gitEnv: NodeJS.ProcessEnv = {
@@ -102,9 +104,9 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     GIT_COMMITTER_EMAIL: botEmail,
   };
 
-  logger.info({ ticketId, workspaceDir }, "starting pi worker session");
+  logger.debug({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear, slack, commentStore, gitEnv });
+    const result = await runPiWorker({ context, github, linear, slack, commentStore, gitEnv, onToolCallProgress: input.onToolCallProgress });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {

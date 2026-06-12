@@ -1,3 +1,7 @@
+export interface Config {
+  maxIterations: number;
+}
+
 export type BmStatus =
   | "discovered"
   | "dispatched"
@@ -25,7 +29,6 @@ export interface Ticket {
   labelsJson: string;
   bmStatus: BmStatus;
   attemptCount: number;
-  maxAttempts: number;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
