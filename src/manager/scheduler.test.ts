@@ -27,6 +27,7 @@ function openPr(number = 7, overrides: Partial<PullRequest> = {}): PullRequest {
     number,
     title: "PR",
     headRef: "feature/a",
+    headSha: `sha-${number}`,
     state: "open",
     draft: false,
     merged: false,
@@ -44,11 +45,13 @@ function status(
   testsFailed = false,
   hasActionableUnresolvedComments = false,
   humanTookOver = false,
+  hasMergeConflicts = false,
 ): PullRequestStatus {
   return {
     pr,
     testsFailed,
     hasActionableUnresolvedComments,
+    hasMergeConflicts,
     humanTookOver,
     context: {
       pullRequest: { head: { sha: "deadbeef" } } as unknown as JsonValue,
@@ -57,6 +60,7 @@ function status(
       failedStatuses: [],
       unresolvedReviewThreads: [],
       reviewThreads: [],
+      mergeable: hasMergeConflicts ? false : true,
     },
   };
 }
@@ -179,6 +183,8 @@ function buildScheduler(deps: {
   handler: TicketHandler;
   concurrency: number;
   reporter?: DashboardReporter;
+  taskStaleAfterMs?: number;
+  taskMaxReclaims?: number;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -190,8 +196,45 @@ function buildScheduler(deps: {
     concurrency: deps.concurrency,
     pollIntervalMs: 60_000,
     reporter: deps.reporter,
+    taskStaleAfterMs: deps.taskStaleAfterMs,
+    taskMaxReclaims: deps.taskMaxReclaims,
   });
 }
+
+describe("Scheduler.tick stale-task recovery (DEN-2334)", () => {
+  it("reclaims an acquired task whose worker stopped heartbeating so the slot doesn't stay stuck", async () => {
+    const tasks = await makeQueue();
+    // Simulate a worker that crashed mid-run: row has worker_id IS NOT NULL, result_status IS NULL,
+    // and worker_heartbeat_at older than the stale threshold.
+    const ticket = makeTicket("a");
+    await tasks.enqueue({ state: "new", ticketId: ticket.identifier, prs: [], trigger: "new", ticketIssueId: ticket.id });
+    await tasks.acquireNext("dead-worker");
+    // Before recovery the row is unrecoverable through acquireNext().
+    expect(await tasks.acquireNext("other-worker")).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 5));
+
+    const linear = new FakeLinear([], { [ticket.id]: ticket });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({
+      linear,
+      github: new FakeGitHub(),
+      tasks,
+      handler,
+      concurrency: 1,
+      taskStaleAfterMs: 1,
+      taskMaxReclaims: 3,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    // After tick, the stuck row is released and re-acquirable by a live worker.
+    const reAcquired = await tasks.acquireNext("live-worker");
+    expect(reAcquired?.workerId).toBe("live-worker");
+    expect(reAcquired?.reclaimCount).toBe(1);
+  });
+});
 
 describe("Scheduler.tick", () => {
   it("admits at most `concurrency` tickets and dispatches new ones into SQL tasks", async () => {
@@ -272,6 +315,27 @@ describe("Scheduler.tick", () => {
       trigger: "ci_failure",
       ticketIssueId: "a",
     });
+  });
+
+  it("re-dispatches a PR with merge conflicts using the merge_conflict trigger", async () => {
+    const tasks = await makeQueue();
+    await seedCompletedTask(tasks, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }),
+      // testsFailed=false, hasActionableUnresolvedComments=false, humanTookOver=false,
+      // hasMergeConflicts=true — conflicts alone must trigger a re-dispatch with the new trigger.
+      github: new FakeGitHub({ status: status(openPr(7), false, false, false, true) }),
+      tasks,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(1);
+    expect(handler.triggers).toEqual(["merge_conflict"]);
   });
 
   it("admits nothing new when SQL slots are full", async () => {

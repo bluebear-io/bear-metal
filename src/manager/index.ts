@@ -74,6 +74,8 @@ const scheduler = new Scheduler({
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
   reporter,
+  taskStaleAfterMs: config.taskStaleAfterMs,
+  taskMaxReclaims: config.taskMaxReclaims,
 });
 const taskWorker = new TaskWorker({
   logger,
@@ -82,6 +84,8 @@ const taskWorker = new TaskWorker({
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
   reporter,
+  heartbeatIntervalMs: config.taskHeartbeatIntervalMs,
+  maxReclaims: config.taskMaxReclaims,
 });
 
 if (config.testTicketId) {

@@ -59,14 +59,6 @@ const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
 
 const PAGE_SIZE = 50;
 
-function matchesFilter(ticket: TicketListItem, filter: FilterKey): boolean {
-  if (filter === "all") {
-    return true;
-  }
-
-  return FILTER_STATUSES[filter].includes(ticket.bmStatus);
-}
-
 const selectClasses =
   "rounded-md border border-border-default bg-bg-card px-2 py-1 text-sm text-text-primary " +
   "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
@@ -86,10 +78,17 @@ export default function TicketsListPage() {
     if (appliedSearch.trim()) q.q = appliedSearch.trim();
     if (workerId) q.workerIds = [workerId];
     if (label) q.labels = [label];
-    if (statusFilter) q.bmStatuses = [statusFilter];
     if (stopReason) q.stopReasons = [stopReason];
+    // The State dropdown is the most specific status filter; when set, it wins over the category
+    // pill. Otherwise the active category pill is mapped into bmStatuses so pagination + counts
+    // reflect the full filtered result set instead of just the current page.
+    if (statusFilter) {
+      q.bmStatuses = [statusFilter];
+    } else if (filter !== "all") {
+      q.bmStatuses = [...FILTER_STATUSES[filter]];
+    }
     return q;
-  }, [appliedSearch, workerId, label, statusFilter, stopReason, page]);
+  }, [appliedSearch, workerId, label, statusFilter, stopReason, page, filter]);
 
   const ticketsQuery = useTickets(query);
   const filtersQuery = useTicketFilterOptions();
@@ -99,30 +98,10 @@ export default function TicketsListPage() {
   const total = response?.total ?? 0;
   const filterOptions = filtersQuery.data;
 
-  const counts = useMemo(() => {
-    const result: Record<FilterKey, number> = {
-      all: tickets.length,
-      backlog: 0,
-      in_progress: 0,
-      failed: 0,
-      completed: 0,
-    };
-
-    for (const ticket of tickets) {
-      for (const key of Object.keys(FILTER_STATUSES) as Array<Exclude<FilterKey, "all">>) {
-        if (FILTER_STATUSES[key].includes(ticket.bmStatus)) {
-          result[key] += 1;
-        }
-      }
-    }
-
-    return result;
-  }, [tickets]);
-
-  const visibleTickets = useMemo(
-    () => tickets.filter((ticket) => matchesFilter(ticket, filter)),
-    [tickets, filter],
-  );
+  // Category filtering is done on the server (see `query` above), so the current page IS already
+  // the filtered set. Per-category badge counts would need a dedicated summary endpoint to be
+  // accurate across pages — we intentionally don't show stale per-page counts here.
+  const visibleTickets = tickets;
 
   const hasActiveServerFilter =
     Boolean(appliedSearch.trim()) || Boolean(workerId) || Boolean(label) || Boolean(statusFilter) || Boolean(stopReason);
@@ -142,6 +121,11 @@ export default function TicketsListPage() {
     setLabel("");
     setStatusFilter("");
     setStopReason("");
+    setPage(1);
+  };
+
+  const setCategory = (key: FilterKey) => {
+    setFilter(key);
     setPage(1);
   };
 
@@ -249,7 +233,7 @@ export default function TicketsListPage() {
             <button
               key={key}
               type="button"
-              onClick={() => setFilter(key)}
+              onClick={() => setCategory(key)}
               aria-pressed={isActive}
               className={
                 "rounded-full border px-3 py-1 text-sm transition " +
@@ -259,7 +243,7 @@ export default function TicketsListPage() {
               }
             >
               {btnLabel}
-              <span className="ml-2 text-xs text-text-muted">{counts[key]}</span>
+              {isActive ? <span className="ml-2 text-xs text-text-muted">{total}</span> : null}
             </button>
           );
         })}

@@ -47,6 +47,8 @@ const SCHEMA_SQL_SQLITE = `
     attempt_number INTEGER NOT NULL, worker_id TEXT REFERENCES workers(id),
     trigger TEXT NOT NULL, status TEXT NOT NULL, context_json TEXT,
     started_at INTEGER, ended_at INTEGER, stop_reason TEXT, error TEXT,
+    prompt_tokens INTEGER, completion_tokens INTEGER,
+    model_name TEXT, provider TEXT,
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS pull_requests (
@@ -62,11 +64,30 @@ const SCHEMA_SQL_SQLITE = `
     status TEXT NOT NULL, url TEXT, summary TEXT,
     created_at INTEGER NOT NULL, completed_at INTEGER
   );
+  CREATE TABLE IF NOT EXISTS ci_checks (
+    id TEXT PRIMARY KEY NOT NULL, ci_run_id TEXT NOT NULL REFERENCES ci_runs(id),
+    source TEXT NOT NULL, external_id TEXT NOT NULL, name TEXT NOT NULL,
+    conclusion TEXT, details_url TEXT, summary TEXT,
+    annotations_json TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS review_threads (
+    id TEXT PRIMARY KEY NOT NULL, pr_id TEXT NOT NULL REFERENCES pull_requests(id),
+    path TEXT, line INTEGER, is_resolved INTEGER NOT NULL,
+    comments_json TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY NOT NULL, ticket_id TEXT REFERENCES tickets(id),
     run_id TEXT REFERENCES runs(id), worker_id TEXT REFERENCES workers(id),
     source TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL,
     payload_json TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS run_tool_calls (
+    id TEXT PRIMARY KEY NOT NULL, run_id TEXT NOT NULL REFERENCES runs(id),
+    sequence INTEGER NOT NULL, tool_name TEXT NOT NULL, args_json TEXT NOT NULL,
+    result_text TEXT, result_status TEXT, output_size INTEGER, thought_text TEXT,
+    created_at INTEGER NOT NULL
   );
 `;
 
@@ -135,6 +156,12 @@ const SCHEMA_SQL_PG = `
     run_id TEXT, worker_id TEXT,
     source TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL,
     payload_json TEXT, created_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS run_tool_calls (
+    id TEXT PRIMARY KEY NOT NULL, run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL, tool_name TEXT NOT NULL, args_json TEXT NOT NULL,
+    result_text TEXT, result_status TEXT, output_size INTEGER, thought_text TEXT,
+    created_at TIMESTAMPTZ NOT NULL
   );
 `;
 

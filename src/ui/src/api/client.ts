@@ -1,12 +1,18 @@
 import type {
   BmStatus,
   ModelComparisonRow,
+  PeriodSummary,
   TicketDetail,
   TicketFilterOptions,
   TicketListQuery,
   TicketListResponse,
   WorkerListItem,
 } from "./types.js";
+
+export interface SummaryRange {
+  from: Date;
+  to: Date;
+}
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -74,4 +80,9 @@ export async function fetchModelComparison(): Promise<ModelComparisonRow[]> {
   const body = await getJson<{ models: ModelComparisonRow[] }>("/api/models/comparison");
 
   return body.models;
+}
+
+export async function fetchSummary(range: SummaryRange): Promise<PeriodSummary> {
+  const params = new URLSearchParams({ from: range.from.toISOString(), to: range.to.toISOString() });
+  return getJson<PeriodSummary>(`/api/summary?${params.toString()}`);
 }

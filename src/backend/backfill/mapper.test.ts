@@ -33,6 +33,7 @@ const makePr = (overrides: Partial<PullRequest> = {}): PullRequest => ({
   number: 100,
   title: "Fix",
   headRef: "feature/den-3001",
+  headSha: "sha-100",
   state: "open",
   draft: false,
   merged: false,

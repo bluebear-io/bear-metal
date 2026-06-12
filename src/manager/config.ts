@@ -19,6 +19,12 @@ export interface Config {
   slackBotToken: string | null;
   /** Optional Slack channel id or name receiving PR notifications. */
   slackNotificationChannel: string | null;
+  /** Worker heartbeat interval. Falls below the stale threshold by at least 5x. */
+  taskHeartbeatIntervalMs: number;
+  /** A task whose worker hasn't heartbeat within this many ms is considered crashed/hung. */
+  taskStaleAfterMs: number;
+  /** After this many recoveries of the same row, the manager abandons it (terminal + slot release). */
+  taskMaxReclaims: number;
 }
 
 function requiredEnv(name: string): string {
@@ -75,6 +81,9 @@ export function loadConfig(): Readonly<Config> {
     dashboardUrl: process.env.DASHBOARD_URL ?? "",
     ingestToken: process.env.INGEST_TOKEN ?? "",
     testTicketId: process.env.TEST_TICKET_ID?.trim() || null,
+    taskHeartbeatIntervalMs: positiveIntEnv("TASK_HEARTBEAT_INTERVAL_MS", 30_000),
+    taskStaleAfterMs: positiveIntEnv("TASK_STALE_AFTER_MS", 5 * 60_000),
+    taskMaxReclaims: positiveIntEnv("TASK_MAX_RECLAIMS", 3),
     ...loadSlackConfig(),
   });
 }

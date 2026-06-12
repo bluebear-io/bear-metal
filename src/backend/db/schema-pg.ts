@@ -56,7 +56,7 @@ export const runs = pgTable("runs", {
   ticketId: text("ticket_id").notNull().references(() => tickets.id),
   attemptNumber: integer("attempt_number").notNull(),
   workerId: text("worker_id").references(() => workers.id),
-  trigger: text("trigger", { enum: ["new", "ci_failure", "delegated_back"] }).notNull(),
+  trigger: text("trigger", { enum: ["new", "ci_failure", "delegated_back", "merge_conflict"] }).notNull(),
   status: text("status", {
     enum: ["dispatched", "running", "succeeded", "failed", "timed_out", "crashed"],
   }).notNull(),
@@ -127,6 +127,23 @@ export const reviewThreads = pgTable("review_threads", {
   commentsJson: text("comments_json").notNull().default("[]"),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),
+});
+
+/**
+ * Step-by-step trace of an agent run's tool calls and interleaved assistant reasoning (DEN-2311).
+ * Mirror of the SQLite `runToolCalls` table.
+ */
+export const runToolCalls = pgTable("run_tool_calls", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => runs.id),
+  sequence: integer("sequence").notNull(),
+  toolName: text("tool_name").notNull(),
+  argsJson: text("args_json").notNull(),
+  resultText: text("result_text"),
+  resultStatus: text("result_status", { enum: ["ok", "error", "unknown"] }),
+  outputSize: integer("output_size"),
+  thoughtText: text("thought_text"),
+  createdAt: ts("created_at").notNull(),
 });
 
 export const events = pgTable("events", {

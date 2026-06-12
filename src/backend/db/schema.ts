@@ -37,7 +37,7 @@ export const runs = sqliteTable("runs", {
   ticketId: text("ticket_id").notNull().references(() => tickets.id),
   attemptNumber: integer("attempt_number").notNull(),
   workerId: text("worker_id").references(() => workers.id),
-  trigger: text("trigger", { enum: ["new", "ci_failure", "delegated_back"] }).notNull(),
+  trigger: text("trigger", { enum: ["new", "ci_failure", "delegated_back", "merge_conflict"] }).notNull(),
   status: text("status", {
     enum: ["dispatched", "running", "succeeded", "failed", "timed_out", "crashed"],
   }).notNull(),
@@ -118,6 +118,30 @@ export const reviewThreads = sqliteTable("review_threads", {
   commentsJson: text("comments_json").notNull().default("[]"),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull(),
+});
+
+/**
+ * Step-by-step trace of an agent run's tool calls and interleaved assistant reasoning, used
+ * by the dashboard's "thought process" visualizer (DEN-2311). The set is replaced on every
+ * upsert: the worker re-sends the full ordered list at run completion, so dialect-specific
+ * upsert semantics don't matter.
+ */
+export const runToolCalls = sqliteTable("run_tool_calls", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => runs.id),
+  /** 0-based position within the run; used to preserve chronological ordering. */
+  sequence: integer("sequence").notNull(),
+  toolName: text("tool_name").notNull(),
+  /** Serialized tool input parameters (best-effort JSON.stringify of the raw args object). */
+  argsJson: text("args_json").notNull(),
+  /** Serialized tool result content (truncated to MAX_TOOL_CALL_RESULT_CHARS by the worker). */
+  resultText: text("result_text"),
+  resultStatus: text("result_status", { enum: ["ok", "error", "unknown"] }),
+  /** Character length of the untruncated result — lets the UI flag truncated payloads. */
+  outputSize: integer("output_size"),
+  /** Assistant text emitted in the same turn as the tool_use block — the "thought" preceding the call. */
+  thoughtText: text("thought_text"),
+  createdAt: ts("created_at").notNull(),
 });
 
 export const events = sqliteTable("events", {

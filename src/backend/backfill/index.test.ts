@@ -38,6 +38,7 @@ const pr = (owner: string, repo: string, number: number, head: string, merged: b
   number,
   title: `PR ${number}`,
   headRef: head,
+  headSha: `sha-${number}`,
   state: merged ? "closed" : "open",
   draft: false,
   merged,

@@ -15,12 +15,15 @@ function isStopReason(v: unknown): v is StopReason {
   return typeof v === "string" && (STOP_REASONS as readonly string[]).includes(v);
 }
 
-// Express query values are string | string[] | ParsedQs | ParsedQs[] | undefined; we accept
-// `?key=a&key=b` and `?key=a,b` uniformly.
+// Express query values are string | string[] | ParsedQs | ParsedQs[] | undefined. We accept both
+// the repeated-key form (`?key=a&key=b`) and the single-string comma shorthand (`?key=a,b`), but
+// only split on commas for the single-string case — array elements are taken verbatim so a label
+// that legitimately contains a comma (e.g. `"a,b"`) survives the round-trip when callers use the
+// repeated-key form (which is what buildTicketsPath() does in the UI client).
 function readList(value: unknown): string[] {
   if (value === undefined || value === null) return [];
   if (Array.isArray(value)) {
-    return value.flatMap((v) => readList(v));
+    return value.filter((v): v is string => typeof v === "string" && v.length > 0);
   }
   if (typeof value !== "string") return [];
   return value
@@ -183,5 +186,43 @@ export function createRouter(repo: Repository): Router {
     }
   });
 
+  router.get("/summary", async (req, res, next) => {
+    try {
+      const now = new Date();
+      const defaultFrom = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const to = parseIsoOrDefault(req.query.to, now);
+      const from = parseIsoOrDefault(req.query.from, defaultFrom);
+      if (!from || !to) {
+        res.status(400).json({ error: "from and to must be valid ISO timestamps" });
+        return;
+      }
+      if (from.getTime() >= to.getTime()) {
+        res.status(400).json({ error: "from must be before to" });
+        return;
+      }
+      // The summary loads the relevant rows in full and computes both the current and prior
+      // windows in JS — bound the requested window so an arbitrary range can't pull in the
+      // entire dataset and starve the worker.
+      if (to.getTime() - from.getTime() > MAX_SUMMARY_WINDOW_MS) {
+        res.status(400).json({ error: `summary window must be ${MAX_SUMMARY_WINDOW_DAYS} days or less` });
+        return;
+      }
+      const summary = await repo.getPeriodSummary({ from, to });
+      res.json(summary);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   return router;
 }
+
+function parseIsoOrDefault(raw: unknown, fallback: Date): Date | null {
+  if (raw === undefined) return fallback;
+  if (typeof raw !== "string" || raw === "") return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const MAX_SUMMARY_WINDOW_DAYS = 90;
+const MAX_SUMMARY_WINDOW_MS = MAX_SUMMARY_WINDOW_DAYS * 24 * 60 * 60 * 1000;

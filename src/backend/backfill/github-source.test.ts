@@ -12,6 +12,7 @@ const pr = (owner: string, repo: string, number: number, headRef: string): PullR
   number,
   title: `PR ${number}`,
   headRef,
+  headSha: `sha-${number}`,
   state: "open",
   draft: false,
   merged: false,
@@ -70,12 +71,12 @@ describe("loadPullRequestsForBranch", () => {
 });
 
 describe("loadCheckRunsForPullRequest", () => {
-  it("calls listCheckRunsForRef with the PR's head branch", async () => {
+  it("calls listCheckRunsForRef with the PR's head SHA", async () => {
     const source = makeSource({
       listCheckRunsForRef: vi.fn().mockResolvedValue([run(1, "lint")]),
     });
     const result = await loadCheckRunsForPullRequest(source, pr("a", "x", 1, "feature/foo"));
-    expect(source.listCheckRunsForRef).toHaveBeenCalledWith("a", "x", "feature/foo");
+    expect(source.listCheckRunsForRef).toHaveBeenCalledWith("a", "x", "sha-1");
     expect(result).toHaveLength(1);
   });
 });

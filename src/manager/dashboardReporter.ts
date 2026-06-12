@@ -1,6 +1,7 @@
 import type {
   CiCheckPayload, DashboardClient, FailedCheckRun, FailedStatus, JsonValue,
-  Logger, PullRequest, PullRequestContext, ReviewThread, ReviewThreadPayload, Ticket,
+  Logger, PullRequest, PullRequestContext, ReviewThread, ReviewThreadPayload,
+  RunToolCallPayload, Ticket,
 } from "../shared/index.js";
 import type { BmStatus, RunTrigger } from "../shared/index.js";
 
@@ -10,6 +11,19 @@ export interface RunUsage {
   completionTokens: number;
   modelName: string;
   provider: string;
+}
+
+/** One step of the run's tool-call timeline, surfaced for the thought-process visualizer (DEN-2311). */
+export interface RunToolCallStep {
+  id: string;
+  sequence: number;
+  toolName: string;
+  argsJson: string;
+  resultText: string | null;
+  resultStatus: "ok" | "error" | "unknown" | null;
+  outputSize: number | null;
+  thoughtText: string | null;
+  createdAt: number;
 }
 
 export interface DashboardReporterDeps {
@@ -190,6 +204,24 @@ export class DashboardReporter {
     const t = this.ms();
     await this.client.upsertRun({ id: runId, ticketId, attemptNumber, workerId, trigger, status: "crashed", contextJson: null, startedAt: null, endedAt: t, stopReason: "crash", error, promptTokens: null, completionTokens: null, modelName: null, provider: null, createdAt: t });
     await this.client.recordEvent({ ticketId, runId, workerId, source: "worker", type: "worker_crashed", summary: error, payloadJson: null, createdAt: t });
+  }
+
+  /** Persist the run's tool-call timeline (DEN-2311). No-op when the worker captured nothing. */
+  async recordRunToolCallsById(runId: string, steps: RunToolCallStep[]): Promise<void> {
+    if (steps.length === 0) return;
+    const payloads: RunToolCallPayload[] = steps.map((s) => ({
+      id: `${runId}:${s.sequence}:${s.id}`,
+      runId,
+      sequence: s.sequence,
+      toolName: s.toolName,
+      argsJson: s.argsJson,
+      resultText: s.resultText,
+      resultStatus: s.resultStatus,
+      outputSize: s.outputSize,
+      thoughtText: s.thoughtText,
+      createdAt: s.createdAt,
+    }));
+    await this.client.replaceRunToolCalls(runId, payloads);
   }
 
   async recordPrOpenedById(ticketId: string, pr: { owner: string; repo: string; number: number }, runId: string): Promise<void> {

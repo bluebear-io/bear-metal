@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Router, type RequestHandler } from "express";
 import * as schema from "../db/schema.js";
 import type { Writer } from "../db/writer.js";
-import type { CiCheckPayload, ReviewThreadPayload } from "../../shared/dashboard/types.js";
+import type { CiCheckPayload, ReviewThreadPayload, RunToolCallPayload } from "../../shared/dashboard/types.js";
 
 class BadPayload extends Error {}
 
@@ -194,6 +194,39 @@ export function createIngestRouter(writer: Writer, token: string): Router {
       };
     });
     await writer.replaceReviewThreadsForPr(id, payloads);
+  }));
+
+  router.put("/runs/:id/tool-calls", requireToken, handle(async (b, id) => {
+    if (!id) throw new BadPayload("missing run id");
+    const list = b.toolCalls;
+    if (!Array.isArray(list)) throw new BadPayload("toolCalls must be an array");
+    const payloads: RunToolCallPayload[] = list.map((raw, idx) => {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        throw new BadPayload(`toolCalls[${idx}] must be an object`);
+      }
+      const tc = raw as Record<string, unknown>;
+      const status = tc.resultStatus;
+      let resultStatus: "ok" | "error" | "unknown" | null = null;
+      if (status !== null && status !== undefined) {
+        if (status !== "ok" && status !== "error" && status !== "unknown") {
+          throw new BadPayload(`toolCalls[${idx}].resultStatus must be ok|error|unknown|null`);
+        }
+        resultStatus = status;
+      }
+      return {
+        id: str(tc, "id"),
+        runId: id,
+        sequence: num(tc, "sequence"),
+        toolName: str(tc, "toolName"),
+        argsJson: str(tc, "argsJson"),
+        resultText: strOrNull(tc, "resultText"),
+        resultStatus,
+        outputSize: numOrNull(tc, "outputSize"),
+        thoughtText: strOrNull(tc, "thoughtText"),
+        createdAt: num(tc, "createdAt"),
+      };
+    });
+    await writer.replaceRunToolCallsForRun(id, payloads);
   }));
 
   router.post("/events", requireToken, handle(async (b) => {

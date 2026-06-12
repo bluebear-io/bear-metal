@@ -22,19 +22,24 @@ export function buildWorkerPrompt(context: WorkerInputContext): string {
         "Do NOT output a text response to signal completion. The only valid way to finish is calling the above tools for each thread, plus `wrote_code` if you wrote code.",
       ];
 
+  const planFilePath = `docs/plans/${context.ticketId}.md`;
+
   const taskInstructions = isNew
     ? [
         "1. Read the codebase to understand context.",
         "2. Create a branch named after the ticket (e.g. feature/den-XXXX-short-description).",
-        "3. Implement the changes.",
-        "4. Call `wrote_code` to commit, push, and open the PR.",
+        `3. Write a task plan to \`${planFilePath}\` describing the intended changes, the files you expect to touch, and the verification strategy. Commit it together with the code so it ships as part of the PR.`,
+        "4. Implement the changes.",
+        "5. Call `wrote_code` to commit, push, and open the PR.",
         "   OR call `respond_to_ticket_reporter` if you are blocked.",
       ]
     : [
         "1. Check out the existing PR branch.",
-        "2. For each failed check: read the code and logs, find the root cause, fix it.",
-        "3. For each unresolved review thread: read the code and respond using the tools above.",
-        "4. Call `wrote_code` once all code changes are done.",
+        "2. If any PR context has `mergeable: false`, the head branch conflicts with its base. Rebase / merge the base branch into the PR head, resolve the conflicts, and push.",
+        "3. For each failed check: read the code and logs, find the root cause, fix it.",
+        "4. For each unresolved review thread: read the code and respond using the tools above.",
+        `5. If baloo posted a fidelity report comparing the PR against the plan in \`${planFilePath}\`, read every gap it lists. For each gap, decide whether it is meaningful (real divergence from the ticket spec or the committed plan) or noise. Address meaningful gaps with code changes; for noise, reply on the thread explaining why the gap is not actionable.`,
+        "6. Call `wrote_code` once all code changes are done.",
       ];
 
   const blockerNote = isNew

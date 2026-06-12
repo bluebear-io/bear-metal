@@ -160,3 +160,96 @@ describe("GET /api/workers", () => {
     });
   });
 });
+
+describe("GET /api/summary", () => {
+  // The mock seeder lays its events across 2026-06-08 → 2026-06-09. A window centred on that
+  // span exercises every block; outside-window queries verify the prior-period symmetry.
+  const FROM = "2026-06-08T00:00:00.000Z";
+  const TO = "2026-06-10T00:00:00.000Z";
+
+  it("returns the documented shape with all six clusters", async () => {
+    const res = await request(app).get("/api/summary").query({ from: FROM, to: TO });
+    expect(res.status).toBe(200);
+    expect(res.body.window).toEqual({ from: FROM, to: TO });
+    expect(res.body.prior.from).toMatch(/^2026-06-06T00:00:00/);
+    expect(res.body.prior.to).toEqual(FROM);
+    expect(res.body).toHaveProperty("throughput");
+    expect(res.body).toHaveProperty("health");
+    expect(res.body).toHaveProperty("cost");
+    expect(res.body).toHaveProperty("time");
+    expect(res.body).toHaveProperty("failures");
+    expect(res.body).toHaveProperty("shipped");
+  });
+
+  it("counts completed/abandoned tickets correctly within the window", async () => {
+    const res = await request(app).get("/api/summary").query({ from: FROM, to: TO });
+    // The seeder ships exactly one completed (DEN-3001) and one abandoned (DEN-3003).
+    expect(res.body.throughput.completed).toBe(1);
+    expect(res.body.throughput.abandoned).toBe(1);
+    expect(res.body.throughput.discovered).toBeGreaterThanOrEqual(4);
+  });
+
+  it("computes a 50% success rate over completed + abandoned tickets", async () => {
+    const res = await request(app).get("/api/summary").query({ from: FROM, to: TO });
+    expect(res.body.health.successRate).toBeCloseTo(0.5, 5);
+  });
+
+  it("buckets shipped tickets by repo with PR + ticket links", async () => {
+    const res = await request(app).get("/api/summary").query({ from: FROM, to: TO });
+    const byRepo = res.body.shipped.byRepo;
+    expect(byRepo.length).toBeGreaterThan(0);
+    const bucket = byRepo.find((b: { repo: string }) => b.repo === "bluebear-io/blueden");
+    expect(bucket).toBeDefined();
+    expect(bucket.count).toBeGreaterThanOrEqual(1);
+    expect(bucket.tickets[0]).toMatchObject({
+      identifier: expect.any(String),
+      title: expect.any(String),
+      url: expect.stringContaining("linear.app"),
+      prUrl: expect.stringContaining("github.com"),
+      prNumber: expect.any(Number),
+    });
+  });
+
+  it("returns the prior block with identical shape to the current block", async () => {
+    const res = await request(app).get("/api/summary").query({ from: FROM, to: TO });
+    expect(res.body.throughput.prior).toEqual(expect.objectContaining({
+      completed: expect.any(Number),
+      abandoned: expect.any(Number),
+      discovered: expect.any(Number),
+    }));
+    expect(res.body.throughput).not.toHaveProperty("inProgress");
+    expect(res.body.cost.prior).toEqual(expect.objectContaining({
+      promptTokens: expect.any(Number),
+      completionTokens: expect.any(Number),
+      estimatedUsd: expect.any(Number),
+      byModel: expect.any(Array),
+    }));
+  });
+
+  it("defaults to a last-7-days window when query params are omitted", async () => {
+    const res = await request(app).get("/api/summary");
+    expect(res.status).toBe(200);
+    const from = new Date(res.body.window.from).getTime();
+    const to = new Date(res.body.window.to).getTime();
+    expect(to - from).toBeCloseTo(7 * 24 * 60 * 60 * 1000, -3);
+  });
+
+  it("rejects from >= to with 400", async () => {
+    const res = await request(app).get("/api/summary").query({ from: TO, to: FROM });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an unparseable ISO with 400", async () => {
+    const res = await request(app).get("/api/summary").query({ from: "garbage", to: TO });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a window longer than 90 days with 400", async () => {
+    const res = await request(app).get("/api/summary").query({
+      from: "2025-01-01T00:00:00.000Z",
+      to: "2026-06-30T00:00:00.000Z",
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/90 days/);
+  });
+});

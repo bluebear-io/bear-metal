@@ -5,7 +5,7 @@ export type BmStatus =
   | "ci_running" | "ci_failed" | "completed" | "abandoned";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
-export type RunTrigger = "new" | "ci_failure" | "delegated_back";
+export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export type StopReason = "completed" | "timeout" | "crash" | "error";
 export type CiStatus = "running" | "passed" | "failed";
 export type EventSource = "manager" | "worker" | "ci";
@@ -122,6 +122,24 @@ export interface ReviewThreadPayload {
   commentsJson: string;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * One step in the agent's tool-call timeline for a single run (DEN-2311). The worker sends the
+ * full ordered list at run completion; the backend replaces all rows for the run id.
+ */
+export interface RunToolCallPayload {
+  id: string;
+  runId: string;
+  sequence: number;
+  toolName: string;
+  argsJson: string;
+  resultText: string | null;
+  /** "ok" / "error" / "unknown". Null when the run aborted before any result block arrived. */
+  resultStatus: "ok" | "error" | "unknown" | null;
+  outputSize: number | null;
+  thoughtText: string | null;
+  createdAt: number;
 }
 
 export interface EventPayload {

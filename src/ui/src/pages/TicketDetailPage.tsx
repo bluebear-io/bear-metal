@@ -1,7 +1,18 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useTicketDetail } from "../api/queries.js";
-import type { CiCheck, CiRun, PullRequest, ReviewThread, ReviewThreadComment, Run, Ticket, TicketEvent } from "../api/types.js";
+import type {
+  CiCheck,
+  CiRun,
+  PullRequest,
+  ReviewThread,
+  ReviewThreadComment,
+  Run,
+  RunToolCall,
+  Ticket,
+  TicketEvent,
+} from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
@@ -325,6 +336,110 @@ const PullRequestCiSection = ({ pullRequests, ciRuns }: { pullRequests: PullRequ
   </Section>
 );
 
+// ---- DEN-2311 Thought-process visualizer -------------------------------
+
+const RESULT_STATUS_STYLE: Record<"ok" | "error" | "unknown", string> = {
+  ok: "bg-status-green/10 text-status-green",
+  error: "bg-status-red/10 text-status-red",
+  unknown: "bg-status-yellow/10 text-status-yellow",
+};
+
+// Pretty-print stored JSON when possible; bad data falls back to the raw string so the
+// operator still sees something useful.
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+const ToolCallStep = ({ step, index }: { step: RunToolCall; index: number }) => {
+  const [open, setOpen] = useState(false);
+  const status = step.resultStatus ?? "unknown";
+  return (
+    <li className="border-b border-border-default last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-bg-page"
+        aria-expanded={open}
+      >
+        <span className="mt-0.5 inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border-default text-xs text-text-secondary">
+          {index + 1}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-sm font-medium text-text-primary">{step.toolName}</span>
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${RESULT_STATUS_STYLE[status]}`}>
+              {status}
+            </span>
+            {step.outputSize !== null && (
+              <span className="text-xs text-text-muted">{step.outputSize.toLocaleString()} chars</span>
+            )}
+          </span>
+          {step.thoughtText && !open && (
+            <span className="mt-1 line-clamp-2 block text-xs text-text-secondary whitespace-pre-wrap">{step.thoughtText}</span>
+          )}
+        </span>
+        <span className="mt-1 text-xs text-text-muted">{open ? "−" : "+"}</span>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-3 border-t border-border-default bg-bg-page px-4 py-3">
+          {step.thoughtText && (
+            <div>
+              <div className="text-xs font-semibold uppercase text-text-muted">Thought</div>
+              <pre className="mt-1 whitespace-pre-wrap break-words text-xs text-text-primary">{step.thoughtText}</pre>
+            </div>
+          )}
+          <div>
+            <div className="text-xs font-semibold uppercase text-text-muted">Input</div>
+            <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary">{prettyJson(step.argsJson)}</pre>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase text-text-muted">Output</div>
+            {step.resultText === null ? (
+              <p className="mt-1 text-xs text-text-muted">No result captured.</p>
+            ) : (
+              <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap break-words">{step.resultText}</pre>
+            )}
+          </div>
+        </div>
+      )}
+    </li>
+  );
+};
+
+const ThoughtProcessSection = ({ runs }: { runs: Run[] }) => {
+  const runsWithCalls = runs.filter((r) => (r.toolCalls?.length ?? 0) > 0);
+  return (
+    <Section title="Thought process">
+      {runsWithCalls.length === 0 ? (
+        <p className="text-sm text-text-muted">No tool calls captured for this ticket’s runs.</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {runsWithCalls.map((run) => (
+            <div key={run.id} className="rounded-md border border-border-default bg-bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-default px-4 py-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium">Attempt {run.attemptNumber}</span>
+                  <StatusBadge status={run.status} />
+                </div>
+                <span className="text-xs text-text-muted">{run.toolCalls.length} step{run.toolCalls.length === 1 ? "" : "s"}</span>
+              </div>
+              <ol className="divide-y divide-border-default">
+                {run.toolCalls.map((step, index) => (
+                  <ToolCallStep key={step.id} step={step} index={index} />
+                ))}
+              </ol>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+};
+
 const TimelineSection = ({ events }: { events: TicketEvent[] }) => (
   <Section title="Timeline">
     {events.length === 0 ? (
@@ -332,12 +447,12 @@ const TimelineSection = ({ events }: { events: TicketEvent[] }) => (
     ) : (
       <ol className="rounded-md border border-border-default bg-bg-card">
         {events.map((event) => (
-          <li className="grid gap-2 border-b border-border-default px-4 py-3 last:border-b-0 sm:grid-cols-[auto_minmax(0,1fr)_auto]" key={event.id}>
+          <li className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-default px-4 py-3 last:border-b-0" key={event.id}>
             <span className="rounded-full border border-border-default px-2 py-0.5 text-xs font-medium text-text-secondary">
               {event.source} / {event.type.replaceAll("_", " ")}
             </span>
             <span className="text-sm text-text-primary">{event.summary}</span>
-            <time className="text-xs text-text-muted" dateTime={event.createdAt}>
+            <time className="whitespace-nowrap text-right text-xs text-text-muted" dateTime={event.createdAt}>
               {formatDateTime(event.createdAt)}
             </time>
           </li>
@@ -388,6 +503,7 @@ export const TicketDetailPage = () => {
           <div className="flex flex-col gap-6">
             <TicketSummary ticket={detail.ticket} />
             <RunsSection runs={detail.runs} />
+            <ThoughtProcessSection runs={detail.runs} />
             <PullRequestCiSection pullRequests={detail.pullRequests} ciRuns={detail.ciRuns} />
             <TimelineSection events={detail.events} />
           </div>

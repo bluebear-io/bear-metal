@@ -59,6 +59,7 @@ const ticketDetail: TicketDetail = {
         startedAt: "2026-06-09T07:30:00.000Z",
         updatedAt: "2026-06-09T08:40:00.000Z",
       },
+      toolCalls: [],
     },
     {
       id: "run_2",
@@ -87,6 +88,7 @@ const ticketDetail: TicketDetail = {
         startedAt: "2026-06-09T08:55:00.000Z",
         updatedAt: "2026-06-09T09:18:00.000Z",
       },
+      toolCalls: [],
     },
   ],
   pullRequests: [
@@ -205,6 +207,10 @@ describe("TicketDetailPage", () => {
     expect(screen.getAllByText(/^failed$/i).length).toBeGreaterThan(0);
     expect(screen.getByText("Unit tests failed on retry")).toBeVisible();
     expect(screen.getByText("Worker reported failing unit tests")).toBeVisible();
+    // Each timeline row exposes a <time> element with the event timestamp on the right.
+    const timelineTime = document.querySelector('time[datetime="2026-06-09T08:40:00.000Z"]');
+    expect(timelineTime).not.toBeNull();
+    expect(timelineTime?.className).toMatch(/text-right/);
     // Granular CI check failure surfaces by name + annotation.
     expect(screen.getByRole("link", { name: /ESLint/i })).toBeVisible();
     expect(screen.getByText(/'reporter' is defined but never used\./)).toBeVisible();
