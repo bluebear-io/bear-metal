@@ -37,13 +37,18 @@ export default function WorkersPage() {
   const workersQuery = useWorkers();
   const workers = workersQuery.data ?? [];
   const [timelineHours, setTimelineHours] = useState<TimelineHours>(24);
-  // Recompute the timeline window only when the selection changes — keeps the query key stable
-  // across re-renders so React Query caches it instead of refetching on every render.
+  // `timelineNonce` is bumped on refresh so the memoized window (and thus the React Query key)
+  // advances to "now" instead of replaying the stale `to` captured on mount/selection change.
+  const [timelineNonce, setTimelineNonce] = useState(0);
+  // Recompute the timeline window only when the selection changes or refresh is clicked — keeps
+  // the query key stable across re-renders so React Query caches it instead of refetching on
+  // every render.
   const timelineRange = useMemo(() => {
     const to = new Date();
     const from = new Date(to.getTime() - timelineHours * 60 * 60 * 1000);
     return { from, to };
-  }, [timelineHours]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineHours, timelineNonce]);
   const timelineQuery = useWorkerTimeline(timelineRange);
 
   return (
@@ -53,7 +58,7 @@ export default function WorkersPage() {
           busy={workersQuery.isFetching || timelineQuery.isFetching}
           onClick={() => {
             void workersQuery.refetch();
-            void timelineQuery.refetch();
+            setTimelineNonce((n) => n + 1);
           }}
         />
       </PageHeader>
