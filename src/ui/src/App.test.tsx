@@ -7,8 +7,11 @@ import { renderWithProviders } from "./test/utils.js";
 
 vi.mock("./api/client.js", () => ({
   fetchTicketDetail: vi.fn(),
-  fetchTickets: vi.fn().mockResolvedValue([]),
+  fetchTickets: vi.fn().mockResolvedValue({ tickets: [], total: 0, page: 1, pageSize: 50 }),
+  fetchTicketFilters: vi.fn().mockResolvedValue({ bmStatuses: [], stopReasons: [], labels: [], workers: [] }),
   fetchWorkers: vi.fn().mockResolvedValue([]),
+  fetchModelComparison: vi.fn().mockResolvedValue([]),
+  buildTicketsPath: vi.fn().mockReturnValue("/api/tickets"),
 }));
 
 describe("App", () => {

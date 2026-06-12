@@ -2,7 +2,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../test/utils.js";
-import type { BmStatus, TicketListItem } from "../api/types.js";
+import type { BmStatus, TicketFilterOptions, TicketListItem, TicketListQuery, TicketListResponse } from "../api/types.js";
 import TicketsListPage from "./TicketsListPage.js";
 
 const mockTicket: TicketListItem = {
@@ -27,16 +27,18 @@ const mockTicket: TicketListItem = {
     status: "succeeded",
     trigger: "new",
     workerId: "worker_1",
+    stopReason: "completed",
     startedAt: "2026-06-09T10:01:00.000Z",
     endedAt: "2026-06-09T10:04:00.000Z",
     createdAt: "2026-06-09T10:01:00.000Z",
   },
+  latestWorkerName: "worker-1",
   latestPr: { number: 42, url: "https://github.com/blueden/bear-metal/pull/42", state: "open", merged: false },
   latestCiStatus: "passed",
 };
 
 function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketListItem {
-  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestPr: null, latestCiStatus: null };
+  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestWorkerName: null, latestPr: null, latestCiStatus: null };
 }
 
 const multipleTickets: TicketListItem[] = [
@@ -48,41 +50,65 @@ const multipleTickets: TicketListItem[] = [
   makeTicket("ticket_backlog", "DEN-6", "discovered"),
 ];
 
-let mockData: TicketListItem[] = [mockTicket];
+const filterOptions: TicketFilterOptions = {
+  bmStatuses: ["completed", "abandoned", "in_progress"],
+  stopReasons: ["completed", "timeout"],
+  labels: ["bear-metal", "module:bff"],
+  workers: [{ id: "worker_1", name: "worker-1" }, { id: "worker_2", name: "worker-2" }],
+};
+
+let mockTickets: TicketListItem[] = [mockTicket];
+const lastQuery: { value: TicketListQuery | undefined } = { value: undefined };
+
+function makeResponse(tickets: TicketListItem[]): TicketListResponse {
+  return { tickets, total: tickets.length, page: 1, pageSize: 50 };
+}
 
 vi.mock("../api/queries.js", () => ({
-  useTickets: () => ({
-    get data() {
-      return mockData;
-    },
+  useTickets: (q: TicketListQuery) => {
+    lastQuery.value = q;
+    return {
+      get data() {
+        return makeResponse(mockTickets);
+      },
+      error: null,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    };
+  },
+  useTicketFilterOptions: () => ({
+    data: filterOptions,
     error: null,
-    isFetching: false,
     isLoading: false,
-    refetch: vi.fn(),
+    isFetching: false,
   }),
 }));
 
 describe("TicketsListPage", () => {
   beforeEach(() => {
-    mockData = [mockTicket];
+    mockTickets = [mockTicket];
+    lastQuery.value = undefined;
   });
 
-  it("renders ticket status, latest run, attempts, and PR link", () => {
+  it("renders ticket status, latest run, attempts, worker, and PR link", () => {
     renderWithProviders(<TicketsListPage />, "/tickets");
 
     expect(screen.getByRole("heading", { name: "Tickets" })).toBeVisible();
-    expect(screen.getByRole("link", { name: "DEN-2271" })).toHaveAttribute("href", "/tickets/ticket_1");
-    expect(screen.getByText("completed")).toBeVisible();
-    expect(screen.getByText("succeeded")).toBeVisible();
-    expect(screen.getByText("1/5")).toBeVisible();
-    expect(screen.getByRole("link", { name: "#42" })).toHaveAttribute(
+    const list = screen.getByRole("region", { name: "Tickets list" });
+    expect(within(list).getByRole("link", { name: "DEN-2271" })).toHaveAttribute("href", "/tickets/ticket_1");
+    expect(within(list).getByText("completed")).toBeVisible();
+    expect(within(list).getByText("succeeded")).toBeVisible();
+    expect(within(list).getByText("1/5")).toBeVisible();
+    expect(within(list).getByText("worker-1")).toBeVisible();
+    expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute(
       "href",
       "https://github.com/blueden/bear-metal/pull/42",
     );
   });
 
   it("filters tickets by bm status category", () => {
-    mockData = multipleTickets;
+    mockTickets = multipleTickets;
     renderWithProviders(<TicketsListPage />, "/tickets");
 
     const list = screen.getByRole("region", { name: "Tickets list" });
@@ -110,10 +136,41 @@ describe("TicketsListPage", () => {
   });
 
   it("shows empty state when filter has no matches", () => {
-    mockData = [makeTicket("ticket_done", "DEN-1", "completed")];
+    mockTickets = [makeTicket("ticket_done", "DEN-1", "completed")];
     renderWithProviders(<TicketsListPage />, "/tickets");
 
     fireEvent.click(screen.getByRole("button", { name: /Backlog/ }));
-    expect(screen.getByText("No tickets match this filter.")).toBeVisible();
+    expect(screen.getByText("No tickets match these filters.")).toBeVisible();
+  });
+
+  it("submits free-text searches via the query layer", () => {
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    fireEvent.change(screen.getByPlaceholderText(/Search tickets/), { target: { value: "flaky" } });
+    fireEvent.submit(screen.getByRole("search"));
+
+    expect(lastQuery.value?.q).toBe("flaky");
+    expect(lastQuery.value?.page).toBe(1);
+  });
+
+  it("populates dropdowns from filter options and pushes selections into the query", () => {
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    const workerSelect = screen.getByLabelText("Filter by worker") as HTMLSelectElement;
+    expect(within(workerSelect).getByRole("option", { name: "worker-2" })).toBeInTheDocument();
+    fireEvent.change(workerSelect, { target: { value: "worker_2" } });
+    expect(lastQuery.value?.workerIds).toEqual(["worker_2"]);
+
+    const labelSelect = screen.getByLabelText("Filter by label") as HTMLSelectElement;
+    fireEvent.change(labelSelect, { target: { value: "module:bff" } });
+    expect(lastQuery.value?.labels).toEqual(["module:bff"]);
+
+    const stateSelect = screen.getByLabelText("Filter by state") as HTMLSelectElement;
+    fireEvent.change(stateSelect, { target: { value: "abandoned" } });
+    expect(lastQuery.value?.bmStatuses).toEqual(["abandoned"]);
+
+    const stopSelect = screen.getByLabelText("Filter by failure reason") as HTMLSelectElement;
+    fireEvent.change(stopSelect, { target: { value: "timeout" } });
+    expect(lastQuery.value?.stopReasons).toEqual(["timeout"]);
   });
 });
