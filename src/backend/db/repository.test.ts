@@ -4,7 +4,7 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema.js";
 import { seedMockData } from "../mock/seed.js";
-import { listTickets, getTicketDetail, listWorkers } from "./repository.js";
+import { listTickets, getTicketDetail, listWorkers, getAnalytics } from "./repository.js";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -89,5 +89,48 @@ describe("listWorkers", () => {
     const dead = rows.find((w) => w.id === "wk_3")!;
     expect(dead.isDead).toBe(true);
     expect(dead.isHeartbeatStale).toBe(true);
+  });
+});
+
+describe("getAnalytics", () => {
+  it("summarizes outcomes from the seeded tickets", () => {
+    const a = getAnalytics(db, { now: new Date("2026-06-09T09:30:00Z") });
+    // Seed: 4 tickets — 1 completed, 1 abandoned, 2 in-flight (ci_failed, in_progress).
+    expect(a.outcomes).toMatchObject({
+      total: 4,
+      completed: 1,
+      abandoned: 1,
+      inFlight: 2,
+    });
+    expect(a.outcomes.successRate).toBeCloseTo(0.5);
+    expect(a.outcomes.abandonmentRate).toBeCloseTo(0.5);
+  });
+
+  it("computes attempts distribution from decided tickets only", () => {
+    const a = getAnalytics(db);
+    // DEN-3001 completed @ 1 attempt; DEN-3003 abandoned @ 5 attempts. In-flight tickets excluded.
+    expect(a.attemptsDistribution).toEqual([
+      { attempts: 1, count: 1 },
+      { attempts: 5, count: 1 },
+    ]);
+  });
+
+  it("computes MTTR from completed tickets", () => {
+    const a = getAnalytics(db);
+    // DEN-3001 createdAt 07:05 → completedAt 07:55 = 50m = 3_000_000ms.
+    expect(a.mttr.sampleSize).toBe(1);
+    expect(a.mttr.meanMs).toBe(50 * 60 * 1000);
+    expect(a.mttr.medianMs).toBe(50 * 60 * 1000);
+    expect(a.mttr.p90Ms).toBe(50 * 60 * 1000);
+  });
+
+  it("returns a contiguous daily throughput series covering created and completed days", () => {
+    const a = getAnalytics(db, { now: new Date("2026-06-09T23:00:00Z") });
+    // Earliest createdAt is 2026-06-08; now is 2026-06-09 → 2 days.
+    expect(a.throughput.map((p) => p.date)).toEqual(["2026-06-08", "2026-06-09"]);
+    const byDate = new Map(a.throughput.map((p) => [p.date, p]));
+    expect(byDate.get("2026-06-08")).toEqual({ date: "2026-06-08", created: 1, completed: 0 });
+    // 3 tickets created on 2026-06-09; 1 completed (DEN-3001).
+    expect(byDate.get("2026-06-09")).toEqual({ date: "2026-06-09", created: 3, completed: 1 });
   });
 });

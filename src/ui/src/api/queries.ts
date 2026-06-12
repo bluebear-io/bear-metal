@@ -1,6 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchRunLogs, fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
+import {
+  fetchAnalytics,
+  fetchRunLogs,
+  fetchTicketDetail,
+  fetchTickets,
+  fetchWorkers,
+} from "./client.js";
 import type { BmStatus } from "./types.js";
 
 export const useTickets = (status?: BmStatus) =>
@@ -20,3 +26,6 @@ export const useRunLogs = (runId: string, enabled: boolean) =>
     enabled,
     refetchInterval: enabled ? 2_000 : false,
   });
+
+export const useAnalytics = () =>
+  useQuery({ queryKey: ["analytics"], queryFn: () => fetchAnalytics() });

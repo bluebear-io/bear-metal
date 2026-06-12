@@ -1,4 +1,11 @@
-import type { BmStatus, RunLog, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import type {
+  AnalyticsSummary,
+  BmStatus,
+  RunLog,
+  TicketDetail,
+  TicketListItem,
+  WorkerListItem,
+} from "./types.js";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -30,4 +37,8 @@ export async function fetchWorkers(): Promise<WorkerListItem[]> {
 export async function fetchRunLogs(runId: string): Promise<RunLog[]> {
   const body = await getJson<{ logs: RunLog[] }>(`/api/runs/${encodeURIComponent(runId)}/logs`);
   return body.logs;
+}
+
+export async function fetchAnalytics(): Promise<AnalyticsSummary> {
+  return getJson<AnalyticsSummary>("/api/analytics");
 }

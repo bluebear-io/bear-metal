@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
-import type { TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import { fetchAnalytics, fetchTicketDetail, fetchTickets, fetchWorkers } from "./client.js";
+import type { AnalyticsSummary, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
 
 const mockFetch = (body: unknown, init?: { ok?: boolean; status?: number }) => {
   const response = {
@@ -122,6 +122,21 @@ describe("api client", () => {
     mockFetch({ error: "nope" }, { ok: false, status: 500 });
 
     await expect(fetchWorkers()).rejects.toThrow(/\/api\/workers.*500/);
+  });
+
+  it("fetchAnalytics returns the analytics body and calls the analytics path", async () => {
+    const analytics: AnalyticsSummary = {
+      generatedAt: "2026-06-09T09:00:00.000Z",
+      outcomes: { total: 1, completed: 1, abandoned: 0, inFlight: 0, successRate: 1, abandonmentRate: 0 },
+      attemptsDistribution: [{ attempts: 1, count: 1 }],
+      mttr: { sampleSize: 1, meanMs: 1000, medianMs: 1000, p90Ms: 1000 },
+      throughput: [{ date: "2026-06-09", created: 1, completed: 1 }],
+    };
+    mockFetch(analytics);
+
+    await expect(fetchAnalytics()).resolves.toEqual(analytics);
+
+    expect(fetch).toHaveBeenCalledWith("/api/analytics");
   });
 
   it("fetchWorkers returns workers with current-run and health fields", async () => {
