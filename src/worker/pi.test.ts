@@ -91,8 +91,7 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "agree_with_github_message", {
-        threadId: "thread-1",
-        text: "Fixed in commit abc123.",
+        id: "thread-1",
       });
       await executeTool(customTools, "wrote_code", {
         repoRoot: "/tmp/workspace/blueden",
@@ -107,7 +106,7 @@ describe("runPiWorker", () => {
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
       "thread-1",
-      "Fixed in commit abc123.",
+      "Fixed.",
       context.pullRequests[0]?.unresolvedReviewThreads,
     );
     expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
@@ -124,7 +123,7 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "disagree_with_github_message", {
-        threadId: "thread-1",
+        id: "thread-1",
         text: "The current code already handles this path.",
       });
       await executeTool(customTools, "wrote_code", {
@@ -184,7 +183,7 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "disagree_with_github_message", {
-        threadId: "thread-1",
+        id: "thread-1",
         text: "No change needed.",
       });
       // agent calls no finish tool — disagree-only, no code changes
@@ -261,6 +260,97 @@ describe("runPiWorker", () => {
     expect(result.prs).toEqual(context.prs);
   });
 
+  it("agree_with_github_message on issue comment records it in comment store without minimizing", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "agree_with_github_message", {
+        id: "IC_abc123",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+
+    expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
+    expect(github.resolveReviewThread).not.toHaveBeenCalled();
+    expect(github.replyToReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("disagree_with_github_message on issue comment posts PR comment and records in comment store", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "disagree_with_github_message", {
+        id: "IC_abc123",
+        text: "This gap is not actionable because the spec explicitly defers it.",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+
+    expect(github.leaveComment).toHaveBeenCalledWith(
+      context.prs[0],
+      "This gap is not actionable because the spec explicitly defers it.",
+    );
+    expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
+    expect(github.replyToReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("mark_github_message_completed on issue comment records it in comment store without minimizing", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "mark_github_message_completed", {
+        id: "IC_abc123",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+
+    expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
+    expect(github.resolveReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("mark_github_message_completed on review thread resolves it without touching comment store", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "mark_github_message_completed", {
+        id: "thread-1",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+
+    expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
+    expect(commentStore.markCompleted).not.toHaveBeenCalled();
+    expect(github.replyToReviewThread).not.toHaveBeenCalled();
+  });
+
   it("registers respond_to_ticket_reporter and wrote_code in new task mode, not iteration tools", async () => {
     const { runPiWorker } = await import("./pi.js");
     const registeredNames: string[] = [];
@@ -308,6 +398,7 @@ describe("runPiWorker", () => {
     expect(registeredNames).toContain("agree_with_github_message");
     expect(registeredNames).toContain("disagree_with_github_message");
     expect(registeredNames).toContain("respond_to_comment_writer");
+    expect(registeredNames).toContain("mark_github_message_completed");
     expect(registeredNames).toContain("wrote_code");
     expect(registeredNames).not.toContain("respond_to_ticket_reporter");
   });
@@ -668,6 +759,7 @@ function makeGithub() {
     getPullRequestContext: vi.fn(),
     resolveReviewThread: vi.fn(),
     replyToReviewThread: vi.fn(),
+    leaveComment: vi.fn().mockResolvedValue(undefined),
     getDefaultBranch: vi.fn(),
     createPullRequest: vi.fn(),
   };
@@ -714,6 +806,25 @@ function makePullRequestContext() {
     failedStatuses: [],
     unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
     reviewThreads,
+    issueComments: [
+      {
+        id: "IC_abc123",
+        databaseId: 456,
+        body: "Deployment complete.",
+        author: "ci-bot",
+        authorId: null,
+        isMinimized: false,
+        createdAt: "2026-06-09T00:00:00Z",
+        updatedAt: "2026-06-09T00:00:00Z",
+      },
+    ],
     mergeable: true,
+  };
+}
+
+function makeCommentStore() {
+  return {
+    markCompleted: vi.fn().mockResolvedValue(undefined),
+    getCompleted: vi.fn().mockResolvedValue(new Set<string>()),
   };
 }

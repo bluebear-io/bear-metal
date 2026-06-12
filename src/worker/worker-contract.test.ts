@@ -55,6 +55,7 @@ describe("worker contract", () => {
           failedStatuses: [],
           unresolvedReviewThreads: [],
           reviewThreads: [],
+          issueComments: [],
           mergeable: true,
         },
       ],
@@ -72,11 +73,10 @@ describe("worker contract", () => {
     expect(prompt).toMatch(/agree_with_github_message/);
     expect(prompt).toMatch(/disagree_with_github_message/);
     expect(prompt).toMatch(/respond_to_comment_writer/);
+    expect(prompt).toMatch(/mark_github_message_completed/);
+    expect(prompt).toMatch(/openComments/);
     expect(prompt).toMatch(/Never read, write, search, or cd outside the repository root/);
     expect(prompt).toMatch(/DEN-1/);
-    expect(prompt).toMatch(/baloo/);
-    expect(prompt).toMatch(/fidelity report/);
-    expect(prompt).toMatch(/docs\/plans\/DEN-1\.md/);
     expect(prompt).not.toMatch(/respond_to_ticket_reporter/);
   });
 
@@ -116,7 +116,6 @@ describe("worker contract", () => {
     expect(prompt).toMatch(/respond_to_ticket_reporter/);
     expect(prompt).toMatch(/wrote_code/);
     expect(prompt).toMatch(/docs\/plans\/DEN-2\.md/);
-    expect(prompt).toMatch(/task plan/);
     expect(prompt).not.toMatch(/respond_to_comment_writer/);
     expect(prompt).not.toMatch(/agree_with_github_message/);
   });

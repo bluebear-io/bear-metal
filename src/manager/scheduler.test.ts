@@ -46,11 +46,13 @@ function status(
   hasActionableUnresolvedComments = false,
   humanTookOver = false,
   hasMergeConflicts = false,
+  hasActionableIssueComments = false,
 ): PullRequestStatus {
   return {
     pr,
     testsFailed,
     hasActionableUnresolvedComments,
+    hasActionableIssueComments,
     hasMergeConflicts,
     humanTookOver,
     context: {
@@ -60,6 +62,7 @@ function status(
       failedStatuses: [],
       unresolvedReviewThreads: [],
       reviewThreads: [],
+      issueComments: [],
       mergeable: hasMergeConflicts ? false : true,
     },
   };

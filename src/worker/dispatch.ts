@@ -32,7 +32,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const prs = input.prs ?? [];
   validateDispatchInputs(state, ticketId, prs);
 
-  const { github, linear, slack } = integrations;
+  const { github, linear, slack, commentStore } = integrations;
   const packageRoot = input.packageRoot ?? getPackageRoot(import.meta.url);
   const workspaceDir = workspaceForTicket(packageRoot, ticketId);
 
@@ -42,7 +42,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   const githubToken = await github.getInstallationToken();
 
-  const [ticket, pullRequests, cloneScript] = await Promise.all([
+  const [ticket, rawPullRequests, cloneScript] = await Promise.all([
     linear.getTicketContext(ticketId).then((t) => {
       logger.info({ ticketId }, "linear ticket fetched");
       return t;
@@ -60,6 +60,19 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       return r;
     }),
   ]);
+
+  // Filter issue comments already processed in prior sessions so PI doesn't re-handle them.
+  const pullRequests = commentStore
+    ? await Promise.all(
+        rawPullRequests.map(async (ctx, idx) => {
+          const pr = prs[idx]!;
+          if (ctx.issueComments.length === 0) return ctx;
+          const completedIds = await commentStore.getCompleted(pr);
+          if (completedIds.size === 0) return ctx;
+          return { ...ctx, issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)) };
+        }),
+      )
+    : rawPullRequests;
 
   const context: WorkerInputContext = {
     state,
@@ -82,7 +95,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   logger.info({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear, slack, gitEnv });
+    const result = await runPiWorker({ context, github, linear, slack, commentStore, gitEnv });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {

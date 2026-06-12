@@ -253,6 +253,7 @@ function makeIntegrations() {
       getPullRequestContext: vi.fn(),
       resolveReviewThread: vi.fn(),
       replyToReviewThread: vi.fn(),
+      leaveComment: vi.fn().mockResolvedValue(undefined),
       getDefaultBranch: vi.fn(),
       createPullRequest: vi.fn(),
     },

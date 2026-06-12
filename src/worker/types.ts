@@ -54,6 +54,7 @@ export interface WorkerGitHub {
   getPullRequestContext(pr: PullRequestRef): Promise<PullRequestContext>;
   resolveReviewThread(threadId: string): Promise<void>;
   replyToReviewThread(pr: PullRequestRef, threadId: string, body: string, threads: ReviewThread[]): Promise<void>;
+  leaveComment(pr: PullRequestRef, body: string): Promise<void>;
   getDefaultBranch(owner: string, repo: string): Promise<string>;
   createPullRequest(input: {
     owner: string;
@@ -63,6 +64,11 @@ export interface WorkerGitHub {
     base: string;
     body: string;
   }): Promise<PullRequestRef>;
+}
+
+export interface WorkerCommentStore {
+  markCompleted(pr: PullRequestRef, commentId: string): Promise<void>;
+  getCompleted(pr: PullRequestRef): Promise<Set<string>>;
 }
 
 export interface WorkerSlack {
@@ -81,6 +87,8 @@ export type WorkerIntegrations = {
   linear: WorkerLinear;
   /** Optional — when unset, PR notifications are skipped. */
   slack?: WorkerSlack;
+  /** Optional — when unset, completed issue comment filtering is skipped. */
+  commentStore?: WorkerCommentStore;
 };
 
 export type CloneScriptResult = {

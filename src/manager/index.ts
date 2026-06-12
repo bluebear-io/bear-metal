@@ -8,6 +8,7 @@ import {
   SlackIntegration,
   type TicketContext,
 } from "../shared/index.js";
+import { createCommentStoreFromDatabaseUrl } from "../worker/comment-store.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { loadConfig } from "./config.js";
@@ -52,6 +53,7 @@ if (!slack) {
 }
 const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
 await tasks.initialize();
+const commentStore = await createCommentStoreFromDatabaseUrl(config.databaseUrl);
 // Dashboard reporting is best-effort and opt-in: with no DASHBOARD_URL it stays undefined and
 // every reporter call site is a no-op. maxAttempts is a phase-1 display constant (cap not yet enforced).
 const reporter = config.dashboardUrl
@@ -80,7 +82,7 @@ const scheduler = new Scheduler({
 const taskWorker = new TaskWorker({
   logger,
   tasks,
-  integrations: { github, linear, slack },
+  integrations: { github, linear, slack, commentStore },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
   reporter,

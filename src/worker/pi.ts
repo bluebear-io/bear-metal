@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -14,6 +14,7 @@ import type {
   DispatchToolCall,
   DispatchUsage,
   PullRequestRef,
+  WorkerCommentStore,
   WorkerGitHub,
   WorkerInputContext,
   WorkerLinear,
@@ -41,6 +42,7 @@ export async function runPiWorker(input: {
   github: WorkerGitHub;
   linear: WorkerLinear;
   slack?: WorkerSlack;
+  commentStore?: WorkerCommentStore;
   gitEnv: NodeJS.ProcessEnv;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
@@ -49,6 +51,19 @@ export async function runPiWorker(input: {
   // PRs accumulate across multiple wrote_code calls (one per repo in this dispatch).
   // A pending decision (respond_*) carries the accumulated set so the manager keeps tracking them.
   const collectedPrs: PullRequestRef[] = [];
+
+  // Map from GitHub node ID → comment kind, built once per dispatch from the
+  // fetched PR context. Tools use this to route without inspecting ID prefixes.
+  // An ID absent from this map was not shown to PI and must not be acted on.
+  const commentMap = new Map<string, "thread" | "issue_comment">();
+  for (const pr of input.context.pullRequests) {
+    for (const thread of pr.unresolvedReviewThreads) {
+      commentMap.set(thread.id, "thread");
+    }
+    for (const comment of pr.issueComments) {
+      commentMap.set(comment.id, "issue_comment");
+    }
+  }
 
   const setDecision = (next: DispatchResult) => {
     if (next.status === "pending") {
@@ -87,49 +102,89 @@ export async function runPiWorker(input: {
   const agreeWithGithubMessage = defineTool({
     name: "agree_with_github_message",
     label: "Agree with GitHub message",
-    description: "Reply to a GitHub review thread after fixing it, then mark the thread as resolved.",
+    description: "Reply to a GitHub comment after fixing it, then mark it as resolved.",
     parameters: Type.Object({
-      threadId: Type.String({ description: "The GitHub review thread node id." }),
-      text: Type.String({ description: "The exact reply body to post to GitHub." }),
+      id: Type.String({ description: "The id of the open comment to act on (from openComments)." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ threadId: params.threadId }, "pi tool: agree_with_github_message");
+      const kind = commentMap.get(params.id);
+      if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
       const pr = requireSinglePr(input.context.prs);
-      await input.github.replyToReviewThread(
-        pr,
-        params.threadId,
-        params.text,
-        unresolvedThreadsFor(input.context, pr),
-      );
-      await input.github.resolveReviewThread(params.threadId);
-      return {
-        content: [{ type: "text", text: `Replied to and resolved review thread ${params.threadId}.` }],
-        details: {},
-      };
+      if (kind === "thread") {
+        logger.info({ threadId: params.id }, "pi tool: agree_with_github_message (thread)");
+        await input.github.replyToReviewThread(pr, params.id, "Fixed.", unresolvedThreadsFor(input.context, pr));
+        await input.github.resolveReviewThread(params.id);
+        return {
+          content: [{ type: "text", text: `Replied "Fixed." and resolved review thread ${params.id}.` }],
+          details: {},
+        };
+      } else {
+        logger.info({ issueCommentId: params.id }, "pi tool: agree_with_github_message (issue comment)");
+        await input.commentStore?.markCompleted(pr, params.id);
+        return {
+          content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
+          details: {},
+        };
+      }
     },
   });
 
   const disagreeWithGithubMessage = defineTool({
     name: "disagree_with_github_message",
     label: "Disagree with GitHub message",
-    description: "Reply to a GitHub review thread with a concrete code-backed explanation. Leaves the thread unresolved.",
+    description: "Reply to a GitHub comment with a concrete code-backed explanation. Leaves it unresolved.",
     parameters: Type.Object({
-      threadId: Type.String({ description: "The GitHub review thread node id." }),
-      text: Type.String({ description: "The exact reply body to post to GitHub." }),
+      id: Type.String({ description: "The id of the open comment to act on (from openComments)." }),
+      text: Type.String({ description: "The exact reply or response body." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ threadId: params.threadId }, "pi tool: disagree_with_github_message");
+      const kind = commentMap.get(params.id);
+      if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
       const pr = requireSinglePr(input.context.prs);
-      await input.github.replyToReviewThread(
-        pr,
-        params.threadId,
-        params.text,
-        unresolvedThreadsFor(input.context, pr),
-      );
-      return {
-        content: [{ type: "text", text: `Replied to review thread ${params.threadId} with disagreement.` }],
-        details: {},
-      };
+      if (kind === "thread") {
+        logger.info({ threadId: params.id }, "pi tool: disagree_with_github_message (thread)");
+        await input.github.replyToReviewThread(pr, params.id, params.text, unresolvedThreadsFor(input.context, pr));
+        return {
+          content: [{ type: "text", text: `Replied to review thread ${params.id} with disagreement.` }],
+          details: {},
+        };
+      } else {
+        logger.info({ issueCommentId: params.id }, "pi tool: disagree_with_github_message (issue comment)");
+        await input.github.leaveComment(pr, params.text);
+        await input.commentStore?.markCompleted(pr, params.id);
+        return {
+          content: [{ type: "text", text: `Posted PR comment and recorded issue comment ${params.id} as completed.` }],
+          details: {},
+        };
+      }
+    },
+  });
+
+  const markGithubMessageCompleted = defineTool({
+    name: "mark_github_message_completed",
+    label: "Mark GitHub message completed",
+    description: "Mark a comment as completed when it needs no action (informational, FYI, already handled).",
+    parameters: Type.Object({
+      id: Type.String({ description: "The id of the open comment to mark completed (from openComments)." }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const kind = commentMap.get(params.id);
+      if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
+      if (kind === "thread") {
+        logger.info({ threadId: params.id }, "pi tool: mark_github_message_completed (thread)");
+        await input.github.resolveReviewThread(params.id);
+        return {
+          content: [{ type: "text", text: `Resolved review thread ${params.id}.` }],
+          details: {},
+        };
+      } else {
+        logger.info({ issueCommentId: params.id }, "pi tool: mark_github_message_completed (issue comment)");
+        await input.commentStore?.markCompleted(requireSinglePr(input.context.prs), params.id);
+        return {
+          content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
+          details: {},
+        };
+      }
     },
   });
 
@@ -226,7 +281,8 @@ export async function runPiWorker(input: {
   setApiKeyFromEnv(authStorage, "openai", "OPENAI_API_KEY");
   setApiKeyFromEnv(authStorage, "google", "GOOGLE_API_KEY");
 
-  const prompt = buildWorkerPrompt(input.context);
+  const agentsMd = await readAgentsMd(workspaceRoot);
+  const prompt = buildWorkerPrompt(input.context, { repoRoot: workspaceRoot, agentsMd });
   const workspaceDir = input.context.cloneScript.workspaceDir;
   const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
 
@@ -240,10 +296,10 @@ export async function runPiWorker(input: {
   const isNew = input.context.state === "new";
   const stateTools = isNew
     ? (["respond_to_ticket_reporter", "wrote_code"] as const)
-    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "wrote_code"] as const);
+    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "wrote_code"] as const);
   const stateCustomTools = isNew
     ? [respondToTicketReporter, wroteCode]
-    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, wroteCode];
+    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, wroteCode];
 
   let usage: DispatchUsage | null = null;
   let toolCalls: DispatchToolCall[] = [];
@@ -572,4 +628,15 @@ function setApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: s
   } else {
     logger.warn({ provider, envName }, "API key not set; this provider will be unavailable to the pi agent");
   }
+}
+
+async function readAgentsMd(repoRoot: string): Promise<string | undefined> {
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    try {
+      return await readFile(join(repoRoot, name), "utf8");
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
 }

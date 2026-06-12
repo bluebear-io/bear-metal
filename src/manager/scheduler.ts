@@ -320,6 +320,7 @@ async function evaluateTicket(
 
   const testsFailed = statuses.some((s) => s.testsFailed);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
+  const hasActionableIssueComments = statuses.some((s) => s.hasActionableIssueComments);
   const hasMergeConflicts = statuses.some((s) => s.hasMergeConflicts);
   // Report each open PR's current state (best-effort; never affects dispatch).
   void (async () => {
@@ -338,7 +339,7 @@ async function evaluateTicket(
     }
   })();
 
-  const needsWork = resuming || testsFailed || hasMergeConflicts || hasActionableUnresolvedComments;
+  const needsWork = resuming || testsFailed || hasMergeConflicts || hasActionableUnresolvedComments || hasActionableIssueComments;
   if (needsWork) {
     logger.info(
       { ticket: ticket.identifier, count: statuses.length, resuming, hasMergeConflicts },
