@@ -20,11 +20,6 @@ const TERMINAL_STATE_NAMES = ["Merged"];
 
 const MAX_ITERATIONS = 20;
 
-/** How long an acquired-but-incomplete task can go without a heartbeat before we recover it. */
-const STALE_TASK_THRESHOLD_MS = 60_000;
-/** Cadence for the stale-task sweep — independent of `pollIntervalMs` per the DEN-2333 spec. */
-const STALE_RECOVERY_INTERVAL_MS = 60_000;
-
 /** A ticket queued for dispatch this tick, carrying the reason its run was triggered. */
 interface DispatchItem {
   context: TicketContext;
@@ -79,11 +74,14 @@ export interface SchedulerDeps {
   concurrency: number;
   pollIntervalMs: number;
   reporter?: DashboardReporter;
-  /** Override the 60s stale-recovery sweep cadence; tests set this small. */
-  staleRecoveryIntervalMs?: number;
-  /** Override the 60s no-heartbeat threshold for stale recovery; tests set this small. */
-  staleTaskThresholdMs?: number;
+  /** A task whose owning worker hasn't heartbeat within this many ms is considered crashed/hung. */
+  taskStaleAfterMs?: number;
+  /** Cap on how many times a single row can be recovered before the manager abandons it. */
+  taskMaxReclaims?: number;
 }
+
+const DEFAULT_TASK_STALE_AFTER_MS = 5 * 60_000;
+const DEFAULT_TASK_MAX_RECLAIMS = 3;
 
 // ---------------------------------------------------------------------------
 // Scheduler — owns the timer, queue, and in-flight guard; composes the steps.
@@ -94,26 +92,16 @@ export class Scheduler {
   private readonly queue: PQueue;
   /** Tickets with a handler invocation in flight — guards against double-dispatch. */
   private readonly inFlight = new Set<string>();
-  private readonly staleRecoveryIntervalMs: number;
-  private readonly staleTaskThresholdMs: number;
   private timer: NodeJS.Timeout | undefined;
-  private staleRecoveryTimer: NodeJS.Timeout | undefined;
 
   constructor(deps: SchedulerDeps) {
     this.deps = deps;
     this.queue = new PQueue({ concurrency: deps.concurrency });
-    this.staleRecoveryIntervalMs = deps.staleRecoveryIntervalMs ?? STALE_RECOVERY_INTERVAL_MS;
-    this.staleTaskThresholdMs = deps.staleTaskThresholdMs ?? STALE_TASK_THRESHOLD_MS;
   }
 
   start(): void {
     void this.safeTick();
     this.timer = setInterval(() => void this.safeTick(), this.deps.pollIntervalMs);
-    void this.safeRecoverStaleTasks();
-    this.staleRecoveryTimer = setInterval(
-      () => void this.safeRecoverStaleTasks(),
-      this.staleRecoveryIntervalMs,
-    );
   }
 
   async stop(): Promise<void> {
@@ -121,31 +109,7 @@ export class Scheduler {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    if (this.staleRecoveryTimer) {
-      clearInterval(this.staleRecoveryTimer);
-      this.staleRecoveryTimer = undefined;
-    }
     await this.queue.onIdle();
-  }
-
-  /**
-   * Sweep for acquired-but-incomplete tasks whose worker stopped heartbeating. Recovered rows
-   * are released back to the queue so another worker can pick them up on the next tick.
-   */
-  async recoverStaleTasks(): Promise<string[]> {
-    const recovered = await this.deps.tasks.recoverStaleTasks(this.staleTaskThresholdMs);
-    if (recovered.length > 0) {
-      this.deps.logger.warn({ taskIds: recovered }, "recovered stale acquired tasks");
-    }
-    return recovered;
-  }
-
-  private async safeRecoverStaleTasks(): Promise<void> {
-    try {
-      await this.recoverStaleTasks();
-    } catch (err) {
-      this.deps.logger.error({ err }, "stale task recovery failed");
-    }
   }
 
   private async safeTick(): Promise<void> {
@@ -163,6 +127,38 @@ export class Scheduler {
    */
   async tick(): Promise<void> {
     const { tasks, linear, github, handler, logger, agentId, concurrency, reporter } = this.deps;
+
+    // Recover any tasks owned by a dead/hung worker before reading the tracked set, so the
+    // subsequent in-flight count and dispatch decisions see the fresh state.
+    try {
+      const recovered = await tasks.reclaimStaleTasks({
+        staleAfterMs: this.deps.taskStaleAfterMs ?? DEFAULT_TASK_STALE_AFTER_MS,
+        maxReclaims: this.deps.taskMaxReclaims ?? DEFAULT_TASK_MAX_RECLAIMS,
+      });
+      for (const r of recovered) {
+        logger.warn(
+          {
+            taskId: r.task.id,
+            ticketId: r.task.ticketId,
+            action: r.action,
+            reclaimCount: r.task.reclaimCount,
+            reason: r.reason,
+          },
+          "recovered stale in-flight task",
+        );
+        void reporter?.runCrashedById(
+          r.task.id,
+          r.task.input.ticketIssueId,
+          r.previousWorkerId,
+          r.task.attemptNumber,
+          r.task.input.trigger,
+          r.reason,
+        );
+      }
+    } catch (err) {
+      // One bad recovery sweep must not kill the tick; the next tick retries.
+      logger.error({ err }, "stale task recovery failed");
+    }
 
     const tracked = await tasks.listTracked();
     const inFlight = tracked.filter((s) => s.latestTask.resultStatus === null).length;

@@ -183,6 +183,8 @@ function buildScheduler(deps: {
   handler: TicketHandler;
   concurrency: number;
   reporter?: DashboardReporter;
+  taskStaleAfterMs?: number;
+  taskMaxReclaims?: number;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -194,8 +196,45 @@ function buildScheduler(deps: {
     concurrency: deps.concurrency,
     pollIntervalMs: 60_000,
     reporter: deps.reporter,
+    taskStaleAfterMs: deps.taskStaleAfterMs,
+    taskMaxReclaims: deps.taskMaxReclaims,
   });
 }
+
+describe("Scheduler.tick stale-task recovery (DEN-2334)", () => {
+  it("reclaims an acquired task whose worker stopped heartbeating so the slot doesn't stay stuck", async () => {
+    const tasks = await makeQueue();
+    // Simulate a worker that crashed mid-run: row has worker_id IS NOT NULL, result_status IS NULL,
+    // and worker_heartbeat_at older than the stale threshold.
+    const ticket = makeTicket("a");
+    await tasks.enqueue({ state: "new", ticketId: ticket.identifier, prs: [], trigger: "new", ticketIssueId: ticket.id });
+    await tasks.acquireNext("dead-worker");
+    // Before recovery the row is unrecoverable through acquireNext().
+    expect(await tasks.acquireNext("other-worker")).toBeNull();
+
+    await new Promise((r) => setTimeout(r, 5));
+
+    const linear = new FakeLinear([], { [ticket.id]: ticket });
+    const handler = new RecordingHandler(tasks);
+    const scheduler = buildScheduler({
+      linear,
+      github: new FakeGitHub(),
+      tasks,
+      handler,
+      concurrency: 1,
+      taskStaleAfterMs: 1,
+      taskMaxReclaims: 3,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    // After tick, the stuck row is released and re-acquirable by a live worker.
+    const reAcquired = await tasks.acquireNext("live-worker");
+    expect(reAcquired?.workerId).toBe("live-worker");
+    expect(reAcquired?.reclaimCount).toBe(1);
+  });
+});
 
 describe("Scheduler.tick", () => {
   it("admits at most `concurrency` tickets and dispatches new ones into SQL tasks", async () => {

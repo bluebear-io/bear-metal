@@ -79,6 +79,35 @@ describe("TaskWorker", () => {
     expect(reporter.runCrashedById).not.toHaveBeenCalled();
   });
 
+  it("marks the row crashed when runDispatch throws so the task isn't left acquired forever", async () => {
+    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const tasks = new FakeTaskQueue(taskRecord({ input }));
+    const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => {
+      throw new Error("boom");
+    });
+    const reporter = makeReporter();
+    const worker = new TaskWorker({
+      logger,
+      tasks,
+      integrations: makeIntegrations(),
+      concurrency: 1,
+      pollIntervalMs: 60_000,
+      workerId: "worker-1",
+      maxReclaims: 5,
+      runDispatch,
+      reporter: reporter as unknown as DashboardReporter,
+    });
+
+    await worker.tick();
+    await worker.stop();
+    // Let the .catch() microtask + markCrashed promise settle.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(reporter.runCrashedById).toHaveBeenCalledWith("task-1", "lin_1", "worker-1", 1, "new", expect.any(String));
+    expect(tasks.markCrashedCalls).toEqual([{ taskId: "task-1", workerId: "worker-1", maxReclaims: 5 }]);
+  });
+
   it("heartbeats the in-flight task on the configured interval and stops once dispatch returns", async () => {
     const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const tasks = new FakeTaskQueue(taskRecord({ id: "task-1", input }));
@@ -146,7 +175,8 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     completedAt: null,
     releasedAt: null,
     iterationNumber: 1,
-    lastHeartbeatAt: null,
+    workerHeartbeatAt: null,
+    reclaimCount: 0,
     ...overrides,
   };
 }
@@ -181,14 +211,6 @@ class FakeTaskQueue implements TaskQueue {
     this.completed.push({ taskId, result });
   }
 
-  async heartbeat(taskId: string, workerId: string): Promise<void> {
-    this.heartbeats.push({ taskId, workerId });
-  }
-
-  async recoverStaleTasks(): Promise<string[]> {
-    return [];
-  }
-
   async listTracked() {
     return [];
   }
@@ -203,6 +225,22 @@ class FakeTaskQueue implements TaskQueue {
 
   async getIterationCount(): Promise<number> {
     return 0;
+  }
+
+  async heartbeat(taskId: string, workerId: string): Promise<boolean> {
+    this.heartbeats.push({ taskId, workerId });
+    return true;
+  }
+
+  async reclaimStaleTasks() {
+    return [];
+  }
+
+  markCrashedCalls: Array<{ taskId: string; workerId: string; maxReclaims: number }> = [];
+
+  async markCrashed(taskId: string, workerId: string, maxReclaims: number) {
+    this.markCrashedCalls.push({ taskId, workerId, maxReclaims });
+    return null;
   }
 
   async close(): Promise<void> {}
