@@ -23,6 +23,7 @@ export function seedMockData(db: Db): void {
   db.delete(schema.pullRequests).run();
   db.delete(schema.runs).run();
   db.delete(schema.tickets).run();
+  db.delete(schema.workerStateTransitions).run();
   db.delete(schema.workers).run();
 
   db.insert(schema.workers).values([
@@ -106,6 +107,7 @@ export async function seedMockDataViaHandle(handle: DbHandle): Promise<void> {
   await db.delete(tbl.pullRequests);
   await db.delete(tbl.runs);
   await db.delete(tbl.tickets);
+  await db.delete(tbl.workerStateTransitions);
   await db.delete(tbl.workers);
 
   await db.insert(tbl.workers).values([

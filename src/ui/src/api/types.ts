@@ -96,6 +96,24 @@ export interface CurrentRunSummary extends LatestRunSummary {
   runtimeMs: number | null;
 }
 
+export interface WorkerTimelineSpan {
+  status: WorkerStatus;
+  startedAt: string;
+  /** ISO timestamp, or null for the currently-open span (interpreted as "now"). */
+  endedAt: string | null;
+}
+
+export interface WorkerTimelineRow {
+  workerId: string;
+  workerName: string;
+  spans: WorkerTimelineSpan[];
+}
+
+export interface WorkerTimeline {
+  window: { from: string; to: string };
+  workers: WorkerTimelineRow[];
+}
+
 export interface WorkerListItem extends Worker {
   currentTicketIdentifier: string | null;
   currentTicketTitle: string | null;

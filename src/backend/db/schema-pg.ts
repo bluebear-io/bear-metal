@@ -146,6 +146,18 @@ export const runToolCalls = pgTable("run_tool_calls", {
   createdAt: ts("created_at").notNull(),
 });
 
+/**
+ * Worker status-transition log (DEN-2335). Mirror of the SQLite `workerStateTransitions` table.
+ */
+export const workerStateTransitions = pgTable("worker_state_transitions", {
+  id: text("id").primaryKey(),
+  workerId: text("worker_id").notNull().references(() => workers.id),
+  status: text("status", { enum: ["idle", "busy", "stopped", "dead"] }).notNull(),
+  startedAt: ts("started_at").notNull(),
+  endedAt: ts("ended_at"),
+  createdAt: ts("created_at").notNull(),
+});
+
 export const events = pgTable("events", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").references(() => tickets.id),

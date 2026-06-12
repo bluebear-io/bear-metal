@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type {
   TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
   CiCheckPayload, ReviewThreadPayload, RunToolCallPayload, EventPayload,
@@ -82,7 +82,70 @@ export function createWriter(handle: DbHandle): Writer {
         id: p.id, name: p.name, status: p.status, currentRunId: p.currentRunId,
         lastHeartbeatAt: d(p.lastHeartbeatAt), startedAt: new Date(p.startedAt), updatedAt: new Date(p.updatedAt),
       };
-      await db.insert(t.workers).values(row).onConflictDoUpdate({ target: t.workers.id, set: row });
+      const updatedAtDate = new Date(p.updatedAt);
+      const startedAtDate = new Date(p.startedAt);
+      const newId = globalThis.crypto.randomUUID();
+
+      // Lookup-then-update-then-insert must be atomic: concurrent heartbeats during a status
+      // change can otherwise both read the same open span, close it twice, and insert duplicate
+      // open spans — corrupting the Gantt timeline (DEN-2335). Same dialect split as
+      // replaceCiChecksForRun/peers: better-sqlite3 transactions are sync, pg is async.
+      if (handle.dialect === "sqlite") {
+        handle.db.transaction((tx: unknown) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const txAny: any = tx;
+          const openRows: { id: string; status: string; startedAt: Date }[] = txAny
+            .select({ id: t.workerStateTransitions.id, status: t.workerStateTransitions.status, startedAt: t.workerStateTransitions.startedAt })
+            .from(t.workerStateTransitions)
+            .where(and(eq(t.workerStateTransitions.workerId, p.id), isNull(t.workerStateTransitions.endedAt)))
+            .all();
+          const current = openRows[0] ?? null;
+          txAny.insert(t.workers).values(row).onConflictDoUpdate({ target: t.workers.id, set: row }).run();
+          if (current === null) {
+            // First-seen worker: open the initial span at startedAt so the Gantt chart includes
+            // the entire history rather than only post-transition state.
+            txAny.insert(t.workerStateTransitions).values({
+              id: newId, workerId: p.id, status: p.status,
+              startedAt: startedAtDate, endedAt: null, createdAt: updatedAtDate,
+            }).run();
+          } else if (current.status !== p.status) {
+            // Out-of-order updates where updatedAt < startedAt are clamped to startedAt so
+            // endedAt >= startedAt.
+            const transitionAt = updatedAtDate.getTime() < current.startedAt.getTime() ? current.startedAt : updatedAtDate;
+            txAny.update(t.workerStateTransitions).set({ endedAt: transitionAt })
+              .where(eq(t.workerStateTransitions.id, current.id)).run();
+            txAny.insert(t.workerStateTransitions).values({
+              id: newId, workerId: p.id, status: p.status,
+              startedAt: transitionAt, endedAt: null, createdAt: updatedAtDate,
+            }).run();
+          }
+        });
+        return;
+      }
+      await handle.db.transaction(async (tx: unknown) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const txAny: any = tx;
+        const openRows: { id: string; status: string; startedAt: Date }[] = await txAny
+          .select({ id: t.workerStateTransitions.id, status: t.workerStateTransitions.status, startedAt: t.workerStateTransitions.startedAt })
+          .from(t.workerStateTransitions)
+          .where(and(eq(t.workerStateTransitions.workerId, p.id), isNull(t.workerStateTransitions.endedAt)));
+        const current = openRows[0] ?? null;
+        await txAny.insert(t.workers).values(row).onConflictDoUpdate({ target: t.workers.id, set: row });
+        if (current === null) {
+          await txAny.insert(t.workerStateTransitions).values({
+            id: newId, workerId: p.id, status: p.status,
+            startedAt: startedAtDate, endedAt: null, createdAt: updatedAtDate,
+          });
+        } else if (current.status !== p.status) {
+          const transitionAt = updatedAtDate.getTime() < current.startedAt.getTime() ? current.startedAt : updatedAtDate;
+          await txAny.update(t.workerStateTransitions).set({ endedAt: transitionAt })
+            .where(eq(t.workerStateTransitions.id, current.id));
+          await txAny.insert(t.workerStateTransitions).values({
+            id: newId, workerId: p.id, status: p.status,
+            startedAt: transitionAt, endedAt: null, createdAt: updatedAtDate,
+          });
+        }
+      });
     },
 
     async upsertRun(p) {
