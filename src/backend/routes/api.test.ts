@@ -66,6 +66,22 @@ describe("GET /api/tickets/:id", () => {
   });
 });
 
+describe("GET /api/analytics", () => {
+  it("returns outcomes, attempts, MTTR, and throughput", async () => {
+    const res = await request(app).get("/api/analytics");
+    expect(res.status).toBe(200);
+    expect(res.body.outcomes).toMatchObject({ total: 4, completed: 1, abandoned: 1, inFlight: 2 });
+    expect(Array.isArray(res.body.attemptsDistribution)).toBe(true);
+    expect(res.body.attemptsDistribution.length).toBeGreaterThan(0);
+    expect(res.body.mttr).toHaveProperty("sampleSize");
+    expect(Array.isArray(res.body.throughput)).toBe(true);
+    expect(res.body.throughput.length).toBeGreaterThan(0);
+    expect(res.body.throughput[0]).toHaveProperty("date");
+    expect(res.body.throughput[0]).toHaveProperty("created");
+    expect(res.body.throughput[0]).toHaveProperty("completed");
+  });
+});
+
 describe("GET /api/workers", () => {
   it("lists workers with current ticket", async () => {
     const res = await request(app).get("/api/workers");

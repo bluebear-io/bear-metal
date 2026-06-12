@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchTicketDetail, fetchTickets, fetchWorkers, listRepos } from "./client.js";
+import { fetchAnalytics, fetchTicketDetail, fetchTickets, fetchWorkers, listRepos } from "./client.js";
 import type { BmStatus } from "./types.js";
 
 export const useTickets = (status?: BmStatus) =>
@@ -14,3 +14,6 @@ export const useWorkers = () =>
 
 export const useRepos = () =>
   useQuery({ queryKey: ["repos"], queryFn: () => listRepos() });
+
+export const useAnalytics = () =>
+  useQuery({ queryKey: ["analytics"], queryFn: () => fetchAnalytics() });

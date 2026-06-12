@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "../db/schema.js";
-import { listTickets, getTicketDetail, listWorkers, listRepoBreakdowns } from "../db/repository.js";
+import { listTickets, getTicketDetail, listWorkers, listRepoBreakdowns, getAnalytics } from "../db/repository.js";
 
 const BM_STATUSES = schema.tickets.bmStatus.enumValues;
 type BmStatus = (typeof BM_STATUSES)[number];
@@ -41,6 +41,10 @@ export function createRouter(db: BetterSQLite3Database<typeof schema>): Router {
 
   router.get("/repos", (_req, res) => {
     res.json({ repos: listRepoBreakdowns(db) });
+  });
+
+  router.get("/analytics", (_req, res) => {
+    res.json(getAnalytics(db));
   });
 
   return router;

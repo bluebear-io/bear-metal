@@ -9,6 +9,13 @@ vi.mock("./api/client.js", () => ({
   fetchTicketDetail: vi.fn(),
   fetchTickets: vi.fn().mockResolvedValue([]),
   fetchWorkers: vi.fn().mockResolvedValue([]),
+  fetchAnalytics: vi.fn().mockResolvedValue({
+    generatedAt: "2026-06-09T09:00:00.000Z",
+    outcomes: { total: 0, completed: 0, abandoned: 0, inFlight: 0, successRate: 0, abandonmentRate: 0 },
+    attemptsDistribution: [],
+    mttr: { sampleSize: 0, meanMs: null, medianMs: null, p90Ms: null },
+    throughput: [],
+  }),
 }));
 
 describe("App", () => {
@@ -22,6 +29,7 @@ describe("App", () => {
     expect(screen.getByTestId("app-root")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tickets" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Workers" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Analytics" })).toBeInTheDocument();
     expect(await screen.findByText("No tickets yet.")).toBeInTheDocument();
   });
 

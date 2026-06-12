@@ -1,4 +1,4 @@
-import type { BmStatus, RepoBreakdown, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
+import type { AnalyticsSummary, BmStatus, RepoBreakdown, TicketDetail, TicketListItem, WorkerListItem } from "./types.js";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -31,4 +31,8 @@ export async function listRepos(): Promise<RepoBreakdown[]> {
   const body = await getJson<{ repos: RepoBreakdown[] }>("/api/repos");
 
   return body.repos;
+}
+
+export async function fetchAnalytics(): Promise<AnalyticsSummary> {
+  return getJson<AnalyticsSummary>("/api/analytics");
 }

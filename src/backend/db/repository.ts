@@ -39,6 +39,41 @@ export interface TicketDetail {
   events: EventRow[];
 }
 
+export interface OutcomeBreakdown {
+  total: number;
+  completed: number;
+  abandoned: number;
+  inFlight: number;
+  successRate: number;
+  abandonmentRate: number;
+}
+
+export interface AttemptsBucket {
+  attempts: number;
+  count: number;
+}
+
+export interface MttrStats {
+  sampleSize: number;
+  meanMs: number | null;
+  medianMs: number | null;
+  p90Ms: number | null;
+}
+
+export interface ThroughputPoint {
+  date: string; // YYYY-MM-DD (UTC)
+  created: number;
+  completed: number;
+}
+
+export interface AnalyticsSummary {
+  generatedAt: Date;
+  outcomes: OutcomeBreakdown;
+  attemptsDistribution: AttemptsBucket[];
+  mttr: MttrStats;
+  throughput: ThroughputPoint[];
+}
+
 export interface WorkerListItem extends Worker {
   currentTicketIdentifier: string | null;
   currentTicketTitle: string | null;
@@ -210,4 +245,114 @@ export function listWorkers(db: Db, options: ListWorkerOptions = {}): WorkerList
       isTimedOut,
     };
   });
+}
+
+const IN_FLIGHT_STATUSES: ReadonlySet<Ticket["bmStatus"]> = new Set([
+  "discovered",
+  "dispatched",
+  "in_progress",
+  "pr_open",
+  "ci_running",
+  "ci_failed",
+]);
+
+const toUtcDateKey = (d: Date): string => d.toISOString().slice(0, 10);
+
+function percentile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 0) {
+    throw new Error("percentile() requires a non-empty sorted array");
+  }
+  if (sortedAsc.length === 1) return sortedAsc[0]!;
+  // Linear interpolation between closest ranks.
+  const rank = (sortedAsc.length - 1) * p;
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  if (lo === hi) return sortedAsc[lo]!;
+  const frac = rank - lo;
+  return sortedAsc[lo]! * (1 - frac) + sortedAsc[hi]! * frac;
+}
+
+export function getAnalytics(db: Db, options: { now?: Date } = {}): AnalyticsSummary {
+  const now = options.now ?? new Date();
+  const tickets = db.select().from(schema.tickets).all();
+
+  let completed = 0;
+  let abandoned = 0;
+  let inFlight = 0;
+  for (const t of tickets) {
+    if (t.bmStatus === "completed") completed++;
+    else if (t.bmStatus === "abandoned") abandoned++;
+    else if (IN_FLIGHT_STATUSES.has(t.bmStatus)) inFlight++;
+  }
+  const decided = completed + abandoned;
+  const outcomes: OutcomeBreakdown = {
+    total: tickets.length,
+    completed,
+    abandoned,
+    inFlight,
+    successRate: decided === 0 ? 0 : completed / decided,
+    abandonmentRate: decided === 0 ? 0 : abandoned / decided,
+  };
+
+  const attemptCounts = new Map<number, number>();
+  for (const t of tickets) {
+    if (t.bmStatus !== "completed" && t.bmStatus !== "abandoned") continue;
+    const n = Math.max(1, t.attemptCount);
+    attemptCounts.set(n, (attemptCounts.get(n) ?? 0) + 1);
+  }
+  const attemptsDistribution: AttemptsBucket[] = [...attemptCounts.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([attempts, count]) => ({ attempts, count }));
+
+  const resolutionMs: number[] = [];
+  for (const t of tickets) {
+    if (t.bmStatus !== "completed" || !t.completedAt) continue;
+    const ms = t.completedAt.getTime() - t.createdAt.getTime();
+    if (ms >= 0) resolutionMs.push(ms);
+  }
+  resolutionMs.sort((a, b) => a - b);
+  const mttr: MttrStats = resolutionMs.length === 0
+    ? { sampleSize: 0, meanMs: null, medianMs: null, p90Ms: null }
+    : {
+        sampleSize: resolutionMs.length,
+        meanMs: resolutionMs.reduce((s, v) => s + v, 0) / resolutionMs.length,
+        medianMs: percentile(resolutionMs, 0.5),
+        p90Ms: percentile(resolutionMs, 0.9),
+      };
+
+  const throughput: ThroughputPoint[] = [];
+  if (tickets.length > 0) {
+    const createdBucket = new Map<string, number>();
+    const completedBucket = new Map<string, number>();
+    let minMs = Number.POSITIVE_INFINITY;
+    let maxMs = Number.NEGATIVE_INFINITY;
+    for (const t of tickets) {
+      const cKey = toUtcDateKey(t.createdAt);
+      createdBucket.set(cKey, (createdBucket.get(cKey) ?? 0) + 1);
+      minMs = Math.min(minMs, t.createdAt.getTime());
+      maxMs = Math.max(maxMs, t.createdAt.getTime());
+      if (t.completedAt) {
+        const dKey = toUtcDateKey(t.completedAt);
+        completedBucket.set(dKey, (completedBucket.get(dKey) ?? 0) + 1);
+        maxMs = Math.max(maxMs, t.completedAt.getTime());
+      }
+    }
+    maxMs = Math.max(maxMs, now.getTime());
+
+    const startD = new Date(minMs);
+    const start = Date.UTC(startD.getUTCFullYear(), startD.getUTCMonth(), startD.getUTCDate());
+    const endD = new Date(maxMs);
+    const end = Date.UTC(endD.getUTCFullYear(), endD.getUTCMonth(), endD.getUTCDate());
+    const dayMs = 24 * 60 * 60 * 1000;
+    for (let cursor = start; cursor <= end; cursor += dayMs) {
+      const key = toUtcDateKey(new Date(cursor));
+      throughput.push({
+        date: key,
+        created: createdBucket.get(key) ?? 0,
+        completed: completedBucket.get(key) ?? 0,
+      });
+    }
+  }
+
+  return { generatedAt: now, outcomes, attemptsDistribution, mttr, throughput };
 }
