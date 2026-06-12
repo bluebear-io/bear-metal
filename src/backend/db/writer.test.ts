@@ -4,7 +4,7 @@ import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3"
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { eq } from "drizzle-orm";
 import * as schema from "./schema.js";
-import { upsertTicket, upsertRun, upsertWorker, insertEvent } from "./writer.js";
+import { upsertTicket, upsertRun, upsertWorker, insertEvent, parseRepoFromUrl } from "./writer.js";
 
 let db: BetterSQLite3Database<typeof schema>;
 beforeEach(() => {
@@ -28,6 +28,25 @@ describe("upsertTicket", () => {
     expect(rows[0]!.bmStatus).toBe("in_progress");
     expect(rows[0]!.labelsJson).toBe(JSON.stringify(["bear-metal"]));
     expect(rows[0]!.updatedAt).toEqual(new Date(2000));
+  });
+});
+
+describe("parseRepoFromUrl", () => {
+  it("extracts owner and repo from a standard GitHub PR URL", () => {
+    expect(parseRepoFromUrl("https://github.com/bluebear-io/bear-metal/pull/42")).toEqual({ owner: "bluebear-io", repo: "bear-metal" });
+  });
+
+  it("returns empty strings for a malformed URL", () => {
+    expect(parseRepoFromUrl("not a url")).toEqual({ owner: "", repo: "" });
+  });
+
+  it("returns empty strings for a non-github host", () => {
+    expect(parseRepoFromUrl("https://gitlab.com/org/proj/merge_requests/1")).toEqual({ owner: "", repo: "" });
+  });
+
+  it("returns empty strings for a github URL with unexpected path shape", () => {
+    expect(parseRepoFromUrl("https://github.com/bluebear-io/bear-metal/issues/42")).toEqual({ owner: "", repo: "" });
+    expect(parseRepoFromUrl("https://github.com/bluebear-io")).toEqual({ owner: "", repo: "" });
   });
 });
 

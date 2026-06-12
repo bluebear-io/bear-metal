@@ -41,8 +41,8 @@ export function seedMockData(db: Db): void {
   ]).run();
 
   db.insert(schema.pullRequests).values([
-    { id: "pr_1", ticketId: "lin_1", number: 1500, title: "Add rate limiting to ingest API", headRef: "feature/den-3001-rate-limit", state: "closed", draft: false, merged: true, url: "https://github.com/bluebear-io/blueden/pull/1500", lastRunId: "run_1", createdAt: t("2026-06-09T07:40:00Z"), updatedAt: t("2026-06-09T07:55:00Z") },
-    { id: "pr_2", ticketId: "lin_2", number: 1501, title: "Fix flaky session aggregator test", headRef: "feature/den-3002-flaky-test", state: "open", draft: false, merged: false, url: "https://github.com/bluebear-io/blueden/pull/1501", lastRunId: "run_3", createdAt: t("2026-06-09T08:18:00Z"), updatedAt: t("2026-06-09T08:46:00Z") },
+    { id: "pr_1", ticketId: "lin_1", number: 1500, title: "Add rate limiting to ingest API", headRef: "feature/den-3001-rate-limit", state: "closed", draft: false, merged: true, url: "https://github.com/bluebear-io/blueden/pull/1500", owner: "bluebear-io", repo: "blueden", lastRunId: "run_1", createdAt: t("2026-06-09T07:40:00Z"), updatedAt: t("2026-06-09T07:55:00Z") },
+    { id: "pr_2", ticketId: "lin_2", number: 1501, title: "Fix flaky session aggregator test", headRef: "feature/den-3002-flaky-test", state: "open", draft: false, merged: false, url: "https://github.com/bluebear-io/blueden/pull/1501", owner: "bluebear-io", repo: "blueden", lastRunId: "run_3", createdAt: t("2026-06-09T08:18:00Z"), updatedAt: t("2026-06-09T08:46:00Z") },
   ]).run();
 
   db.insert(schema.ciRuns).values([

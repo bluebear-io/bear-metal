@@ -2,6 +2,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 
 import AnalyticsPage from "./pages/AnalyticsPage.js";
 import { ThemeToggle } from "./components/ThemeToggle.js";
+import ReposPage from "./pages/ReposPage.js";
 import TicketDetailPage from "./pages/TicketDetailPage.js";
 import TicketsListPage from "./pages/TicketsListPage.js";
 import WorkersPage from "./pages/WorkersPage.js";
@@ -35,6 +36,9 @@ export default function App() {
           <NavLink to="/workers" className={navClass}>
             Workers
           </NavLink>
+          <NavLink to="/repos" className={navClass}>
+            Repos
+          </NavLink>
           <NavLink to="/analytics" className={navClass}>
             Analytics
           </NavLink>
@@ -49,6 +53,7 @@ export default function App() {
         <Route path="/tickets" element={<TicketsListPage />} />
         <Route path="/tickets/:id" element={<TicketDetailPage />} />
         <Route path="/workers" element={<WorkersPage />} />
+        <Route path="/repos" element={<ReposPage />} />
         <Route path="/analytics" element={<AnalyticsPage />} />
       </Routes>
     </div>
