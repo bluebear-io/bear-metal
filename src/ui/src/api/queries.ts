@@ -18,7 +18,6 @@ export const useTickets = (query?: BmStatus | TicketListQuery) => {
   return useQuery({
     queryKey: ["tickets", key],
     queryFn: () => fetchTickets(query),
-    refetchInterval: 5000,
   });
 };
 
@@ -29,12 +28,11 @@ export const useTicketDetail = (id: string) =>
   useQuery({
     queryKey: ["ticket", id],
     queryFn: () => fetchTicketDetail(id),
-    refetchInterval: (query) =>
-      query.state.data?.runs.some((r) => r.status === "running") ? 5000 : false,
+    refetchInterval: 5000,
   });
 
 export const useWorkers = () =>
-  useQuery({ queryKey: ["workers"], queryFn: () => fetchWorkers(), refetchInterval: 5000 });
+  useQuery({ queryKey: ["workers"], queryFn: () => fetchWorkers() });
 
 export const useModelComparison = () =>
   useQuery({ queryKey: ["models", "comparison"], queryFn: () => fetchModelComparison() });
