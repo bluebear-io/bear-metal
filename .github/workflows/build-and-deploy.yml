@@ -122,6 +122,12 @@ jobs:
             --query 'service.deployments[0].{status:status,desiredCount:desiredCount}' \
             --output table
 
+      - name: Wait for ECS deployment stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}"
+
       - name: Summary
         env:
           SHA_TAG: ${{ steps.tags.outputs.sha_tag }}
