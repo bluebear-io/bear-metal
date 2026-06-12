@@ -11,6 +11,7 @@ import {
 } from "../shared/index.js";
 import type {
   DispatchResult,
+  DispatchToolCall,
   DispatchUsage,
   PullRequestRef,
   WorkerGitHub,
@@ -29,6 +30,11 @@ const logger = createLogger({
 
 const MAX_WORKER_TIME_MS = 2 * 60 * 60 * 1000; // 2 hours
 const MAX_WORKER_TOKENS = 20_000_000;            // 20M tokens
+
+// Cap on the per-tool-call result body we persist to the dashboard. Tool outputs (file reads,
+// grep results) can be megabytes; the UI only needs enough to give the operator context. We
+// still record the untruncated length in `outputSize` so the UI can flag truncated payloads.
+const MAX_TOOL_CALL_RESULT_CHARS = 8_000;
 
 export async function runPiWorker(input: {
   context: WorkerInputContext;
@@ -240,6 +246,7 @@ export async function runPiWorker(input: {
     : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, wroteCode];
 
   let usage: DispatchUsage | null = null;
+  let toolCalls: DispatchToolCall[] = [];
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
@@ -266,6 +273,14 @@ export async function runPiWorker(input: {
       }
     } else if (event.type === "agent_end") {
       logger.info({ messageCount: event.messages.length }, "pi agent_end");
+      // DEN-2311: build the thought-process timeline from the full message history. Doing it
+      // here (rather than incrementally on tool_execution_start/end) lets us pair each
+      // assistant tool_use with its matching tool_result regardless of ordering quirks.
+      try {
+        toolCalls = extractToolCalls(event.messages as unknown as ReadonlyArray<unknown>);
+      } catch (err) {
+        logger.warn({ err }, "failed to extract pi tool calls from transcript");
+      }
     }
   });
 
@@ -355,7 +370,120 @@ export async function runPiWorker(input: {
     }
   }
   // Attach LLM usage stats captured during the just-finished session (DEN-2313).
-  return usage ? { ...decision, usage } : decision;
+  const withUsage = usage ? { ...decision, usage } : decision;
+  // Attach the tool-call timeline (DEN-2311). Empty array when no tool calls were captured.
+  return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
+}
+
+// ---- Thought-process extraction (DEN-2311) ------------------------------
+
+/**
+ * Walk the pi session message history and build a flat, ordered list of tool calls. Each
+ * assistant `tool_use` block becomes a step; its matching user `tool_result` block (paired by
+ * id) supplies the result body and status. Assistant text emitted in the same turn as a
+ * tool_use is attached as the step's `thoughtText`.
+ *
+ * The function is defensive about shape because the upstream message format isn't typed in
+ * this file: malformed entries are skipped rather than crashing the worker.
+ */
+function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] {
+  // Pass 1: index tool_result blocks by their tool_use_id so we can pair them up in one go.
+  const resultsById = new Map<string, { text: string; status: "ok" | "error" }>();
+  for (const msg of messages) {
+    if (!isMessage(msg) || msg.role !== "user") continue;
+    for (const block of contentBlocks(msg)) {
+      if (!isRecord(block) || block.type !== "tool_result") continue;
+      const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
+      if (!id) continue;
+      const text = renderResultContent(block.content);
+      const status: "ok" | "error" = block.is_error === true ? "error" : "ok";
+      resultsById.set(id, { text, status });
+    }
+  }
+
+  // Pass 2: emit a step per assistant tool_use, in transcript order, attaching the latest
+  // assistant text block in the same message as the step's thought.
+  const steps: DispatchToolCall[] = [];
+  let sequence = 0;
+  for (const msg of messages) {
+    if (!isMessage(msg) || msg.role !== "assistant") continue;
+    const blocks = contentBlocks(msg);
+    // Collect text blocks first so a tool_use later in the same message inherits the thought
+    // even if the SDK emits text after the tool_use (defensive: tested ordering is text-first).
+    const thought = blocks
+      .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && b.text.length > 0)
+      .map((b) => (b as { text: string }).text)
+      .join("\n")
+      .trim() || null;
+    for (const block of blocks) {
+      if (!isRecord(block) || block.type !== "tool_use") continue;
+      const id = typeof block.id === "string" && block.id.length > 0
+        ? block.id
+        : `tc_${sequence}`;
+      const toolName = typeof block.name === "string" ? block.name : "unknown";
+      const argsJson = safeStringify(block.input);
+      const result = resultsById.get(id) ?? null;
+      const rawResult = result?.text ?? null;
+      const outputSize = rawResult === null ? null : rawResult.length;
+      const truncated = rawResult === null
+        ? null
+        : rawResult.length > MAX_TOOL_CALL_RESULT_CHARS
+          ? `${rawResult.slice(0, MAX_TOOL_CALL_RESULT_CHARS)}… [truncated, ${rawResult.length - MAX_TOOL_CALL_RESULT_CHARS} more chars]`
+          : rawResult;
+      steps.push({
+        id,
+        sequence,
+        toolName,
+        argsJson,
+        resultText: truncated,
+        resultStatus: result === null ? "unknown" : result.status,
+        outputSize,
+        thoughtText: thought,
+        createdAt: Date.now(),
+      });
+      sequence += 1;
+    }
+  }
+  return steps;
+}
+
+/** Render a `tool_result.content` value to a flat string. Accepts either a string or an array of text blocks. */
+function renderResultContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (typeof block === "string") {
+        parts.push(block);
+      } else if (isRecord(block) && typeof block.text === "string") {
+        parts.push(block.text);
+      } else {
+        parts.push(safeStringify(block));
+      }
+    }
+    return parts.join("\n");
+  }
+  return safeStringify(content);
+}
+
+function contentBlocks(msg: { content: unknown }): unknown[] {
+  return Array.isArray(msg.content) ? msg.content : [];
+}
+
+function isMessage(v: unknown): v is { role: string; content: unknown } {
+  return isRecord(v) && typeof v.role === "string";
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function safeStringify(v: unknown): string {
+  try {
+    return typeof v === "string" ? v : JSON.stringify(v) ?? "";
+  } catch {
+    return String(v);
+  }
 }
 
 function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequestRef[] {

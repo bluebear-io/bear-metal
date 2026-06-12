@@ -13,6 +13,7 @@ function fakeClient() {
     upsertCiRun: vi.fn().mockResolvedValue(undefined),
     replaceCiChecks: vi.fn().mockResolvedValue(undefined),
     replaceReviewThreads: vi.fn().mockResolvedValue(undefined),
+    replaceRunToolCalls: vi.fn().mockResolvedValue(undefined),
     recordEvent: vi.fn().mockResolvedValue(undefined),
   } satisfies DashboardClient;
 }

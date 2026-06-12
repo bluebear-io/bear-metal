@@ -129,6 +129,23 @@ export const reviewThreads = pgTable("review_threads", {
   updatedAt: ts("updated_at").notNull(),
 });
 
+/**
+ * Step-by-step trace of an agent run's tool calls and interleaved assistant reasoning (DEN-2311).
+ * Mirror of the SQLite `runToolCalls` table.
+ */
+export const runToolCalls = pgTable("run_tool_calls", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => runs.id),
+  sequence: integer("sequence").notNull(),
+  toolName: text("tool_name").notNull(),
+  argsJson: text("args_json").notNull(),
+  resultText: text("result_text"),
+  resultStatus: text("result_status", { enum: ["ok", "error", "unknown"] }),
+  outputSize: integer("output_size"),
+  thoughtText: text("thought_text"),
+  createdAt: ts("created_at").notNull(),
+});
+
 export const events = pgTable("events", {
   id: text("id").primaryKey(),
   ticketId: text("ticket_id").references(() => tickets.id),

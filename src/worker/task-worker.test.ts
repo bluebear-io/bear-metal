@@ -126,6 +126,7 @@ function makeReporter() {
     recordPrOpenedById: vi.fn(),
     progressById: vi.fn(),
     branchCreatedById: vi.fn(),
+    recordRunToolCallsById: vi.fn(),
   };
 }
 

@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
 import type {
-  Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, EventRow, Worker,
+  Ticket, Run, PullRequestRow, CiRun, CiCheck, ReviewThreadRow, RunToolCallRow, EventRow, Worker,
 } from "./types.js";
 import type { DbHandle } from "./client.js";
 import { estimateCostUsd, modelFamily } from "../pricing.js";
@@ -47,6 +47,8 @@ export interface RunWithUsage extends Run {
   worker: Worker | null;
   /** Estimated cost in USD; null when the model pricing isn't in the table or tokens weren't recorded. */
   estimatedCostUsd: number | null;
+  /** Ordered tool-call timeline for the "thought process" visualizer (DEN-2311). */
+  toolCalls: RunToolCallRow[];
 }
 
 export interface TicketDetail {
@@ -285,10 +287,20 @@ export function createRepository(handle: DbHandle): Repository {
       const runRows: Run[] = await db.select().from(t.runs).where(eq(t.runs.ticketId, id)).orderBy(t.runs.attemptNumber);
       const workerRows: Worker[] = await db.select().from(t.workers);
       const workersById = new Map(workerRows.map((w) => [w.id, w]));
+      const toolCallRows: RunToolCallRow[] = runRows.length === 0
+        ? []
+        : await db.select().from(t.runToolCalls).where(inArray(t.runToolCalls.runId, runRows.map((r) => r.id))).orderBy(t.runToolCalls.runId, t.runToolCalls.sequence);
+      const toolCallsByRun = new Map<string, RunToolCallRow[]>();
+      for (const tc of toolCallRows) {
+        const list = toolCallsByRun.get(tc.runId) ?? [];
+        list.push(tc);
+        toolCallsByRun.set(tc.runId, list);
+      }
       const runs: RunWithUsage[] = runRows.map((r) => ({
         ...r,
         worker: r.workerId ? workersById.get(r.workerId) ?? null : null,
         estimatedCostUsd: estimateCostUsd(r.provider, r.modelName, r.promptTokens, r.completionTokens),
+        toolCalls: toolCallsByRun.get(r.id) ?? [],
       }));
 
       const prRows: PullRequestRow[] = await db.select().from(t.pullRequests).where(eq(t.pullRequests.ticketId, id)).orderBy(desc(t.pullRequests.updatedAt));
