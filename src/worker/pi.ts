@@ -261,7 +261,16 @@ export async function runPiWorker(input: {
 
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
-      logger.info({ tool: event.toolName }, "pi tool call");
+      logger.info({ tool: event.toolName, args: event.args }, "pi tool call");
+    } else if (event.type === "turn_end") {
+      const msg = event.message;
+      if ("role" in msg && msg.role === "assistant" && "content" in msg) {
+        const text = (msg.content as Array<{ type: string; text?: string }>)
+          .filter((c) => c.type === "text" && c.text)
+          .map((c) => c.text!)
+          .join("");
+        if (text) logger.info({ text }, "pi assistant output");
+      }
     } else if (event.type === "agent_end") {
       logger.info({ messageCount: event.messages.length }, "pi agent_end");
       // DEN-2311: build the thought-process timeline from the full message history. Doing it
