@@ -371,34 +371,6 @@ async function evaluateTicket(
           ]));
         }
       }
-      if (testsFailed) {
-        void db.recordEvent({
-          id: randomUUID(),
-          ticketId: ticket.id,
-          runId: null,
-          workerId: null,
-          source: "ci",
-          type: "ci_failed",
-          summary: "CI checks failed",
-          payloadJson: null,
-          createdAt: new Date().toISOString(),
-        });
-      } else {
-        const firstPr = statuses[0]?.pr;
-        if (firstPr) {
-          void db.recordEvent({
-            id: randomUUID(),
-            ticketId: ticket.id,
-            runId: null,
-            workerId: null,
-            source: "manager",
-            type: "pr_opened",
-            summary: `PR #${firstPr.number} opened`,
-            payloadJson: null,
-            createdAt: new Date().toISOString(),
-          });
-        }
-      }
     } catch (err) {
       logger.warn({ err, ticket: ticket.identifier }, "best-effort dashboard observation failed");
     }

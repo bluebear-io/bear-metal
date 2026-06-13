@@ -57,6 +57,7 @@ export interface TicketListResponse {
 
 export interface TicketFilterOptions {
   bmStatuses: BmStatus[];
+  statusCounts: Partial<Record<BmStatus, number>>;
   stopReasons: StopReason[];
   labels: string[];
   workers: Array<{ id: string; name: string }>;

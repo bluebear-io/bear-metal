@@ -218,6 +218,7 @@ export interface ListTicketsResult {
 
 export interface TicketFilterOptions {
   bmStatuses: BmStatus[];
+  statusCounts: Partial<Record<BmStatus, number>>;
   stopReasons: StopReason[];
   labels: string[];
   workers: Array<{ id: string; name: string }>;
@@ -1949,8 +1950,29 @@ export class SqlDbClient implements DbClient {
 
     const allBmStatuses: BmStatus[] = ["in_progress", "validating", "waiting_for_human", "completed"];
 
+    const countRows = await this.query<{ status: string | null; cnt: number }>(
+      this.sql(`
+        SELECT COALESCE(ts.status, 'in_progress') AS status, COUNT(*) AS cnt
+        FROM (
+          SELECT ticket_id, MAX(created_at) AS max_ca
+          FROM tasks WHERE ticket_id IS NOT NULL
+          GROUP BY ticket_id
+        ) latest
+        JOIN tasks t ON t.ticket_id = latest.ticket_id AND t.created_at = latest.max_ca
+        LEFT JOIN ticket_statuses ts ON ts.ticket_id = t.ticket_id
+        GROUP BY COALESCE(ts.status, 'in_progress')
+      `),
+    );
+    const statusCounts: Partial<Record<BmStatus, number>> = {};
+    for (const row of countRows) {
+      if (row.status && allBmStatuses.includes(row.status as BmStatus)) {
+        statusCounts[row.status as BmStatus] = Number(row.cnt);
+      }
+    }
+
     return {
       bmStatuses: allBmStatuses,
+      statusCounts,
       stopReasons: Array.from(stopReasons).sort() as StopReason[],
       labels: Array.from(labels).sort(),
       workers,

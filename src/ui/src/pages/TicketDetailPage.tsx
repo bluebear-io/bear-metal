@@ -47,7 +47,7 @@ const TicketSummary = ({ ticket, maxIterations }: { ticket: Ticket; maxIteration
         </div>
         <Field label="Title" value={ticket.title} />
         <div>
-          <dt className="text-xs font-medium uppercase text-text-muted">BM status</dt>
+          <dt className="text-xs font-medium uppercase text-text-muted">Status</dt>
           <dd className="mt-1">
             <StatusBadge status={ticket.bmStatus} />
           </dd>
@@ -194,8 +194,8 @@ const PullRequestRow = ({ pullRequest }: { pullRequest: PullRequest }) => {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={pullRequest.merged ? "merged" : pullRequest.state} />
-          <span className="text-xs text-text-secondary">{pullRequest.draft ? "Draft" : "Ready"}</span>
-          <span className="text-xs text-text-secondary">{pullRequest.merged ? "Merged" : "Unmerged"}</span>
+          <span className="inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-xs font-medium leading-5 text-text-secondary">{pullRequest.draft ? "Draft" : "Ready"}</span>
+          <span className="inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-xs font-medium leading-5 text-text-secondary">{pullRequest.merged ? "Merged" : "Unmerged"}</span>
         </div>
       </div>
       {threads.length > 0 && (
@@ -348,11 +348,14 @@ const LogRow = ({ item }: { item: LogItem }) => {
   );
 };
 
+const ACTIVE_RUN_STATUSES = new Set(["running", "dispatched"]);
+
 const EventLogSection = ({ runs, events }: { runs: Run[]; events: TicketEvent[] }) => {
   const items = buildLog(runs, events);
+  const isActive = runs.some((r) => r.status !== null && ACTIVE_RUN_STATUSES.has(r.status));
   return (
     <Section title="Event log">
-      {items.length === 0 ? (
+      {items.length === 0 && !isActive ? (
         <p className="text-sm text-text-muted">No events yet.</p>
       ) : (
         <div className="overflow-x-auto rounded-md border border-border-default bg-bg-card">
@@ -369,6 +372,19 @@ const EventLogSection = ({ runs, events }: { runs: Run[]; events: TicketEvent[] 
               {items.map((item) => (
                 <LogRow key={item.kind === "toolcall" ? `tc-${item.data.id}` : `ev-${item.data.id}`} item={item} />
               ))}
+              {isActive && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-3">
+                    <div className="flex items-center gap-2 text-xs text-text-muted">
+                      <span className="relative flex size-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                        <span className="relative inline-flex size-2 rounded-full bg-primary" />
+                      </span>
+                      Worker is active — new events will appear here
+                    </div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
