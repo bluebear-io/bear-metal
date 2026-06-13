@@ -28,6 +28,8 @@ export interface PullRequestNotification {
   ticketId: string;
   /** Optional Linear ticket url. */
   ticketUrl?: string;
+  /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
+  recipientEmail?: string;
 }
 
 const DEFAULT_API_BASE_URL = "https://slack.com/api";
@@ -60,12 +62,47 @@ export class SlackIntegration implements Integration {
   }
 
   /**
-   * Post a "PR opened" or "PR updated" notification to the configured channel.
-   * Failures are logged but never thrown — Slack outages must not break the
-   * worker's commit/push flow, which has already succeeded by the time we get here.
+   * Post a "PR opened" or "PR updated" notification. When `recipientEmail` is set,
+   * resolves it to a Slack user ID (DM) via `users.lookupByEmail`; falls back to
+   * the configured channel on lookup failure. Failures are logged but never thrown.
    */
   async notifyPullRequest(notification: PullRequestNotification): Promise<void> {
     const text = formatNotificationText(notification);
+    const channel = notification.recipientEmail
+      ? await this.resolveUserChannel(notification.recipientEmail)
+      : this.channel;
+    await this.postMessage(channel, text);
+  }
+
+  private async resolveUserChannel(email: string): Promise<string> {
+    try {
+      const response = await this.fetchImpl(
+        `${this.apiBaseUrl}/users.lookupByEmail?email=${encodeURIComponent(email)}`,
+        { headers: { Authorization: `Bearer ${this.token}` } },
+      );
+      if (!response.ok) {
+        this.logger.warn(
+          { status: response.status, email },
+          "slack users.lookupByEmail HTTP error; falling back to channel",
+        );
+        return this.channel;
+      }
+      const body = (await response.json()) as { ok: boolean; user?: { id: string }; error?: string };
+      if (!body.ok || !body.user?.id) {
+        this.logger.warn(
+          { error: body.error, email },
+          "slack users.lookupByEmail returned ok=false; falling back to channel",
+        );
+        return this.channel;
+      }
+      return body.user.id;
+    } catch (err) {
+      this.logger.warn({ err, email }, "slack users.lookupByEmail threw; falling back to channel");
+      return this.channel;
+    }
+  }
+
+  private async postMessage(channel: string, text: string): Promise<void> {
     try {
       const response = await this.fetchImpl(`${this.apiBaseUrl}/chat.postMessage`, {
         method: "POST",
@@ -73,26 +110,21 @@ export class SlackIntegration implements Integration {
           "Content-Type": "application/json; charset=utf-8",
           Authorization: `Bearer ${this.token}`,
         },
-        body: JSON.stringify({
-          channel: this.channel,
-          text,
-          unfurl_links: false,
-          unfurl_media: false,
-        }),
+        body: JSON.stringify({ channel, text, unfurl_links: false, unfurl_media: false }),
       });
       if (!response.ok) {
         this.logger.error(
-          { status: response.status, statusText: response.statusText, channel: this.channel },
+          { status: response.status, statusText: response.statusText, channel },
           "slack chat.postMessage HTTP error",
         );
         return;
       }
       const body = (await response.json()) as { ok: boolean; error?: string };
       if (!body.ok) {
-        this.logger.error({ error: body.error, channel: this.channel }, "slack chat.postMessage returned ok=false");
+        this.logger.error({ error: body.error, channel }, "slack chat.postMessage returned ok=false");
       }
     } catch (err) {
-      this.logger.error({ err, channel: this.channel }, "slack chat.postMessage threw");
+      this.logger.error({ err, channel }, "slack chat.postMessage threw");
     }
   }
 }

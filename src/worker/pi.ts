@@ -258,6 +258,13 @@ export async function runPiWorker(input: {
       // new tickets, and on iterations only when at least one unresolved
       // review thread's latest comment is from a human author.
       if (input.slack && shouldNotifySlackForPr(input.context, pr)) {
+        const assigneeId = input.context.ticket.issue.assignee?.id;
+        const recipientEmail: string | undefined = assigneeId
+          ? (await input.linear.getUserEmail(assigneeId).catch((err) => {
+              logger.warn({ err, assigneeId }, "failed to look up assignee email for Slack DM; falling back to channel");
+              return null;
+            })) ?? undefined
+          : undefined;
         // The Slack client logs and swallows its own failures so a Slack outage
         // doesn't mask a successful commit/push from the rest of the pipeline.
         await input.slack.notifyPullRequest({
@@ -267,6 +274,7 @@ export async function runPiWorker(input: {
           url: `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`,
           ticketId: input.context.ticketId,
           ticketUrl: input.context.ticket.issue.url,
+          ...(recipientEmail ? { recipientEmail } : {}),
         });
       }
       return {

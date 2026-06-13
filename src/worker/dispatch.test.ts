@@ -64,6 +64,7 @@ describe("dispatch", () => {
           moveTicketToInProgress,
           moveTicketToInReview: vi.fn(),
           commentAndHandBack: vi.fn(),
+          getUserEmail: vi.fn().mockResolvedValue(null),
         },
       },
     });
@@ -145,6 +146,7 @@ function makeIntegrations() {
       moveTicketToInProgress: vi.fn(async () => {}),
       moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
+      getUserEmail: vi.fn().mockResolvedValue(null),
     },
   };
 }

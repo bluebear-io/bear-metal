@@ -1651,7 +1651,7 @@ export class SqlDbClient implements DbClient {
           SELECT * FROM tasks
           WHERE worker_id IS NOT NULL AND result_status IS NULL
             AND worker_heartbeat_at IS NOT NULL
-            AND worker_heartbeat_at < (NOW() - ($1::bigint || ' milliseconds')::interval)
+            AND worker_heartbeat_at::timestamptz < (NOW() - ($1::bigint || ' milliseconds')::interval)
           ORDER BY worker_heartbeat_at ASC
           FOR UPDATE SKIP LOCKED
         `,

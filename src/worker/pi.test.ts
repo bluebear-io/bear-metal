@@ -448,6 +448,30 @@ describe("runPiWorker", () => {
     });
   });
 
+  it("includes recipientEmail in slack notification when getUserEmail resolves", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    linear.getUserEmail.mockResolvedValue("assignee@example.com");
+    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
+    const github = makeGithub();
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/blueden",
+        prTitle: "feat: ship",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+
+    expect(linear.getUserEmail).toHaveBeenCalledWith("creator");
+    expect(slack.notifyPullRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientEmail: "assignee@example.com" }),
+    );
+  });
+
   it("sends a slack 'updated' notification when push_for_review runs on an existing PR", async () => {
     const { runPiWorker } = await import("./pi.js");
     const linear = makeLinear();
@@ -759,6 +783,7 @@ function makeLinear() {
     moveTicketToInProgress: vi.fn(),
     moveTicketToInReview: vi.fn(),
     commentAndHandBack: vi.fn(),
+    getUserEmail: vi.fn().mockResolvedValue(null),
   };
 }
 

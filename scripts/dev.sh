@@ -10,8 +10,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Shared config — override any of these via the environment before running.
-export DATABASE_URL="${DATABASE_URL:-sqlite:$ROOT/data/bear-metal.sqlite}"
+# BACKEND_PORT is needed by the shell to print the URL; DATABASE_URL is left to dotenv so
+# that the value in .env is respected without being shadowed by a shell export.
 export BACKEND_PORT="${BACKEND_PORT:-3100}"
 
 # The UI is a separate npm package; install its deps on first run.

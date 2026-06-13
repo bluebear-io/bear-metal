@@ -264,6 +264,7 @@ function makeIntegrations() {
       moveTicketToInProgress: vi.fn(),
       moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
+      getUserEmail: vi.fn().mockResolvedValue(null),
     },
   };
 }

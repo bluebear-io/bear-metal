@@ -11,7 +11,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "start": "node dist/manager/index.js",
-    "dev": "tsx watch src/manager/index.ts",
+    "dev": "tsx src/manager/index.ts",
     "dev:all": "bash scripts/dev.sh",
     "test": "vitest run"
   },

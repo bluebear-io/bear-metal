@@ -82,6 +82,7 @@ export interface WorkerLinear {
   moveTicketToInProgress(ticketId: string): Promise<void>;
   moveTicketToInReview(ticketId: string): Promise<void>;
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
+  getUserEmail(userId: string): Promise<string | null>;
 }
 
 export type WorkerIntegrations = {

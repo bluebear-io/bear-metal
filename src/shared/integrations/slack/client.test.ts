@@ -146,4 +146,92 @@ describe("SlackIntegration", () => {
     expect(() => new SlackIntegration({ token: "", channel: "C1" })).toThrow();
     expect(() => new SlackIntegration({ token: "xoxb", channel: "" })).toThrow();
   });
+
+  it("sends a DM when recipientEmail resolves to a Slack user", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, user: { id: "U9876" } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyPullRequest({
+      kind: "opened",
+      pr: { owner: "acme", repo: "blueden", number: 1 },
+      title: "Hello",
+      url: "https://example.com/pr/1",
+      ticketId: "DEN-1",
+      recipientEmail: "user@example.com",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [lookupUrl] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(lookupUrl).toBe("https://slack.com/api/users.lookupByEmail?email=user%40example.com");
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("U9876");
+  });
+
+  it("falls back to channel when users.lookupByEmail returns users_not_found", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, error: "users_not_found" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyPullRequest({
+      kind: "opened",
+      pr: { owner: "acme", repo: "blueden", number: 1 },
+      title: "Hello",
+      url: "https://example.com/pr/1",
+      ticketId: "DEN-1",
+      recipientEmail: "unknown@example.com",
+    });
+
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("C12345");
+  });
+
+  it("falls back to channel when users.lookupByEmail returns an HTTP error", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("nope", { status: 500 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyPullRequest({
+      kind: "opened",
+      pr: { owner: "acme", repo: "blueden", number: 1 },
+      title: "Hello",
+      url: "https://example.com/pr/1",
+      ticketId: "DEN-1",
+      recipientEmail: "user@example.com",
+    });
+
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("C12345");
+  });
 });

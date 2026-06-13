@@ -62,6 +62,11 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     return this.toTicket(issue);
   }
 
+  async getUserEmail(userId: string): Promise<string | null> {
+    const user = await this.client.user(userId);
+    return user.email ?? null;
+  }
+
   async getTicketContext(id: string): Promise<LinearTicketContext> {
     const issue = await this.client.issue(id);
     const [ticket, comments] = await Promise.all([this.toTicket(issue), this.getComments(issue)]);
