@@ -68,6 +68,7 @@ export function buildWorkerPrompt(
     "- Use the Linear and GitHub context below as the sole source of truth.",
     "- Do not invent missing requirements.",
     "- Do not silently work around failures.",
+    "- Do not shell out to discover state (branch existence, PR status, ticket state). All of it is already in the context JSON below — read it there.",
     `- Repository root: ${repoRoot}`,
     "- Never read, write, search, or cd outside the repository root.",
     "",

@@ -126,7 +126,7 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
     throw new Error("git push is not allowed in bash — use push_for_review instead");
   }
   if (/(^|[\s;&|`(])gh(\s|$)/.test(command)) {
-    throw new Error("gh CLI is not allowed in bash — use push_for_review instead");
+    throw new Error("gh CLI is not allowed — use the context JSON to discover state and the provided tools to perform operations");
   }
 
   const root = normalizeWorkspaceRoot(workspaceRoot);
