@@ -1,37 +1,20 @@
 # bear-metal CI/CD (DEN-2370)
 #
-# PR:        typecheck + tests (no ECR push)
-# main push: typecheck + tests → build + push to shared-services ECR → force ECS redeploy
+# PR / push to main: typecheck + tests + docker build (verify only, no push)
+# Release:          typecheck + tests + build + push to ghcr.io
 
 name: Build and Deploy
-
-permissions:
-  id-token: write
-  contents: read
 
 on:
   pull_request:
   push:
     branches: [main]
-
-  workflow_dispatch:
-    inputs:
-      image_tag:
-        description: "Additional image tag (optional)"
-        required: false
-        type: string
+  release:
+    types: [published]
 
 concurrency:
   group: build-and-deploy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  AWS_REGION: us-east-1
-  SHARED_SERVICES_ACCOUNT_ID: "403048695294"
-  DEV_ACCOUNT_ID: "571938892820"
-  ECR_REPOSITORY: shared-services-bear-metal
-  ECS_CLUSTER: ops-dev
-  ECS_SERVICE: bear-metal-dev
 
 jobs:
   test:
@@ -54,85 +37,45 @@ jobs:
       - name: Run tests
         run: npm test
 
-  build-and-deploy:
-    name: Build, Push, Deploy
+  build:
+    name: Build Docker image
     needs: [test]
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: read
+      packages: write
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (shared-services — ECR push)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ env.SHARED_SERVICES_ACCOUNT_ID }}:role/GithubActionsECRRole
-          role-session-name: bear-metal-ecr-push
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'release'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Generate image tags
         id: tags
-        env:
-          CUSTOM_TAG: ${{ inputs.image_tag }}
         run: |
-          ECR_REGISTRY="${{ env.SHARED_SERVICES_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          REPO="${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}"
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          TAGS="${REPO}:latest,${REPO}:git-${SHORT_SHA}"
-          if [ -n "$CUSTOM_TAG" ]; then
-            TAGS="${TAGS},${REPO}:${CUSTOM_TAG}"
+          REPO="ghcr.io/${{ github.repository_owner }}/bear-metal"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tags=${REPO}:${{ github.ref_name }},${REPO}:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${REPO}:build-check" >> "$GITHUB_OUTPUT"
           fi
-          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${REPO}:git-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push image
+      - name: Build image (and push on release)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: Dockerfile
-          push: true
+          push: ${{ github.event_name == 'release' }}
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
-
-      - name: Configure AWS credentials (dev — ECS deploy)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ env.DEV_ACCOUNT_ID }}:role/GithubActionsDeployRole
-          role-session-name: bear-metal-ecs-deploy
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Force ECS redeployment
-        run: |
-          aws ecs update-service \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --service "${{ env.ECS_SERVICE }}" \
-            --force-new-deployment \
-            --query 'service.deployments[0].{status:status,desiredCount:desiredCount}' \
-            --output table
-
-      - name: Wait for ECS deployment stability
-        run: |
-          aws ecs wait services-stable \
-            --cluster "${{ env.ECS_CLUSTER }}" \
-            --services "${{ env.ECS_SERVICE }}"
-
-      - name: Summary
-        env:
-          SHA_TAG: ${{ steps.tags.outputs.sha_tag }}
-        run: |
-          echo "## bear-metal deployed" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Image:** ${SHA_TAG}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Cluster:** ${{ env.ECS_CLUSTER }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Service:** ${{ env.ECS_SERVICE }}" >> "$GITHUB_STEP_SUMMARY"
