@@ -46,7 +46,7 @@ describe("ManagerTicketHandler", () => {
     ]);
   });
 
-  it("upserts the dispatched run into the db after enqueue", async () => {
+  it("records a dispatched event in the db after enqueue", async () => {
     const db = new FakeDb();
     const handler = new ManagerTicketHandler({ logger, db: db as unknown as DbClient });
     const ctx = makeContext("den-1");
@@ -56,13 +56,13 @@ describe("ManagerTicketHandler", () => {
     // Allow the fire-and-forget void promise to settle.
     await new Promise((r) => setImmediate(r));
 
-    expect(db.upsertTicketDispatchedCalls).toHaveLength(1);
-    expect(db.upsertTicketDispatchedCalls[0]).toEqual(
+    expect(db.recordEventCalls).toHaveLength(1);
+    expect(db.recordEventCalls[0]).toEqual(
       expect.objectContaining({
-        ticket: ctx.ticket,
+        ticketId: "den-1",
         runId: "task-1",
-        workerId: null,
-        trigger: "new",
+        source: "manager",
+        type: "dispatched",
       }),
     );
   });
@@ -71,6 +71,7 @@ describe("ManagerTicketHandler", () => {
 class FakeDb {
   enqueued: DispatchTaskInput[] = [];
   upsertTicketDispatchedCalls: object[] = [];
+  recordEventCalls: object[] = [];
 
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     this.enqueued.push(input);
@@ -98,5 +99,7 @@ class FakeDb {
     this.upsertTicketDispatchedCalls.push(ref);
   }
 
-  async recordEvent(): Promise<void> {}
+  async recordEvent(event: object): Promise<void> {
+    this.recordEventCalls.push(event);
+  }
 }

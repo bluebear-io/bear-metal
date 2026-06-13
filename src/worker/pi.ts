@@ -18,7 +18,6 @@ import type {
   WorkerGitHub,
   WorkerInputContext,
   WorkerLinear,
-  WorkerSlack,
 } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
@@ -41,7 +40,6 @@ export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
-  slack?: WorkerSlack;
   commentStore?: WorkerCommentStore;
   gitEnv: NodeJS.ProcessEnv;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
@@ -68,16 +66,22 @@ export async function runPiWorker(input: {
 
   const setDecision = (next: DispatchResult) => {
     if (next.status === "pending") {
-      decision = next;
+      decision = {
+        status: "pending",
+        prs: mergePrs(decision?.prs ?? [], next.prs),
+        // Preserve notifyOnComplete from a prior push_for_review so respond_to_comment_writer
+        // calling setDecision("pending") after push_for_review doesn't silently clear it.
+        notifyOnComplete: decision?.notifyOnComplete,
+      };
     } else {
       collectedPrs.push(...next.prs);
       // Preserve a pending decision across subsequent push_for_review calls: once a
       // respond_* tool has handed control back to a human, additional code
       // pushes must not silently flip the dispatch result to "done".
       if (decision?.status === "pending") {
-        decision = { status: "pending", prs: mergePrs(decision.prs, next.prs) };
+        decision = { status: "pending", prs: mergePrs(decision.prs, next.prs), notifyOnComplete: decision.notifyOnComplete };
       } else {
-        decision = { status: "done", prs: [...collectedPrs] };
+        decision = { status: "done", prs: [...collectedPrs], notifyOnComplete: next.notifyOnComplete };
       }
     }
   };
@@ -247,35 +251,16 @@ export async function runPiWorker(input: {
         null;
       const isNewPr = existingPr === null;
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
-      setDecision({ status: "done", prs: [pr] });
+      // DEN-2329: suppress Slack notifications for bot-only iteration churn.
+      // notifyOnComplete is stored in the result; scheduler fires the Slack DM
+      // later when the ticket reaches waiting_for_human, giving a single DM per
+      // human-review cycle rather than one per push_for_review call.
+      const notify = shouldNotifySlackForPr(input.context, pr);
+      setDecision({ status: "done", prs: [pr], notifyOnComplete: notify });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
       } catch (err) {
         logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
-      }
-      // DEN-2329: suppress Slack notifications for bot-only iteration churn
-      // (e.g. Cursor/Baloo nits the agent auto-addresses). Always notify on
-      // new tickets, and on iterations only when at least one unresolved
-      // review thread's latest comment is from a human author.
-      if (input.slack && shouldNotifySlackForPr(input.context, pr)) {
-        const assigneeId = input.context.ticket.issue.assignee?.id;
-        const recipientEmail: string | undefined = assigneeId
-          ? (await input.linear.getUserEmail(assigneeId).catch((err) => {
-              logger.warn({ err, assigneeId }, "failed to look up assignee email for Slack DM; falling back to channel");
-              return null;
-            })) ?? undefined
-          : undefined;
-        // The Slack client logs and swallows its own failures so a Slack outage
-        // doesn't mask a successful commit/push from the rest of the pipeline.
-        await input.slack.notifyPullRequest({
-          kind: isNewPr ? "opened" : "updated",
-          pr,
-          title: params.prTitle,
-          url: `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`,
-          ticketId: input.context.ticketId,
-          ticketUrl: input.context.ticket.issue.url,
-          ...(recipientEmail ? { recipientEmail } : {}),
-        });
       }
       return {
         content: [{ type: "text", text: `Pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],

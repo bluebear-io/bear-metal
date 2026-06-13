@@ -2,7 +2,7 @@ import { Router } from "express";
 import { MAX_TICKET_PAGE_SIZE, type DbClient, type ListTicketsOptions, type TicketListItem } from "../db/client.js";
 import { MAX_ITERATIONS } from "./constants.js";
 
-const BM_STATUSES = ["discovered", "dispatched", "in_progress", "pr_open", "ci_running", "ci_failed", "completed", "abandoned"] as const;
+const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "completed"] as const;
 type BmStatus = (typeof BM_STATUSES)[number];
 const STOP_REASONS = ["completed", "timeout", "crash", "error"] as const;
 type StopReason = (typeof STOP_REASONS)[number];

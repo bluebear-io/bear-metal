@@ -20,9 +20,19 @@ const EXCLUDED_STATE_NAMES = ["Merged"];
 export class LinearIntegration implements Integration, CommentCapable<string> {
   readonly name = "linear";
   private readonly client: LinearClient;
+  private cachedAgentId: string | undefined;
 
   constructor(options: LinearIntegrationOptions) {
     this.client = new LinearClient({ apiKey: options.token });
+  }
+
+  /** Resolves the Linear user ID for the API token in use. Result is cached after the first call. */
+  async getAgentId(): Promise<string> {
+    if (!this.cachedAgentId) {
+      const viewer = await this.client.viewer;
+      this.cachedAgentId = viewer.id;
+    }
+    return this.cachedAgentId;
   }
 
   /**

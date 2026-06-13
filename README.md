@@ -8,7 +8,7 @@ solves them with an LLM, and opens a GitHub PR.
 ## Scope (current)
 
 This repository currently contains one package with a **manager** and **worker**.
-The manager polls Linear tickets delegated to `LINEAR_ASSIGNEE_ID`, looks up the
+The manager polls Linear tickets delegated to the user associated with `LINEAR_API_TOKEN`, looks up the
 GitHub PR for active tickets with a known worker-returned PR ref, and maintains
 its concurrency slots in the SQL-backed `tasks` table. The worker atomically
 acquires a task row, gathers Linear/GitHub context, runs the repository clone
@@ -34,8 +34,7 @@ Copy `.env.example` to `.env` and fill in the required values:
 
 | Var | Required | Default | Purpose |
 |-----|----------|---------|---------|
-| `LINEAR_API_TOKEN` | yes | — | Linear auth |
-| `LINEAR_ASSIGNEE_ID` | yes | — | Linear user id whose tickets the manager works |
+| `LINEAR_API_TOKEN` | yes | — | Linear auth (assignee resolved automatically via viewer query) |
 | `GITHUB_APP_ID` | yes | — | GitHub App id (numeric) |
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
 | `GITHUB_APP_INSTALLATION_ID` | yes | — | installation id (numeric) |

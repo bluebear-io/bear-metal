@@ -96,6 +96,9 @@ class FakeLinear implements LinearSource {
     /** Override what getTicket returns per id or identifier. */
     private readonly refreshed: Record<string, Ticket> = {},
   ) {}
+  async getAgentId(): Promise<string> {
+    return "user-1";
+  }
   async findDelegatedTickets(_agentId: string): Promise<Ticket[]> {
     return this.todo;
   }
@@ -114,6 +117,9 @@ class FakeLinear implements LinearSource {
   commentAndHandBackCalls: Array<{ ticketId: string; body: string }> = [];
   async commentAndHandBack(ticketId: string, body: string): Promise<void> {
     this.commentAndHandBackCalls.push({ ticketId, body });
+  }
+  async getUserEmail(_userId: string): Promise<string | null> {
+    return null;
   }
 }
 
@@ -176,7 +182,6 @@ function buildScheduler(deps: {
     github: deps.github,
     db: deps.db,
     handler: deps.handler,
-    agentId: "user-1",
     concurrency: deps.concurrency,
     pollIntervalMs: 60_000,
     taskStaleAfterMs: deps.taskStaleAfterMs,

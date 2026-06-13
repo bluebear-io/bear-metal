@@ -34,13 +34,6 @@ export class ManagerTicketHandler {
       trigger,
       ticketIssueId: ctx.ticket.id,  // UUID — used as DB key
     });
-    void this.db.upsertTicketDispatched({
-      ticket: ctx.ticket,
-      runId: task.id,
-      workerId: null,
-      attemptNumber: task.attemptNumber,
-      trigger,
-    });
     void this.db.recordEvent({
       id: randomUUID(),
       ticketId: ctx.ticket.id,

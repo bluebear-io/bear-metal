@@ -237,6 +237,10 @@ class FakeDb {
 
   async recordEvent(): Promise<void> {}
 
+  async setTicketStatus(): Promise<void> {}
+
+  async tryTransitionToWaitingForHuman(): Promise<boolean> { return false; }
+
   markCrashedCalls_: Array<{ taskId: string; workerId: string; maxReclaims: number }> = [];
 
   async markCrashed(taskId: string, workerId: string, maxReclaims: number) {

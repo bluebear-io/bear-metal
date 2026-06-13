@@ -1,8 +1,6 @@
 // src/shared/dashboard/types.ts
 
-export type BmStatus =
-  | "discovered" | "dispatched" | "in_progress" | "pr_open"
-  | "ci_running" | "ci_failed" | "completed" | "abandoned";
+export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";

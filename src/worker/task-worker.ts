@@ -22,6 +22,8 @@ export interface TaskWorkerDeps {
   heartbeatIntervalMs?: number;
   /** After this many crash/stale recoveries of the same row, abandon it. */
   maxReclaims?: number;
+  /** Linear user id the manager runs as; used to detect when a task hands the ticket back. */
+  agentId?: string;
 }
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -40,6 +42,7 @@ export class TaskWorker {
   private readonly startedAtMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly maxReclaims: number;
+  private readonly agentId: string | undefined;
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: TaskWorkerDeps) {
@@ -54,6 +57,7 @@ export class TaskWorker {
     this.startedAtMs = Date.now();
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.maxReclaims = deps.maxReclaims ?? DEFAULT_MAX_RECLAIMS;
+    this.agentId = deps.agentId;
     this.queue = new PQueue({ concurrency: deps.concurrency });
   }
 
@@ -120,6 +124,9 @@ export class TaskWorker {
       { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId },
       "SQL task acquired",
     );
+    if (task.ticketId) {
+      void this.db.setTicketStatus(task.ticketId, "in_progress");
+    }
     const workerStartedAt = new Date().toISOString();
     void this.db.upsertRunStarted(task.id, this.workerId, workerStartedAt);
     if (task.input?.state === "new") {
@@ -178,6 +185,29 @@ export class TaskWorker {
       clearInterval(heartbeat);
     }
     await this.db.complete(task.id, result);
+
+    // Update ticket status based on the dispatch result.
+    if (task.ticketId) {
+      if (result.status === "pending") {
+        // Determine if delegation was dropped (worker called commentAndHandBack / respond_to_ticket_reporter).
+        // Only check if we know the agentId; skip if not configured.
+        if (this.agentId) {
+          try {
+            const freshCtx = await this.integrations.linear.getTicketContext(task.ticketId);
+            if (freshCtx.issue.delegate?.id !== this.agentId) {
+              void this.db.setTicketStatus(task.ticketId, "waiting_for_human");
+            }
+            // else: delegation still held (respond_to_comment_writer path) — leave in_progress;
+            // scheduler will re-dispatch on the next tick and update status then.
+          } catch (err) {
+            this.logger.warn({ err, ticketId: task.ticketId }, "failed to check delegation for status update");
+          }
+        }
+      } else if (result.status === "done" && result.prs.length > 0) {
+        void this.db.setTicketStatus(task.ticketId, "validating", result.notifyOnComplete ?? false);
+      }
+    }
+
     // The writes below are intentionally fire-and-forget: complete() has already released the task
     // so the scheduler can move on. A crash between here and the event/usage/toolCalls writes means
     // the dashboard misses one run's supplementary data — accepted trade-off vs. blocking the slot.

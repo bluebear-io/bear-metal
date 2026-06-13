@@ -1,19 +1,23 @@
 const FIRST_NAMES = [
-  // Israeli
-  "Noa", "Lior", "Tamar", "Idan", "Shira", "Rotem", "Eitan", "Yael",
   // American
   "Jake", "Emily", "Tyler", "Chloe", "Mason", "Olivia", "Ethan", "Lily",
-  // Funny nicknames
-  "Buster", "Patches", "Turbo", "Ziggy",
+  // Pirate
+  "Blackbeard", "Calico", "Jolly", "Scurvy", "Pegleg", "Cannonball", "Barnacle", "Salty",
+  // College football
+  "Touchdown", "Blitz", "Spike", "Fumble", "Gunslinger", "Crusher", "Tank", "Rocket",
+  // Extra funny
+  "Buster", "Patches", "Turbo", "Ziggy", "Noodles", "Biscuit", "Corndog", "Pickles",
 ];
 
 const LAST_NAMES = [
-  // Israeli
-  "Cohen", "Levi", "Mizrahi", "Goldberg", "Shapiro", "Katz", "Ben-David", "Friedman",
   // American
   "Mitchell", "Hayes", "Sullivan", "Parker", "Brennan", "McTavish", "Gallagher", "Lawson",
-  // Funny nicknames
-  "Thunderbolt", "Waffles", "Bananaman", "McFluffin",
+  // Pirate
+  "Plank", "Davy Jones", "Blackwater", "Ironhook", "Stormcrow", "Keel", "Broadside", "Foulweather",
+  // College football
+  "Blitzkrieg", "Gridiron", "Endzone", "Linebacker", "Hailmary", "Pigskin", "Fumblesworth", "Touchdownski",
+  // Extra funny
+  "Thunderbolt", "Waffles", "Bananaman", "McFluffin", "Noodlearms", "von Snuggles", "Biscuithead", "Corndog",
 ];
 
 export function generateWorkerName(): string {

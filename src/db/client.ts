@@ -33,9 +33,7 @@ function modelFamily(provider: string | null, modelName: string | null): "claude
 // Types ported from src/backend/db/types.ts + repository.ts
 // ---------------------------------------------------------------------------
 
-export type BmStatus =
-  | "discovered" | "dispatched" | "in_progress" | "pr_open"
-  | "ci_running" | "ci_failed" | "completed" | "abandoned";
+export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
 
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
@@ -54,7 +52,7 @@ export interface TaskRow {
   ticket_linear_status_name: string | null;
   ticket_linear_status_type: string | null;
   ticket_labels_json: string;
-  bm_status: string | null;
+  ts_status: string | null;
   attempt_count: number;
   ticket_completed_at: string | null;
   dispatch_state: string | null;
@@ -103,6 +101,7 @@ export interface PullRequestRef {
 export interface DispatchResult {
   status: "pending" | "done";
   prs: PullRequestRef[];
+  notifyOnComplete?: boolean;
 }
 
 export interface DispatchTaskInput {
@@ -464,22 +463,6 @@ export interface TicketInput {
   labels: string[];
 }
 
-export interface RunRef {
-  ticket: {
-    id: string;
-    identifier: string;
-    title: string;
-    description: string | null;
-    url: string;
-    branchName: string;
-    status: { name: string; type: string };
-    labels: string[];
-  };
-  runId: string;
-  workerId: string | null;
-  attemptNumber: number;
-  trigger: RunTrigger;
-}
 
 export interface RunUsage {
   promptTokens: number;
@@ -522,12 +505,10 @@ export interface DbClient {
 
   // Ticket lifecycle
   upsertTicketDiscovered(ticket: TicketInput): Promise<void>;
-  upsertTicketDispatched(ref: RunRef): Promise<void>;
-  upsertTicketInProgress(ticketId: string, attemptCount: number): Promise<void>;
-  upsertTicketPrOpen(ticketId: string): Promise<void>;
-  upsertTicketCiFailed(ticketId: string): Promise<void>;
-  upsertTicketCompleted(ticketId: string): Promise<void>;
-  upsertTicketDelegatedBack(ticketId: string): Promise<void>;
+  setTicketStatus(ticketId: string, status: BmStatus, notify?: boolean): Promise<void>;
+  /** Atomically transitions a validating ticket to waiting_for_human and resets the notify flag.
+   *  Returns true if the notify flag was consumed (Slack DM should fire). */
+  tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean>;
 
   // Run lifecycle
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
@@ -732,7 +713,7 @@ function rowToTicketListItem(row: TaskRow): TicketListItem {
     ticketLinearStatusName: row.ticket_linear_status_name,
     ticketLinearStatusType: row.ticket_linear_status_type,
     ticketLabelsJson: row.ticket_labels_json ?? "[]",
-    bmStatus: (row.bm_status as BmStatus | null),
+    bmStatus: (row.ts_status as BmStatus | null) ?? "in_progress",
     attemptCount: Number(row.attempt_count ?? 0),
     ticketCompletedAt: parseTimestamp(row.ticket_completed_at),
     createdAt: parseTimestampRequired(row.created_at, "created_at"),
@@ -841,7 +822,7 @@ function computeThroughput(tasks: PeriodTaskRow[], from: Date, to: Date): Throug
     const updatedAt = parseTimestamp(t.updated_at);
     if (inRange(createdAt, from, to)) discovered += 1;
     if (t.bm_status === "completed" && inRange(completedAt, from, to)) completed += 1;
-    else if (t.bm_status === "abandoned" && inRange(updatedAt, from, to)) abandoned += 1;
+    else if (Number(t.attempt_count) >= MAX_ITERATIONS && t.bm_status !== "completed" && inRange(updatedAt, from, to)) abandoned += 1;
   }
   return { completed, abandoned, discovered };
 }
@@ -855,7 +836,7 @@ function computeHealth(tasks: PeriodTaskRow[], ciRuns: PeriodCiRow[], from: Date
     const completedAt = parseTimestamp(t.ticket_completed_at);
     const updatedAt = parseTimestamp(t.updated_at);
     const isCompleted = t.bm_status === "completed" && inRange(completedAt, from, to);
-    const isAbandoned = t.bm_status === "abandoned" && inRange(updatedAt, from, to);
+    const isAbandoned = Number(t.attempt_count) >= MAX_ITERATIONS && t.bm_status !== "completed" && inRange(updatedAt, from, to);
     if (!isCompleted && !isAbandoned) continue;
     if (isCompleted) completed += 1;
     else abandoned += 1;
@@ -961,7 +942,7 @@ function computeFailures(
     .slice(0, 10);
 
   const ticketsAtMaxAttempts: TicketRef[] = tasks
-    .filter((t) => t.bm_status === "abandoned" && Number(t.attempt_count) >= MAX_ITERATIONS && inRange(parseTimestamp(t.updated_at), from, to))
+    .filter((t) => Number(t.attempt_count) >= MAX_ITERATIONS && t.bm_status !== "completed" && inRange(parseTimestamp(t.updated_at), from, to))
     .sort((a, b) => (parseTimestamp(b.updated_at)?.getTime() ?? 0) - (parseTimestamp(a.updated_at)?.getTime() ?? 0))
     .slice(0, 20)
     .map((t) => ({ id: t.id, identifier: t.ticket_identifier ?? "", title: t.ticket_title ?? "", url: t.ticket_url ?? "" }));
@@ -1126,6 +1107,20 @@ export class SqlDbClient implements DbClient {
         }
       }
       this.sqlite = db;
+      // Backfill pre-migration tasks into ticket_statuses (no-op if bm_status already dropped).
+      // Map old bm_status: 'completed' → 'completed', everything else → 'in_progress'.
+      try {
+        db.exec(`
+          INSERT OR IGNORE INTO ticket_statuses (ticket_id, status, notify, updated_at)
+          SELECT DISTINCT ticket_id,
+            CASE WHEN bm_status = 'completed' THEN 'completed' ELSE 'in_progress' END,
+            0,
+            datetime('now')
+          FROM tasks WHERE ticket_id IS NOT NULL AND bm_status IS NOT NULL
+        `);
+        // Drop the now-obsolete column; silently ignored if already removed.
+        try { db.exec("ALTER TABLE tasks DROP COLUMN bm_status"); } catch { /* already dropped */ }
+      } catch { /* bm_status column already dropped — backfill ran on a prior startup */ }
     } else {
       const pool = new pg.Pool({ connectionString: this.databaseUrl });
       // Execute statement by statement so ALTER TABLE failures on existing columns are
@@ -1140,6 +1135,21 @@ export class SqlDbClient implements DbClient {
             if (code !== "42701") throw err; // 42701 = duplicate_column
           }
         }
+        // Backfill pre-migration tasks into ticket_statuses (no-op if bm_status already dropped).
+        // Map old bm_status: 'completed' → 'completed', everything else → 'in_progress'.
+        try {
+          await client.query(`
+            INSERT INTO ticket_statuses (ticket_id, status, notify, updated_at)
+            SELECT DISTINCT ON (ticket_id) ticket_id,
+              CASE WHEN bm_status = 'completed' THEN 'completed' ELSE 'in_progress' END,
+              0,
+              NOW()::TEXT
+            FROM tasks WHERE ticket_id IS NOT NULL AND bm_status IS NOT NULL
+            ON CONFLICT (ticket_id) DO NOTHING
+          `);
+          // Drop the now-obsolete column; silently ignored if already removed.
+          await client.query(`ALTER TABLE tasks DROP COLUMN IF EXISTS bm_status`);
+        } catch { /* bm_status column already dropped — backfill ran on a prior startup */ }
       } finally {
         client.release();
       }
@@ -1153,7 +1163,7 @@ export class SqlDbClient implements DbClient {
 
   async upsertTicketDiscovered(ticket: TicketInput): Promise<void> {
     const now = this.clock.nowIso();
-    // Insert a new "discovered" row only when no active row exists for this ticket yet.
+    // Insert a new row only when no active row exists for this ticket yet.
     // If a row already exists, update the ticket metadata fields on the latest row.
     const existing = await this.query<{ id: string }>(
       `SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
@@ -1163,8 +1173,8 @@ export class SqlDbClient implements DbClient {
       await this.run(
         `INSERT INTO tasks (id, ticket_id, ticket_identifier, ticket_title, ticket_description,
            ticket_url, ticket_branch_name, ticket_linear_status_name, ticket_linear_status_type,
-           ticket_labels_json, bm_status, attempt_count, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 0, ?, ?)`,
+           ticket_labels_json, attempt_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
         [randomUUID(), ticket.id, ticket.identifier, ticket.title, ticket.description,
          ticket.url, ticket.branchName, ticket.linearStatusName, ticket.linearStatusType,
          JSON.stringify(ticket.labels), now, now],
@@ -1182,60 +1192,57 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  async upsertTicketDispatched(ref: RunRef): Promise<void> {
+  async setTicketStatus(ticketId: string, status: BmStatus, notify: boolean = false): Promise<void> {
     const now = this.clock.nowIso();
-    // Update the latest discovered row to dispatched status.
-    await this.run(
-      `UPDATE tasks SET bm_status = 'dispatched', run_status = 'dispatched',
-         attempt_count = ?, trigger = ?, updated_at = ?
-       WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
-      [ref.attemptNumber, ref.trigger, now, ref.ticket.id],
-    );
+    const notifyInt = notify ? 1 : 0;
+    // Only overwrite notify when transitioning TO validating (where it carries the DM flag).
+    // For all other status writes (in_progress, waiting_for_human, completed) preserve the
+    // existing notify value so a re-dispatch to in_progress cannot silently clear a pending notify=1.
+    if (this.dialect === "sqlite") {
+      await this.run(
+        `INSERT INTO ticket_statuses (ticket_id, status, notify, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (ticket_id) DO UPDATE SET status = excluded.status,
+           notify = CASE WHEN excluded.status = 'validating' THEN excluded.notify ELSE ticket_statuses.notify END,
+           updated_at = excluded.updated_at`,
+        [ticketId, status, notifyInt, now],
+      );
+    } else {
+      await this.run(
+        `INSERT INTO ticket_statuses (ticket_id, status, notify, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (ticket_id) DO UPDATE SET status = EXCLUDED.status,
+           notify = CASE WHEN EXCLUDED.status = 'validating' THEN EXCLUDED.notify ELSE ticket_statuses.notify END,
+           updated_at = EXCLUDED.updated_at`,
+        [ticketId, status, notifyInt, now],
+      );
+    }
+    if (status === "completed") {
+      // Stamp ticket_completed_at for throughput/health queries that range-filter on it.
+      await this.run(
+        `UPDATE tasks SET ticket_completed_at = COALESCE(ticket_completed_at, ?), updated_at = ?
+         WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
+        [now, now, ticketId],
+      );
+    }
   }
 
-  async upsertTicketInProgress(ticketId: string, attemptCount: number): Promise<void> {
+  async tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean> {
     const now = this.clock.nowIso();
-    await this.run(
-      `UPDATE tasks SET bm_status = 'in_progress', attempt_count = ?, updated_at = ?
-       WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
-      [attemptCount, now, ticketId],
-    );
-  }
-
-  async upsertTicketPrOpen(ticketId: string): Promise<void> {
-    const now = this.clock.nowIso();
-    await this.run(
-      `UPDATE tasks SET bm_status = 'pr_open', updated_at = ?
-       WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
+    // Atomically flip status + consume notify flag. Affected 1 row means notify was 1.
+    const res = await this.run(
+      `UPDATE ticket_statuses SET status = 'waiting_for_human', notify = 0, updated_at = ?
+       WHERE ticket_id = ? AND status = 'validating' AND notify = 1`,
       [now, ticketId],
     );
-  }
-
-  async upsertTicketCiFailed(ticketId: string): Promise<void> {
-    const now = this.clock.nowIso();
+    if (res.changes === 1) {
+      return true;
+    }
+    // notify was already 0 — still transition status, just don't DM.
     await this.run(
-      `UPDATE tasks SET bm_status = 'ci_failed', updated_at = ?
-       WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
+      `UPDATE ticket_statuses SET status = 'waiting_for_human', updated_at = ?
+       WHERE ticket_id = ? AND status = 'validating'`,
       [now, ticketId],
     );
-  }
-
-  async upsertTicketCompleted(ticketId: string): Promise<void> {
-    const now = this.clock.nowIso();
-    await this.run(
-      `UPDATE tasks SET bm_status = 'completed', ticket_completed_at = ?, updated_at = ?
-       WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
-      [now, now, ticketId],
-    );
-  }
-
-  async upsertTicketDelegatedBack(ticketId: string): Promise<void> {
-    const now = this.clock.nowIso();
-    await this.run(
-      `UPDATE tasks SET bm_status = 'discovered', updated_at = ?
-       WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
-      [now, ticketId],
-    );
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -1345,12 +1352,12 @@ export class SqlDbClient implements DbClient {
 
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     const now = this.clock.nowIso();
-    // Update the existing 'discovered' row for this ticket if one exists;
+    // Update the existing undispatched row for this ticket if one exists;
     // otherwise insert a new task row (direct dispatch without prior discovery).
     // Use input.ticketIssueId (UUID) as the DB key — ticket_id stores the Linear UUID,
     // not the human-readable identifier (e.g. "DEN-2369").
     const existing = await this.query<{ id: string }>(
-      `SELECT id FROM tasks WHERE ticket_id = ? AND bm_status = 'discovered' AND result_status IS NULL
+      `SELECT id FROM tasks WHERE ticket_id = ? AND dispatch_state IS NULL AND result_status IS NULL AND slot_status = 'active'
        ORDER BY created_at DESC, id DESC LIMIT 1`,
       [input.ticketIssueId],
     );
@@ -1427,7 +1434,7 @@ export class SqlDbClient implements DbClient {
         const candidate = db.prepare(`
           SELECT id FROM tasks
           WHERE worker_id IS NULL AND result_status IS NULL AND slot_status = 'active'
-            AND (dispatch_state IS NOT NULL OR bm_status = 'discovered')
+            AND dispatch_state IS NOT NULL
           ORDER BY created_at ASC
           LIMIT 1
         `).get() as { id: string } | undefined;
@@ -1462,7 +1469,7 @@ export class SqlDbClient implements DbClient {
           WITH next_task AS (
             SELECT id FROM tasks
             WHERE worker_id IS NULL AND result_status IS NULL AND slot_status = 'active'
-              AND (dispatch_state IS NOT NULL OR bm_status = 'discovered')
+              AND dispatch_state IS NOT NULL
             ORDER BY created_at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
@@ -1795,7 +1802,7 @@ export class SqlDbClient implements DbClient {
 
     if (options.bmStatuses && options.bmStatuses.length > 0) {
       const placeholders = options.bmStatuses.map(() => "?").join(", ");
-      conditions.push(`bm_status IN (${placeholders})`);
+      conditions.push(`COALESCE(ts.status, 'in_progress') IN (${placeholders})`);
       params.push(...options.bmStatuses);
     }
 
@@ -1829,16 +1836,17 @@ export class SqlDbClient implements DbClient {
 
     const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
 
-    // Fetch the latest task row per ticket using window function
+    // Fetch the latest task row per ticket using window function; join ticket_statuses for current status.
     const ticketRows = await this.query<TaskRow>(
       this.sql(`
-        SELECT * FROM (
+        SELECT ranked.*, ts.status AS ts_status FROM (
           SELECT tasks.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS rn
           FROM tasks
           WHERE ticket_id IS NOT NULL
         ) ranked
+        LEFT JOIN ticket_statuses ts ON ts.ticket_id = ranked.ticket_id
         WHERE rn = 1 ${whereClause}
-        ORDER BY created_at DESC
+        ORDER BY ranked.created_at DESC
       `),
       params,
     );
@@ -1883,7 +1891,7 @@ export class SqlDbClient implements DbClient {
 
     const enriched: TicketListItem[] = ticketRows.map((row) => {
       const item = rowToTicketListItem(row);
-      item.latestRun = toLatestRunSummary(row);
+      item.latestRun = row.run_status !== null ? toLatestRunSummary(row) : null;
       item.latestWorkerName = row.worker_id ? workerNameById.get(row.worker_id) ?? row.worker_id : null;
       const latestPr = row.ticket_id ? latestPrByTicket.get(row.ticket_id) : null;
       item.latestPr = latestPr
@@ -1939,7 +1947,7 @@ export class SqlDbClient implements DbClient {
     );
     const workers = workerRows.map((w) => ({ id: w.worker_id, name: w.worker_id }));
 
-    const allBmStatuses: BmStatus[] = ["discovered", "dispatched", "in_progress", "pr_open", "ci_running", "ci_failed", "completed", "abandoned"];
+    const allBmStatuses: BmStatus[] = ["in_progress", "validating", "waiting_for_human", "completed"];
 
     return {
       bmStatuses: allBmStatuses,
@@ -1956,7 +1964,11 @@ export class SqlDbClient implements DbClient {
   async getTicketDetail(id: string): Promise<TicketDetail | null> {
     // id is the ticket_id (Linear issue id)
     const taskRows = await this.query<TaskRow>(
-      `SELECT * FROM tasks WHERE ticket_id = ? ORDER BY created_at ASC`,
+      `SELECT t.*, ts.status AS ts_status
+         FROM tasks t
+         LEFT JOIN ticket_statuses ts ON ts.ticket_id = t.ticket_id
+        WHERE t.ticket_id = ?
+        ORDER BY t.created_at ASC`,
       [id],
     );
     if (taskRows.length === 0) return null;
@@ -2313,12 +2325,13 @@ export class SqlDbClient implements DbClient {
     // Fetch all relevant data in parallel; bound to outerFrom–outerTo to cover both current and prior windows
     const [allTasks, allCiRuns, allPrs] = await Promise.all([
       this.query<PeriodTaskRow>(
-        `SELECT id, ticket_id, ticket_identifier, ticket_title, ticket_url, ticket_labels_json,
-           bm_status, attempt_count, ticket_completed_at,
-           run_status, started_at, ended_at, prompt_tokens, completion_tokens,
-           model_name, provider, created_at, updated_at
-         FROM tasks
-         WHERE created_at >= ? AND created_at < ?`,
+        `SELECT t.id, t.ticket_id, t.ticket_identifier, t.ticket_title, t.ticket_url, t.ticket_labels_json,
+           ts.status AS bm_status, t.attempt_count, t.ticket_completed_at,
+           t.run_status, t.started_at, t.ended_at, t.prompt_tokens, t.completion_tokens,
+           t.model_name, t.provider, t.created_at, t.updated_at
+         FROM tasks t
+         LEFT JOIN ticket_statuses ts ON ts.ticket_id = t.ticket_id
+         WHERE t.created_at >= ? AND t.created_at < ?`,
         [outerFrom.toISOString(), outerTo.toISOString()],
       ),
       this.query<PeriodCiRow>(

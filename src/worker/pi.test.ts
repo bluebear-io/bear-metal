@@ -230,7 +230,7 @@ describe("runPiWorker", () => {
 
     const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
 
-    expect(result).toEqual({ status: "pending", prs: context.prs });
+    expect(result).toMatchObject({ status: "pending", prs: context.prs });
   });
 
   it("preserves pending decision when push_for_review is called after respond_to_comment_writer", async () => {
@@ -418,13 +418,11 @@ describe("runPiWorker", () => {
     });
 
     expect(linear.moveTicketToInReview).toHaveBeenCalledWith("DEN-1");
-    expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
+    expect(result).toMatchObject({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
   });
 
-  it("sends a slack 'opened' notification on a new PR after push_for_review", async () => {
+  it("sets notifyOnComplete=true on result for a new PR after push_for_review", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const github = makeGithub();
     github.getDefaultBranch.mockResolvedValue("main");
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
@@ -436,46 +434,14 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {} });
 
-    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
-      kind: "opened",
-      pr: { owner: "acme", repo: "widgets", number: 42 },
-      title: "feat: ship",
-      url: "https://github.com/acme/widgets/pull/42",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-    });
+    expect(result.notifyOnComplete).toBe(true);
+    expect(result.prs).toEqual([{ owner: "acme", repo: "widgets", number: 42 }]);
   });
 
-  it("includes recipientEmail in slack notification when getUserEmail resolves", async () => {
+  it("sets notifyOnComplete on iteration with unresolved human thread", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    linear.getUserEmail.mockResolvedValue("assignee@example.com");
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
-    const github = makeGithub();
-    github.getDefaultBranch.mockResolvedValue("main");
-    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
-    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
-        prTitle: "feat: ship",
-        prBody: "body",
-      });
-    });
-
-    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
-
-    expect(linear.getUserEmail).toHaveBeenCalledWith("creator");
-    expect(slack.notifyPullRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ recipientEmail: "assignee@example.com" }),
-    );
-  });
-
-  it("sends a slack 'updated' notification when push_for_review runs on an existing PR", async () => {
-    const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/blueden",
@@ -484,53 +450,22 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [makePullRequestContext()],
       }),
       github: makeGithub(),
-      linear,
-      slack,
+      linear: makeLinear(),
       gitEnv: {},
     });
 
-    expect(slack.notifyPullRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "updated",
-        pr: { owner: "acme", repo: "widgets", number: 7 },
-        url: "https://github.com/acme/widgets/pull/7",
-        ticketId: "DEN-1",
-      }),
-    );
+    expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("does not require a slack integration to be provided", async () => {
+  it("sets notifyOnComplete=true for a new PR (state=new always notifies)", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
-        prTitle: "fix",
-        prBody: "body",
-      });
-    });
-
-    const result = await runPiWorker({
-      context: makeContext({ prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
-      github: makeGithub(),
-      linear,
-      gitEnv: {},
-    });
-
-    expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
-  });
-
-  it("sends a slack 'opened' notification on a new PR after push_for_review", async () => {
-    const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const github = makeGithub();
     github.getDefaultBranch.mockResolvedValue("main");
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
@@ -542,22 +477,13 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {} });
 
-    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
-      kind: "opened",
-      pr: { owner: "acme", repo: "widgets", number: 42 },
-      title: "feat: ship",
-      url: "https://github.com/acme/widgets/pull/42",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-    });
+    expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("does not send a slack notification on iteration when only bot comments triggered the dispatch", async () => {
+  it("sets notifyOnComplete=false on iteration when only bot comments triggered the dispatch", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const botPrContext = makePullRequestContext();
     botPrContext.reviewThreads[0]!.comments[0]!.author = "cursor[bot]";
     botPrContext.reviewThreads[0]!.comments[0]!.authorId = "BOT_cursor";
@@ -570,25 +496,22 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [botPrContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
+      linear: makeLinear(),
       gitEnv: {},
     });
 
-    expect(slack.notifyPullRequest).not.toHaveBeenCalled();
+    expect(result.notifyOnComplete).toBe(false);
   });
 
-  it("sends a slack notification on iteration when at least one unresolved thread has a human comment", async () => {
+  it("sets notifyOnComplete=true on iteration when at least one unresolved thread has a human comment", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const mixedPrContext = makePullRequestContext();
     // First thread is a bot; add a second human-authored thread.
     mixedPrContext.reviewThreads[0]!.comments[0]!.author = "baloo[bot]";
@@ -624,25 +547,22 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [mixedPrContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
+      linear: makeLinear(),
       gitEnv: {},
     });
 
-    expect(slack.notifyPullRequest).toHaveBeenCalledTimes(1);
+    expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("does not send a slack notification on iteration with no unresolved review threads (e.g. CI-failure re-run)", async () => {
+  it("sets notifyOnComplete=false on iteration with no unresolved review threads (e.g. CI-failure re-run)", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const prContext = makePullRequestContext();
     prContext.reviewThreads = [];
     prContext.unresolvedReviewThreads = [];
@@ -654,25 +574,22 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [prContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
+      linear: makeLinear(),
       gitEnv: {},
     });
 
-    expect(slack.notifyPullRequest).not.toHaveBeenCalled();
+    expect(result.notifyOnComplete).toBe(false);
   });
 
-  it("treats our own bear-metal bot replies as non-human (no [bot] suffix in GraphQL login)", async () => {
+  it("sets notifyOnComplete=false when bear-metal bot replies are mistaken for human (no [bot] suffix in GraphQL login)", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const ownBotPrContext = makePullRequestContext();
     // GraphQL returns the bare slug for app accounts; the node id is what
     // disambiguates a bot from a user.
@@ -687,19 +604,18 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [ownBotPrContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
+      linear: makeLinear(),
       gitEnv: {},
     });
 
-    expect(slack.notifyPullRequest).not.toHaveBeenCalled();
+    expect(result.notifyOnComplete).toBe(false);
   });
 
   it("comments and hands the ticket back to its human owner when pending human response", async () => {

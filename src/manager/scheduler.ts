@@ -11,6 +11,8 @@ import type {
   WorkOutcome,
 } from "../shared/index.js";
 
+import type { SlackIntegration } from "../shared/index.js";
+
 import type { DbClient, TaskSlot } from "../db/client.js";
 
 type TicketPhase = "active" | "parked";
@@ -29,12 +31,14 @@ interface DispatchItem {
 
 /** The Linear capabilities the scheduler needs (subset of LinearIntegration). */
 export interface LinearSource {
+  getAgentId(): Promise<string>;
   findDelegatedTickets(agentId: string): Promise<Ticket[]>;
   getTicket(id: string): Promise<Ticket>;
   /** Relinquish the agent's delegation so the ticket returns to its human assignee. */
   handBack(ticketId: string): Promise<void>;
   /** Post a comment on the ticket and then relinquish delegation. */
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
+  getUserEmail(userId: string): Promise<string | null>;
 }
 
 /** The GitHub capabilities the scheduler needs (subset of GitHubIntegration). */
@@ -70,14 +74,13 @@ export interface SchedulerDeps {
   github: GitHubSource;
   db: DbClient;
   handler: TicketHandler;
-  /** Linear user id of the agent the manager runs as; it works tickets delegated to this id. */
-  agentId: string;
   concurrency: number;
   pollIntervalMs: number;
   /** A task whose owning worker hasn't heartbeat within this many ms is considered crashed/hung. */
   taskStaleAfterMs?: number;
   /** Cap on how many times a single row can be recovered before the manager abandons it. */
   taskMaxReclaims?: number;
+  slack?: SlackIntegration;
 }
 
 const DEFAULT_TASK_STALE_AFTER_MS = 5 * 60_000;
@@ -126,7 +129,8 @@ export class Scheduler {
    * free SQL slots, then enqueue one worker task per eligible dispatch.
    */
   async tick(): Promise<void> {
-    const { db, linear, github, handler, logger, agentId, concurrency } = this.deps;
+    const { db, linear, github, handler, logger, concurrency } = this.deps;
+    const agentId = await linear.getAgentId();
 
     // Recover any tasks owned by a dead/hung worker before reading the tracked set, so the
     // subsequent in-flight count and dispatch decisions see the fresh state.
@@ -168,7 +172,7 @@ export class Scheduler {
     const inFlight = tracked.filter((s) => s.latestTask.resultStatus === null).length;
     logger.debug({ tracked: tracked.length, inFlight }, "poll tick started");
 
-    const refreshed = await refreshTrackedTickets(db, linear, github, agentId, logger);
+    const refreshed = await refreshTrackedTickets(db, linear, github, agentId, logger, this.deps.slack);
     const admitted = await admitNewTickets(
       db,
       linear,
@@ -368,7 +372,6 @@ async function evaluateTicket(
         }
       }
       if (testsFailed) {
-        void db.upsertTicketCiFailed(ticket.id);
         void db.recordEvent({
           id: randomUUID(),
           ticketId: ticket.id,
@@ -383,7 +386,6 @@ async function evaluateTicket(
       } else {
         const firstPr = statuses[0]?.pr;
         if (firstPr) {
-          void db.upsertTicketPrOpen(ticket.id);
           void db.recordEvent({
             id: randomUUID(),
             ticketId: ticket.id,
@@ -412,7 +414,6 @@ async function evaluateTicket(
       const summary = hasMergeConflicts
         ? "Re-dispatched: merge conflicts on PR head"
         : "Re-dispatched: unresolved review or resumed";
-      void db.upsertTicketDelegatedBack(ticket.id);
       void db.recordEvent({
         id: randomUUID(),
         ticketId: ticket.id,
@@ -443,6 +444,7 @@ async function refreshTrackedTickets(
   github: GitHubSource,
   agentId: string,
   logger: Logger,
+  slack?: SlackIntegration,
 ): Promise<DispatchItem[]> {
   const toDispatch: DispatchItem[] = [];
   for (const slot of await db.listTracked()) {
@@ -470,7 +472,7 @@ async function refreshTrackedTickets(
           // If this throws, leave the slot tracked so the next tick retries.
           await linear.handBack(ticket.id);
           logger.info({ ticket: ticket.identifier }, "handed ticket back to assignee after merge");
-          void db.upsertTicketCompleted(ticket.id);
+          await db.setTicketStatus(ticket.id, "completed");
           void db.recordEvent({
             id: randomUUID(),
             ticketId: ticket.id,
@@ -501,7 +503,7 @@ async function refreshTrackedTickets(
           }
           await linear.commentAndHandBack(ticket.id, HUMAN_TAKEOVER_LINEAR_COMMENT);
           logger.info({ ticket: ticket.identifier }, "handed ticket back after human takeover");
-          void db.upsertTicketDelegatedBack(ticket.id);
+          void db.setTicketStatus(ticket.id, "waiting_for_human");
           void db.recordEvent({
             id: randomUUID(),
             ticketId: ticket.id,
@@ -513,6 +515,9 @@ async function refreshTrackedTickets(
             payloadJson: null,
             createdAt: new Date().toISOString(),
           });
+        } else if (!decision.merged && decision.context.prs.length > 0) {
+          // All PRs closed without merging — ticket needs human attention.
+          void db.setTicketStatus(ticket.id, "waiting_for_human");
         }
         await db.setSlotStatus(slot.ticketId!, "released");
         continue;
@@ -521,15 +526,34 @@ async function refreshTrackedTickets(
       if (slot.slotStatus !== decision.phase) {
         await db.setSlotStatus(slot.ticketId!, decision.phase);
       }
-      // Delegated, tracked, no PR yet — it's being worked but has nothing to show. (Parked tickets stay quiet.)
-      if (decision.phase === "active" && decision.context.prs.length === 0) {
-        void db.upsertTicketInProgress(ticket.id, 0);
-      }
       if (decision.dispatch) {
         if (slot.latestTask.resultStatus === null) {
           logger.debug({ ticket: ticket.identifier }, "ticket already has active SQL task; skipping dispatch");
         } else {
+          void db.setTicketStatus(ticket.id, "in_progress");
           toDispatch.push({ context: decision.context, trigger: decision.trigger });
+        }
+      } else if (decision.phase === "active") {
+        const shouldDm = await db.tryTransitionToWaitingForHuman(ticket.id);
+        if (shouldDm && slack && decision.context.prs.length > 0) {
+          const prRef = decision.context.prs[0]!;
+          try {
+            const prStatus = await github.getPullRequestStatus(prRef);
+            const recipientEmail = ticket.assignee
+              ? (await linear.getUserEmail(ticket.assignee.id)) ?? undefined
+              : undefined;
+            await slack.notifyPullRequest({
+              kind: "opened",
+              pr: prRef,
+              title: prStatus.pr.title,
+              url: prStatus.pr.url,
+              ticketId: ticket.identifier,
+              ticketUrl: ticket.url,
+              recipientEmail,
+            });
+          } catch (err) {
+            logger.warn({ err, ticketId: ticket.id }, "failed to send waiting_for_human Slack DM");
+          }
         }
       }
     } catch (err) {

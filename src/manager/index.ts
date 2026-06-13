@@ -20,7 +20,6 @@ const logger = createLogger({ level: config.logLevel, name: "manager", pretty: c
 
 logger.info(
   {
-    assigneeId: config.linearAssigneeId,
     githubAppId: config.githubAppId,
     githubInstallationId: config.githubAppInstallationId,
     concurrency: config.workerConcurrency,
@@ -51,6 +50,11 @@ if (!slack) {
 const db = new SqlDbClient(config.databaseUrl);
 await db.initSchema();
 
+const agentId = await linear.getAgentId().catch((err) => {
+  logger.warn({ err }, "failed to resolve Linear agent id; task delegation checks disabled");
+  return undefined;
+});
+
 const handler = new ManagerTicketHandler({ logger, db });
 
 const scheduler = new Scheduler({
@@ -59,11 +63,11 @@ const scheduler = new Scheduler({
   github,
   db,
   handler,
-  agentId: config.linearAssigneeId,
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
   taskStaleAfterMs: config.taskStaleAfterMs,
   taskMaxReclaims: config.taskMaxReclaims,
+  slack,
 });
 const taskWorker = new TaskWorker({
   logger,
@@ -73,6 +77,7 @@ const taskWorker = new TaskWorker({
   pollIntervalMs: config.pollIntervalMs,
   heartbeatIntervalMs: config.taskHeartbeatIntervalMs,
   maxReclaims: config.taskMaxReclaims,
+  agentId,
 });
 
 if (config.testTicketId) {

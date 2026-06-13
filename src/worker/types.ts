@@ -46,6 +46,8 @@ export type DispatchResult = {
   usage?: DispatchUsage;
   /** Ordered tool-call timeline for the run; empty when no tool calls were captured. */
   toolCalls?: DispatchToolCall[];
+  /** When true, fire a Slack DM once the ticket reaches waiting_for_human (set by push_for_review). */
+  notifyOnComplete?: boolean;
 };
 
 export type { PullRequestRef };
