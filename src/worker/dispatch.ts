@@ -22,7 +22,7 @@ const logger = createLogger({
 export interface DispatchInput {
   state: DispatchState;
   ticketId: string;
-  prs?: PullRequestRef[];
+  prs: PullRequestRef[];
   integrations: WorkerIntegrations;
   /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
   workspaceBuilderCommand?: string;
@@ -42,8 +42,7 @@ export interface DispatchInput {
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
-  const { state, ticketId, integrations } = input;
-  const prs = input.prs ?? [];
+  const { state, ticketId, integrations, prs } = input;
   validateDispatchInputs(state, ticketId, prs);
 
   const { github, linear, commentStore } = integrations;

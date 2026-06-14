@@ -76,15 +76,12 @@ export interface SchedulerDeps {
   concurrency: number;
   pollIntervalMs: number;
   /** A task whose owning worker hasn't heartbeat within this many ms is considered crashed/hung. */
-  taskStaleAfterMs?: number;
+  taskStaleAfterMs: number;
   /** Cap on how many times a single row can be recovered before the manager abandons it. */
-  taskMaxReclaims?: number;
+  taskMaxReclaims: number;
   slack?: SlackIntegration;
   maxIterations: number;
 }
-
-const DEFAULT_TASK_STALE_AFTER_MS = 5 * 60_000;
-const DEFAULT_TASK_MAX_RECLAIMS = 3;
 
 // ---------------------------------------------------------------------------
 // Scheduler — owns the timer, queue, and in-flight guard; composes the steps.
@@ -136,8 +133,8 @@ export class Scheduler {
     // subsequent in-flight count and dispatch decisions see the fresh state.
     try {
       const recovered = await db.reclaimStaleTasks({
-        staleAfterMs: this.deps.taskStaleAfterMs ?? DEFAULT_TASK_STALE_AFTER_MS,
-        maxReclaims: this.deps.taskMaxReclaims ?? DEFAULT_TASK_MAX_RECLAIMS,
+        staleAfterMs: this.deps.taskStaleAfterMs,
+        maxReclaims: this.deps.taskMaxReclaims,
       });
       for (const r of recovered) {
         logger.warn(

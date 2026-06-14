@@ -21,18 +21,13 @@ export interface TaskWorkerDeps {
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
   workspaceBuilderPath?: string;
   runDispatch?: DispatchRunner;
-  /** How often to refresh the per-task heartbeat row. Falls back to a derived value if unset. */
-  heartbeatIntervalMs?: number;
-  /** After this many crash/stale recoveries of the same row, abandon it. */
-  maxReclaims?: number;
+  heartbeatIntervalMs: number;
+  maxReclaims: number;
   /** Linear user id the manager runs as; used to detect when a task hands the ticket back. */
-  agentId?: string;
-  maxWorkerTimeMs?: number;
-  maxWorkerTokens?: number;
+  agentId: string | undefined;
+  maxWorkerTimeMs: number;
+  maxWorkerTokens: number;
 }
-
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
-const DEFAULT_MAX_RECLAIMS = 3;
 
 export class TaskWorker {
   readonly workerId: string;
@@ -64,11 +59,11 @@ export class TaskWorker {
     this.workspaceBuilderPath = deps.workspaceBuilderPath;
     this.runDispatch = deps.runDispatch ?? dispatch;
     this.startedAtMs = Date.now();
-    this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-    this.maxReclaims = deps.maxReclaims ?? DEFAULT_MAX_RECLAIMS;
+    this.heartbeatIntervalMs = deps.heartbeatIntervalMs;
+    this.maxReclaims = deps.maxReclaims;
     this.agentId = deps.agentId;
-    this.maxWorkerTimeMs = deps.maxWorkerTimeMs ?? 2 * 60 * 60 * 1000;
-    this.maxWorkerTokens = deps.maxWorkerTokens ?? 20_000_000;
+    this.maxWorkerTimeMs = deps.maxWorkerTimeMs;
+    this.maxWorkerTokens = deps.maxWorkerTokens;
     this.queue = new PQueue({ concurrency: deps.concurrency });
   }
 

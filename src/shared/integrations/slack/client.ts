@@ -1,6 +1,6 @@
 import type { Integration } from "../base.js";
 import type { PullRequestRef } from "../github/types.js";
-import { createLogger, type Logger } from "../../logger.js";
+import type { Logger } from "../../logger.js";
 
 export interface SlackIntegrationOptions {
   /** Slack bot user OAuth token (xoxb-...). */
@@ -9,8 +9,7 @@ export interface SlackIntegrationOptions {
   channel: string;
   /** Optional override for the Slack Web API base URL (used in tests). */
   apiBaseUrl?: string;
-  /** Optional logger; defaults to a pino logger named "slack". */
-  logger?: Logger;
+  logger: Logger;
   /** Optional fetch implementation; defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
@@ -26,8 +25,7 @@ export interface PullRequestNotification {
   url: string;
   /** Originating Linear ticket identifier (e.g. "DEN-2305"). */
   ticketId: string;
-  /** Optional Linear ticket url. */
-  ticketUrl?: string;
+  ticketUrl: string;
   /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
   recipientEmail?: string;
 }
@@ -57,7 +55,7 @@ export class SlackIntegration implements Integration {
     this.token = options.token;
     this.channel = options.channel;
     this.apiBaseUrl = options.apiBaseUrl ?? DEFAULT_API_BASE_URL;
-    this.logger = options.logger ?? createLogger({ level: "info", name: "slack" });
+    this.logger = options.logger;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -142,12 +140,12 @@ function escapeSlackMrkdwn(text: string): string {
 export function formatNotificationText(notification: PullRequestNotification): string {
   const { kind, pr, title, url, ticketId, ticketUrl } = notification;
   if (!url.startsWith("https://")) throw new Error(`Invalid PR URL: ${url}`);
-  if (ticketUrl && !ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
+  if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
   const verb = kind === "opened" ? "opened" : "updated";
   const icon = kind === "opened" ? ":rocket:" : ":arrows_counterclockwise:";
   const safeTitle = escapeSlackMrkdwn(title);
   const safeTicketId = escapeSlackMrkdwn(ticketId);
   const prLink = `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`;
-  const ticketLabel = ticketUrl ? `<${ticketUrl}|${safeTicketId}>` : safeTicketId;
+  const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
   return `${icon} *PR ${verb}* ${prLink} — ${safeTitle} (ticket: ${ticketLabel})`;
 }

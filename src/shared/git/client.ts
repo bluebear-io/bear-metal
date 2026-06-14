@@ -5,7 +5,7 @@ export type RemoteRef = {
   repo: string;
 };
 
-export async function push(repoRoot: string, env?: NodeJS.ProcessEnv): Promise<void> {
+export async function push(repoRoot: string, env: NodeJS.ProcessEnv): Promise<void> {
   const branch = (await git(["branch", "--show-current"], repoRoot, env)).stdout.trim();
   if (!branch) {
     throw new Error(`Could not determine current git branch in ${repoRoot}`);

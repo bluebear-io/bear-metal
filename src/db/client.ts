@@ -514,7 +514,7 @@ export interface DbClient {
 
   // Run lifecycle
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
-  upsertRunSucceeded(taskId: string, usage?: RunUsage | null): Promise<void>;
+  upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
   upsertRunCrashed(taskId: string, error: string): Promise<void>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
@@ -543,7 +543,7 @@ export interface DbClient {
   close(): Promise<void>;
 
   // Read (dashboard)
-  listTickets(options?: ListTicketsOptions): Promise<ListTicketsResult>;
+  listTickets(options: ListTicketsOptions): Promise<ListTicketsResult>;
   listTicketFilterOptions(): Promise<TicketFilterOptions>;
   getTicketDetail(id: string): Promise<TicketDetail | null>;
   listWorkers(): Promise<WorkerListItem[]>;
@@ -1039,7 +1039,7 @@ export class SqlDbClient implements DbClient {
   private sqlite: DatabaseSync | null = null;
   private pgPool: pg.Pool | null = null;
 
-  constructor(databaseUrl: string, maxIterations = 50) {
+  constructor(databaseUrl: string, maxIterations: number) {
     this.databaseUrl = databaseUrl;
     this.dialect = detectDialect(databaseUrl);
     this.maxIterations = maxIterations;
@@ -1076,7 +1076,7 @@ export class SqlDbClient implements DbClient {
     return result.rows as T[];
   }
 
-  private async run(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
+  private async run(sql: string, params: unknown[]): Promise<{ changes: number }> {
     if (this.dialect === "sqlite") {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = this.requireSqlite().prepare(this.sql(sql)).run(...(params as any[]));
@@ -1268,7 +1268,7 @@ export class SqlDbClient implements DbClient {
     );
   }
 
-  async upsertRunSucceeded(taskId: string, usage?: RunUsage | null): Promise<void> {
+  async upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void> {
     const now = this.clock.nowIso();
     await this.run(
       `UPDATE tasks SET run_status = 'succeeded', stop_reason = 'completed',
@@ -1801,7 +1801,7 @@ export class SqlDbClient implements DbClient {
   // Dashboard reads — listTickets
   // -------------------------------------------------------------------------
 
-  async listTickets(options: ListTicketsOptions = {}): Promise<ListTicketsResult> {
+  async listTickets(options: ListTicketsOptions): Promise<ListTicketsResult> {
     const page = clampPage(options.page);
     const pageSize = clampPageSize(options.pageSize);
 
