@@ -23,6 +23,11 @@ describe("TaskWorker", () => {
       pollIntervalMs: 60_000,
       workerId: "worker-1",
       runDispatch,
+      heartbeatIntervalMs: 30_000,
+      maxReclaims: 3,
+      agentId: undefined,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
     });
 
     await worker.tick();
@@ -59,6 +64,11 @@ describe("TaskWorker", () => {
       pollIntervalMs: 60_000,
       workerId: "worker-1",
       runDispatch,
+      heartbeatIntervalMs: 30_000,
+      maxReclaims: 3,
+      agentId: undefined,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
     });
 
     await worker.tick();
@@ -89,6 +99,10 @@ describe("TaskWorker", () => {
       workerId: "worker-1",
       maxReclaims: 5,
       runDispatch,
+      heartbeatIntervalMs: 30_000,
+      agentId: undefined,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
     });
 
     await worker.tick();
@@ -123,6 +137,10 @@ describe("TaskWorker", () => {
       workerId: "worker-1",
       runDispatch,
       heartbeatIntervalMs: 10,
+      maxReclaims: 3,
+      agentId: undefined,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
     });
 
     await worker.tick();

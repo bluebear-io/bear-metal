@@ -38,6 +38,8 @@ export interface LinearSource {
   /** Post a comment on the ticket and then relinquish delegation. */
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
   getUserEmail(userId: string): Promise<string | null>;
+  /** Returns open GitHub PR refs attached to the ticket, parsed from Linear attachments. */
+  getPullRequestRefs(ticketId: string): Promise<PullRequestRef[]>;
 }
 
 /** The GitHub capabilities the scheduler needs (subset of GitHubIntegration). */
@@ -587,7 +589,12 @@ async function admitNewTickets(
   const admitted = selectAdmissions(candidates, (id) => trackedTicketIds.has(id), free);
   const contexts: DispatchItem[] = [];
   for (const ticket of admitted) {
-    const context: TicketContext = { ticket, prs: [] };
+    const prs = await linear.getPullRequestRefs(ticket.id).catch((err) => {
+      logger.warn({ err, ticket: ticket.identifier }, "failed to fetch PR refs from Linear; admitting with empty PR list");
+      return [];
+    });
+    logger.info({ ticket: ticket.identifier, prCount: prs.length }, "picked up ticket");
+    const context: TicketContext = { ticket, prs };
     await db.upsertTicketDiscovered({
       id: ticket.id,
       identifier: ticket.identifier,
@@ -599,7 +606,6 @@ async function admitNewTickets(
       linearStatusType: ticket.status.type,
       labels: ticket.labels,
     });
-    logger.info({ ticket: ticket.identifier }, "picked up ticket");
     contexts.push({ context, trigger: "new" });
   }
   return contexts;

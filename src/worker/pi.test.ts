@@ -633,7 +633,7 @@ describe("runPiWorker", () => {
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", "Need a product decision.");
+    expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", expect.stringContaining("Need a product decision."));
     expect(result).toEqual({ status: "pending", prs: [] });
     expect(piMock.sessionDispose).toHaveBeenCalled();
   });

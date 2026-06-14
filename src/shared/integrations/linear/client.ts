@@ -133,6 +133,22 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     await issue.update({ delegateId: null });
   }
 
+  async getPullRequestRefs(ticketId: string): Promise<{ owner: string; repo: string; number: number }[]> {
+    const issue = await this.client.issue(ticketId);
+    const attachments = await issue.attachments();
+    const refs: { owner: string; repo: string; number: number }[] = [];
+    for (const attachment of attachments.nodes) {
+      if (attachment.sourceType !== "github") continue;
+      const match = attachment.url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
+      if (!match) continue;
+      const meta = attachment.metadata as Record<string, unknown> | null;
+      const state = (meta?.state ?? meta?.status) as string | undefined;
+      if (state === "closed" || state === "merged") continue;
+      refs.push({ owner: match[1]!, repo: match[2]!, number: parseInt(match[3]!, 10) });
+    }
+    return refs;
+  }
+
   private async getComments(issue: Issue): Promise<TicketComment[]> {
     const comments: TicketComment[] = [];
     let after: string | undefined;

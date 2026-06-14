@@ -27,22 +27,24 @@ describe("formatNotificationText", () => {
       title: "Check <https://evil.com|this> & stuff",
       url: "https://github.com/acme/blueden/pull/1",
       ticketId: "DEN-<1>",
+      ticketUrl: "https://linear.app/x/DEN-1",
     });
     expect(text).toContain("Check &lt;https://evil.com|this&gt; &amp; stuff");
-    expect(text).toContain("(ticket: DEN-&lt;1&gt;)");
+    expect(text).toContain("DEN-&lt;1&gt;");
     expect(text).not.toContain("<https://evil.com|this>");
   });
 
-  it("formats an 'updated' message and falls back to plain ticket id without url", () => { 
+  it("formats an 'updated' message with ticket link", () => {
     const text = formatNotificationText({
       kind: "updated",
       pr: { owner: "acme", repo: "blueden", number: 7 },
       title: "Fix flakes",
       url: "https://github.com/acme/blueden/pull/7",
       ticketId: "DEN-9",
+      ticketUrl: "https://linear.app/x/DEN-9",
     });
     expect(text).toContain(":arrows_counterclockwise: *PR updated*");
-    expect(text).toContain("(ticket: DEN-9)");
+    expect(text).toContain("DEN-9");
   });
 });
 
@@ -64,6 +66,7 @@ describe("SlackIntegration", () => {
       title: "Hello",
       url: "https://example.com/pr/1",
       ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
     });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -96,6 +99,7 @@ describe("SlackIntegration", () => {
         title: "Hi",
         url: "https://example.com/pr/2",
         ticketId: "DEN-2",
+        ticketUrl: "https://linear.app/x/DEN-2",
       }),
     ).resolves.toBeUndefined();
   });
@@ -116,6 +120,7 @@ describe("SlackIntegration", () => {
         title: "Hi",
         url: "https://example.com/pr/3",
         ticketId: "DEN-3",
+        ticketUrl: "https://linear.app/x/DEN-3",
       }),
     ).resolves.toBeUndefined();
   });
@@ -138,13 +143,14 @@ describe("SlackIntegration", () => {
         title: "Hi",
         url: "https://example.com/pr/4",
         ticketId: "DEN-4",
+        ticketUrl: "https://linear.app/x/DEN-4",
       }),
     ).resolves.toBeUndefined();
   });
 
   it("throws when constructed without a token or channel", () => {
-    expect(() => new SlackIntegration({ token: "", channel: "C1" })).toThrow();
-    expect(() => new SlackIntegration({ token: "xoxb", channel: "" })).toThrow();
+    expect(() => new SlackIntegration({ token: "", channel: "C1", logger: SILENT_LOGGER })).toThrow();
+    expect(() => new SlackIntegration({ token: "xoxb", channel: "", logger: SILENT_LOGGER })).toThrow();
   });
 
   it("sends a DM when recipientEmail resolves to a Slack user", async () => {
@@ -168,6 +174,7 @@ describe("SlackIntegration", () => {
       title: "Hello",
       url: "https://example.com/pr/1",
       ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
       recipientEmail: "user@example.com",
     });
 
@@ -200,6 +207,7 @@ describe("SlackIntegration", () => {
       title: "Hello",
       url: "https://example.com/pr/1",
       ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
       recipientEmail: "unknown@example.com",
     });
 
@@ -227,6 +235,7 @@ describe("SlackIntegration", () => {
       title: "Hello",
       url: "https://example.com/pr/1",
       ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
       recipientEmail: "user@example.com",
     });
 

@@ -95,7 +95,8 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.debug({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
-      await input.linear.commentAndHandBack(input.context.ticketId, params.text);
+      const footer = "\n\n---\n\n🐻 **Waiting for your input.**\nTo get me back on this:\n1. Add a clarifying comment here or update the ticket description with the missing information\n2. Assign or delegate this ticket back to bear-metal — I'll pick it up automatically from there";
+      await input.linear.commentAndHandBack(input.context.ticketId, params.text + footer);
       setDecision({ status: "pending", prs: mergePrs(input.context.prs, collectedPrs) });
       return {
         content: [{ type: "text", text: "Posted Linear comment, relinquished delegation, and marked dispatch pending." }],

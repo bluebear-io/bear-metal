@@ -41,6 +41,7 @@ describe("dispatch", () => {
     const result = await dispatch({
       state: "new",
       ticketId: "DEN-1",
+      prs: [],
       integrations: {
         github: makeGithub(),
         linear: {
@@ -83,6 +84,7 @@ describe("dispatch", () => {
       await dispatch({
         state: "new",
         ticketId: "DEN-1",
+        prs: [],
         integrations: makeIntegrations(),
         maxWorkerTimeMs: 7_200_000,
         maxWorkerTokens: 20_000_000,
@@ -101,6 +103,7 @@ describe("dispatch", () => {
         dispatch({
           state: "new",
           ticketId: "DEN-1",
+          prs: [],
           integrations: makeIntegrations(),
           maxWorkerTimeMs: 7_200_000,
           maxWorkerTokens: 20_000_000,

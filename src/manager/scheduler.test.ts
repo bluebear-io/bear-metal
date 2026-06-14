@@ -68,7 +68,7 @@ function status(
 }
 
 async function makeDb(): Promise<DbClient> {
-  const db = new SqlDbClient("sqlite::memory:");
+  const db = new SqlDbClient("sqlite::memory:", 50);
   await db.initSchema();
   dbs.push(db);
   return db;
@@ -120,6 +120,9 @@ class FakeLinear implements LinearSource {
   }
   async getUserEmail(_userId: string): Promise<string | null> {
     return null;
+  }
+  async getPullRequestRefs(_ticketId: string): Promise<{ owner: string; repo: string; number: number }[]> {
+    return [];
   }
 }
 
@@ -185,8 +188,8 @@ function buildScheduler(deps: {
     handler: deps.handler,
     concurrency: deps.concurrency,
     pollIntervalMs: 60_000,
-    taskStaleAfterMs: deps.taskStaleAfterMs,
-    taskMaxReclaims: deps.taskMaxReclaims,
+    taskStaleAfterMs: deps.taskStaleAfterMs ?? 60_000,
+    taskMaxReclaims: deps.taskMaxReclaims ?? 3,
     maxIterations: deps.maxIterations ?? 50,
   });
 }
