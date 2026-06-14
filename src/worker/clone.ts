@@ -1,5 +1,5 @@
 import { homedir, tmpdir } from "node:os";
-import { rm, mkdir, mkdtemp, chmod, writeFile } from "node:fs/promises";
+import { rm, mkdir, mkdtemp, chmod, writeFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { runCommand } from "../shared/command.js";
 import type { Ticket } from "../shared/integrations/linear/types.js";
@@ -73,6 +73,14 @@ export async function runWorkspaceBuilder(input: RunWorkspaceBuilderInput): Prom
         GIT_CONFIG_VALUE_0: "git@github.com:",
       },
     });
+
+    const entries = await readdir(agentWorkdir).catch(() => []);
+    if (entries.length === 0) {
+      throw new Error(
+        `Workspace builder exited 0 but AGENT_WORKDIR is empty (${agentWorkdir}). ` +
+        `Make sure your script clones into "$AGENT_WORKDIR".`,
+      );
+    }
 
     return {
       agentWorkdir,

@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const commandMock = vi.hoisted(() => ({
-  runCommand: vi.fn(async () => ({ stdout: "cloned", stderr: "" })),
+  runCommand: vi.fn(async (_cmd: unknown, _args: unknown, opts: { env?: Record<string, string> }) => {
+    // Simulate the workspace builder populating AGENT_WORKDIR so the post-run validation passes.
+    if (opts?.env?.AGENT_WORKDIR) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(`${opts.env.AGENT_WORKDIR}/.workspace-ready`, "");
+    }
+    return { stdout: "cloned", stderr: "" };
+  }),
 }));
 
 vi.mock("../shared/command.js", () => ({
@@ -83,6 +90,19 @@ describe("runWorkspaceBuilder", () => {
           }),
         }),
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when workspace builder exits 0 but leaves AGENT_WORKDIR empty", async () => {
+    commandMock.runCommand.mockResolvedValueOnce({ stdout: "", stderr: "" });
+    const { runWorkspaceBuilder } = await import("./clone.js");
+    const root = await mkdtempRoot();
+    try {
+      await expect(
+        runWorkspaceBuilder({ workspaceDir: join(root, "ws"), githubToken: "tok", ticket, builderCommand: "echo hi" }),
+      ).rejects.toThrow(/AGENT_WORKDIR is empty/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
