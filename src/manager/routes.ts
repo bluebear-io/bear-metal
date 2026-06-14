@@ -203,6 +203,44 @@ export function createRouter(db: DbClient, maxIterations: number): Router {
     }
   });
 
+  router.get("/workers/timeline", async (req, res, next) => {
+    try {
+      const now = new Date();
+      const defaultFrom = new Date(now.getTime() - DEFAULT_TIMELINE_WINDOW_MS);
+      const to = parseIsoOrDefault(req.query.to, now);
+      const from = parseIsoOrDefault(req.query.from, defaultFrom);
+      if (!from || !to) {
+        res.status(400).json({ error: "from and to must be valid ISO timestamps" });
+        return;
+      }
+      if (from.getTime() >= to.getTime()) {
+        res.status(400).json({ error: "from must be before to" });
+        return;
+      }
+      // Cap the window so a stray query can't pull in unbounded transition history. The UI's
+      // designed range is 24-72h; 7d is a generous ceiling that still bounds the response size.
+      if (to.getTime() - from.getTime() > MAX_TIMELINE_WINDOW_MS) {
+        res.status(400).json({ error: `timeline window must be ${MAX_TIMELINE_WINDOW_DAYS} days or less` });
+        return;
+      }
+      const timeline = await repo.getWorkerTimeline({ from, to });
+      res.json({
+        window: { from: timeline.window.from.toISOString(), to: timeline.window.to.toISOString() },
+        workers: timeline.workers.map((w) => ({
+          workerId: w.workerId,
+          workerName: w.workerName,
+          spans: w.spans.map((s) => ({
+            status: s.status,
+            startedAt: s.startedAt.toISOString(),
+            endedAt: s.endedAt ? s.endedAt.toISOString() : null,
+          })),
+        })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get("/models/comparison", async (_req, res, next) => {
     try {
       res.json({ models: await db.listModelComparison() });
@@ -251,3 +289,7 @@ function parseIsoOrDefault(raw: unknown, fallback: Date): Date | null {
 
 const MAX_SUMMARY_WINDOW_DAYS = 90;
 const MAX_SUMMARY_WINDOW_MS = MAX_SUMMARY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+const DEFAULT_TIMELINE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_TIMELINE_WINDOW_DAYS = 7;
+const MAX_TIMELINE_WINDOW_MS = MAX_TIMELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
