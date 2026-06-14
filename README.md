@@ -95,12 +95,6 @@ npm run build    # type-check + compile all packages
 npm test         # run unit tests
 ```
 
-## Run
-
-```bash
-docker compose up --build   # runs the manager; GET /health on $PORT
-```
-
 ## Dashboard DB
 
 The dashboard backend (`src/backend/`) reads and writes its own database — separate from the

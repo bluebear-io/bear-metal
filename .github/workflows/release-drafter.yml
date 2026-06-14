@@ -1,0 +1,44 @@
+# Release Drafter Workflow
+# Automatically creates and updates draft releases based on merged PRs
+# Draft releases are categorized by PR labels (feature, bugfix, etc.)
+#
+# Workflow:
+# 1. PR merged to main -> This workflow runs
+# 2. Draft release is created/updated with PR changes
+# 3. Manual publish of release triggers production deployment
+#
+# Related: deploy-environment.yml (triggers on release publish)
+
+name: Release Drafter
+
+on:
+  push:
+    branches:
+      - main
+  # Autolabel PRs when opened/edited (required for categorization)
+  pull_request_target:
+    types: [opened, reopened, synchronize, edited]
+  # Allow manual trigger to update draft release
+  workflow_dispatch:
+
+# DEN-737: Prevent multiple release drafter runs from stacking up
+concurrency:
+  group: release-drafter-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-release-draft:
+    name: Update Release Draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run Release Drafter
+        uses: release-drafter/release-drafter@v6.0.0
+        with:
+          config-name: release-drafter.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
