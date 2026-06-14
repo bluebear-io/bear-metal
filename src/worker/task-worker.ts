@@ -20,6 +20,8 @@ export interface TaskWorkerDeps {
   workspaceBuilderCommand?: string;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
   workspaceBuilderPath?: string;
+  /** Custom system prompt content injected into the agent prompt. */
+  systemPrompt?: string | null;
   runDispatch?: DispatchRunner;
   heartbeatIntervalMs: number;
   maxReclaims: number;
@@ -39,6 +41,7 @@ export class TaskWorker {
   private readonly pollIntervalMs: number;
   private readonly workspaceBuilderCommand: string | undefined;
   private readonly workspaceBuilderPath: string | undefined;
+  private readonly systemPrompt: string | null | undefined;
   private readonly runDispatch: DispatchRunner;
   private readonly startedAtMs: number;
   private readonly heartbeatIntervalMs: number;
@@ -57,6 +60,7 @@ export class TaskWorker {
     this.pollIntervalMs = deps.pollIntervalMs;
     this.workspaceBuilderCommand = deps.workspaceBuilderCommand;
     this.workspaceBuilderPath = deps.workspaceBuilderPath;
+    this.systemPrompt = deps.systemPrompt;
     this.runDispatch = deps.runDispatch ?? dispatch;
     this.startedAtMs = Date.now();
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs;
@@ -168,6 +172,7 @@ export class TaskWorker {
         integrations: this.integrations,
         workspaceBuilderCommand: this.workspaceBuilderCommand,
         workspaceBuilderPath: this.workspaceBuilderPath,
+        systemPrompt: this.systemPrompt,
         maxWorkerTimeMs: this.maxWorkerTimeMs,
         maxWorkerTokens: this.maxWorkerTokens,
         onToolCallProgress: (calls) => {

@@ -1,3 +1,5 @@
+import { readFileSync } from "fs";
+
 export type DatabaseDialect = "sqlite" | "postgres";
 
 export function detectDialect(databaseUrl: string): DatabaseDialect {
@@ -11,6 +13,8 @@ export interface Config {
   workspaceBuilderCommand: string | null;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
   workspaceBuilderPath: string | null;
+  /** Custom system prompt content injected into the agent prompt. Mutually exclusive with systemPromptPath. */
+  systemPrompt: string | null;
   linearApiToken: string;
   githubAppId: number;
   githubAppPrivateKey: string;
@@ -80,6 +84,7 @@ export function positiveIntEnv(name: string, fallback: number): number {
 export function loadConfig(): Readonly<Config> {
   return Object.freeze({
     ...loadWorkspaceBuilderConfig(),
+    ...loadSystemPromptConfig(),
     linearApiToken: requiredEnv("LINEAR_API_TOKEN"),
     githubAppId: requiredPositiveIntEnv("GITHUB_APP_ID"),
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
@@ -115,6 +120,26 @@ function loadSlackConfig(): { slackBotToken: string | null; slackNotificationCha
     );
   }
   return { slackBotToken: token, slackNotificationChannel: channel };
+}
+
+/**
+ * Both SYSTEM_PROMPT and SYSTEM_PROMPT_PATH are optional, but mutually exclusive.
+ * SYSTEM_PROMPT: inline prompt content. SYSTEM_PROMPT_PATH: path to a file containing the prompt.
+ */
+function loadSystemPromptConfig(): { systemPrompt: string | null } {
+  const inline = process.env.SYSTEM_PROMPT?.trim() || null;
+  const path = process.env.SYSTEM_PROMPT_PATH?.trim() || null;
+  if (inline && path) {
+    throw new Error("SYSTEM_PROMPT and SYSTEM_PROMPT_PATH are mutually exclusive — set at most one");
+  }
+  if (path) {
+    try {
+      return { systemPrompt: readFileSync(path, "utf8") };
+    } catch (err) {
+      throw new Error(`SYSTEM_PROMPT_PATH: cannot read file at "${path}" — ${(err as NodeJS.ErrnoException).message}`);
+    }
+  }
+  return { systemPrompt: inline };
 }
 
 /**

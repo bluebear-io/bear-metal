@@ -11,6 +11,7 @@ import {
 } from "../shared/index.js";
 import type {
   DispatchResult,
+  DispatchState,
   DispatchToolCall,
   DispatchUsage,
   PullRequestRef,
@@ -40,6 +41,15 @@ export async function runPiWorker(input: {
   linear: WorkerLinear;
   commentStore?: WorkerCommentStore;
   gitEnv: NodeJS.ProcessEnv;
+  systemPrompt?: string | null;
+  prs?: PullRequestRef[];
+  onAgentStarted?: (payload: {
+    state: DispatchState;
+    ticket: WorkerInputContext["ticket"];
+    pullRequests: WorkerInputContext["pullRequests"];
+    prs: PullRequestRef[];
+    prompt: string;
+  }) => void;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
@@ -276,7 +286,7 @@ export async function runPiWorker(input: {
   setApiKeyFromEnv(authStorage, "google", "GOOGLE_API_KEY");
 
   const agentsMd = await readAgentsMd(workspaceRoot);
-  const prompt = buildWorkerPrompt(input.context, { repoRoot: workspaceRoot, agentsMd });
+  const prompt = buildWorkerPrompt(input.context, { repoRoot: workspaceRoot, agentsMd, customSystemPrompt: input.systemPrompt ?? undefined });
   const workspaceDir = input.context.cloneScript.workspaceDir;
   const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
 
@@ -286,6 +296,14 @@ export async function runPiWorker(input: {
     writeFile(resolve(workspaceDir, "prompt.txt"), prompt, "utf8"),
   ]);
   logger.debug({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
+
+  input.onAgentStarted?.({
+    state: input.context.state,
+    ticket: input.context.ticket,
+    pullRequests: input.context.pullRequests,
+    prs: input.prs ?? [],
+    prompt,
+  });
 
   const isNew = input.context.state === "new";
   const stateTools = isNew

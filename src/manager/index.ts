@@ -81,6 +81,7 @@ const taskWorker = new TaskWorker({
   agentId,
   workspaceBuilderCommand: config.workspaceBuilderCommand ?? undefined,
   workspaceBuilderPath: config.workspaceBuilderPath ?? undefined,
+  systemPrompt: config.systemPrompt,
   maxWorkerTimeMs: config.maxWorkerTimeMs,
   maxWorkerTokens: config.maxWorkerTokens,
 });

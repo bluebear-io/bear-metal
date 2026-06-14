@@ -28,6 +28,8 @@ export interface DispatchInput {
   workspaceBuilderCommand?: string;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
   workspaceBuilderPath?: string;
+  /** Custom system prompt content injected into the agent prompt. */
+  systemPrompt?: string | null;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
   onWorkspaceBuilding?: () => void;
   onWorkspaceBuilt?: (agentWorkdir: string) => void;
@@ -36,6 +38,7 @@ export interface DispatchInput {
     ticket: WorkerInputContext["ticket"];
     pullRequests: WorkerInputContext["pullRequests"];
     prs: PullRequestRef[];
+    prompt: string;
   }) => void;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
@@ -122,15 +125,9 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     GIT_COMMITTER_EMAIL: botEmail,
   };
 
-  input.onAgentStarted?.({
-    state: context.state,
-    ticket: context.ticket,
-    pullRequests: context.pullRequests,
-    prs,
-  });
   logger.debug({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens });
+    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, systemPrompt: input.systemPrompt, onAgentStarted: input.onAgentStarted, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens, prs });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {

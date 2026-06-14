@@ -4,11 +4,10 @@ import type { WorkerInputContext } from "./types.js";
 
 export function buildWorkerPrompt(
   context: WorkerInputContext,
-  opts?: { repoRoot?: string; agentsMd?: string },
+  opts?: { repoRoot?: string; agentsMd?: string; customSystemPrompt?: string },
 ): string {
   const isNew = context.state === "new";
   const repoRoot = opts?.repoRoot ?? context.cloneScript.workspaceDir;
-  const planFallback = `docs/plans/${context.ticketId}.md`;
 
   const finishToolsSection = isNew
     ? [
@@ -35,9 +34,8 @@ export function buildWorkerPrompt(
     ? [
         "1. Read the codebase to understand context.",
         "2. Create a branch following the repository's branching strategy.",
-        `3. Write a plan file describing the intended changes, the files you expect to touch, and the verification strategy, all according to the repository standards. If no plan path is specified in the repository standards, create it at \`${planFallback}\`. Commit it together with the code so it ships as part of the PR.`,
-        "4. Implement the changes.",
-        "5. Commit your changes via git, then call `push_for_review` to push and open the PR.",
+        "3. Implement the changes following the repository standards.",
+        "4. Commit your changes via git, then call `push_for_review` to push and open the PR.",
         "   OR call `respond_to_ticket_reporter` if you are blocked.",
       ]
     : [
@@ -48,15 +46,12 @@ export function buildWorkerPrompt(
         "5. Call `push_for_review` once all code changes are done.",
       ];
 
-  const blockerNote = isNew
-    ? [
-        "If at any step you are blocked or the ticket is missing critical information,",
-        "call `respond_to_ticket_reporter` with the exact question or blocker instead.",
-      ]
+  const customSystemPromptSection = opts?.customSystemPrompt
+    ? [opts.customSystemPrompt, ""]
     : [];
 
   const agentsSection = opts?.agentsMd
-    ? ["Repository guidelines:", opts.agentsMd, ""]
+    ? ["## Repository Guidelines", opts.agentsMd, ""]
     : [];
 
   return [
@@ -64,23 +59,21 @@ export function buildWorkerPrompt(
     "",
     ...finishToolsSection,
     "",
-    "Rules:",
+    `## Steps for this ${isNew ? "new task" : "PR iteration"}`,
+    ...taskInstructions,
+    "",
+    "## Rules",
     "- Use the Linear and GitHub context below as the sole source of truth.",
     "- Do not invent missing requirements.",
-    "- Do not silently work around failures.",
+    "- Do not work around failures to operate. If you cannot perform the task, stop and give up instead of looping forever on failing bash calls.",
     "- Do not shell out to discover state (branch existence, PR status, ticket state). All of it is already in the context JSON below — read it there.",
     `- Repository root: ${repoRoot}`,
     "- Never read, write, search, or cd outside the repository root.",
     "",
-    `Steps for this ${isNew ? "new task" : "PR iteration"}:`,
-    ...taskInstructions,
-    "",
-    ...blockerNote,
-    "",
-    "Context JSON:",
-    JSON.stringify(toPiContext(context), null, 2),
-    "",
+    ...customSystemPromptSection,
     ...agentsSection,
+    "## Task Context",
+    JSON.stringify(toPiContext(context), null, 2),
   ].join("\n");
 }
 
