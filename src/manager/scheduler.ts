@@ -537,7 +537,7 @@ async function refreshTrackedTickets(
               ? (await linear.getUserEmail(ticket.assignee.id)) ?? undefined
               : undefined;
             await slack.notifyPullRequest({
-              kind: "opened",
+              kind: slot.latestTask.attemptNumber === 1 ? "opened" : "updated",
               pr: prRef,
               title: prStatus.pr.title,
               url: prStatus.pr.url,
