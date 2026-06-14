@@ -342,40 +342,38 @@ async function evaluateTicket(
   const hasActionableIssueComments = statuses.some((s) => s.hasActionableIssueComments);
   const hasMergeConflicts = statuses.some((s) => s.hasMergeConflicts);
   // Report each open PR's current state (best-effort; never affects dispatch).
-  void (async () => {
-    try {
-      for (const status of statuses.filter((s) => !s.pr.merged && s.pr.state !== "closed")) {
-        const pr = status.pr;
-        const prDbId = `${pr.owner}/${pr.repo}#${pr.number}`;
-        void db.upsertPullRequest(prDbId, ticket.id, {
-          number: pr.number,
-          title: pr.title,
-          headRef: pr.headRef,
-          state: pr.state,
-          draft: pr.draft,
-          merged: pr.merged,
-          url: pr.url,
-          lastRunId: null,
-          reviewThreadsJson: JSON.stringify(status.context.reviewThreads.map((t) => ({
-            id: t.id,
-            path: t.path,
-            line: t.line,
-            isResolved: t.isResolved,
-            commentsJson: JSON.stringify(t.comments),
-          }))),
-        });
-        if (testsFailed) {
-          const ciRunId = `${prDbId}@${status.context.headSha.slice(0, 12)}`;
-          void db.upsertCiRun(ciRunId, ticket.id, null, prDbId, "failed", null, ciRunSummary(status.context), JSON.stringify([
-            ...status.context.failedCheckRuns.map((cr) => toCheckRow(ciRunId, cr)),
-            ...status.context.failedStatuses.map((s) => toStatusRow(ciRunId, s)),
-          ]));
-        }
+  try {
+    for (const status of statuses.filter((s) => !s.pr.merged && s.pr.state !== "closed")) {
+      const pr = status.pr;
+      const prDbId = `${pr.owner}/${pr.repo}#${pr.number}`;
+      await db.upsertPullRequest(prDbId, ticket.id, {
+        number: pr.number,
+        title: pr.title,
+        headRef: pr.headRef,
+        state: pr.state,
+        draft: pr.draft,
+        merged: pr.merged,
+        url: pr.url,
+        lastRunId: null,
+        reviewThreadsJson: JSON.stringify(status.context.reviewThreads.map((t) => ({
+          id: t.id,
+          path: t.path,
+          line: t.line,
+          isResolved: t.isResolved,
+          commentsJson: JSON.stringify(t.comments),
+        }))),
+      });
+      if (testsFailed) {
+        const ciRunId = `${prDbId}@${status.context.headSha.slice(0, 12)}`;
+        void db.upsertCiRun(ciRunId, ticket.id, null, prDbId, "failed", null, ciRunSummary(status.context), JSON.stringify([
+          ...status.context.failedCheckRuns.map((cr) => toCheckRow(ciRunId, cr)),
+          ...status.context.failedStatuses.map((s) => toStatusRow(ciRunId, s)),
+        ]));
       }
-    } catch (err) {
-      logger.warn({ err, ticket: ticket.identifier }, "best-effort dashboard observation failed");
     }
-  })();
+  } catch (err) {
+    logger.warn({ err, ticket: ticket.identifier }, "best-effort dashboard observation failed");
+  }
 
   const needsWork = resuming || testsFailed || hasMergeConflicts || hasActionableUnresolvedComments || hasActionableIssueComments;
   if (needsWork) {

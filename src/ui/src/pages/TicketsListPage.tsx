@@ -272,7 +272,6 @@ export default function TicketsListPage() {
                   <th scope="col" className="px-4 py-3 font-medium">Latest run</th>
                   <th scope="col" className="px-4 py-3 font-medium">Worker</th>
                   <th scope="col" className="px-4 py-3 font-medium">Attempts</th>
-                  <th scope="col" className="px-4 py-3 font-medium">CI</th>
                   <th scope="col" className="px-4 py-3 font-medium">PR</th>
                   <th scope="col" className="px-4 py-3 font-medium">Updated</th>
                 </tr>
@@ -299,9 +298,6 @@ export default function TicketsListPage() {
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text-primary">
                       {ticket.attemptCount}/{configQuery.data?.maxIterations ?? "?"}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
-                      {ticket.latestCiStatus === null ? <Dash /> : <StatusBadge status={ticket.latestCiStatus} />}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
                       <PrLink ticket={ticket} />

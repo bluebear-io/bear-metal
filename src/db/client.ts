@@ -716,7 +716,7 @@ function rowToTicketListItem(row: TaskRow): TicketListItem {
     ticketLinearStatusType: row.ticket_linear_status_type,
     ticketLabelsJson: row.ticket_labels_json ?? "[]",
     bmStatus: (row.ts_status as BmStatus | null) ?? "in_progress",
-    attemptCount: Number(row.attempt_count ?? 0),
+    attemptCount: Number(row.attempt_number ?? 0),
     ticketCompletedAt: parseTimestamp(row.ticket_completed_at),
     createdAt: parseTimestampRequired(row.created_at, "created_at"),
     updatedAt: parseTimestampRequired(row.updated_at, "updated_at"),

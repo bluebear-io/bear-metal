@@ -335,9 +335,17 @@ const LogRow = ({ item }: { item: LogItem }) => {
                   <span><span className="font-medium text-text-muted">source:</span> {ev!.source}</span>
                   <span><span className="font-medium text-text-muted">type:</span> {ev!.type.replaceAll("_", " ")}</span>
                   <span><span className="font-medium text-text-muted">summary:</span> {ev!.summary}</span>
-                  {ev!.payloadJson && (
-                    <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary">{prettyJson(ev!.payloadJson)}</pre>
-                  )}
+                  {ev!.payloadJson && (() => {
+                    if (ev!.type === "agent_started") {
+                      try {
+                        const parsed = JSON.parse(ev!.payloadJson) as { prompt?: string };
+                        if (parsed.prompt) {
+                          return <pre className="mt-1 max-h-96 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap">{parsed.prompt}</pre>;
+                        }
+                      } catch { /* fall through */ }
+                    }
+                    return <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary">{prettyJson(ev!.payloadJson)}</pre>;
+                  })()}
                 </div>
               )}
             </div>
