@@ -104,12 +104,16 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact comment body to post to Linear." }),
     }),
     execute: async (_toolCallId, params) => {
-      if (decision?.status !== "pending") {
-        logger.debug({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
-        const footer = "\n\n---\n\n🐻 **Waiting for your input.**\nTo get me back on this:\n1. Add a clarifying comment here or update the ticket description with the missing information\n2. Assign or delegate this ticket back to bear-metal — I'll pick it up automatically from there";
-        await input.linear.commentAndHandBack(input.context.ticketId, params.text + footer);
-        setDecision({ status: "pending", prs: mergePrs(input.context.prs, collectedPrs) });
+      if (decision?.status === "pending") {
+        return {
+          content: [{ type: "text", text: "Already pending — duplicate respond_to_ticket_reporter call was ignored. No comment was posted." }],
+          details: {},
+        };
       }
+      logger.debug({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
+      const footer = "\n\n---\n\n🐻 **Waiting for your input.**\nTo get me back on this:\n1. Add a clarifying comment here or update the ticket description with the missing information\n2. Assign or delegate this ticket back to bear-metal — I'll pick it up automatically from there";
+      await input.linear.commentAndHandBack(input.context.ticketId, params.text + footer);
+      setDecision({ status: "pending", prs: mergePrs(input.context.prs, collectedPrs) });
       return {
         content: [{ type: "text", text: "Posted Linear comment, relinquished delegation, and marked dispatch pending." }],
         details: {},
