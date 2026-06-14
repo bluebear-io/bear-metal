@@ -147,7 +147,7 @@ export class TaskWorker {
       workerId: this.workerId,
       source: "worker",
       type: "worker_started",
-      summary: `Worker ${this.workerId} started on ${task.ticketId ?? "unknown"} (${task.input?.state ?? "unknown"})`,
+      summary: `worker ${this.workerId} started on ${task.ticketId ?? "unknown"} (${task.input?.state ?? "unknown"})`,
       payloadJson: null,
       createdAt: new Date().toISOString(),
     });
@@ -178,6 +178,19 @@ export class TaskWorker {
         onToolCallProgress: (calls) => {
           void this.db.upsertToolCalls(task.id, JSON.stringify(calls));
         },
+        onWorkspaceBuilding: () => {
+          void this.db.recordEvent({
+            id: randomUUID(),
+            ticketId: task.ticketId,
+            runId: task.id,
+            workerId: this.workerId,
+            source: "worker",
+            type: "workspace_building",
+            summary: "workspace builder started",
+            payloadJson: null,
+            createdAt: new Date().toISOString(),
+          });
+        },
         onWorkspaceBuilt: (agentWorkdir) => {
           void this.db.recordEvent({
             id: randomUUID(),
@@ -186,12 +199,14 @@ export class TaskWorker {
             workerId: this.workerId,
             source: "worker",
             type: "workspace_built",
-            summary: `Workspace ready at ${agentWorkdir}`,
+            summary: `workspace ready at ${agentWorkdir}`,
             payloadJson: null,
             createdAt: new Date().toISOString(),
           });
         },
         onAgentStarted: (payload) => {
+          const { issue } = payload.ticket;
+          const prCount = payload.prs.length;
           void this.db.recordEvent({
             id: randomUUID(),
             ticketId: task.ticketId,
@@ -199,7 +214,7 @@ export class TaskWorker {
             workerId: this.workerId,
             source: "worker",
             type: "agent_started",
-            summary: `Coding agent started — ${payload.ticketId}: ${payload.ticketTitle}${payload.prCount > 0 ? ` (${payload.prCount} PR${payload.prCount > 1 ? "s" : ""})` : ""}`,
+            summary: `coding agent started — ${issue.identifier}: ${issue.title}${prCount > 0 ? ` (${prCount} PR${prCount > 1 ? "s" : ""})` : ""}`,
             payloadJson: JSON.stringify(payload),
             createdAt: new Date().toISOString(),
           });
@@ -269,7 +284,7 @@ export class TaskWorker {
         workerId: null,
         source: "worker",
         type: "pr_opened",
-        summary: `PR #${pr.number} opened`,
+        summary: `pull request #${pr.number} opened`,
         payloadJson: JSON.stringify(pr),
         createdAt: new Date().toISOString(),
       });
@@ -281,7 +296,7 @@ export class TaskWorker {
       workerId: this.workerId,
       source: "worker",
       type: "progress",
-      summary: `Worker finished: ${result.status}`,
+      summary: `worker finished: ${result.status}`,
       payloadJson: null,
       createdAt: new Date().toISOString(),
     });

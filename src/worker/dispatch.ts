@@ -29,13 +29,12 @@ export interface DispatchInput {
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
   workspaceBuilderPath?: string;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
+  onWorkspaceBuilding?: () => void;
   onWorkspaceBuilt?: (agentWorkdir: string) => void;
   onAgentStarted?: (payload: {
     state: DispatchState;
-    ticketId: string;
-    ticketTitle: string;
-    ticketUrl: string;
-    prCount: number;
+    ticket: WorkerInputContext["ticket"];
+    pullRequests: WorkerInputContext["pullRequests"];
     prs: PullRequestRef[];
   }) => void;
   maxWorkerTimeMs: number;
@@ -74,6 +73,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     }),
   ]);
 
+  input.onWorkspaceBuilding?.();
   const cloneScript = await runWorkspaceBuilder({
     workspaceDir,
     githubToken,
@@ -125,10 +125,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   input.onAgentStarted?.({
     state: context.state,
-    ticketId: context.ticketId,
-    ticketTitle: context.ticket.issue.title,
-    ticketUrl: context.ticket.issue.url,
-    prCount: prs.length,
+    ticket: context.ticket,
+    pullRequests: context.pullRequests,
     prs,
   });
   logger.debug({ ticketId, workspaceDir }, "starting pi worker session");

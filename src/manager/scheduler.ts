@@ -253,6 +253,8 @@ interface TicketDecision {
   trigger: RunTrigger;
   /** When set, a human pushed a commit after bear-metal on these open PRs — hand back with comments. */
   humanTookOverPrs?: PullRequestRef[];
+  /** Linear already moved the ticket to a terminal state (Done/Canceled) — treat as completed, skip handBack. */
+  terminated?: boolean;
 }
 
 /**
@@ -277,7 +279,7 @@ async function evaluateTicket(
       { ticket: ticket.identifier, statusName: ticket.status.name, statusType: ticket.status.type },
       "linear ticket is terminal; releasing slot",
     );
-    return { remove: true, merged: false, context: { ticket, prs: knownPrs }, dispatch: false, phase: "active", trigger: "new" };
+    return { remove: true, merged: false, terminated: true, context: { ticket, prs: knownPrs }, dispatch: false, phase: "active", trigger: "new" };
   }
 
   if (ticket.delegate?.id !== agentId) {
@@ -423,7 +425,22 @@ async function refreshTrackedTickets(
       const knownPrs = knownPrsForSlot(slot);
       const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, db, logger);
       if (decision.remove) {
-        if (decision.merged) {
+        if (decision.terminated) {
+          // Linear already moved the ticket to a terminal state (Done/Canceled) — no handBack needed.
+          logger.info({ ticket: ticket.identifier, linearStatus: ticket.status.name }, "linear ticket terminal; releasing slot as completed");
+          await db.setTicketStatus(ticket.id, "completed");
+          void db.recordEvent({
+            id: randomUUID(),
+            ticketId: ticket.id,
+            runId: null,
+            workerId: null,
+            source: "manager",
+            type: "ticket_completed",
+            summary: `completed ${ticket.identifier} (Linear: ${ticket.status.name})`,
+            payloadJson: null,
+            createdAt: new Date().toISOString(),
+          });
+        } else if (decision.merged) {
           // PR merged — relinquish the agent's delegation so the ticket returns to its human assignee.
           // If this throws, leave the slot tracked so the next tick retries.
           await linear.handBack(ticket.id);
@@ -436,7 +453,7 @@ async function refreshTrackedTickets(
             workerId: null,
             source: "manager",
             type: "ticket_completed",
-            summary: `Completed ${ticket.identifier}`,
+            summary: `completed ${ticket.identifier}`,
             payloadJson: null,
             createdAt: new Date().toISOString(),
           });
@@ -467,7 +484,7 @@ async function refreshTrackedTickets(
             workerId: null,
             source: "manager",
             type: "delegated_back",
-            summary: "Human takeover detected on PR branch",
+            summary: "human takeover detected on PR branch",
             payloadJson: null,
             createdAt: new Date().toISOString(),
           });
@@ -497,8 +514,8 @@ async function refreshTrackedTickets(
               source: "manager",
               type: "delegated_back",
               summary: decision.trigger === "merge_conflict"
-                ? "Re-dispatched: merge conflicts on PR head"
-                : "Re-dispatched: unresolved review or resumed",
+                ? "re-dispatched: merge conflicts on PR head"
+                : "re-dispatched: unresolved review or resumed",
               payloadJson: null,
               createdAt: new Date().toISOString(),
             });
@@ -530,6 +547,17 @@ async function refreshTrackedTickets(
               ticketId: ticket.identifier,
               ticketUrl: ticket.url,
               recipientEmail,
+            });
+            void db.recordEvent({
+              id: randomUUID(),
+              ticketId: ticket.id,
+              runId: slot.latestTask.id,
+              workerId: null,
+              source: "manager",
+              type: "user_notified",
+              summary: `user notified via Slack — PR #${prRef.number} in ${prRef.repo}`,
+              payloadJson: recipientEmail ? JSON.stringify({ recipientEmail }) : null,
+              createdAt: new Date().toISOString(),
             });
           } catch (err) {
             logger.warn({ err, ticketId: ticket.id }, "failed to send waiting_for_human Slack DM");

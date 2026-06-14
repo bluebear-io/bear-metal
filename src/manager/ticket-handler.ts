@@ -41,7 +41,7 @@ export class ManagerTicketHandler {
       workerId: null,
       source: "manager",
       type: "dispatched",
-      summary: `Dispatched attempt ${task.attemptNumber}`,
+      summary: `dispatched attempt ${task.attemptNumber}`,
       payloadJson: null,
       createdAt: new Date().toISOString(),
     });
