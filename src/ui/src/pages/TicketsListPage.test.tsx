@@ -33,11 +33,10 @@ const mockTicket: TicketListItem = {
   },
   latestWorkerName: "worker-1",
   latestPr: { number: 42, url: "https://github.com/blueden/bear-metal/pull/42", state: "open", merged: false },
-  latestCiStatus: "passed",
 };
 
 function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketListItem {
-  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestWorkerName: null, latestPr: null, latestCiStatus: null };
+  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestWorkerName: null, latestPr: null };
 }
 
 const multipleTickets: TicketListItem[] = [

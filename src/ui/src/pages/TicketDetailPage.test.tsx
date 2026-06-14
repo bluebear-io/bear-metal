@@ -128,35 +128,6 @@ const ticketDetail: TicketDetail = {
       ],
     },
   ],
-  ciRuns: [
-    {
-      id: "ci_1",
-      ticketId: "lin_2",
-      runId: "run_2",
-      prId: "pr_1501",
-      status: "failed",
-      url: "https://github.com/blueden/bear-metal/actions/runs/1501",
-      summary: "Unit tests failed on retry",
-      createdAt: "2026-06-09T09:10:00.000Z",
-      completedAt: "2026-06-09T09:18:00.000Z",
-      checks: [
-        {
-          id: "chk_eslint",
-          ciRunId: "ci_1",
-          source: "check_run",
-          externalId: "9001",
-          name: "ESLint",
-          conclusion: "failure",
-          detailsUrl: "https://github.com/blueden/bear-metal/actions/runs/1501/job/9001",
-          summary: "1 lint problem",
-          annotationsJson: JSON.stringify([
-            { path: "src/manager/scheduler.ts", start_line: 122, message: "'reporter' is defined but never used." },
-          ]),
-          createdAt: "2026-06-09T09:12:00.000Z",
-        },
-      ],
-    },
-  ],
   events: [
     {
       id: "event_1",

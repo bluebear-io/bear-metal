@@ -363,13 +363,6 @@ async function evaluateTicket(
           commentsJson: JSON.stringify(t.comments),
         }))),
       });
-      if (testsFailed) {
-        const ciRunId = `${prDbId}@${status.context.headSha.slice(0, 12)}`;
-        void db.upsertCiRun(ciRunId, ticket.id, null, prDbId, "failed", null, ciRunSummary(status.context), JSON.stringify([
-          ...status.context.failedCheckRuns.map((cr) => toCheckRow(ciRunId, cr)),
-          ...status.context.failedStatuses.map((s) => toStatusRow(ciRunId, s)),
-        ]));
-      }
     }
   } catch (err) {
     logger.warn({ err, ticket: ticket.identifier }, "best-effort dashboard observation failed");
@@ -716,69 +709,3 @@ function isTerminalLinearTicket(ticket: Ticket): boolean {
   return TERMINAL_STATE_TYPES.includes(ticket.status.type) || TERMINAL_STATE_NAMES.includes(ticket.status.name);
 }
 
-// ---------------------------------------------------------------------------
-// CI helper types and functions (ported from dashboardReporter.ts)
-// ---------------------------------------------------------------------------
-
-import type { FailedCheckRun, FailedStatus, JsonValue, PullRequestContext } from "../shared/index.js";
-
-function ciRunSummary(context: PullRequestContext): string {
-  const failedNames = context.failedCheckRuns
-    .map((failed) => {
-      const cr = failed.checkRun as Record<string, JsonValue>;
-      return String(readField(cr, "name") ?? "check");
-    })
-    .concat(
-      context.failedStatuses.map((failed) => {
-        const status = failed.status as Record<string, JsonValue>;
-        return String(readField(status, "context") ?? "status");
-      }),
-    );
-  return failedNames.length === 0 ? "CI failed" : `${failedNames.length} failing: ${failedNames.join(", ")}`;
-}
-
-function toCheckRow(ciRunId: string, failed: FailedCheckRun): Record<string, unknown> {
-  const cr = failed.checkRun as Record<string, JsonValue>;
-  const externalId = String(readField(cr, "id") ?? "");
-  const name = String(readField(cr, "name") ?? "check");
-  const conclusion = stringOrNull(readField(cr, "conclusion"));
-  const detailsUrl = stringOrNull(readField(cr, "details_url") ?? readField(cr, "html_url"));
-  return {
-    id: `${ciRunId}:check_run:${externalId}`,
-    ciRunId,
-    source: "check_run",
-    externalId,
-    name,
-    conclusion,
-    detailsUrl,
-    annotationsJson: JSON.stringify(failed.annotations),
-  };
-}
-
-function toStatusRow(ciRunId: string, failed: FailedStatus): Record<string, unknown> {
-  const status = failed.status as Record<string, JsonValue>;
-  const externalId = String(readField(status, "context") ?? "");
-  const conclusion = stringOrNull(readField(status, "state"));
-  return {
-    id: `${ciRunId}:status:${externalId}`,
-    ciRunId,
-    source: "status",
-    externalId,
-    name: externalId || "status",
-    conclusion,
-    detailsUrl: stringOrNull(readField(status, "target_url")),
-    annotationsJson: "[]",
-  };
-}
-
-function readField(o: Record<string, JsonValue> | undefined, key: string): JsonValue | undefined {
-  if (!o) return undefined;
-  const v = o[key];
-  return v === undefined ? undefined : v;
-}
-
-function stringOrNull(v: JsonValue | undefined): string | null {
-  if (v === undefined || v === null) return null;
-  if (typeof v === "string") return v;
-  return String(v);
-}

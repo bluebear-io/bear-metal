@@ -134,32 +134,6 @@ ALTER TABLE pull_requests ADD COLUMN created_at TEXT;
 ALTER TABLE pull_requests ADD COLUMN updated_at TEXT;
 
 -- ---------------------------------------------------------------------------
--- ci_runs
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ci_runs (
-  id TEXT PRIMARY KEY NOT NULL,
-  ticket_id TEXT NOT NULL,
-  run_id TEXT,
-  pr_id TEXT,
-  status TEXT NOT NULL,
-  url TEXT,
-  summary TEXT,
-  checks_json TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL,
-  completed_at TEXT
-);
-
-ALTER TABLE ci_runs ADD COLUMN ticket_id TEXT NOT NULL DEFAULT '';
-ALTER TABLE ci_runs ADD COLUMN run_id TEXT;
-ALTER TABLE ci_runs ADD COLUMN pr_id TEXT;
-ALTER TABLE ci_runs ADD COLUMN status TEXT NOT NULL DEFAULT '';
-ALTER TABLE ci_runs ADD COLUMN url TEXT;
-ALTER TABLE ci_runs ADD COLUMN summary TEXT;
-ALTER TABLE ci_runs ADD COLUMN checks_json TEXT NOT NULL DEFAULT '[]';
-ALTER TABLE ci_runs ADD COLUMN created_at TEXT;
-ALTER TABLE ci_runs ADD COLUMN completed_at TEXT;
-
--- ---------------------------------------------------------------------------
 -- events
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS events (

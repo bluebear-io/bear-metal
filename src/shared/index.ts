@@ -46,7 +46,7 @@ export {
 } from "./integrations/slack/client.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
 export type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
-  CiCheckPayload, ReviewThreadPayload, RunToolCallPayload, EventPayload,
-  BmStatus, RunStatus, RunTrigger, StopReason, CiStatus, EventType, EventSource, WorkerStatus as DashboardWorkerStatus,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload,
+  ReviewThreadPayload, RunToolCallPayload, EventPayload,
+  BmStatus, RunStatus, RunTrigger, StopReason, EventType, EventSource, WorkerStatus as DashboardWorkerStatus,
 } from "./dashboard/types.js";

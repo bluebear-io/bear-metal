@@ -76,7 +76,6 @@ function serializeTicket(item: TicketListItem) {
     latestRun: item.latestRun,
     latestWorkerName: item.latestWorkerName,
     latestPr: item.latestPr,
-    latestCiStatus: item.latestCiStatus,
   };
 }
 

@@ -7,8 +7,6 @@ export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "com
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
-export type CiStatus = "running" | "passed" | "failed";
-
 export interface Ticket {
   id: string;
   identifier: string;
@@ -45,7 +43,6 @@ export interface TicketListItem extends Ticket {
   /** Worker name for the most recent attempt; surfaced for the filter bar + list display. */
   latestWorkerName: string | null;
   latestPr: { number: number; url: string; state: "open" | "closed"; merged: boolean } | null;
-  latestCiStatus: CiStatus | null;
 }
 
 export interface TicketListResponse {
@@ -185,7 +182,6 @@ export interface HealthBlock {
   successRate: number | null;
   avgAttempts: number | null;
   multiAttemptRate: number | null;
-  ciPassRate: number | null;
 }
 
 export interface ModelCostRow {
@@ -207,12 +203,6 @@ export interface TimeBlock {
   devHoursSaved: number;
 }
 
-export interface CheckFailureRow {
-  name: string;
-  count: number;
-  latestDetailsUrl: string | null;
-}
-
 export interface TicketRef {
   id: string;
   identifier: string;
@@ -220,17 +210,8 @@ export interface TicketRef {
   url: string;
 }
 
-export interface RepoPassRow {
-  repo: string;
-  totalRuns: number;
-  passedRuns: number;
-  passRate: number;
-}
-
 export interface FailureBlock {
-  topCiCheckNames: CheckFailureRow[];
   ticketsAtMaxAttempts: TicketRef[];
-  worstReposByCi: RepoPassRow[];
 }
 
 export interface ShippedTicket extends TicketRef {
@@ -277,33 +258,6 @@ export interface PullRequest {
   reviewThreads: ReviewThread[];
 }
 
-export interface CiCheck {
-  id: string;
-  ciRunId: string;
-  source: "check_run" | "status";
-  externalId: string;
-  name: string;
-  conclusion: string | null;
-  detailsUrl: string | null;
-  summary: string | null;
-  /** Raw JSON string — serialized annotation array. Parsed by the renderer. */
-  annotationsJson: string;
-  createdAt: string;
-}
-
-export interface CiRun {
-  id: string;
-  ticketId: string;
-  runId: string;
-  prId: string | null;
-  status: CiStatus;
-  url: string | null;
-  summary: string | null;
-  createdAt: string;
-  completedAt: string | null;
-  checks: CiCheck[];
-}
-
 export interface TicketEvent {
   id: string;
   ticketId: string | null;
@@ -320,6 +274,5 @@ export interface TicketDetail {
   ticket: Ticket;
   runs: Run[];
   pullRequests: PullRequest[];
-  ciRuns: CiRun[];
   events: TicketEvent[];
 }

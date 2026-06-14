@@ -193,7 +193,6 @@ export interface TicketListItem {
   latestRun: LatestRunSummary | null;
   latestWorkerName: string | null;
   latestPr: { number: number; url: string; state: string; merged: boolean } | null;
-  latestCiStatus: string | null;
 }
 
 export interface ListTicketsOptions {
@@ -221,30 +220,6 @@ export interface TicketFilterOptions {
   stopReasons: StopReason[];
   labels: string[];
   workers: Array<{ id: string; name: string }>;
-}
-
-export interface CiRunWithChecks {
-  id: string;
-  ticketId: string;
-  runId: string | null;
-  prId: string | null;
-  status: string;
-  url: string | null;
-  summary: string | null;
-  checksJson: string;
-  createdAt: Date;
-  completedAt: Date | null;
-  checks: Array<{
-    id: string;
-    name: string;
-    source: string;
-    externalId: string;
-    conclusion: string | null;
-    detailsUrl: string | null;
-    summary: string | null;
-    annotationsJson: string;
-    createdAt: Date;
-  }>;
 }
 
 export interface ReviewThread {
@@ -312,7 +287,6 @@ export interface TicketDetail {
   ticket: TicketListItem;
   runs: RunWithUsage[];
   pullRequests: PullRequestWithThreads[];
-  ciRuns: CiRunWithChecks[];
   events: Array<{
     id: string;
     ticketId: string | null;
@@ -366,7 +340,6 @@ export interface HealthBlock {
   successRate: number | null;
   avgAttempts: number | null;
   multiAttemptRate: number | null;
-  ciPassRate: number | null;
 }
 
 export interface ModelCostRow {
@@ -388,12 +361,6 @@ export interface TimeBlock {
   devHoursSaved: number;
 }
 
-export interface CheckFailureRow {
-  name: string;
-  count: number;
-  latestDetailsUrl: string | null;
-}
-
 export interface TicketRef {
   id: string;
   identifier: string;
@@ -401,17 +368,8 @@ export interface TicketRef {
   url: string;
 }
 
-export interface RepoPassRow {
-  repo: string;
-  totalRuns: number;
-  passedRuns: number;
-  passRate: number;
-}
-
 export interface FailureBlock {
-  topCiCheckNames: CheckFailureRow[];
   ticketsAtMaxAttempts: TicketRef[];
-  worstReposByCi: RepoPassRow[];
 }
 
 export interface ShippedTicket extends TicketRef {
@@ -520,7 +478,6 @@ export interface DbClient {
 
   // PR / CI
   upsertPullRequest(id: string, ticketId: string, data: PullRequestInputData): Promise<void>;
-  upsertCiRun(id: string, ticketId: string, runId: string | null, prId: string | null, status: string, url: string | null, summary: string | null, checksJson: string): Promise<void>;
 
   // Events
   recordEvent(event: EventInput): Promise<void>;
@@ -558,8 +515,6 @@ export interface DbClient {
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
 const WORKER_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const DEV_HOURS_PER_TICKET = 4;
-const WORST_REPO_MIN_RUNS = 3;
-
 // ---------------------------------------------------------------------------
 // Monotonic ISO clock (same as tasks.ts — prevents duplicate timestamps)
 // ---------------------------------------------------------------------------
@@ -723,7 +678,6 @@ function rowToTicketListItem(row: TaskRow): TicketListItem {
     latestRun: null,
     latestWorkerName: null,
     latestPr: null,
-    latestCiStatus: null,
   };
 }
 
@@ -785,22 +739,6 @@ interface PeriodTaskRow {
   updated_at: string;
 }
 
-interface PeriodCiRow {
-  id: string;
-  ticket_id: string | null;
-  pr_id: string | null;
-  status: string;
-  created_at: string;
-  completed_at: string | null;
-}
-
-interface PeriodCiCheckRow {
-  id: string;
-  name: string;
-  details_url: string | null;
-  created_at: string;
-}
-
 interface PeriodPrRow {
   id: string;
   ticket_id: string | null;
@@ -829,7 +767,7 @@ function computeThroughput(tasks: PeriodTaskRow[], from: Date, to: Date, maxIter
   return { completed, abandoned, discovered };
 }
 
-function computeHealth(tasks: PeriodTaskRow[], ciRuns: PeriodCiRow[], from: Date, to: Date, maxIterations: number): HealthBlock {
+function computeHealth(tasks: PeriodTaskRow[], from: Date, to: Date, maxIterations: number): HealthBlock {
   let completed = 0;
   let abandoned = 0;
   let attemptsSum = 0;
@@ -846,14 +784,10 @@ function computeHealth(tasks: PeriodTaskRow[], ciRuns: PeriodCiRow[], from: Date
     if (Number(t.attempt_count ?? 0) > 1) multiAttempt += 1;
   }
   const ticketSettled = completed + abandoned;
-  const ciWindow = ciRuns.filter((r) => inRange(parseTimestamp(r.completed_at), from, to));
-  const ciPassed = ciWindow.filter((r) => r.status === "passed").length;
-  const ciCompleted = ciWindow.filter((r) => r.status === "passed" || r.status === "failed").length;
   return {
     successRate: ticketSettled > 0 ? completed / ticketSettled : null,
     avgAttempts: ticketSettled > 0 ? attemptsSum / ticketSettled : null,
     multiAttemptRate: ticketSettled > 0 ? multiAttempt / ticketSettled : null,
-    ciPassRate: ciCompleted > 0 ? ciPassed / ciCompleted : null,
   };
 }
 
@@ -919,60 +853,16 @@ function repoFromPrUrl(url: string): string | null {
 
 function computeFailures(
   tasks: PeriodTaskRow[],
-  checks: PeriodCiCheckRow[],
-  ciRuns: PeriodCiRow[],
-  prs: PeriodPrRow[],
   from: Date,
   to: Date,
   maxIterations: number,
 ): FailureBlock {
-  const inWindowChecks = checks.filter((c) => inRange(parseTimestamp(c.created_at), from, to));
-  type CheckBucket = { count: number; latestAt: Date; latestDetailsUrl: string | null };
-  const checkBuckets = new Map<string, CheckBucket>();
-  for (const c of inWindowChecks) {
-    const createdAt = parseTimestamp(c.created_at)!;
-    const b = checkBuckets.get(c.name) ?? { count: 0, latestAt: new Date(0), latestDetailsUrl: null };
-    b.count += 1;
-    if (createdAt > b.latestAt) {
-      b.latestAt = createdAt;
-      b.latestDetailsUrl = c.details_url;
-    }
-    checkBuckets.set(c.name, b);
-  }
-  const topCiCheckNames: CheckFailureRow[] = [...checkBuckets.entries()]
-    .map(([name, b]) => ({ name, count: b.count, latestDetailsUrl: b.latestDetailsUrl }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 10);
-
   const ticketsAtMaxAttempts: TicketRef[] = tasks
     .filter((t) => Number(t.attempt_count) >= maxIterations && t.bm_status !== "completed" && inRange(parseTimestamp(t.updated_at), from, to))
     .sort((a, b) => (parseTimestamp(b.updated_at)?.getTime() ?? 0) - (parseTimestamp(a.updated_at)?.getTime() ?? 0))
     .slice(0, 20)
     .map((t) => ({ id: t.id, identifier: t.ticket_identifier ?? "", title: t.ticket_title ?? "", url: t.ticket_url ?? "" }));
-
-  const prById = new Map<string, PeriodPrRow>(prs.map((pr) => [pr.id, pr]));
-  type RepoBucket = { totalRuns: number; passedRuns: number };
-  const repoBuckets = new Map<string, RepoBucket>();
-  for (const r of ciRuns) {
-    const completedAt = parseTimestamp(r.completed_at);
-    if (!inRange(completedAt, from, to)) continue;
-    if (r.status !== "passed" && r.status !== "failed") continue;
-    const pr = r.pr_id ? prById.get(r.pr_id) : null;
-    if (!pr) continue;
-    const repo = repoFromPrUrl(pr.url);
-    if (!repo) continue;
-    const b = repoBuckets.get(repo) ?? { totalRuns: 0, passedRuns: 0 };
-    b.totalRuns += 1;
-    if (r.status === "passed") b.passedRuns += 1;
-    repoBuckets.set(repo, b);
-  }
-  const worstReposByCi: RepoPassRow[] = [...repoBuckets.entries()]
-    .filter(([, b]) => b.totalRuns >= WORST_REPO_MIN_RUNS)
-    .map(([repo, b]) => ({ repo, totalRuns: b.totalRuns, passedRuns: b.passedRuns, passRate: b.passedRuns / b.totalRuns }))
-    .sort((a, b) => a.passRate - b.passRate)
-    .slice(0, 10);
-
-  return { topCiCheckNames, ticketsAtMaxAttempts, worstReposByCi };
+  return { ticketsAtMaxAttempts };
 }
 
 function computeShipped(tasks: PeriodTaskRow[], prs: PeriodPrRow[], from: Date, to: Date): ShippedBlock {
@@ -1321,24 +1211,6 @@ export class SqlDbClient implements DbClient {
       [id, ticketId, data.number, data.title, data.headRef, data.state,
        data.draft ? 1 : 0, data.merged ? 1 : 0, data.url, data.lastRunId,
        data.reviewThreadsJson, now, now],
-    );
-  }
-
-  async upsertCiRun(
-    id: string, ticketId: string, runId: string | null, prId: string | null,
-    status: string, url: string | null, summary: string | null, checksJson: string,
-  ): Promise<void> {
-    const now = this.clock.nowIso();
-    await this.run(
-      `INSERT INTO ci_runs (id, ticket_id, run_id, pr_id, status, url, summary, checks_json, created_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         ticket_id = excluded.ticket_id, run_id = excluded.run_id, pr_id = excluded.pr_id,
-         status = excluded.status, url = excluded.url, summary = excluded.summary,
-         checks_json = excluded.checks_json,
-         completed_at = CASE WHEN excluded.status IN ('passed','failed') THEN excluded.completed_at ELSE ci_runs.completed_at END`,
-      [id, ticketId, runId, prId, status, url, summary, checksJson, now,
-       (status === "passed" || status === "failed") ? now : null],
     );
   }
 
@@ -1868,25 +1740,15 @@ export class SqlDbClient implements DbClient {
     const prPlaceholders = ticketIds.map(() => "?").join(", ");
 
     // Fetch supporting data in parallel
-    const [prRows, ciRows] = await Promise.all([
-      ticketIds.length > 0
-        ? this.query<{ id: string; ticket_id: string; number: number; url: string; state: string; merged: number | boolean; updated_at: string }>(
-            this.sql(`SELECT id, ticket_id, number, url, state, merged, updated_at FROM pull_requests WHERE ticket_id IN (${prPlaceholders}) ORDER BY updated_at DESC`),
-            ticketIds,
-          )
-        : Promise.resolve([]),
-      ticketIds.length > 0
-        ? this.query<{ id: string; ticket_id: string; status: string; created_at: string }>(
-            this.sql(`SELECT id, ticket_id, status, created_at FROM ci_runs WHERE ticket_id IN (${prPlaceholders}) ORDER BY created_at DESC`),
-            ticketIds,
-          )
-        : Promise.resolve([]),
-    ]);
+    const prRows = ticketIds.length > 0
+      ? await this.query<{ id: string; ticket_id: string; number: number; url: string; state: string; merged: number | boolean; updated_at: string }>(
+          this.sql(`SELECT id, ticket_id, number, url, state, merged, updated_at FROM pull_requests WHERE ticket_id IN (${prPlaceholders}) ORDER BY updated_at DESC`),
+          ticketIds,
+        )
+      : [];
 
     const latestPrByTicket = new Map<string, typeof prRows[number]>();
     for (const pr of prRows) if (pr.ticket_id && !latestPrByTicket.has(pr.ticket_id)) latestPrByTicket.set(pr.ticket_id, pr);
-    const latestCiByTicket = new Map<string, typeof ciRows[number]>();
-    for (const ci of ciRows) if (ci.ticket_id && !latestCiByTicket.has(ci.ticket_id)) latestCiByTicket.set(ci.ticket_id, ci);
 
     // Collect distinct worker IDs from task rows that have a worker
     const workerIds = Array.from(new Set(ticketRows.map((r) => r.worker_id).filter((id): id is string => id !== null)));
@@ -1906,7 +1768,6 @@ export class SqlDbClient implements DbClient {
       item.latestPr = latestPr
         ? { number: latestPr.number, url: latestPr.url, state: latestPr.state, merged: intBool(latestPr.merged) }
         : null;
-      item.latestCiStatus = row.ticket_id ? (latestCiByTicket.get(row.ticket_id)?.status ?? null) : null;
       return item;
     });
 
@@ -2109,54 +1970,6 @@ export class SqlDbClient implements DbClient {
       };
     });
 
-    // CI runs
-    const ciRunRows = await this.query<{
-      id: string; ticket_id: string; run_id: string | null; pr_id: string | null;
-      status: string; url: string | null; summary: string | null;
-      checks_json: string; created_at: string; completed_at: string | null;
-    }>(
-      `SELECT * FROM ci_runs WHERE ticket_id = ? ORDER BY created_at ASC`,
-      [id],
-    );
-
-    const ciRuns: CiRunWithChecks[] = ciRunRows.map((ci) => {
-      let checks: CiRunWithChecks["checks"] = [];
-      try {
-        const parsed = JSON.parse(ci.checks_json || "[]") as unknown;
-        if (Array.isArray(parsed)) {
-          checks = parsed.map((c: unknown) => {
-            const check = c as Record<string, unknown>;
-            return {
-              id: String(check.id ?? ""),
-              name: String(check.name ?? ""),
-              source: String(check.source ?? "check_run"),
-              externalId: String(check.externalId ?? check.external_id ?? ""),
-              conclusion: check.conclusion != null ? String(check.conclusion) : null,
-              detailsUrl: check.detailsUrl != null ? String(check.detailsUrl) : null,
-              summary: check.summary != null ? String(check.summary) : null,
-              annotationsJson: String(check.annotationsJson ?? check.annotations_json ?? "[]"),
-              createdAt: parseTimestamp(check.createdAt as string) ?? new Date(),
-            };
-          });
-        }
-      } catch {
-        // malformed — empty checks
-      }
-      return {
-        id: ci.id,
-        ticketId: ci.ticket_id,
-        runId: ci.run_id,
-        prId: ci.pr_id,
-        status: ci.status,
-        url: ci.url,
-        summary: ci.summary,
-        checksJson: ci.checks_json,
-        createdAt: parseTimestampRequired(ci.created_at, "created_at"),
-        completedAt: parseTimestamp(ci.completed_at),
-        checks,
-      };
-    });
-
     // Events
     const eventRows = await this.query<{
       id: string; ticket_id: string | null; run_id: string | null; worker_id: string | null;
@@ -2177,7 +1990,7 @@ export class SqlDbClient implements DbClient {
       createdAt: parseTimestampRequired(e.created_at, "created_at"),
     }));
 
-    return { ticket, runs, pullRequests, ciRuns, events };
+    return { ticket, runs, pullRequests, events };
   }
 
   // -------------------------------------------------------------------------
@@ -2353,7 +2166,7 @@ export class SqlDbClient implements DbClient {
     const outerTo = to;
 
     // Fetch all relevant data in parallel; bound to outerFrom–outerTo to cover both current and prior windows
-    const [allTasks, allCiRuns, allPrs] = await Promise.all([
+    const [allTasks, allPrs] = await Promise.all([
       this.query<PeriodTaskRow>(
         `SELECT t.id, t.ticket_id, t.ticket_identifier, t.ticket_title, t.ticket_url, t.ticket_labels_json,
            ts.status AS bm_status, t.attempt_count, t.ticket_completed_at,
@@ -2364,11 +2177,6 @@ export class SqlDbClient implements DbClient {
          WHERE t.created_at >= ? AND t.created_at < ?`,
         [outerFrom.toISOString(), outerTo.toISOString()],
       ),
-      this.query<PeriodCiRow>(
-        `SELECT id, ticket_id, pr_id, status, created_at, completed_at FROM ci_runs
-         WHERE created_at >= ? AND created_at < ?`,
-        [outerFrom.toISOString(), outerTo.toISOString()],
-      ),
       this.query<PeriodPrRow>(
         `SELECT id, ticket_id, number, url, merged, updated_at FROM pull_requests
          WHERE created_at >= ? AND created_at < ?`,
@@ -2376,38 +2184,15 @@ export class SqlDbClient implements DbClient {
       ),
     ]);
 
-    const checksForFailures: PeriodCiCheckRow[] = [];
-    // Re-fetch ci_runs with checks_json for the failure analysis
-    const ciRunsWithChecks = await this.query<{ id: string; checks_json: string; created_at: string }>(
-      `SELECT id, checks_json, created_at FROM ci_runs WHERE created_at >= ? AND created_at < ?`,
-      [outerFrom.toISOString(), outerTo.toISOString()],
-    );
-    for (const ci of ciRunsWithChecks) {
-      try {
-        const parsed = JSON.parse(ci.checks_json || "[]") as unknown[];
-        for (const c of parsed) {
-          const check = c as Record<string, unknown>;
-          checksForFailures.push({
-            id: String(check.id ?? ""),
-            name: String(check.name ?? ""),
-            details_url: check.detailsUrl != null ? String(check.detailsUrl) : null,
-            created_at: ci.created_at,
-          });
-        }
-      } catch {
-        // malformed — skip
-      }
-    }
-
     const throughput = computeThroughput(allTasks, from, to, this.maxIterations);
     const throughputPrior = computeThroughput(allTasks, priorFrom, priorTo, this.maxIterations);
-    const health = computeHealth(allTasks, allCiRuns, from, to, this.maxIterations);
-    const healthPrior = computeHealth(allTasks, allCiRuns, priorFrom, priorTo, this.maxIterations);
+    const health = computeHealth(allTasks, from, to, this.maxIterations);
+    const healthPrior = computeHealth(allTasks, priorFrom, priorTo, this.maxIterations);
     const cost = computeCost(allTasks, from, to);
     const costPrior = computeCost(allTasks, priorFrom, priorTo);
     const time = computeTime(allTasks, from, to);
     const timePrior = computeTime(allTasks, priorFrom, priorTo);
-    const failures = computeFailures(allTasks, checksForFailures, allCiRuns, allPrs, from, to, this.maxIterations);
+    const failures = computeFailures(allTasks, from, to, this.maxIterations);
     const shipped = computeShipped(allTasks, allPrs, from, to);
 
     return {
