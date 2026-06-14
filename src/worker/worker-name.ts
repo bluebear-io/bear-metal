@@ -1,27 +1,51 @@
-const FIRST_NAMES = [
-  // American
-  "Jake", "Emily", "Tyler", "Chloe", "Mason", "Olivia", "Ethan", "Lily",
-  // Pirate
-  "Blackbeard", "Calico", "Jolly", "Scurvy", "Pegleg", "Cannonball", "Barnacle", "Salty",
-  // College football
-  "Touchdown", "Blitz", "Spike", "Fumble", "Gunslinger", "Crusher", "Tank", "Rocket",
-  // Extra funny
-  "Buster", "Patches", "Turbo", "Ziggy", "Noodles", "Biscuit", "Corndog", "Pickles",
+const NICKNAMES = [
+  "one_eyed",
+  "two_toes",
+  "three_fingers",
+  "cannonball",
+  "ironjaw",
+  "barnacle",
+  "trigger_finger",
+  "cutlass",
+  "dead_eye",
+  "black_powder",
+  "rusty_hook",
+  "salted",
+  "scurvy",
+  "pegleg",
+  "bilge_rat",
+  "plank_walking",
+  "shark_bitten",
+  "gold_tooth",
+  "tattooed",
+  "hangman",
 ];
 
-const LAST_NAMES = [
-  // American
-  "Mitchell", "Hayes", "Sullivan", "Parker", "Brennan", "McTavish", "Gallagher", "Lawson",
-  // Pirate
-  "Plank", "Davy Jones", "Blackwater", "Ironhook", "Stormcrow", "Keel", "Broadside", "Foulweather",
-  // College football
-  "Blitzkrieg", "Gridiron", "Endzone", "Linebacker", "Hailmary", "Pigskin", "Fumblesworth", "Touchdownski",
-  // Extra funny
-  "Thunderbolt", "Waffles", "Bananaman", "McFluffin", "Noodlearms", "von Snuggles", "Biscuithead", "Corndog",
+const FIRST_NAMES = [
+  "ned",
+  "tommy",
+  "johnny",
+  "tim",
+  "molly",
+  "jack",
+  "sal",
+  "pete",
+  "mary",
+  "dan",
+  "lou",
+  "rita",
+  "hank",
+  "bess",
+  "crow",
+  "wade",
+  "mick",
+  "nora",
+  "flint",
+  "gus",
 ];
 
 export function generateWorkerName(): string {
-  const first = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]!;
-  const last = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)]!;
-  return `${first} ${last}`;
+  const nickname = NICKNAMES[Math.floor(Math.random() * NICKNAMES.length)]!;
+  const name = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]!;
+  return `${nickname}_${name}`;
 }
