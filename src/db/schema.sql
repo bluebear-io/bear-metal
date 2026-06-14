@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   url TEXT NOT NULL,
   last_run_id TEXT,
   review_threads_json TEXT NOT NULL DEFAULT '[]',
+  notified_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -130,6 +131,7 @@ ALTER TABLE pull_requests ADD COLUMN merged INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE pull_requests ADD COLUMN url TEXT NOT NULL DEFAULT '';
 ALTER TABLE pull_requests ADD COLUMN last_run_id TEXT;
 ALTER TABLE pull_requests ADD COLUMN review_threads_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE pull_requests ADD COLUMN notified_at TEXT;
 ALTER TABLE pull_requests ADD COLUMN created_at TEXT;
 ALTER TABLE pull_requests ADD COLUMN updated_at TEXT;
 

@@ -418,6 +418,7 @@ async function refreshTrackedTickets(
             await slack.notifyNeedsInput({
               ticketId: ticket.identifier,
               ticketUrl: ticket.url,
+              title: ticket.title,
               recipientEmail,
             });
           } catch (err) {
@@ -539,19 +540,22 @@ async function refreshTrackedTickets(
         if (shouldDm && slack && decision.context.prs.length > 0) {
           const prRef = decision.context.prs[0]!;
           try {
-            const prStatus = await github.getPullRequestStatus(prRef);
-            const recipientEmail = ticket.assignee
-              ? (await linear.getUserEmail(ticket.assignee.id)) ?? undefined
-              : undefined;
+            const prDbId = `${prRef.owner}/${prRef.repo}#${prRef.number}`;
+            const [prStatus, prNotifiedAt, recipientEmail] = await Promise.all([
+              github.getPullRequestStatus(prRef),
+              db.getPrNotifiedAt(prDbId),
+              ticket.assignee ? linear.getUserEmail(ticket.assignee.id) : Promise.resolve(null),
+            ]);
             await slack.notifyPullRequest({
-              kind: slot.latestTask.attemptNumber === 1 ? "opened" : "updated",
+              kind: prNotifiedAt == null ? "opened" : "updated",
               pr: prRef,
-              title: prStatus.pr.title,
+              title: ticket.title,
               url: prStatus.pr.url,
               ticketId: ticket.identifier,
               ticketUrl: ticket.url,
-              recipientEmail,
+              recipientEmail: recipientEmail ?? undefined,
             });
+            await db.markPrNotified(prDbId);
             void db.recordEvent({
               id: randomUUID(),
               ticketId: ticket.id,

@@ -16,7 +16,7 @@ describe("formatNotificationText", () => {
       ticketUrl: "https://linear.app/x/DEN-2305",
     });
     expect(text).toBe(
-      ":rocket: *PR opened* <https://github.com/acme/blueden/pull/42|acme/blueden#42> — Add slack notifier (ticket: <https://linear.app/x/DEN-2305|DEN-2305>)",
+      ":bear: PR opened <https://github.com/acme/blueden/pull/42|acme/blueden#42> for ticket <https://linear.app/x/DEN-2305|DEN-2305> — Add slack notifier",
     );
   });
 
@@ -43,8 +43,9 @@ describe("formatNotificationText", () => {
       ticketId: "DEN-9",
       ticketUrl: "https://linear.app/x/DEN-9",
     });
-    expect(text).toContain(":arrows_counterclockwise: *PR updated*");
-    expect(text).toContain("DEN-9");
+    expect(text).toBe(
+      "Updated PR <https://github.com/acme/blueden/pull/7|acme/blueden#7> for ticket <https://linear.app/x/DEN-9|DEN-9> — Fix flakes",
+    );
   });
 });
 
@@ -53,9 +54,10 @@ describe("formatNeedsInputText", () => {
     const text = formatNeedsInputText({
       ticketId: "DEN-2369",
       ticketUrl: "https://linear.app/x/DEN-2369",
+      title: "fix the widget",
     });
     expect(text).toBe(
-      ":raising_hand: *Needs your input* <https://linear.app/x/DEN-2369|DEN-2369> — bear-metal is waiting for clarification. Add a comment on the ticket and re-delegate to resume.",
+      ":raising_hand: Needs your input on ticket <https://linear.app/x/DEN-2369|DEN-2369> — fix the widget",
     );
   });
 
@@ -63,6 +65,7 @@ describe("formatNeedsInputText", () => {
     const text = formatNeedsInputText({
       ticketId: "DEN-<99>",
       ticketUrl: "https://linear.app/x/DEN-99",
+      title: "some ticket",
     });
     expect(text).toContain("DEN-&lt;99&gt;");
   });
@@ -278,6 +281,7 @@ describe("SlackIntegration", () => {
     await slack.notifyNeedsInput({
       ticketId: "DEN-2369",
       ticketUrl: "https://linear.app/x/DEN-2369",
+      title: "fix the widget",
     });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -306,6 +310,7 @@ describe("SlackIntegration", () => {
     await slack.notifyNeedsInput({
       ticketId: "DEN-2369",
       ticketUrl: "https://linear.app/x/DEN-2369",
+      title: "fix the widget",
       recipientEmail: "user@example.com",
     });
 

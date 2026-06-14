@@ -245,6 +245,7 @@ export interface PullRequestWithThreads {
   url: string;
   lastRunId: string | null;
   reviewThreadsJson: string;
+  notifiedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   reviewThreads: ReviewThread[];
@@ -478,6 +479,8 @@ export interface DbClient {
 
   // PR / CI
   upsertPullRequest(id: string, ticketId: string, data: PullRequestInputData): Promise<void>;
+  markPrNotified(prId: string): Promise<void>;
+  getPrNotifiedAt(prId: string): Promise<Date | null>;
 
   // Events
   recordEvent(event: EventInput): Promise<void>;
@@ -1214,6 +1217,19 @@ export class SqlDbClient implements DbClient {
     );
   }
 
+  async markPrNotified(prId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(`UPDATE pull_requests SET notified_at = ? WHERE id = ?`, [now, prId]);
+  }
+
+  async getPrNotifiedAt(prId: string): Promise<Date | null> {
+    const rows = await this.query<{ notified_at: string | null }>(
+      `SELECT notified_at FROM pull_requests WHERE id = ?`,
+      [prId],
+    );
+    return rows.length > 0 ? parseTimestamp(rows[0]!.notified_at) : null;
+  }
+
   // -------------------------------------------------------------------------
   // Events
   // -------------------------------------------------------------------------
@@ -1924,7 +1940,8 @@ export class SqlDbClient implements DbClient {
     const prRows = await this.query<{
       id: string; ticket_id: string; number: number; title: string; head_ref: string;
       state: string; draft: number | boolean; merged: number | boolean; url: string;
-      last_run_id: string | null; review_threads_json: string; created_at: string; updated_at: string;
+      last_run_id: string | null; review_threads_json: string; notified_at: string | null;
+      created_at: string; updated_at: string;
     }>(
       `SELECT * FROM pull_requests WHERE ticket_id = ? ORDER BY updated_at DESC`,
       [id],
@@ -1964,6 +1981,7 @@ export class SqlDbClient implements DbClient {
         url: pr.url,
         lastRunId: pr.last_run_id,
         reviewThreadsJson: pr.review_threads_json,
+        notifiedAt: parseTimestamp(pr.notified_at),
         createdAt: parseTimestampRequired(pr.created_at, "created_at"),
         updatedAt: parseTimestampRequired(pr.updated_at, "updated_at"),
         reviewThreads,

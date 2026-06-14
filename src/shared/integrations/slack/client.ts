@@ -19,7 +19,7 @@ export type PullRequestNotificationKind = "opened" | "updated";
 export interface PullRequestNotification {
   kind: PullRequestNotificationKind;
   pr: PullRequestRef;
-  /** PR title. */
+  /** Linear ticket title. */
   title: string;
   /** PR HTML url. */
   url: string;
@@ -34,6 +34,8 @@ export interface NeedsInputNotification {
   /** Linear ticket identifier (e.g. "DEN-2305"). */
   ticketId: string;
   ticketUrl: string;
+  /** Linear ticket title. */
+  title: string;
   /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
   recipientEmail?: string;
 }
@@ -162,19 +164,21 @@ export function formatNotificationText(notification: PullRequestNotification): s
   const { kind, pr, title, url, ticketId, ticketUrl } = notification;
   if (!url.startsWith("https://")) throw new Error(`Invalid PR URL: ${url}`);
   if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
-  const verb = kind === "opened" ? "opened" : "updated";
-  const icon = kind === "opened" ? ":rocket:" : ":arrows_counterclockwise:";
   const safeTitle = escapeSlackMrkdwn(title);
   const safeTicketId = escapeSlackMrkdwn(ticketId);
   const prLink = `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`;
   const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
-  return `${icon} *PR ${verb}* ${prLink} — ${safeTitle} (ticket: ${ticketLabel})`;
+  if (kind === "opened") {
+    return `:bear: PR opened ${prLink} for ticket ${ticketLabel} — ${safeTitle}`;
+  }
+  return `Updated PR ${prLink} for ticket ${ticketLabel} — ${safeTitle}`;
 }
 
 export function formatNeedsInputText(notification: NeedsInputNotification): string {
-  const { ticketId, ticketUrl } = notification;
+  const { ticketId, ticketUrl, title } = notification;
   if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
   const safeTicketId = escapeSlackMrkdwn(ticketId);
+  const safeTitle = escapeSlackMrkdwn(title);
   const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
-  return `:raising_hand: *Needs your input* ${ticketLabel} — bear-metal is waiting for clarification. Add a comment on the ticket and re-delegate to resume.`;
+  return `:raising_hand: Needs your input on ticket ${ticketLabel} — ${safeTitle}`;
 }
