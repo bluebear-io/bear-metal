@@ -72,6 +72,7 @@ function serializeTicket(item: TicketListItem) {
     attemptCount: item.attemptCount,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
+    completedAt: item.ticketCompletedAt?.toISOString() ?? null,
     latestRun: item.latestRun,
     latestWorkerName: item.latestWorkerName,
     latestPr: item.latestPr,
