@@ -96,7 +96,11 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
           if (ctx.issueComments.length === 0) return ctx;
           const completedIds = await commentStore.getCompleted(pr);
           if (completedIds.size === 0) return ctx;
-          return { ...ctx, issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)) };
+          return {
+            ...ctx,
+            issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)),
+            completedIssueComments: ctx.issueComments.filter((c) => completedIds.has(c.id)),
+          };
         }),
       )
     : rawPullRequests;

@@ -147,6 +147,8 @@ export interface PullRequestContext {
   reviewThreads: ReviewThread[];
   /** Non-minimized PR-level issue comments from non-bot authors (excludes infrastructure bots). */
   issueComments: IssueComment[];
+  /** Issue comments already handled in prior sessions — kept for agent context, not for action. */
+  completedIssueComments: IssueComment[];
   /**
    * GitHub's `mergeable` result for the PR head against its base. `true` means clean, `false`
    * means conflicting, `null` means GitHub hasn't finished computing it yet (next poll will

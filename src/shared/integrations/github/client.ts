@@ -162,6 +162,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
       reviewThreads,
       issueComments,
+      completedIssueComments: [],
       // pullRequest.mergeable is typed `boolean | null | undefined`; normalize to boolean|null.
       mergeable: pullRequest.mergeable ?? null,
     };

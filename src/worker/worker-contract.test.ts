@@ -57,6 +57,7 @@ describe("worker contract", () => {
           unresolvedReviewThreads: [],
           reviewThreads: [],
           issueComments: [],
+          completedIssueComments: [],
           mergeable: true,
         },
       ],

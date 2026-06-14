@@ -748,6 +748,7 @@ function makePullRequestContext() {
         updatedAt: "2026-06-09T00:00:00Z",
       },
     ],
+    completedIssueComments: [],
     mergeable: true,
   };
 }

@@ -25,7 +25,7 @@ const ticketDetail: TicketDetail = {
     linearStatusName: "In Progress",
     linearStatusType: "started",
     labelsJson: JSON.stringify(["backend", "ci"]),
-    bmStatus: "ci_failed",
+    bmStatus: "in_progress",
     attemptCount: 2,
     createdAt: "2026-06-09T08:00:00.000Z",
     updatedAt: "2026-06-09T09:20:00.000Z",

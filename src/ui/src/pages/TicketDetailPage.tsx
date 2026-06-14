@@ -233,6 +233,40 @@ const PullRequestSection = ({ pullRequests }: { pullRequests: PullRequest[] }) =
 
 // ---- Unified event log --------------------------------------------------
 
+function CopyableBlock({ content, tall }: { content: string; tall?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard.writeText(content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="mt-1">
+      <div className="flex items-center justify-end rounded-t border border-b-0 border-border-default bg-bg-card px-2 py-0.5">
+        <button
+          onClick={copy}
+          title="Copy to clipboard"
+          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors"
+        >
+          {copied ? (
+            <>
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              copied
+            </>
+          ) : (
+            <>
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              copy
+            </>
+          )}
+        </button>
+      </div>
+      <pre className={`${tall ? "max-h-96" : "max-h-64"} overflow-auto rounded-b border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap`}>{content}</pre>
+    </div>
+  );
+}
+
 function prettyJson(raw: string): string {
   try {
     return JSON.stringify(JSON.parse(raw), null, 2);
@@ -314,19 +348,19 @@ const LogRow = ({ item }: { item: LogItem }) => {
                   {tc.thoughtText && (
                     <div>
                       <div className="text-xs font-semibold uppercase text-text-muted">Thought</div>
-                      <pre className="mt-1 whitespace-pre-wrap break-words text-xs text-text-primary">{tc.thoughtText}</pre>
+                      <CopyableBlock content={tc.thoughtText} />
                     </div>
                   )}
                   <div>
                     <div className="text-xs font-semibold uppercase text-text-muted">Input</div>
-                    <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary">{prettyJson(tc.argsJson)}</pre>
+                    <CopyableBlock content={prettyJson(tc.argsJson)} />
                   </div>
                   <div>
                     <div className="text-xs font-semibold uppercase text-text-muted">Output</div>
                     {tc.resultText === null ? (
                       <p className="mt-1 text-xs text-text-muted">No result captured.</p>
                     ) : (
-                      <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap break-words">{tc.resultText}</pre>
+                      <CopyableBlock content={tc.resultText} />
                     )}
                   </div>
                 </>
@@ -336,15 +370,18 @@ const LogRow = ({ item }: { item: LogItem }) => {
                   <span><span className="font-medium text-text-muted">type:</span> {ev!.type.replaceAll("_", " ")}</span>
                   <span><span className="font-medium text-text-muted">summary:</span> {ev!.summary}</span>
                   {ev!.payloadJson && (() => {
+                    let content: string;
+                    let tall = false;
                     if (ev!.type === "agent_started") {
                       try {
                         const parsed = JSON.parse(ev!.payloadJson) as { prompt?: string };
-                        if (parsed.prompt) {
-                          return <pre className="mt-1 max-h-96 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap">{parsed.prompt}</pre>;
-                        }
-                      } catch { /* fall through */ }
+                        if (parsed.prompt) { content = parsed.prompt; tall = true; }
+                        else { content = prettyJson(ev!.payloadJson); }
+                      } catch { content = prettyJson(ev!.payloadJson); }
+                    } else {
+                      content = prettyJson(ev!.payloadJson);
                     }
-                    return <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary">{prettyJson(ev!.payloadJson)}</pre>;
+                    return <CopyableBlock content={content} tall={tall} />;
                   })()}
                 </div>
               )}

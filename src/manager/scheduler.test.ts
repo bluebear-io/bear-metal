@@ -62,6 +62,7 @@ function status(
       unresolvedReviewThreads: [],
       reviewThreads: [],
       issueComments: [],
+      completedIssueComments: [],
       mergeable: hasMergeConflicts ? false : true,
     },
   };

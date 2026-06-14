@@ -85,12 +85,16 @@ function toPiContext(context: WorkerInputContext) {
 }
 
 function toPiPullRequestContext(pr: PullRequestContext) {
-  const { unresolvedReviewThreads, reviewThreads: _rt, issueComments, ...rest } = pr;
+  const { unresolvedReviewThreads, reviewThreads, issueComments, completedIssueComments, ...rest } = pr;
   return {
     ...rest,
     openComments: [
       ...unresolvedReviewThreads.map(threadToOpenComment),
       ...issueComments.map(issueCommentToOpenComment),
+    ],
+    commentHistory: [
+      ...reviewThreads.filter((t) => t.isResolved).map(threadToOpenComment),
+      ...completedIssueComments.map(issueCommentToOpenComment),
     ],
   };
 }
