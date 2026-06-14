@@ -9,6 +9,7 @@ import { TicketDetailPage } from "./TicketDetailPage.js";
 
 vi.mock("../api/queries.js", () => ({
   useTicketDetail: vi.fn(),
+  useConfig: vi.fn().mockReturnValue({ data: { maxIterations: 20 } }),
 }));
 
 const mockUseTicketDetail = vi.mocked(useTicketDetail);
@@ -24,9 +25,8 @@ const ticketDetail: TicketDetail = {
     linearStatusName: "In Progress",
     linearStatusType: "started",
     labelsJson: JSON.stringify(["backend", "ci"]),
-    bmStatus: "ci_failed",
+    bmStatus: "in_progress",
     attemptCount: 2,
-    maxAttempts: 3,
     createdAt: "2026-06-09T08:00:00.000Z",
     updatedAt: "2026-06-09T09:20:00.000Z",
     completedAt: null,
@@ -48,7 +48,6 @@ const ticketDetail: TicketDetail = {
       completionTokens: 2_000,
       modelName: "claude-sonnet-4",
       provider: "anthropic",
-      estimatedCostUsd: 0.18,
       createdAt: "2026-06-09T08:04:00.000Z",
       worker: {
         id: "worker_1",
@@ -77,7 +76,6 @@ const ticketDetail: TicketDetail = {
       completionTokens: null,
       modelName: null,
       provider: null,
-      estimatedCostUsd: null,
       createdAt: "2026-06-09T08:59:00.000Z",
       worker: {
         id: "worker_2",
@@ -126,35 +124,6 @@ const ticketDetail: TicketDetail = {
           ]),
           createdAt: "2026-06-09T08:33:00.000Z",
           updatedAt: "2026-06-09T08:33:00.000Z",
-        },
-      ],
-    },
-  ],
-  ciRuns: [
-    {
-      id: "ci_1",
-      ticketId: "lin_2",
-      runId: "run_2",
-      prId: "pr_1501",
-      status: "failed",
-      url: "https://github.com/blueden/bear-metal/actions/runs/1501",
-      summary: "Unit tests failed on retry",
-      createdAt: "2026-06-09T09:10:00.000Z",
-      completedAt: "2026-06-09T09:18:00.000Z",
-      checks: [
-        {
-          id: "chk_eslint",
-          ciRunId: "ci_1",
-          source: "check_run",
-          externalId: "9001",
-          name: "ESLint",
-          conclusion: "failure",
-          detailsUrl: "https://github.com/blueden/bear-metal/actions/runs/1501/job/9001",
-          summary: "1 lint problem",
-          annotationsJson: JSON.stringify([
-            { path: "src/manager/scheduler.ts", start_line: 122, message: "'reporter' is defined but never used." },
-          ]),
-          createdAt: "2026-06-09T09:12:00.000Z",
         },
       ],
     },

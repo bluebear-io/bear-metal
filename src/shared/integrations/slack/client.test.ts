@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../../logger.js";
-import { formatNotificationText, SlackIntegration } from "./client.js";
+import { formatNeedsInputText, formatNotificationText, SlackIntegration } from "./client.js";
 
 const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
 
@@ -16,7 +16,7 @@ describe("formatNotificationText", () => {
       ticketUrl: "https://linear.app/x/DEN-2305",
     });
     expect(text).toBe(
-      ":rocket: *PR opened* <https://github.com/acme/blueden/pull/42|acme/blueden#42> — Add slack notifier (ticket: <https://linear.app/x/DEN-2305|DEN-2305>)",
+      ":bear: PR opened <https://github.com/acme/blueden/pull/42|acme/blueden#42> for ticket <https://linear.app/x/DEN-2305|DEN-2305> — Add slack notifier",
     );
   });
 
@@ -27,22 +27,47 @@ describe("formatNotificationText", () => {
       title: "Check <https://evil.com|this> & stuff",
       url: "https://github.com/acme/blueden/pull/1",
       ticketId: "DEN-<1>",
+      ticketUrl: "https://linear.app/x/DEN-1",
     });
     expect(text).toContain("Check &lt;https://evil.com|this&gt; &amp; stuff");
-    expect(text).toContain("(ticket: DEN-&lt;1&gt;)");
+    expect(text).toContain("DEN-&lt;1&gt;");
     expect(text).not.toContain("<https://evil.com|this>");
   });
 
-  it("formats an 'updated' message and falls back to plain ticket id without url", () => { 
+  it("formats an 'updated' message with ticket link", () => {
     const text = formatNotificationText({
       kind: "updated",
       pr: { owner: "acme", repo: "blueden", number: 7 },
       title: "Fix flakes",
       url: "https://github.com/acme/blueden/pull/7",
       ticketId: "DEN-9",
+      ticketUrl: "https://linear.app/x/DEN-9",
     });
-    expect(text).toContain(":arrows_counterclockwise: *PR updated*");
-    expect(text).toContain("(ticket: DEN-9)");
+    expect(text).toBe(
+      "Updated PR <https://github.com/acme/blueden/pull/7|acme/blueden#7> for ticket <https://linear.app/x/DEN-9|DEN-9> — Fix flakes",
+    );
+  });
+});
+
+describe("formatNeedsInputText", () => {
+  it("formats a needs-input message with raising_hand icon and ticket link", () => {
+    const text = formatNeedsInputText({
+      ticketId: "DEN-2369",
+      ticketUrl: "https://linear.app/x/DEN-2369",
+      title: "fix the widget",
+    });
+    expect(text).toBe(
+      ":raising_hand: Needs your input on ticket <https://linear.app/x/DEN-2369|DEN-2369> — fix the widget",
+    );
+  });
+
+  it("escapes mrkdwn special chars in ticket id", () => {
+    const text = formatNeedsInputText({
+      ticketId: "DEN-<99>",
+      ticketUrl: "https://linear.app/x/DEN-99",
+      title: "some ticket",
+    });
+    expect(text).toContain("DEN-&lt;99&gt;");
   });
 });
 
@@ -64,6 +89,7 @@ describe("SlackIntegration", () => {
       title: "Hello",
       url: "https://example.com/pr/1",
       ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
     });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -96,6 +122,7 @@ describe("SlackIntegration", () => {
         title: "Hi",
         url: "https://example.com/pr/2",
         ticketId: "DEN-2",
+        ticketUrl: "https://linear.app/x/DEN-2",
       }),
     ).resolves.toBeUndefined();
   });
@@ -116,6 +143,7 @@ describe("SlackIntegration", () => {
         title: "Hi",
         url: "https://example.com/pr/3",
         ticketId: "DEN-3",
+        ticketUrl: "https://linear.app/x/DEN-3",
       }),
     ).resolves.toBeUndefined();
   });
@@ -138,12 +166,158 @@ describe("SlackIntegration", () => {
         title: "Hi",
         url: "https://example.com/pr/4",
         ticketId: "DEN-4",
+        ticketUrl: "https://linear.app/x/DEN-4",
       }),
     ).resolves.toBeUndefined();
   });
 
   it("throws when constructed without a token or channel", () => {
-    expect(() => new SlackIntegration({ token: "", channel: "C1" })).toThrow();
-    expect(() => new SlackIntegration({ token: "xoxb", channel: "" })).toThrow();
+    expect(() => new SlackIntegration({ token: "", channel: "C1", logger: SILENT_LOGGER })).toThrow();
+    expect(() => new SlackIntegration({ token: "xoxb", channel: "", logger: SILENT_LOGGER })).toThrow();
+  });
+
+  it("sends a DM when recipientEmail resolves to a Slack user", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, user: { id: "U9876" } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyPullRequest({
+      kind: "opened",
+      pr: { owner: "acme", repo: "blueden", number: 1 },
+      title: "Hello",
+      url: "https://example.com/pr/1",
+      ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
+      recipientEmail: "user@example.com",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [lookupUrl] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(lookupUrl).toBe("https://slack.com/api/users.lookupByEmail?email=user%40example.com");
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("U9876");
+  });
+
+  it("falls back to channel when users.lookupByEmail returns users_not_found", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, error: "users_not_found" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyPullRequest({
+      kind: "opened",
+      pr: { owner: "acme", repo: "blueden", number: 1 },
+      title: "Hello",
+      url: "https://example.com/pr/1",
+      ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
+      recipientEmail: "unknown@example.com",
+    });
+
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("C12345");
+  });
+
+  it("falls back to channel when users.lookupByEmail returns an HTTP error", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("nope", { status: 500 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyPullRequest({
+      kind: "opened",
+      pr: { owner: "acme", repo: "blueden", number: 1 },
+      title: "Hello",
+      url: "https://example.com/pr/1",
+      ticketId: "DEN-1",
+      ticketUrl: "https://linear.app/x/DEN-1",
+      recipientEmail: "user@example.com",
+    });
+
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("C12345");
+  });
+
+  it("notifyNeedsInput posts raising_hand message to channel", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyNeedsInput({
+      ticketId: "DEN-2369",
+      ticketUrl: "https://linear.app/x/DEN-2369",
+      title: "fix the widget",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [, postInit] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("C12345");
+    expect(body.text).toContain(":raising_hand:");
+    expect(body.text).toContain("DEN-2369");
+  });
+
+  it("notifyNeedsInput DMs the assignee when recipientEmail resolves", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, user: { id: "UABC" } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyNeedsInput({
+      ticketId: "DEN-2369",
+      ticketUrl: "https://linear.app/x/DEN-2369",
+      title: "fix the widget",
+      recipientEmail: "user@example.com",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("UABC");
+    expect(body.text).toContain(":raising_hand:");
   });
 });

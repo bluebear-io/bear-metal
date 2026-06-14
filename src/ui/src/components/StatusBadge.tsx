@@ -5,6 +5,7 @@ const toneColorByStatus: Record<string, string> = {
   passed: "var(--color-status-green)",
   merged: "var(--color-status-green)",
   succeeded: "var(--color-status-green)",
+  waiting_for_human: "var(--color-status-green)",
   healthy: "var(--color-status-green)",
   abandoned: "var(--color-status-red)",
   failed: "var(--color-status-red)",

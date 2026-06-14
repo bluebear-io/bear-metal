@@ -19,4 +19,27 @@ describe("workspace guard", () => {
     expect(() => validateWorkspaceBashCommand("cd ..", "/tmp/workspace/blueden")).toThrow(/outside workspace/);
     expect(() => validateWorkspaceBashCommand("ls ~/projects", "/tmp/workspace/blueden")).toThrow(/outside workspace/);
   });
+
+  it("blocks git push in all forms", () => {
+    const root = "/tmp/workspace/blueden";
+    expect(() => validateWorkspaceBashCommand("git push", root)).toThrow(/git push is not allowed/);
+    expect(() => validateWorkspaceBashCommand("git push -u origin HEAD", root)).toThrow(/git push is not allowed/);
+    expect(() => validateWorkspaceBashCommand("git push --force-with-lease", root)).toThrow(/git push is not allowed/);
+    expect(() => validateWorkspaceBashCommand("git push origin --delete my-branch", root)).toThrow(/git push is not allowed/);
+    expect(() => validateWorkspaceBashCommand("git push --tags", root)).toThrow(/git push is not allowed/);
+    // git operations that are not push remain allowed
+    expect(() => validateWorkspaceBashCommand("git status", root)).not.toThrow();
+    expect(() => validateWorkspaceBashCommand("git commit -m 'fix'", root)).not.toThrow();
+    expect(() => validateWorkspaceBashCommand("git merge origin/main", root)).not.toThrow();
+  });
+
+  it("blocks gh CLI in all forms", () => {
+    const root = "/tmp/workspace/blueden";
+    expect(() => validateWorkspaceBashCommand("gh pr create", root)).toThrow(/gh CLI is not allowed/);
+    expect(() => validateWorkspaceBashCommand("gh issue list", root)).toThrow(/gh CLI is not allowed/);
+    expect(() => validateWorkspaceBashCommand("gh auth status", root)).toThrow(/gh CLI is not allowed/);
+    // similar-looking strings that are not the gh CLI remain allowed
+    expect(() => validateWorkspaceBashCommand("echo 'gh is cool'", root)).not.toThrow();
+    expect(() => validateWorkspaceBashCommand("touch /tmp/workspace/blueden/ghfile", root)).not.toThrow();
+  });
 });

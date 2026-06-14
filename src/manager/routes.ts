@@ -1,10 +1,9 @@
 import { Router } from "express";
-import * as schema from "../db/schema.js";
-import { MAX_TICKET_PAGE_SIZE, type ListTicketsOptions, type Repository } from "../db/repository.js";
+import { MAX_TICKET_PAGE_SIZE, type DbClient, type ListTicketsOptions, type TicketListItem } from "../db/client.js";
 
-const BM_STATUSES = schema.tickets.bmStatus.enumValues;
+const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "completed"] as const;
 type BmStatus = (typeof BM_STATUSES)[number];
-const STOP_REASONS = schema.runs.stopReason.enumValues;
+const STOP_REASONS = ["completed", "timeout", "crash", "error"] as const;
 type StopReason = (typeof STOP_REASONS)[number];
 
 function isBmStatus(v: unknown): v is BmStatus {
@@ -58,16 +57,42 @@ function readOptionalInt(value: unknown, name: string): number | undefined {
   return n;
 }
 
-export function createRouter(repo: Repository): Router {
+function serializeTicket(item: TicketListItem) {
+  return {
+    id: item.ticketId,
+    identifier: item.ticketIdentifier,
+    title: item.ticketTitle,
+    description: item.ticketDescription,
+    url: item.ticketUrl,
+    branchName: item.ticketBranchName,
+    linearStatusName: item.ticketLinearStatusName,
+    linearStatusType: item.ticketLinearStatusType,
+    labelsJson: item.ticketLabelsJson,
+    bmStatus: item.bmStatus,
+    attemptCount: item.attemptCount,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    completedAt: item.ticketCompletedAt?.toISOString() ?? null,
+    latestRun: item.latestRun,
+    latestWorkerName: item.latestWorkerName,
+    latestPr: item.latestPr,
+  };
+}
+
+export function createRouter(db: DbClient, maxIterations: number): Router {
   const router = Router();
 
   router.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
 
+  router.get("/config", (_req, res) => {
+    res.json({ maxIterations });
+  });
+
   router.get("/tickets/filters", async (_req, res, next) => {
     try {
-      res.json(await repo.listTicketFilterOptions());
+      res.json(await db.listTicketFilterOptions());
     } catch (err) {
       next(err);
     }
@@ -145,9 +170,9 @@ export function createRouter(repo: Repository): Router {
         pageSize,
       };
 
-      const result = await repo.listTickets(opts);
+      const result = await db.listTickets(opts);
       res.json({
-        tickets: result.items,
+        tickets: result.items.map(serializeTicket),
         total: result.total,
         page: result.page,
         pageSize: result.pageSize,
@@ -159,12 +184,12 @@ export function createRouter(repo: Repository): Router {
 
   router.get("/tickets/:id", async (req, res, next) => {
     try {
-      const detail = await repo.getTicketDetail(req.params.id);
+      const detail = await db.getTicketDetail(req.params.id);
       if (!detail) {
         res.status(404).json({ error: "ticket not found" });
         return;
       }
-      res.json(detail);
+      res.json({ ...detail, ticket: serializeTicket(detail.ticket) });
     } catch (err) {
       next(err);
     }
@@ -172,45 +197,7 @@ export function createRouter(repo: Repository): Router {
 
   router.get("/workers", async (_req, res, next) => {
     try {
-      res.json({ workers: await repo.listWorkers() });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  router.get("/workers/timeline", async (req, res, next) => {
-    try {
-      const now = new Date();
-      const defaultFrom = new Date(now.getTime() - DEFAULT_TIMELINE_WINDOW_MS);
-      const to = parseIsoOrDefault(req.query.to, now);
-      const from = parseIsoOrDefault(req.query.from, defaultFrom);
-      if (!from || !to) {
-        res.status(400).json({ error: "from and to must be valid ISO timestamps" });
-        return;
-      }
-      if (from.getTime() >= to.getTime()) {
-        res.status(400).json({ error: "from must be before to" });
-        return;
-      }
-      // Cap the window so a stray query can't pull in unbounded transition history. The UI's
-      // designed range is 24-72h; 7d is a generous ceiling that still bounds the response size.
-      if (to.getTime() - from.getTime() > MAX_TIMELINE_WINDOW_MS) {
-        res.status(400).json({ error: `timeline window must be ${MAX_TIMELINE_WINDOW_DAYS} days or less` });
-        return;
-      }
-      const timeline = await repo.getWorkerTimeline({ from, to });
-      res.json({
-        window: { from: timeline.window.from.toISOString(), to: timeline.window.to.toISOString() },
-        workers: timeline.workers.map((w) => ({
-          workerId: w.workerId,
-          workerName: w.workerName,
-          spans: w.spans.map((s) => ({
-            status: s.status,
-            startedAt: s.startedAt.toISOString(),
-            endedAt: s.endedAt ? s.endedAt.toISOString() : null,
-          })),
-        })),
-      });
+      res.json({ workers: await db.listWorkers() });
     } catch (err) {
       next(err);
     }
@@ -218,7 +205,7 @@ export function createRouter(repo: Repository): Router {
 
   router.get("/models/comparison", async (_req, res, next) => {
     try {
-      res.json({ models: await repo.listModelComparison() });
+      res.json({ models: await db.listModelComparison() });
     } catch (err) {
       next(err);
     }
@@ -245,7 +232,7 @@ export function createRouter(repo: Repository): Router {
         res.status(400).json({ error: `summary window must be ${MAX_SUMMARY_WINDOW_DAYS} days or less` });
         return;
       }
-      const summary = await repo.getPeriodSummary({ from, to });
+      const summary = await db.getPeriodSummary({ from, to });
       res.json(summary);
     } catch (err) {
       next(err);
@@ -264,7 +251,3 @@ function parseIsoOrDefault(raw: unknown, fallback: Date): Date | null {
 
 const MAX_SUMMARY_WINDOW_DAYS = 90;
 const MAX_SUMMARY_WINDOW_MS = MAX_SUMMARY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-
-const DEFAULT_TIMELINE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const MAX_TIMELINE_WINDOW_DAYS = 7;
-const MAX_TIMELINE_WINDOW_MS = MAX_TIMELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000;

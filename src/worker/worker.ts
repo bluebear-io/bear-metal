@@ -13,7 +13,12 @@ const logger = createLogger({
 
 export interface WorkerProcessDeps extends WorkerIntegrations {
   logger?: Logger;
-  packageRoot?: string;
+  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
+  workspaceBuilderCommand?: string;
+  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
+  workspaceBuilderPath?: string;
+  maxWorkerTimeMs: number;
+  maxWorkerTokens: number;
 }
 
 export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContext) => Promise<WorkerResponse> {
@@ -31,7 +36,10 @@ export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContex
       ticketId: ctx.ticket.identifier,
       prs,
       integrations: deps,
-      packageRoot: deps.packageRoot,
+      workspaceBuilderCommand: deps.workspaceBuilderCommand,
+      workspaceBuilderPath: deps.workspaceBuilderPath,
+      maxWorkerTimeMs: deps.maxWorkerTimeMs,
+      maxWorkerTokens: deps.maxWorkerTokens,
     });
     return { status: result.status };
   };

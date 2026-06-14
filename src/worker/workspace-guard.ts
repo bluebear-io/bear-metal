@@ -122,6 +122,12 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
   if (/(^|[\s;&|])(?:cd|pushd|popd)\s+-($|[\s;&|])/.test(command)) {
     throw new Error("Bash command uses directory history outside workspace");
   }
+  if (/(^|[\s;&|`(])git\s+push(\s|$)/.test(command)) {
+    throw new Error("git push is not allowed in bash — use push_for_review instead");
+  }
+  if (/(^|[\s;&|`(])gh(\s|$)/.test(command)) {
+    throw new Error("gh CLI is not allowed — use the context JSON to discover state and the provided tools to perform operations");
+  }
 
   const root = normalizeWorkspaceRoot(workspaceRoot);
   for (const match of command.matchAll(/(^|[\s"'`=({[,;|&<>])\/[^\s"'`$;&|<>)]*/g)) {

@@ -1,51 +1,90 @@
-import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
-import { rm, mkdtemp, chmod, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { rm, mkdir, mkdtemp, chmod, writeFile, readdir } from "node:fs/promises";
+import { resolve } from "node:path";
 import { runCommand } from "../shared/command.js";
+import type { Ticket } from "../shared/integrations/linear/types.js";
 import type { CloneScriptResult } from "./types.js";
 
-export async function runCloneScript(input: {
-  packageRoot: string;
+export interface RunWorkspaceBuilderInput {
   workspaceDir: string;
   githubToken: string;
-}): Promise<CloneScriptResult> {
-  const scriptPath = resolve(input.packageRoot, "scripts", "clone-target-repos.sh");
-  await rm(resolve(input.workspaceDir, "blueden"), { recursive: true, force: true });
+  ticket: Ticket;
+  /** Inline bash script content. Mutually exclusive with builderPath. */
+  builderCommand?: string;
+  /** Path to an executable workspace builder script. Mutually exclusive with builderCommand. */
+  builderPath?: string;
+}
+
+export async function runWorkspaceBuilder(input: RunWorkspaceBuilderInput): Promise<CloneScriptResult> {
+  const { workspaceDir, githubToken, ticket, builderCommand, builderPath } = input;
+
+  if (!builderCommand && !builderPath) {
+    throw new Error("Either WORKSPACE_BUILDER_COMMAND or WORKSPACE_BUILDER_PATH must be set");
+  }
+  if (builderCommand && builderPath) {
+    throw new Error("WORKSPACE_BUILDER_COMMAND and WORKSPACE_BUILDER_PATH are mutually exclusive");
+  }
+
+  const agentWorkdir = resolve(workspaceDir, "agent");
+
+  // Clean slate — remove any leftover agent workdir from a prior run before rebuilding.
+  await rm(agentWorkdir, { recursive: true, force: true });
+  await mkdir(agentWorkdir, { recursive: true });
 
   // Write .netrc to a private temp dir so the token is never visible in ps aux.
-  // HOME is overridden to that dir for the duration of the script so sub-clones
-  // (inside clone-repos.sh) inherit the same credentials.
-  // SSH URLs (git@github.com:...) are rewritten to HTTPS via GIT_CONFIG_* so the
-  // container doesn't need an SSH client.
-  // The netrcDir is NOT deleted here — it is returned and must be cleaned up by the
-  // caller after the full dispatch (including pi's git push) completes.
-  // mkdtemp guarantees a unique path even under concurrent dispatches; Date.now()
-  // would collide when two tasks start within the same millisecond.
+  // HOME is overridden to that dir for the duration of the script so sub-clones inherit the same credentials.
+  // SSH URLs (git@github.com:...) are rewritten to HTTPS via GIT_CONFIG_* so the container doesn't need an SSH client.
+  // The netrcDir is NOT deleted here — it is returned and must be cleaned up by the caller after the full dispatch
+  // (including pi's git push) completes.
   const netrcDir = await mkdtemp(resolve(tmpdir(), "bear-metal-clone-"));
   await chmod(netrcDir, 0o700);
+
+  let scriptPath: string | undefined;
+
   try {
     const netrcPath = resolve(netrcDir, ".netrc");
-    await writeFile(netrcPath, `machine github.com login x-access-token password ${input.githubToken}\n`, {
+    await writeFile(netrcPath, `machine github.com login x-access-token password ${githubToken}\n`, {
       mode: 0o600,
     });
 
+    if (builderCommand) {
+      const content = builderCommand.startsWith("#!") ? builderCommand : `#!/usr/bin/env bash\nset -euo pipefail\n${builderCommand}`;
+      scriptPath = resolve(netrcDir, "workspace-builder.sh");
+      await writeFile(scriptPath, content, { mode: 0o700 });
+    } else {
+      scriptPath = builderPath!;
+    }
+
     const result = await runCommand("bash", [scriptPath], {
-      cwd: input.workspaceDir,
+      cwd: workspaceDir,
       timeoutMs: 10 * 60 * 1000,
       env: {
         ...process.env,
+        AGENT_WORKDIR: agentWorkdir,
+        TICKET_ID: ticket.identifier,
+        TICKET_TITLE: ticket.title,
+        TICKET_URL: ticket.url,
+        TICKET_TEAM: ticket.teamKey,
+        TICKET_TAGS: ticket.labels.join(","),
+        TICKET_DESCRIPTION: ticket.description ?? "",
         HOME: netrcDir,
-        // Rewrite SSH URLs to HTTPS — no SSH client needed in the container
         GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
         GIT_CONFIG_VALUE_0: "git@github.com:",
       },
     });
 
+    const entries = await readdir(agentWorkdir).catch(() => []);
+    if (entries.length === 0) {
+      throw new Error(
+        `Workspace builder exited 0 but AGENT_WORKDIR is empty (${agentWorkdir}). ` +
+        `Make sure your script clones into "$AGENT_WORKDIR".`,
+      );
+    }
+
     return {
-      scriptPath,
-      workspaceDir: input.workspaceDir,
+      agentWorkdir,
+      workspaceDir,
       stdout: result.stdout,
       stderr: result.stderr,
       netrcDir,
@@ -56,11 +95,7 @@ export async function runCloneScript(input: {
   }
 }
 
-export function getPackageRoot(importMetaUrl: string): string {
-  return resolve(dirname(fileURLToPath(importMetaUrl)), "..", "..");
-}
-
-export function workspaceForTicket(_packageRoot: string, ticketId: string): string {
+export function workspaceForTicket(ticketId: string): string {
   const safeTicketId = ticketId.replace(/[^a-zA-Z0-9_-]/g, "-");
   const base = process.env.BEAR_METAL_WORKSPACE_DIR ?? resolve(homedir(), ".bear-metal", "workspace");
   return resolve(base, safeTicketId);

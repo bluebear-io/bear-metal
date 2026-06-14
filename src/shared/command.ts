@@ -11,7 +11,7 @@ export async function runCommand(
   options: {
     cwd: string;
     env?: NodeJS.ProcessEnv;
-    timeoutMs?: number;
+    timeoutMs: number;
   },
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
@@ -23,12 +23,10 @@ export async function runCommand(
 
     let stdout = "";
     let stderr = "";
-    const timeout = options.timeoutMs
-      ? setTimeout(() => {
-          child.kill("SIGTERM");
-          reject(new Error(`Command timed out: ${command} ${args.join(" ")}`));
-        }, options.timeoutMs)
-      : undefined;
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`Command timed out: ${command} ${args.join(" ")}`));
+    }, options.timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -39,11 +37,11 @@ export async function runCommand(
       stderr += chunk;
     });
     child.on("error", (error) => {
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
       reject(error);
     });
     child.on("close", (code) => {
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
       if (code === 0) {
         resolve({ stdout, stderr });
         return;

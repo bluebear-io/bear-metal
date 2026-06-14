@@ -1,20 +1,18 @@
 import "dotenv/config";
 
 import {
-  createDashboardClient,
   createLogger,
   GitHubIntegration,
   LinearIntegration,
   SlackIntegration,
   type TicketContext,
 } from "../shared/index.js";
+import { SqlDbClient } from "../db/client.js";
 import { TaskWorker } from "../worker/index.js";
 
+import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
-import { DashboardReporter } from "./dashboardReporter.js";
 import { Scheduler } from "./scheduler.js";
-import { createServer } from "./server.js";
-import { createTaskQueueFromDatabaseUrl } from "./tasks.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 
 const config = loadConfig();
@@ -22,7 +20,6 @@ const logger = createLogger({ level: config.logLevel, name: "manager", pretty: c
 
 logger.info(
   {
-    assigneeId: config.linearAssigneeId,
     githubAppId: config.githubAppId,
     githubInstallationId: config.githubAppInstallationId,
     concurrency: config.workerConcurrency,
@@ -50,42 +47,43 @@ if (!slack) {
     "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
   );
 }
-const tasks = createTaskQueueFromDatabaseUrl(config.databaseUrl);
-await tasks.initialize();
-// Dashboard reporting is best-effort and opt-in: with no DASHBOARD_URL it stays undefined and
-// every reporter call site is a no-op. maxAttempts is a phase-1 display constant (cap not yet enforced).
-const reporter = config.dashboardUrl
-  ? new DashboardReporter({
-      client: createDashboardClient({ baseUrl: config.dashboardUrl, token: config.ingestToken, logger }),
-      logger,
-      maxAttempts: 5,
-    })
-  : undefined;
+const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
+await db.initSchema();
 
-const handler = new ManagerTicketHandler({ logger, tasks, reporter });
+const agentId = await linear.getAgentId().catch((err) => {
+  logger.warn({ err }, "failed to resolve Linear agent id; task delegation checks disabled");
+  return undefined;
+});
+
+const handler = new ManagerTicketHandler({ logger, db });
 
 const scheduler = new Scheduler({
   logger,
   linear,
   github,
-  tasks,
+  db,
   handler,
-  agentId: config.linearAssigneeId,
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
-  reporter,
   taskStaleAfterMs: config.taskStaleAfterMs,
   taskMaxReclaims: config.taskMaxReclaims,
+  maxIterations: config.maxIterations,
+  slack,
 });
 const taskWorker = new TaskWorker({
   logger,
-  tasks,
-  integrations: { github, linear, slack },
+  db,
+  integrations: { github, linear, slack, commentStore: db },
   concurrency: config.workerConcurrency,
   pollIntervalMs: config.pollIntervalMs,
-  reporter,
   heartbeatIntervalMs: config.taskHeartbeatIntervalMs,
   maxReclaims: config.taskMaxReclaims,
+  agentId,
+  workspaceBuilderCommand: config.workspaceBuilderCommand ?? undefined,
+  workspaceBuilderPath: config.workspaceBuilderPath ?? undefined,
+  systemPrompt: config.systemPrompt,
+  maxWorkerTimeMs: config.maxWorkerTimeMs,
+  maxWorkerTokens: config.maxWorkerTokens,
 });
 
 if (config.testTicketId) {
@@ -103,17 +101,17 @@ if (config.testTicketId) {
     logger.error({ err, ticketId: config.testTicketId }, "test mode: pipeline failed");
     exitCode = 1;
   } finally {
-    // Always close the task queue so the DB connection is released and the SQLite WAL is checkpointed,
+    // Always close the db so the DB connection is released and the SQLite WAL is checkpointed,
     // even when the pipeline throws partway through.
-    await tasks.close();
+    await db.close();
   }
   process.exit(exitCode);
 }
 
-const app = createServer({ tasks });
-const server = app.listen(config.port, () => {
-  logger.info({ port: config.port }, "health server listening");
-  logger.info({ port: config.port, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+const app = createApp(db, config.maxIterations);
+const server = app.listen(config.backendPort, () => {
+  logger.info({ port: config.backendPort }, "dashboard server listening");
+  logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 });
 
 scheduler.start();
@@ -128,10 +126,10 @@ function shutdown(signal: string): void {
   logger.info({ signal }, "shutting down");
   logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
   void Promise.all([scheduler.stop(), taskWorker.stop()])
-    .then(() => tasks.close())
+    .then(() => db.close())
     .then(() => {
       server.close(() => {
-        logger.info({ signal }, "health server closed, goodnight 🌙");
+        logger.info({ signal }, "dashboard server closed, goodnight 🌙");
         process.exit(0);
       });
     });

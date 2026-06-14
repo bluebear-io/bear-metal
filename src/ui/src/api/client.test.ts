@@ -23,9 +23,8 @@ const ticket: TicketListItem = {
   linearStatusName: "Todo",
   linearStatusType: "unstarted",
   labelsJson: "[]",
-  bmStatus: "abandoned",
+  bmStatus: "completed",
   attemptCount: 1,
-  maxAttempts: 3,
   createdAt: "2026-06-09T10:00:00.000Z",
   updatedAt: "2026-06-09T10:05:00.000Z",
   completedAt: null,
@@ -42,14 +41,12 @@ const ticket: TicketListItem = {
   },
   latestWorkerName: "runner-1",
   latestPr: { number: 14, url: "https://github.com/acme/repo/pull/14", state: "open", merged: false },
-  latestCiStatus: "failed",
 };
 
 const detail: TicketDetail = {
   ticket,
   runs: [],
   pullRequests: [],
-  ciRuns: [],
   events: [],
 };
 
@@ -93,9 +90,9 @@ describe("api client", () => {
     const body = { tickets: [ticket], total: 1, page: 1, pageSize: 50 };
     mockFetch(body);
 
-    await expect(fetchTickets("abandoned")).resolves.toEqual(body);
+    await expect(fetchTickets("completed")).resolves.toEqual(body);
 
-    expect(fetch).toHaveBeenCalledWith("/api/tickets?status=abandoned");
+    expect(fetch).toHaveBeenCalledWith("/api/tickets?status=completed");
   });
 
   it("fetchTickets calls the ticket collection path without a status", async () => {
@@ -111,7 +108,7 @@ describe("api client", () => {
     expect(
       buildTicketsPath({
         q: "flaky",
-        bmStatuses: ["completed", "abandoned"],
+        bmStatuses: ["completed", "in_progress"],
         workerIds: ["wk_1"],
         labels: ["bear-metal"],
         stopReasons: ["timeout"],
@@ -119,7 +116,7 @@ describe("api client", () => {
         pageSize: 25,
       }),
     ).toBe(
-      "/api/tickets?q=flaky&statuses=completed&statuses=abandoned&workerId=wk_1&label=bear-metal&stopReason=timeout&page=2&pageSize=25",
+      "/api/tickets?q=flaky&statuses=completed&statuses=in_progress&workerId=wk_1&label=bear-metal&stopReason=timeout&page=2&pageSize=25",
     );
     expect(buildTicketsPath()).toBe("/api/tickets");
   });
@@ -127,6 +124,7 @@ describe("api client", () => {
   it("fetchTicketFilters returns the dropdown body", async () => {
     const filters: TicketFilterOptions = {
       bmStatuses: ["completed"],
+      statusCounts: {},
       stopReasons: ["timeout"],
       labels: ["bear-metal"],
       workers: [{ id: "wk_1", name: "worker-1" }],

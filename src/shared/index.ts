@@ -1,7 +1,7 @@
 export { createLogger, type Logger, type LoggerOptions } from "./logger.js";
 export type { JsonValue } from "./json.js";
 export {
-  commitAndPush,
+  push,
   getCurrentBranch,
   getRemoteRef,
   parseGitHubRemote,
@@ -22,6 +22,7 @@ export type {
 export {
   GitHubIntegration,
   type GitHubIntegrationOptions,
+  type BotIdentity,
 } from "./integrations/github/client.js";
 export type {
   CommitAuthor,
@@ -39,14 +40,15 @@ export type {
 export {
   SlackIntegration,
   formatNotificationText,
+  formatNeedsInputText,
   type SlackIntegrationOptions,
   type PullRequestNotification,
   type PullRequestNotificationKind,
+  type NeedsInputNotification,
 } from "./integrations/slack/client.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
-export { createDashboardClient, type DashboardClient, type DashboardClientOptions } from "./dashboard/client.js";
 export type {
-  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload, CiRunPayload,
-  CiCheckPayload, ReviewThreadPayload, RunToolCallPayload, EventPayload,
-  BmStatus, RunStatus, RunTrigger, StopReason, CiStatus, EventType, EventSource, WorkerStatus as DashboardWorkerStatus,
+  TicketPayload, WorkerPayload, RunPayload, PullRequestPayload,
+  ReviewThreadPayload, RunToolCallPayload, EventPayload,
+  BmStatus, RunStatus, RunTrigger, StopReason, EventType, EventSource, WorkerStatus as DashboardWorkerStatus,
 } from "./dashboard/types.js";

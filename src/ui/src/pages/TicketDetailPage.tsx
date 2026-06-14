@@ -1,10 +1,8 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { useTicketDetail } from "../api/queries.js";
+import { useConfig, useTicketDetail } from "../api/queries.js";
 import type {
-  CiCheck,
-  CiRun,
   PullRequest,
   ReviewThread,
   ReviewThreadComment,
@@ -17,7 +15,7 @@ import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
-import { formatCostUsd, formatDateTime, formatDuration, formatTokens, parseLabels } from "../lib/format.js";
+import { formatDateTime, formatDuration, formatTokens, parseLabels } from "../lib/format.js";
 
 const Field = ({ label, value }: { label: string; value: string }) => (
   <div className="min-w-0">
@@ -33,7 +31,7 @@ const Section = ({ title, children }: { title: string; children: React.ReactNode
   </section>
 );
 
-const TicketSummary = ({ ticket }: { ticket: Ticket }) => {
+const TicketSummary = ({ ticket, maxIterations }: { ticket: Ticket; maxIterations: number | undefined }) => {
   const labels = parseLabels(ticket.labelsJson);
 
   return (
@@ -49,13 +47,13 @@ const TicketSummary = ({ ticket }: { ticket: Ticket }) => {
         </div>
         <Field label="Title" value={ticket.title} />
         <div>
-          <dt className="text-xs font-medium uppercase text-text-muted">BM status</dt>
+          <dt className="text-xs font-medium uppercase text-text-muted">Status</dt>
           <dd className="mt-1">
             <StatusBadge status={ticket.bmStatus} />
           </dd>
         </div>
         <Field label="Linear status" value={`${ticket.linearStatusName} (${ticket.linearStatusType})`} />
-        <Field label="Attempts" value={`${ticket.attemptCount} / ${ticket.maxAttempts}`} />
+        <Field label="Attempts" value={`${ticket.attemptCount} / ${maxIterations ?? "?"}`} />
         <Field label="Branch" value={ticket.branchName} />
         <Field label="Updated" value={formatDateTime(ticket.updatedAt)} />
         <Field label="Completed" value={formatDateTime(ticket.completedAt)} />
@@ -98,7 +96,6 @@ const RunsSection = ({ runs }: { runs: Run[] }) => (
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Prompt</th>
               <th className="px-3 py-2 font-medium">Completion</th>
-              <th className="px-3 py-2 font-medium">Cost</th>
               <th className="px-3 py-2 font-medium">Stop / error</th>
             </tr>
           </thead>
@@ -121,7 +118,6 @@ const RunsSection = ({ runs }: { runs: Run[] }) => (
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.promptTokens)}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.completionTokens)}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatCostUsd(run.estimatedCostUsd)}</td>
                 <td className="min-w-48 px-3 py-2 text-text-secondary">{[run.stopReason, run.error].filter(Boolean).join(": ") || "—"}</td>
               </tr>
             ))}
@@ -142,14 +138,6 @@ function parseComments(json: string): ReviewThreadComment[] {
   }
 }
 
-function parseAnnotations(json: string): Array<Record<string, unknown>> {
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed) ? (parsed as Array<Record<string, unknown>>) : [];
-  } catch {
-    return [];
-  }
-}
 
 const ReviewThreadItem = ({ thread }: { thread: ReviewThread }) => {
   const comments = parseComments(thread.commentsJson);
@@ -206,8 +194,8 @@ const PullRequestRow = ({ pullRequest }: { pullRequest: PullRequest }) => {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={pullRequest.merged ? "merged" : pullRequest.state} />
-          <span className="text-xs text-text-secondary">{pullRequest.draft ? "Draft" : "Ready"}</span>
-          <span className="text-xs text-text-secondary">{pullRequest.merged ? "Merged" : "Unmerged"}</span>
+          <span className="inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-xs font-medium leading-5 text-text-secondary">{pullRequest.draft ? "Draft" : "Ready"}</span>
+          <span className="inline-flex items-center rounded-full border border-border-default px-2 py-0.5 text-xs font-medium leading-5 text-text-secondary">{pullRequest.merged ? "Merged" : "Unmerged"}</span>
         </div>
       </div>
       {threads.length > 0 && (
@@ -226,126 +214,61 @@ const PullRequestRow = ({ pullRequest }: { pullRequest: PullRequest }) => {
   );
 };
 
-const CiCheckItem = ({ check }: { check: CiCheck }) => {
-  const annotations = parseAnnotations(check.annotationsJson);
-  return (
-    <li className="border-b border-border-default px-4 py-2 last:border-b-0">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0">
-          {check.detailsUrl ? (
-            <a href={check.detailsUrl} className="text-sm font-medium text-primary hover:underline">
-              {check.name}
-            </a>
-          ) : (
-            <span className="text-sm font-medium text-text-primary">{check.name}</span>
-          )}
-          {check.summary && (
-            <p className="mt-1 text-xs text-text-secondary whitespace-pre-wrap break-words">{check.summary}</p>
-          )}
-        </div>
-        <span className="rounded-full bg-status-red/10 px-2 py-0.5 text-xs font-medium text-status-red">
-          {check.conclusion ?? "failed"}
-        </span>
-      </div>
-      {annotations.length > 0 && (
-        <ul className="mt-2 flex flex-col gap-1 rounded border border-border-default bg-bg-page px-3 py-2 text-xs text-text-secondary">
-          {annotations.slice(0, 5).map((annotation, index) => {
-            const path = String(annotation.path ?? "");
-            const startLine = annotation.start_line ?? annotation.line ?? null;
-            const message = String(annotation.message ?? annotation.title ?? "");
-            return (
-              <li key={index} className="font-mono">
-                <span className="text-text-primary">
-                  {path}
-                  {startLine !== null ? `:${String(startLine)}` : ""}
-                </span>{" "}
-                <span>{message}</span>
-              </li>
-            );
-          })}
-          {annotations.length > 5 && (
-            <li className="text-text-muted">+ {annotations.length - 5} more annotation(s)</li>
-          )}
+
+const PullRequestSection = ({ pullRequests }: { pullRequests: PullRequest[] }) => (
+  <Section title="Pull requests">
+    <div className="rounded-md border border-border-default bg-bg-card">
+      {pullRequests.length === 0 ? (
+        <p className="px-4 py-3 text-sm text-text-muted">No pull requests</p>
+      ) : (
+        <ul>
+          {pullRequests.map((pullRequest) => (
+            <PullRequestRow key={pullRequest.id} pullRequest={pullRequest} />
+          ))}
         </ul>
       )}
-    </li>
-  );
-};
-
-const CiRunRow = ({ ciRun }: { ciRun: CiRun }) => {
-  const checks = ciRun.checks ?? [];
-  return (
-    <li className="flex flex-col gap-2 border-b border-border-default px-4 py-3 last:border-b-0">
-      <div className="grid gap-3 sm:grid-cols-[auto_minmax(0,1fr)_auto]">
-        <StatusBadge status={ciRun.status} />
-        <div className="min-w-0 text-sm text-text-secondary">
-          {ciRun.url === null ? (
-            <span>{ciRun.summary ?? "No CI summary"}</span>
-          ) : (
-            <a href={ciRun.url} className="text-primary hover:underline">
-              {ciRun.summary ?? "CI run"}
-            </a>
-          )}
-        </div>
-        <span className="text-xs text-text-muted">{formatDateTime(ciRun.completedAt ?? ciRun.createdAt)}</span>
-      </div>
-      {checks.length > 0 && (
-        <div className="rounded-md border border-border-default bg-bg-page">
-          <h4 className="border-b border-border-default px-3 py-2 text-xs font-semibold uppercase text-text-secondary">
-            Failing checks ({checks.length})
-          </h4>
-          <ul>
-            {checks.map((check) => (
-              <CiCheckItem key={check.id} check={check} />
-            ))}
-          </ul>
-        </div>
-      )}
-    </li>
-  );
-};
-
-const PullRequestCiSection = ({ pullRequests, ciRuns }: { pullRequests: PullRequest[]; ciRuns: CiRun[] }) => (
-  <Section title="PR / CI">
-    <div className="grid gap-4 lg:grid-cols-2">
-      <div className="rounded-md border border-border-default bg-bg-card">
-        <h3 className="border-b border-border-default px-4 py-2 text-sm font-medium">Pull requests</h3>
-        {pullRequests.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-text-muted">No pull requests</p>
-        ) : (
-          <ul>
-            {pullRequests.map((pullRequest) => (
-              <PullRequestRow key={pullRequest.id} pullRequest={pullRequest} />
-            ))}
-          </ul>
-        )}
-      </div>
-      <div className="rounded-md border border-border-default bg-bg-card">
-        <h3 className="border-b border-border-default px-4 py-2 text-sm font-medium">CI runs</h3>
-        {ciRuns.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-text-muted">No CI runs</p>
-        ) : (
-          <ul>
-            {ciRuns.map((ciRun) => (
-              <CiRunRow key={ciRun.id} ciRun={ciRun} />
-            ))}
-          </ul>
-        )}
-      </div>
     </div>
   </Section>
 );
 
-// ---- DEN-2311 Thought-process visualizer -------------------------------
+// ---- Unified event log --------------------------------------------------
 
-const RESULT_STATUS_STYLE: Record<"ok" | "error" | "unknown", string> = {
-  ok: "bg-status-green/10 text-status-green",
-  error: "bg-status-red/10 text-status-red",
-  unknown: "bg-status-yellow/10 text-status-yellow",
-};
+function CopyableBlock({ content, tall }: { content: string; tall?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard.writeText(content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {
+      console.warn("Clipboard write failed");
+    });
+  };
+  return (
+    <div className="mt-1">
+      <div className="flex items-center justify-end rounded-t border border-b-0 border-border-default bg-bg-card px-2 py-0.5">
+        <button
+          onClick={copy}
+          title="Copy to clipboard"
+          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors"
+        >
+          {copied ? (
+            <>
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              copied
+            </>
+          ) : (
+            <>
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              copy
+            </>
+          )}
+        </button>
+      </div>
+      <pre className={`${tall ? "max-h-96" : "max-h-64"} overflow-auto rounded-b border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap`}>{content}</pre>
+    </div>
+  );
+}
 
-// Pretty-print stored JSON when possible; bad data falls back to the raw string so the
-// operator still sees something useful.
 function prettyJson(raw: string): string {
   try {
     return JSON.stringify(JSON.parse(raw), null, 2);
@@ -354,118 +277,174 @@ function prettyJson(raw: string): string {
   }
 }
 
-const ToolCallStep = ({ step, index }: { step: RunToolCall; index: number }) => {
+type LogItem =
+  | { kind: "toolcall"; ts: number; data: RunToolCall }
+  | { kind: "event"; ts: number; data: TicketEvent };
+
+function buildLog(runs: Run[], events: TicketEvent[]): LogItem[] {
+  const items: LogItem[] = [
+    ...events.map((e) => ({ kind: "event" as const, ts: new Date(e.createdAt).getTime(), data: e })),
+    ...runs.flatMap((r) =>
+      (r.toolCalls ?? []).map((tc) => ({ kind: "toolcall" as const, ts: new Date(tc.createdAt).getTime(), data: tc }))
+    ),
+  ];
+  return items.sort((a, b) => a.ts - b.ts);
+}
+
+const STATUS_BADGE: Record<string, string> = {
+  ok: "bg-status-green/10 text-status-green",
+  error: "bg-status-red/10 text-status-red",
+  unknown: "bg-status-yellow/10 text-status-yellow",
+};
+
+const ERROR_EVENT_TYPES = new Set(["worker_crashed", "error"]);
+
+const LogRow = ({ item }: { item: LogItem }) => {
   const [open, setOpen] = useState(false);
-  const status = step.resultStatus ?? "unknown";
+
+  const isToolCall = item.kind === "toolcall";
+  const tc = isToolCall ? item.data : null;
+  const ev = !isToolCall ? item.data : null;
+
+  const label = isToolCall ? "agent" : ev!.source;
+  const statusKey = isToolCall
+    ? (tc!.resultStatus ?? "unknown")
+    : (ERROR_EVENT_TYPES.has(ev!.type) ? "error" : "ok");
+  const badgeClass = STATUS_BADGE[statusKey] ?? STATUS_BADGE.unknown;
+
   return (
-    <li className="border-b border-border-default last:border-b-0">
-      <button
-        type="button"
+    <>
+      <tr
+        className="cursor-pointer hover:bg-bg-page"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-bg-page"
         aria-expanded={open}
       >
-        <span className="mt-0.5 inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border-default text-xs text-text-secondary">
-          {index + 1}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-sm font-medium text-text-primary">{step.toolName}</span>
-            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${RESULT_STATUS_STYLE[status]}`}>
-              {status}
-            </span>
-            {step.outputSize !== null && (
-              <span className="text-xs text-text-muted">{step.outputSize.toLocaleString()} chars</span>
-            )}
+        <td className="whitespace-nowrap px-4 py-3">
+          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${badgeClass}`}>
+            {statusKey}
           </span>
-          {step.thoughtText && !open && (
-            <span className="mt-1 line-clamp-2 block text-xs text-text-secondary whitespace-pre-wrap">{step.thoughtText}</span>
-          )}
-        </span>
-        <span className="mt-1 text-xs text-text-muted">{open ? "−" : "+"}</span>
-      </button>
+        </td>
+        <td className="whitespace-nowrap px-4 py-3">
+          <span className="rounded-full border border-border-default px-2 py-0.5 text-xs font-medium text-text-secondary">
+            {label}
+          </span>
+        </td>
+        <td className="px-4 py-3 text-sm text-text-primary">
+          {isToolCall
+            ? <span className="flex items-center gap-2">
+                <span className="rounded-full border border-border-default px-2 py-0.5 text-xs font-medium text-text-secondary">tool</span>
+                <span className="font-mono text-sm">{tc!.toolName}</span>
+              </span>
+            : ev!.summary}
+        </td>
+        <td className="whitespace-nowrap px-4 py-3 text-right text-xs text-text-muted">
+          <time dateTime={item.data.createdAt}>{formatDateTime(item.data.createdAt)}</time>
+        </td>
+      </tr>
       {open && (
-        <div className="flex flex-col gap-3 border-t border-border-default bg-bg-page px-4 py-3">
-          {step.thoughtText && (
-            <div>
-              <div className="text-xs font-semibold uppercase text-text-muted">Thought</div>
-              <pre className="mt-1 whitespace-pre-wrap break-words text-xs text-text-primary">{step.thoughtText}</pre>
+        <tr>
+          <td colSpan={4} className="border-t border-border-default bg-bg-page px-4 py-3 max-w-0 w-full">
+            <div className="flex flex-col gap-3 overflow-hidden">
+              {isToolCall && tc ? (
+                <>
+                  {tc.thoughtText && (
+                    <div>
+                      <div className="text-xs font-semibold uppercase text-text-muted">Thought</div>
+                      <CopyableBlock content={tc.thoughtText} />
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-text-muted">Input</div>
+                    <CopyableBlock content={prettyJson(tc.argsJson)} />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold uppercase text-text-muted">Output</div>
+                    {tc.resultText === null ? (
+                      <p className="mt-1 text-xs text-text-muted">No result captured.</p>
+                    ) : (
+                      <CopyableBlock content={tc.resultText} />
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col gap-1 text-sm text-text-secondary">
+                  <span><span className="font-medium text-text-muted">source:</span> {ev!.source}</span>
+                  <span><span className="font-medium text-text-muted">type:</span> {ev!.type.replaceAll("_", " ")}</span>
+                  <span><span className="font-medium text-text-muted">summary:</span> {ev!.summary}</span>
+                  {ev!.payloadJson && (() => {
+                    let content: string;
+                    let tall = false;
+                    if (ev!.type === "agent_started") {
+                      try {
+                        const parsed = JSON.parse(ev!.payloadJson) as { prompt?: string };
+                        if (parsed.prompt) { content = parsed.prompt; tall = true; }
+                        else { content = prettyJson(ev!.payloadJson); }
+                      } catch { content = prettyJson(ev!.payloadJson); }
+                    } else {
+                      content = prettyJson(ev!.payloadJson);
+                    }
+                    return <CopyableBlock content={content} tall={tall} />;
+                  })()}
+                </div>
+              )}
             </div>
-          )}
-          <div>
-            <div className="text-xs font-semibold uppercase text-text-muted">Input</div>
-            <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary">{prettyJson(step.argsJson)}</pre>
-          </div>
-          <div>
-            <div className="text-xs font-semibold uppercase text-text-muted">Output</div>
-            {step.resultText === null ? (
-              <p className="mt-1 text-xs text-text-muted">No result captured.</p>
-            ) : (
-              <pre className="mt-1 max-h-64 overflow-auto rounded border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap break-words">{step.resultText}</pre>
-            )}
-          </div>
-        </div>
+          </td>
+        </tr>
       )}
-    </li>
+    </>
   );
 };
 
-const ThoughtProcessSection = ({ runs }: { runs: Run[] }) => {
-  const runsWithCalls = runs.filter((r) => (r.toolCalls?.length ?? 0) > 0);
+const ACTIVE_RUN_STATUSES = new Set(["running", "dispatched"]);
+
+const EventLogSection = ({ runs, events }: { runs: Run[]; events: TicketEvent[] }) => {
+  const items = buildLog(runs, events);
+  const isActive = runs.some((r) => r.status !== null && ACTIVE_RUN_STATUSES.has(r.status));
   return (
-    <Section title="Thought process">
-      {runsWithCalls.length === 0 ? (
-        <p className="text-sm text-text-muted">No tool calls captured for this ticket’s runs.</p>
+    <Section title="Event log">
+      {items.length === 0 && !isActive ? (
+        <p className="text-sm text-text-muted">No events yet.</p>
       ) : (
-        <div className="flex flex-col gap-4">
-          {runsWithCalls.map((run) => (
-            <div key={run.id} className="rounded-md border border-border-default bg-bg-card">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-default px-4 py-2">
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="font-medium">Attempt {run.attemptNumber}</span>
-                  <StatusBadge status={run.status} />
-                </div>
-                <span className="text-xs text-text-muted">{run.toolCalls.length} step{run.toolCalls.length === 1 ? "" : "s"}</span>
-              </div>
-              <ol className="divide-y divide-border-default">
-                {run.toolCalls.map((step, index) => (
-                  <ToolCallStep key={step.id} step={step} index={index} />
-                ))}
-              </ol>
-            </div>
-          ))}
+        <div className="overflow-x-auto rounded-md border border-border-default bg-bg-card">
+          <table className="min-w-full divide-y divide-border-default text-left text-sm">
+            <thead className="bg-bg-page text-xs uppercase text-text-muted">
+              <tr>
+                <th scope="col" className="px-4 py-3 font-medium">Status</th>
+                <th scope="col" className="px-4 py-3 font-medium">Source</th>
+                <th scope="col" className="px-4 py-3 font-medium">Event</th>
+                <th scope="col" className="px-4 py-3 font-medium text-right">Time</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border-default">
+              {items.map((item) => (
+                <LogRow key={item.kind === "toolcall" ? `tc-${item.data.id}` : `ev-${item.data.id}`} item={item} />
+              ))}
+              {isActive && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-3">
+                    <div className="flex items-center gap-2 text-xs text-text-muted">
+                      <span className="relative flex size-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+                        <span className="relative inline-flex size-2 rounded-full bg-primary" />
+                      </span>
+                      Worker is active — new events will appear here
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       )}
     </Section>
   );
 };
 
-const TimelineSection = ({ events }: { events: TicketEvent[] }) => (
-  <Section title="Timeline">
-    {events.length === 0 ? (
-      <p className="text-sm text-text-muted">No events</p>
-    ) : (
-      <ol className="rounded-md border border-border-default bg-bg-card">
-        {events.map((event) => (
-          <li className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-border-default px-4 py-3 last:border-b-0" key={event.id}>
-            <span className="rounded-full border border-border-default px-2 py-0.5 text-xs font-medium text-text-secondary">
-              {event.source} / {event.type.replaceAll("_", " ")}
-            </span>
-            <span className="text-sm text-text-primary">{event.summary}</span>
-            <time className="whitespace-nowrap text-right text-xs text-text-muted" dateTime={event.createdAt}>
-              {formatDateTime(event.createdAt)}
-            </time>
-          </li>
-        ))}
-      </ol>
-    )}
-  </Section>
-);
-
 export const TicketDetailPage = () => {
   const { id } = useParams();
   const hasTicketId = id !== undefined && id.trim() !== "";
   const query = useTicketDetail(id ?? "");
+  const configQuery = useConfig();
   const detail = hasTicketId ? query.data : undefined;
 
   if (!hasTicketId) {
@@ -501,11 +480,10 @@ export const TicketDetailPage = () => {
       >
         {detail === undefined ? null : (
           <div className="flex flex-col gap-6">
-            <TicketSummary ticket={detail.ticket} />
+            <TicketSummary ticket={detail.ticket} maxIterations={configQuery.data?.maxIterations} />
+            <PullRequestSection pullRequests={detail.pullRequests} />
             <RunsSection runs={detail.runs} />
-            <ThoughtProcessSection runs={detail.runs} />
-            <PullRequestCiSection pullRequests={detail.pullRequests} ciRuns={detail.ciRuns} />
-            <TimelineSection events={detail.events} />
+            <EventLogSection runs={detail.runs} events={detail.events} />
           </div>
         )}
       </QueryBoundary>

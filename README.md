@@ -8,7 +8,7 @@ solves them with an LLM, and opens a GitHub PR.
 ## Scope (current)
 
 This repository currently contains one package with a **manager** and **worker**.
-The manager polls Linear tickets delegated to `LINEAR_ASSIGNEE_ID`, looks up the
+The manager polls Linear tickets delegated to the user associated with `LINEAR_API_TOKEN`, looks up the
 GitHub PR for active tickets with a known worker-returned PR ref, and maintains
 its concurrency slots in the SQL-backed `tasks` table. The worker atomically
 acquires a task row, gathers Linear/GitHub context, runs the repository clone
@@ -34,17 +34,20 @@ Copy `.env.example` to `.env` and fill in the required values:
 
 | Var | Required | Default | Purpose |
 |-----|----------|---------|---------|
-| `LINEAR_API_TOKEN` | yes | — | Linear auth |
-| `LINEAR_ASSIGNEE_ID` | yes | — | Linear user id whose tickets the manager works |
+| `LINEAR_API_TOKEN` | yes | — | Linear auth (assignee resolved automatically via viewer query) |
 | `GITHUB_APP_ID` | yes | — | GitHub App id (numeric) |
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
 | `GITHUB_APP_INSTALLATION_ID` | yes | — | installation id (numeric) |
+| `WORKSPACE_BUILDER_COMMAND` | yes* | — | Inline bash script for workspace setup (see [Workspace Builder](#workspace-builder)) |
+| `WORKSPACE_BUILDER_PATH` | yes* | — | Path to a workspace builder script file (see [Workspace Builder](#workspace-builder)) |
 | `DATABASE_URL` | no | `sqlite:./bear-metal-manager.sqlite` | task queue database; supports `sqlite:<path>` and `postgres://...` |
 | `WORKER_CONCURRENCY` | no | `5` | max tickets worked in parallel |
 | `POLL_INTERVAL_MS` | no | `60000` | poll cadence |
 | `PORT` | no | `3000` | health server port |
 | `LOG_LEVEL` | no | `info` | pino log level |
 | `LOG_PRETTY` | no | `false` | colorized, human-readable logs (dev); JSON when false |
+
+*Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
 
 The worker also needs Pi model credentials supported by
 `@earendil-works/pi-coding-agent`, such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
@@ -82,10 +85,66 @@ the manager's durable slot record while `slot_status` is `active` or `parked`;
 only from the latest row's `result_json.pr` or `input_json.pr`; it does not scan
 GitHub branches or commit messages to discover PRs.
 
-## Clone Hook
+## Workspace Builder
 
-The worker runs `scripts/clone-target-repos.sh` inside a per-ticket workspace
-before invoking Pi. Keep target-repository setup logic in that script.
+Before invoking the coding agent, the worker runs a **workspace builder** to
+clone and set up the target repository. You must provide one via env var.
+
+Bear-metal creates `AGENT_WORKDIR`, runs the builder, then runs the agent inside
+`AGENT_WORKDIR`. The builder must populate that directory and exit 0 on success.
+A non-zero exit aborts the task.
+
+**Input env vars passed to the builder:**
+
+| Var | Example |
+|-----|---------|
+| `AGENT_WORKDIR` | `/tmp/bear-metal-workspace-DEN-123/agent` |
+| `TICKET_ID` | `DEN-123` |
+| `TICKET_TITLE` | `Fix the auth bug` |
+| `TICKET_URL` | `https://linear.app/...` |
+| `TICKET_TEAM` | `DEN` |
+| `TICKET_TAGS` | `repo:backend,priority:high` (comma-separated Linear labels) |
+| `TICKET_DESCRIPTION` | full ticket body |
+
+### Single repo (`WORKSPACE_BUILDER_COMMAND`)
+
+One-liner — no file to mount:
+
+```bash
+WORKSPACE_BUILDER_COMMAND=git clone git@github.com:your-org/your-repo "$AGENT_WORKDIR"
+```
+
+### Umbrella repo with sub-repos (`WORKSPACE_BUILDER_COMMAND`)
+
+Clone the umbrella, then run its sub-repo clone script:
+
+```bash
+WORKSPACE_BUILDER_COMMAND=<<'EOF'
+git clone git@github.com:your-org/umbrella "$AGENT_WORKDIR"
+cd "$AGENT_WORKDIR" && scripts/clone-repos.sh
+EOF
+```
+
+### Dynamic multi-repo routing by tag (`WORKSPACE_BUILDER_PATH`)
+
+For complex logic, mount a script file and point to it:
+
+```bash
+WORKSPACE_BUILDER_PATH=/scripts/build-workspace.sh
+```
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+if echo "$TICKET_TAGS" | grep -q "repo:frontend"; then
+  git clone git@github.com:your-org/frontend "$AGENT_WORKDIR"
+elif echo "$TICKET_TAGS" | grep -q "repo:backend"; then
+  git clone git@github.com:your-org/backend "$AGENT_WORKDIR"
+else
+  git clone git@github.com:your-org/monorepo "$AGENT_WORKDIR"
+fi
+```
 
 ## Develop
 

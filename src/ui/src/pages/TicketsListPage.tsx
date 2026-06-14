@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
-import { useTicketFilterOptions, useTickets } from "../api/queries.js";
+import { useConfig, useTicketFilterOptions, useTickets } from "../api/queries.js";
 import type { BmStatus, StopReason, TicketListItem, TicketListQuery } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
@@ -12,12 +12,15 @@ import { formatDateTime } from "../lib/format.js";
 const Dash = () => <span className="text-text-muted">-</span>;
 
 const TicketLink = ({ ticket }: { ticket: TicketListItem }) => (
-  <Link
-    to={`/tickets/${ticket.id}`}
+  <a
+    href={ticket.url}
     className="font-medium text-primary transition hover:text-text-primary hover:underline"
+    target="_blank"
+    rel="noreferrer"
+    onClick={(e) => e.stopPropagation()}
   >
     {ticket.identifier}
-  </Link>
+  </a>
 );
 
 const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
@@ -31,29 +34,27 @@ const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
       className="font-medium text-primary transition hover:text-text-primary hover:underline"
       target="_blank"
       rel="noreferrer"
+      onClick={(e) => e.stopPropagation()}
     >
       #{ticket.latestPr.number}
     </a>
   );
 };
 
-type FilterKey = "all" | "backlog" | "in_progress" | "failed" | "completed";
+type FilterKey = "all" | "in_progress" | "validating" | "waiting_for_human" | "completed";
 
-// Map each filter category to the set of bmStatus values it covers. "backlog" is
-// the unstarted bucket (assigned to bear-metal but not yet picked up), and
-// "failed" is the human-resolution bucket (CI failed or attempts exhausted).
 const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<BmStatus>> = {
-  backlog: ["discovered"],
-  in_progress: ["dispatched", "in_progress", "pr_open", "ci_running"],
-  failed: ["ci_failed", "abandoned"],
+  in_progress: ["in_progress"],
+  validating: ["validating"],
+  waiting_for_human: ["waiting_for_human"],
   completed: ["completed"],
 };
 
 const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
   { key: "all", label: "All" },
-  { key: "backlog", label: "Backlog" },
   { key: "in_progress", label: "In progress" },
-  { key: "failed", label: "Needs human" },
+  { key: "validating", label: "Validating" },
+  { key: "waiting_for_human", label: "Waiting for human" },
   { key: "completed", label: "Completed" },
 ];
 
@@ -64,6 +65,7 @@ const selectClasses =
   "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
 
 export default function TicketsListPage() {
+  const navigate = useNavigate();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [searchInput, setSearchInput] = useState<string>("");
   const [appliedSearch, setAppliedSearch] = useState<string>("");
@@ -92,6 +94,7 @@ export default function TicketsListPage() {
 
   const ticketsQuery = useTickets(query);
   const filtersQuery = useTicketFilterOptions();
+  const configQuery = useConfig();
 
   const response = ticketsQuery.data;
   const tickets = response?.tickets ?? [];
@@ -229,6 +232,9 @@ export default function TicketsListPage() {
       <nav aria-label="Ticket categories" className="flex flex-wrap gap-2">
         {FILTERS.map(({ key, label: btnLabel }) => {
           const isActive = filter === key;
+          const count = key === "all"
+            ? Object.values(filterOptions?.statusCounts ?? {}).reduce((s, n) => s + (n ?? 0), 0)
+            : FILTER_STATUSES[key].reduce((s, status) => s + (filterOptions?.statusCounts?.[status] ?? 0), 0);
           return (
             <button
               key={key}
@@ -243,7 +249,7 @@ export default function TicketsListPage() {
               }
             >
               {btnLabel}
-              {isActive ? <span className="ml-2 text-xs text-text-muted">{total}</span> : null}
+              {count !== undefined && <span className="ml-2 text-xs text-text-muted">{count}</span>}
             </button>
           );
         })}
@@ -262,18 +268,21 @@ export default function TicketsListPage() {
                 <tr>
                   <th scope="col" className="px-4 py-3 font-medium">Ticket</th>
                   <th scope="col" className="px-4 py-3 font-medium">Title</th>
-                  <th scope="col" className="px-4 py-3 font-medium">BM status</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Status</th>
                   <th scope="col" className="px-4 py-3 font-medium">Latest run</th>
                   <th scope="col" className="px-4 py-3 font-medium">Worker</th>
                   <th scope="col" className="px-4 py-3 font-medium">Attempts</th>
-                  <th scope="col" className="px-4 py-3 font-medium">CI</th>
                   <th scope="col" className="px-4 py-3 font-medium">PR</th>
                   <th scope="col" className="px-4 py-3 font-medium">Updated</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-default">
                 {visibleTickets.map((ticket) => (
-                  <tr key={ticket.id} className="align-middle">
+                  <tr
+                    key={ticket.id}
+                    className="align-middle cursor-pointer hover:bg-bg-page"
+                    onClick={() => navigate(`/tickets/${ticket.id}`)}
+                  >
                     <td className="whitespace-nowrap px-4 py-3">
                       <TicketLink ticket={ticket} />
                     </td>
@@ -288,10 +297,7 @@ export default function TicketsListPage() {
                       {ticket.latestWorkerName ?? <Dash />}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text-primary">
-                      {ticket.attemptCount}/{ticket.maxAttempts}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-3">
-                      {ticket.latestCiStatus === null ? <Dash /> : <StatusBadge status={ticket.latestCiStatus} />}
+                      {ticket.attemptCount}/{configQuery.data?.maxIterations ?? "?"}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
                       <PrLink ticket={ticket} />

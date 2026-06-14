@@ -57,6 +57,8 @@ export interface PullRequestStatus {
   testsFailed: boolean;
   /** Any unresolved review thread whose latest comment is not from bear-metal. */
   hasActionableUnresolvedComments: boolean;
+  /** Any non-minimized PR-level issue comment from a non-infrastructure author. */
+  hasActionableIssueComments: boolean;
   /**
    * GitHub reports the PR head as conflicting with the base branch. Treated as a re-dispatch
    * signal alongside failing checks and unresolved comments — the agent rebases / resolves
@@ -97,6 +99,19 @@ export interface FailedStatus {
   status: JsonValue;
 }
 
+export interface IssueComment {
+  /** GraphQL node id (IC_...) — used with minimizeComment mutation. */
+  id: string;
+  /** REST database id — used for posting replies. */
+  databaseId: number;
+  body: string;
+  author: string | null;
+  authorId: string | null;
+  isMinimized: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ReviewThreadComment {
   id: string;
   databaseId: number | null;
@@ -130,6 +145,10 @@ export interface PullRequestContext {
   unresolvedReviewThreads: ReviewThread[];
   /** Every review thread on the PR, resolved or not, so the dashboard can render the full conversation. */
   reviewThreads: ReviewThread[];
+  /** Non-minimized PR-level issue comments from non-bot authors (excludes infrastructure bots). */
+  issueComments: IssueComment[];
+  /** Issue comments already handled in prior sessions — kept for agent context, not for action. */
+  completedIssueComments: IssueComment[];
   /**
    * GitHub's `mergeable` result for the PR head against its base. `true` means clean, `false`
    * means conflicting, `null` means GitHub hasn't finished computing it yet (next poll will

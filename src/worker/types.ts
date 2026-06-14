@@ -4,6 +4,7 @@ import type {
   PullRequestRef,
   PullRequestNotification,
   ReviewThread,
+  BotIdentity,
 } from "../shared/index.js";
 
 export type DispatchState = "new" | "iteration";
@@ -45,15 +46,19 @@ export type DispatchResult = {
   usage?: DispatchUsage;
   /** Ordered tool-call timeline for the run; empty when no tool calls were captured. */
   toolCalls?: DispatchToolCall[];
+  /** When true, fire a Slack DM once the ticket reaches waiting_for_human (set by push_for_review). */
+  notifyOnComplete?: boolean;
 };
 
 export type { PullRequestRef };
 
 export interface WorkerGitHub {
   getInstallationToken(): Promise<string>;
+  getBotIdentity(): Promise<BotIdentity>;
   getPullRequestContext(pr: PullRequestRef): Promise<PullRequestContext>;
   resolveReviewThread(threadId: string): Promise<void>;
   replyToReviewThread(pr: PullRequestRef, threadId: string, body: string, threads: ReviewThread[]): Promise<void>;
+  leaveComment(pr: PullRequestRef, body: string): Promise<void>;
   getDefaultBranch(owner: string, repo: string): Promise<string>;
   createPullRequest(input: {
     owner: string;
@@ -65,6 +70,11 @@ export interface WorkerGitHub {
   }): Promise<PullRequestRef>;
 }
 
+export interface WorkerCommentStore {
+  markCompleted(pr: PullRequestRef, commentId: string): Promise<void>;
+  getCompleted(pr: PullRequestRef): Promise<Set<string>>;
+}
+
 export interface WorkerSlack {
   notifyPullRequest(notification: PullRequestNotification): Promise<void>;
 }
@@ -74,6 +84,7 @@ export interface WorkerLinear {
   moveTicketToInProgress(ticketId: string): Promise<void>;
   moveTicketToInReview(ticketId: string): Promise<void>;
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
+  getUserEmail(userId: string): Promise<string | null>;
 }
 
 export type WorkerIntegrations = {
@@ -81,10 +92,13 @@ export type WorkerIntegrations = {
   linear: WorkerLinear;
   /** Optional — when unset, PR notifications are skipped. */
   slack?: WorkerSlack;
+  /** Optional — when unset, completed issue comment filtering is skipped. */
+  commentStore?: WorkerCommentStore;
 };
 
 export type CloneScriptResult = {
-  scriptPath: string;
+  /** Absolute path where the agent runs — populated by the workspace builder. */
+  agentWorkdir: string;
   workspaceDir: string;
   stdout: string;
   stderr: string;

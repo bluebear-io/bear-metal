@@ -1,23 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../shared/index.js";
+import type { DbClient, DispatchTaskInput, TaskRecord } from "../db/client.js";
 
-import type { DashboardReporter } from "./dashboardReporter.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 import { makeContext } from "./test-helpers.js";
-import type { DispatchTaskInput, TaskQueue, TaskRecord } from "./tasks.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 
 describe("ManagerTicketHandler", () => {
   it("enqueues a new task and returns the SQL task id", async () => {
-    const tasks = new FakeTaskQueue();
-    const handler = new ManagerTicketHandler({ logger, tasks });
+    const db = new FakeDb();
+    const handler = new ManagerTicketHandler({ logger, db: db as unknown as DbClient });
     const ctx = makeContext("den-1");
 
     const outcome = await handler.handle(ctx, "new");
 
-    expect(tasks.enqueued).toEqual([
+    expect(db.enqueued).toEqual([
       { state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "den-1" },
     ]);
     expect(outcome.status).toBe("pending");
@@ -25,8 +24,8 @@ describe("ManagerTicketHandler", () => {
   });
 
   it("enqueues an iteration task with a compact pull request ref", async () => {
-    const tasks = new FakeTaskQueue();
-    const handler = new ManagerTicketHandler({ logger, tasks });
+    const db = new FakeDb();
+    const handler = new ManagerTicketHandler({ logger, db: db as unknown as DbClient });
 
     await handler.handle(
       {
@@ -36,7 +35,7 @@ describe("ManagerTicketHandler", () => {
       "delegated_back",
     );
 
-    expect(tasks.enqueued).toEqual([
+    expect(db.enqueued).toEqual([
       {
         state: "iteration",
         ticketId: "DEN-2",
@@ -47,38 +46,38 @@ describe("ManagerTicketHandler", () => {
     ]);
   });
 
-  it("reports the dispatched run to the dashboard reporter", async () => {
-    const tasks = new FakeTaskQueue();
-    const runDispatched = vi.fn();
-    const reporter = { runDispatched } as unknown as DashboardReporter;
-    const handler = new ManagerTicketHandler({ logger, tasks, reporter });
+  it("records a dispatched event in the db after enqueue", async () => {
+    const db = new FakeDb();
+    const handler = new ManagerTicketHandler({ logger, db: db as unknown as DbClient });
     const ctx = makeContext("den-1");
 
     await handler.handle(ctx, "new");
 
-    expect(runDispatched).toHaveBeenCalledTimes(1);
-    expect(runDispatched).toHaveBeenCalledWith(
+    // Allow the fire-and-forget void promise to settle.
+    await new Promise((r) => setImmediate(r));
+
+    expect(db.recordEventCalls).toHaveLength(1);
+    expect(db.recordEventCalls[0]).toEqual(
       expect.objectContaining({
-        ticket: ctx.ticket,
+        ticketId: "den-1",
         runId: "task-1",
-        workerId: null,
-        attemptNumber: 1,
-        trigger: "new",
+        source: "manager",
+        type: "dispatched",
       }),
     );
   });
 });
 
-class FakeTaskQueue implements TaskQueue {
+class FakeDb {
   enqueued: DispatchTaskInput[] = [];
-
-  async initialize(): Promise<void> {}
+  upsertTicketDispatchedCalls: object[] = [];
+  recordEventCalls: object[] = [];
 
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     this.enqueued.push(input);
     return {
       id: `task-${this.enqueued.length}`,
-      ticketId: input.ticketId,
+      ticketId: input.ticketIssueId,
       dispatchState: input.state,
       attemptNumber: this.enqueued.length,
       input,
@@ -93,42 +92,14 @@ class FakeTaskQueue implements TaskQueue {
       iterationNumber: 1,
       workerHeartbeatAt: null,
       reclaimCount: 0,
-    };
+    } as TaskRecord;
   }
 
-  async acquireNext(): Promise<TaskRecord | null> {
-    return null;
+  async upsertTicketDispatched(ref: object): Promise<void> {
+    this.upsertTicketDispatchedCalls.push(ref);
   }
 
-  async complete(): Promise<void> {}
-
-  async listTracked() {
-    return [];
+  async recordEvent(event: object): Promise<void> {
+    this.recordEventCalls.push(event);
   }
-
-  async countTracked(): Promise<number> {
-    return 0;
-  }
-
-  async setSlotStatus(): Promise<TaskRecord> {
-    throw new Error("FakeTaskQueue.setSlotStatus is not used by ManagerTicketHandler tests");
-  }
-
-  async getIterationCount(): Promise<number> {
-    return 0;
-  }
-
-  async heartbeat(): Promise<boolean> {
-    return true;
-  }
-
-  async reclaimStaleTasks() {
-    return [];
-  }
-
-  async markCrashed() {
-    return null;
-  }
-
-  async close(): Promise<void> {}
 }

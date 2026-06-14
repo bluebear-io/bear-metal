@@ -1,13 +1,10 @@
 // src/shared/dashboard/types.ts
 
-export type BmStatus =
-  | "discovered" | "dispatched" | "in_progress" | "pr_open"
-  | "ci_running" | "ci_failed" | "completed" | "abandoned";
+export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export type StopReason = "completed" | "timeout" | "crash" | "error";
-export type CiStatus = "running" | "passed" | "failed";
 export type EventSource = "manager" | "worker" | "ci";
 export type EventType =
   | "ticket_discovered" | "dispatched" | "branch_created" | "progress"
@@ -26,7 +23,6 @@ export interface TicketPayload {
   labels: string[];
   bmStatus: BmStatus;
   attemptCount: number;
-  maxAttempts: number;
   createdAt: number;
   updatedAt: number;
   completedAt: number | null;
@@ -76,38 +72,6 @@ export interface PullRequestPayload {
   lastRunId: string | null;
   createdAt: number;
   updatedAt: number;
-}
-
-export interface CiRunPayload {
-  id: string;
-  ticketId: string;
-  runId: string;
-  prId: string | null;
-  status: CiStatus;
-  url: string | null;
-  summary: string | null;
-  createdAt: number;
-  completedAt: number | null;
-}
-
-/**
- * One failing CI check (test/lint/type). Identified by `id` for idempotent upsert across polls;
- * use `<ciRunId>:<source>:<externalId>` so re-polling the same SHA replaces the same row.
- */
-export interface CiCheckPayload {
-  id: string;
-  ciRunId: string;
-  /** "check_run" (GitHub Checks API) vs "status" (legacy commit status). */
-  source: "check_run" | "status";
-  /** GitHub check_run.id (string) or status context. */
-  externalId: string;
-  name: string;
-  conclusion: string | null;
-  detailsUrl: string | null;
-  summary: string | null;
-  /** Serialized GitHub annotations (line-level test/lint failures). */
-  annotationsJson: string;
-  createdAt: number;
 }
 
 /** One PR review thread (resolved or unresolved) with its full comment chain. */

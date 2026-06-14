@@ -1,23 +1,51 @@
-const FIRST_NAMES = [
-  // Israeli
-  "Noa", "Lior", "Tamar", "Idan", "Shira", "Rotem", "Eitan", "Yael",
-  // American
-  "Jake", "Emily", "Tyler", "Chloe", "Mason", "Olivia", "Ethan", "Lily",
-  // Funny nicknames
-  "Buster", "Patches", "Turbo", "Ziggy",
+const NICKNAMES = [
+  "one_eyed",
+  "two_toes",
+  "three_fingers",
+  "cannonball",
+  "ironjaw",
+  "barnacle",
+  "trigger_finger",
+  "cutlass",
+  "dead_eye",
+  "black_powder",
+  "rusty_hook",
+  "salted",
+  "scurvy",
+  "pegleg",
+  "bilge_rat",
+  "plank_walking",
+  "shark_bitten",
+  "gold_tooth",
+  "tattooed",
+  "hangman",
 ];
 
-const LAST_NAMES = [
-  // Israeli
-  "Cohen", "Levi", "Mizrahi", "Goldberg", "Shapiro", "Katz", "Ben-David", "Friedman",
-  // American
-  "Mitchell", "Hayes", "Sullivan", "Parker", "Brennan", "McTavish", "Gallagher", "Lawson",
-  // Funny nicknames
-  "Thunderbolt", "Waffles", "Bananaman", "McFluffin",
+const FIRST_NAMES = [
+  "ned",
+  "tommy",
+  "johnny",
+  "tim",
+  "molly",
+  "jack",
+  "sal",
+  "pete",
+  "mary",
+  "dan",
+  "lou",
+  "rita",
+  "hank",
+  "bess",
+  "crow",
+  "wade",
+  "mick",
+  "nora",
+  "flint",
+  "gus",
 ];
 
 export function generateWorkerName(): string {
-  const first = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]!;
-  const last = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)]!;
-  return `${first} ${last}`;
+  const nickname = NICKNAMES[Math.floor(Math.random() * NICKNAMES.length)]!;
+  const name = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)]!;
+  return `${nickname}_${name}`;
 }

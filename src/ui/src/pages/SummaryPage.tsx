@@ -3,11 +3,9 @@ import { useSearchParams } from "react-router-dom";
 
 import { useSummary } from "../api/queries.js";
 import type {
-  CheckFailureRow,
   CostBlock,
   HealthBlock,
   PeriodSummary,
-  RepoPassRow,
   ShippedRepoBucket,
   ThroughputBlock,
   TicketRef,
@@ -16,7 +14,7 @@ import type {
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
-import { formatCostUsd, formatPercent, formatSeconds, formatTokens } from "../lib/format.js";
+import { formatPercent, formatSeconds, formatTokens } from "../lib/format.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
@@ -256,9 +254,8 @@ function ThroughputCard({ block, prior }: { block: ThroughputBlock; prior: Throu
 function HealthCard({ block, prior }: { block: HealthBlock; prior: HealthBlock }) {
   return (
     <Card title="Pipeline health">
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <RatioStat label="Success rate" current={block.successRate} priorVal={prior.successRate} />
-        <RatioStat label="CI pass rate" current={block.ciPassRate} priorVal={prior.ciPassRate} />
         <NumericStat label="Avg attempts" current={block.avgAttempts} priorVal={prior.avgAttempts} digits={2} invert />
         <RatioStat label="Needed >1 attempt" current={block.multiAttemptRate} priorVal={prior.multiAttemptRate} invert />
       </div>
@@ -268,21 +265,20 @@ function HealthCard({ block, prior }: { block: HealthBlock; prior: HealthBlock }
 
 function CostCard({ block, prior }: { block: CostBlock; prior: CostBlock }) {
   return (
-    <Card title="Cost & LLM usage">
+    <Card title="LLM usage">
       <div className="grid grid-cols-2 gap-3">
         <Stat
-          label="Estimated cost"
-          value={formatCostUsd(block.estimatedUsd)}
-          deltaCurrent={block.estimatedUsd}
-          deltaPrior={prior.estimatedUsd}
-          invert
-          deltaFormat={(d) => formatCostUsd(d)}
+          label="Input tokens"
+          value={formatTokens(block.promptTokens)}
+          deltaCurrent={block.promptTokens}
+          deltaPrior={prior.promptTokens}
+          deltaFormat={(d) => formatTokens(d)}
         />
         <Stat
-          label="Total tokens"
-          value={formatTokens(block.promptTokens + block.completionTokens)}
-          deltaCurrent={block.promptTokens + block.completionTokens}
-          deltaPrior={prior.promptTokens + prior.completionTokens}
+          label="Output tokens"
+          value={formatTokens(block.completionTokens)}
+          deltaCurrent={block.completionTokens}
+          deltaPrior={prior.completionTokens}
           deltaFormat={(d) => formatTokens(d)}
         />
       </div>
@@ -292,7 +288,7 @@ function CostCard({ block, prior }: { block: CostBlock; prior: CostBlock }) {
             <li key={`${row.provider}::${row.modelName}`} className="flex items-center justify-between gap-2 py-1.5">
               <span className="truncate text-text-primary">{row.modelName}</span>
               <span className="text-text-secondary">
-                {formatTokens(row.promptTokens + row.completionTokens)} · {formatCostUsd(row.estimatedUsd)}
+                {formatTokens(row.promptTokens + row.completionTokens)}
               </span>
             </li>
           ))}
@@ -333,62 +329,20 @@ function TimeCard({ block, prior }: { block: TimeBlock; prior: TimeBlock }) {
   );
 }
 
-function FailuresCard({ block }: { block: { topCiCheckNames: CheckFailureRow[]; ticketsAtMaxAttempts: TicketRef[]; worstReposByCi: RepoPassRow[] } }) {
-  const empty = block.topCiCheckNames.length === 0 && block.ticketsAtMaxAttempts.length === 0 && block.worstReposByCi.length === 0;
+function FailuresCard({ block }: { block: { ticketsAtMaxAttempts: TicketRef[] } }) {
   return (
-    <Card title="Top failures">
-      {empty ? (
-        <p className="text-sm text-text-muted">Nothing failed in this window.</p>
+    <Card title="At iteration limit">
+      {block.ticketsAtMaxAttempts.length === 0 ? (
+        <p className="text-sm text-text-muted">No tickets at the iteration limit in this window.</p>
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <div className="flex flex-col gap-1">
-            <h3 className="text-xs font-medium uppercase text-text-muted">CI checks</h3>
-            {block.topCiCheckNames.length === 0
-              ? <p className="text-sm text-text-muted">—</p>
-              : (
-                <ul className="divide-y divide-border-default text-sm">
-                  {block.topCiCheckNames.map((row) => (
-                    <li key={row.name} className="flex items-center justify-between gap-2 py-1.5">
-                      {row.latestDetailsUrl
-                        ? <a href={row.latestDetailsUrl} target="_blank" rel="noreferrer" className="truncate text-text-primary hover:underline">{row.name}</a>
-                        : <span className="truncate text-text-primary">{row.name}</span>}
-                      <span className="text-text-secondary">{row.count}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-          </div>
-          <div className="flex flex-col gap-1">
-            <h3 className="text-xs font-medium uppercase text-text-muted">At iteration limit</h3>
-            {block.ticketsAtMaxAttempts.length === 0
-              ? <p className="text-sm text-text-muted">—</p>
-              : (
-                <ul className="divide-y divide-border-default text-sm">
-                  {block.ticketsAtMaxAttempts.map((t) => (
-                    <li key={t.id} className="py-1.5">
-                      <a href={t.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{t.identifier}</a>
-                      <span className="ml-2 text-text-secondary">{t.title}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-          </div>
-          <div className="flex flex-col gap-1">
-            <h3 className="text-xs font-medium uppercase text-text-muted">Worst repos by CI</h3>
-            {block.worstReposByCi.length === 0
-              ? <p className="text-sm text-text-muted">—</p>
-              : (
-                <ul className="divide-y divide-border-default text-sm">
-                  {block.worstReposByCi.map((row) => (
-                    <li key={row.repo} className="flex items-center justify-between gap-2 py-1.5">
-                      <span className="truncate text-text-primary">{row.repo}</span>
-                      <span className="text-text-secondary">{formatPercent(row.passRate)} · {row.totalRuns} runs</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-          </div>
-        </div>
+        <ul className="divide-y divide-border-default text-sm">
+          {block.ticketsAtMaxAttempts.map((t) => (
+            <li key={t.id} className="py-1.5">
+              <a href={t.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">{t.identifier}</a>
+              <span className="ml-2 text-text-secondary">{t.title}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </Card>
   );

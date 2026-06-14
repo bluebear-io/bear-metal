@@ -1,11 +1,10 @@
+import { randomUUID } from "node:crypto";
 import type { Logger, RunTrigger, TicketContext, WorkOutcome } from "../shared/index.js";
-import type { DashboardReporter } from "./dashboardReporter.js";
-import type { TaskQueue } from "./tasks.js";
+import type { DbClient } from "../db/client.js";
 
 export interface ManagerTicketHandlerDeps {
   logger: Logger;
-  tasks: TaskQueue;
-  reporter?: DashboardReporter;
+  db: DbClient;
 }
 
 /**
@@ -15,29 +14,37 @@ export interface ManagerTicketHandlerDeps {
  */
 export class ManagerTicketHandler {
   private readonly logger: Logger;
-  private readonly tasks: TaskQueue;
-  private readonly reporter?: DashboardReporter;
+  private readonly db: DbClient;
 
   constructor(deps: ManagerTicketHandlerDeps) {
     this.logger = deps.logger;
-    this.tasks = deps.tasks;
-    this.reporter = deps.reporter;
+    this.db = deps.db;
   }
 
   async handle(ctx: TicketContext, trigger: RunTrigger): Promise<WorkOutcome> {
     const state = ctx.prs.length === 0 ? "new" : "iteration";
-    this.logger.info(
+    this.logger.debug(
       { ticket: ctx.ticket.identifier, state, prCount: ctx.prs.length },
       "enqueueing ticket task",
     );
-    const task = await this.tasks.enqueue({
+    const task = await this.db.enqueue({
       state,
-      ticketId: ctx.ticket.identifier,
+      ticketId: ctx.ticket.identifier,  // keep identifier for display/JSON
       prs: ctx.prs.map((pr) => ({ owner: pr.owner, repo: pr.repo, number: pr.number })),
       trigger,
-      ticketIssueId: ctx.ticket.id,
+      ticketIssueId: ctx.ticket.id,  // UUID — used as DB key
     });
-    void this.reporter?.runDispatched({ ticket: ctx.ticket, runId: task.id, workerId: null, attemptNumber: task.attemptNumber, trigger });
+    void this.db.recordEvent({
+      id: randomUUID(),
+      ticketId: ctx.ticket.id,
+      runId: task.id,
+      workerId: null,
+      source: "manager",
+      type: "dispatched",
+      summary: `dispatched attempt ${task.attemptNumber}`,
+      payloadJson: null,
+      createdAt: new Date().toISOString(),
+    });
     return { status: "pending", taskId: task.id };
   }
 }

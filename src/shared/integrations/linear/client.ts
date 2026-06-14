@@ -20,9 +20,19 @@ const EXCLUDED_STATE_NAMES = ["Merged"];
 export class LinearIntegration implements Integration, CommentCapable<string> {
   readonly name = "linear";
   private readonly client: LinearClient;
+  private cachedAgentId: string | undefined;
 
   constructor(options: LinearIntegrationOptions) {
     this.client = new LinearClient({ apiKey: options.token });
+  }
+
+  /** Resolves the Linear user ID for the API token in use. Result is cached after the first call. */
+  async getAgentId(): Promise<string> {
+    if (!this.cachedAgentId) {
+      const viewer = await this.client.viewer;
+      this.cachedAgentId = viewer.id;
+    }
+    return this.cachedAgentId;
   }
 
   /**
@@ -60,6 +70,11 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   async getTicket(id: string): Promise<Ticket> {
     const issue = await this.client.issue(id);
     return this.toTicket(issue);
+  }
+
+  async getUserEmail(userId: string): Promise<string | null> {
+    const user = await this.client.user(userId);
+    return user.email ?? null;
   }
 
   async getTicketContext(id: string): Promise<LinearTicketContext> {
@@ -118,6 +133,22 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     await issue.update({ delegateId: null });
   }
 
+  async getPullRequestRefs(ticketId: string): Promise<{ owner: string; repo: string; number: number }[]> {
+    const issue = await this.client.issue(ticketId);
+    const attachments = await issue.attachments();
+    const refs: { owner: string; repo: string; number: number }[] = [];
+    for (const attachment of attachments.nodes) {
+      if (attachment.sourceType !== "github") continue;
+      const match = attachment.url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
+      if (!match) continue;
+      const meta = attachment.metadata as Record<string, unknown> | null;
+      const state = (meta?.state ?? meta?.status) as string | undefined;
+      if (state === "closed" || state === "merged") continue;
+      refs.push({ owner: match[1]!, repo: match[2]!, number: parseInt(match[3]!, 10) });
+    }
+    return refs;
+  }
+
   private async getComments(issue: Issue): Promise<TicketComment[]> {
     const comments: TicketComment[] = [];
     let after: string | undefined;
@@ -130,11 +161,13 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   }
 
   private async toTicket(issue: Issue): Promise<Ticket> {
-    const state = await issue.state;
+    const [state, labels, team] = await Promise.all([issue.state, issue.labels(), issue.team]);
     if (!state) {
       throw new Error(`Linear issue ${issue.identifier} has no workflow state`);
     }
-    const labels = await issue.labels();
+    if (!team) {
+      throw new Error(`Linear issue ${issue.identifier} has no team`);
+    }
     return {
       id: issue.id,
       identifier: issue.identifier,
@@ -145,6 +178,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       status: { name: state.name, type: state.type },
       priority: issue.priority ?? 0,
       labels: labels.nodes.map((node) => node.name),
+      teamKey: team.key,
       assignee: issue.assigneeId ? { id: issue.assigneeId } : null,
       delegate: issue.delegateId ? { id: issue.delegateId } : null,
       createdAt: issue.createdAt.toISOString(),

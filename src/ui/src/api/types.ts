@@ -1,18 +1,12 @@
-export type BmStatus =
-  | "discovered"
-  | "dispatched"
-  | "in_progress"
-  | "pr_open"
-  | "ci_running"
-  | "ci_failed"
-  | "completed"
-  | "abandoned";
+export interface Config {
+  maxIterations: number;
+}
+
+export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
 
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
-export type CiStatus = "running" | "passed" | "failed";
-
 export interface Ticket {
   id: string;
   identifier: string;
@@ -25,7 +19,6 @@ export interface Ticket {
   labelsJson: string;
   bmStatus: BmStatus;
   attemptCount: number;
-  maxAttempts: number;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -50,7 +43,6 @@ export interface TicketListItem extends Ticket {
   /** Worker name for the most recent attempt; surfaced for the filter bar + list display. */
   latestWorkerName: string | null;
   latestPr: { number: number; url: string; state: "open" | "closed"; merged: boolean } | null;
-  latestCiStatus: CiStatus | null;
 }
 
 export interface TicketListResponse {
@@ -62,6 +54,7 @@ export interface TicketListResponse {
 
 export interface TicketFilterOptions {
   bmStatuses: BmStatus[];
+  statusCounts: Partial<Record<BmStatus, number>>;
   stopReasons: StopReason[];
   labels: string[];
   workers: Array<{ id: string; name: string }>;
@@ -94,24 +87,6 @@ export interface CurrentRunSummary extends LatestRunSummary {
   ticketIdentifier: string;
   ticketTitle: string;
   runtimeMs: number | null;
-}
-
-export interface WorkerTimelineSpan {
-  status: WorkerStatus;
-  startedAt: string;
-  /** ISO timestamp, or null for the currently-open span (interpreted as "now"). */
-  endedAt: string | null;
-}
-
-export interface WorkerTimelineRow {
-  workerId: string;
-  workerName: string;
-  spans: WorkerTimelineSpan[];
-}
-
-export interface WorkerTimeline {
-  window: { from: string; to: string };
-  workers: WorkerTimelineRow[];
 }
 
 export interface WorkerListItem extends Worker {
@@ -153,8 +128,6 @@ export interface Run {
   completionTokens: number | null;
   modelName: string | null;
   provider: string | null;
-  /** Estimated USD cost from the backend pricing table; null when pricing or tokens are missing. */
-  estimatedCostUsd: number | null;
   createdAt: string;
   worker: Worker | null;
   /** Ordered tool-call timeline for the thought-process visualizer (DEN-2311). */
@@ -195,8 +168,6 @@ export interface ModelComparisonRow {
   runsWithDuration: number;
   totalPromptTokens: number;
   totalCompletionTokens: number;
-  totalCostUsd: number;
-  avgCostUsd: number;
 }
 
 /* --- Period summary (GET /api/summary) ----------------------------------- */
@@ -211,7 +182,6 @@ export interface HealthBlock {
   successRate: number | null;
   avgAttempts: number | null;
   multiAttemptRate: number | null;
-  ciPassRate: number | null;
 }
 
 export interface ModelCostRow {
@@ -219,13 +189,11 @@ export interface ModelCostRow {
   modelName: string;
   promptTokens: number;
   completionTokens: number;
-  estimatedUsd: number;
 }
 
 export interface CostBlock {
   promptTokens: number;
   completionTokens: number;
-  estimatedUsd: number;
   byModel: ModelCostRow[];
 }
 
@@ -235,12 +203,6 @@ export interface TimeBlock {
   devHoursSaved: number;
 }
 
-export interface CheckFailureRow {
-  name: string;
-  count: number;
-  latestDetailsUrl: string | null;
-}
-
 export interface TicketRef {
   id: string;
   identifier: string;
@@ -248,17 +210,8 @@ export interface TicketRef {
   url: string;
 }
 
-export interface RepoPassRow {
-  repo: string;
-  totalRuns: number;
-  passedRuns: number;
-  passRate: number;
-}
-
 export interface FailureBlock {
-  topCiCheckNames: CheckFailureRow[];
   ticketsAtMaxAttempts: TicketRef[];
-  worstReposByCi: RepoPassRow[];
 }
 
 export interface ShippedTicket extends TicketRef {
@@ -305,33 +258,6 @@ export interface PullRequest {
   reviewThreads: ReviewThread[];
 }
 
-export interface CiCheck {
-  id: string;
-  ciRunId: string;
-  source: "check_run" | "status";
-  externalId: string;
-  name: string;
-  conclusion: string | null;
-  detailsUrl: string | null;
-  summary: string | null;
-  /** Raw JSON string — serialized annotation array. Parsed by the renderer. */
-  annotationsJson: string;
-  createdAt: string;
-}
-
-export interface CiRun {
-  id: string;
-  ticketId: string;
-  runId: string;
-  prId: string | null;
-  status: CiStatus;
-  url: string | null;
-  summary: string | null;
-  createdAt: string;
-  completedAt: string | null;
-  checks: CiCheck[];
-}
-
 export interface TicketEvent {
   id: string;
   ticketId: string | null;
@@ -348,6 +274,5 @@ export interface TicketDetail {
   ticket: Ticket;
   runs: Run[];
   pullRequests: PullRequest[];
-  ciRuns: CiRun[];
   events: TicketEvent[];
 }

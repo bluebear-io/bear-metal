@@ -1,9 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-  commitAndPush,
+  push,
   createLogger,
   getCurrentBranch,
   getRemoteRef,
@@ -11,13 +11,14 @@ import {
 } from "../shared/index.js";
 import type {
   DispatchResult,
+  DispatchState,
   DispatchToolCall,
   DispatchUsage,
   PullRequestRef,
+  WorkerCommentStore,
   WorkerGitHub,
   WorkerInputContext,
   WorkerLinear,
-  WorkerSlack,
 } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
@@ -28,8 +29,6 @@ const logger = createLogger({
   pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
 });
 
-const MAX_WORKER_TIME_MS = 2 * 60 * 60 * 1000; // 2 hours
-const MAX_WORKER_TOKENS = 20_000_000;            // 20M tokens
 
 // Cap on the per-tool-call result body we persist to the dashboard. Tool outputs (file reads,
 // grep results) can be megabytes; the UI only needs enough to give the operator context. We
@@ -40,28 +39,59 @@ export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
-  slack?: WorkerSlack;
+  commentStore?: WorkerCommentStore;
   gitEnv: NodeJS.ProcessEnv;
+  systemPrompt?: string | null;
+  prs?: PullRequestRef[];
+  onAgentStarted?: (payload: {
+    state: DispatchState;
+    ticket: WorkerInputContext["ticket"];
+    pullRequests: WorkerInputContext["pullRequests"];
+    prs: PullRequestRef[];
+    prompt: string;
+  }) => void;
+  onToolCallProgress?: (calls: DispatchToolCall[]) => void;
+  maxWorkerTimeMs: number;
+  maxWorkerTokens: number;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
-  const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
+  const workspaceRoot = input.context.cloneScript.agentWorkdir;
 
-  // PRs accumulate across multiple wrote_code calls (one per repo in this dispatch).
+  // PRs accumulate across multiple push_for_review calls (one per repo in this dispatch).
   // A pending decision (respond_*) carries the accumulated set so the manager keeps tracking them.
   const collectedPrs: PullRequestRef[] = [];
 
+  // Map from GitHub node ID → comment kind, built once per dispatch from the
+  // fetched PR context. Tools use this to route without inspecting ID prefixes.
+  // An ID absent from this map was not shown to PI and must not be acted on.
+  const commentMap = new Map<string, "thread" | "issue_comment">();
+  for (const pr of input.context.pullRequests) {
+    for (const thread of pr.unresolvedReviewThreads) {
+      commentMap.set(thread.id, "thread");
+    }
+    for (const comment of pr.issueComments) {
+      commentMap.set(comment.id, "issue_comment");
+    }
+  }
+
   const setDecision = (next: DispatchResult) => {
     if (next.status === "pending") {
-      decision = next;
+      decision = {
+        status: "pending",
+        prs: mergePrs(decision?.prs ?? [], next.prs),
+        // Preserve notifyOnComplete from a prior push_for_review so respond_to_comment_writer
+        // calling setDecision("pending") after push_for_review doesn't silently clear it.
+        notifyOnComplete: decision?.notifyOnComplete,
+      };
     } else {
       collectedPrs.push(...next.prs);
-      // Preserve a pending decision across subsequent wrote_code calls: once a
+      // Preserve a pending decision across subsequent push_for_review calls: once a
       // respond_* tool has handed control back to a human, additional code
       // pushes must not silently flip the dispatch result to "done".
       if (decision?.status === "pending") {
-        decision = { status: "pending", prs: mergePrs(decision.prs, next.prs) };
+        decision = { status: "pending", prs: mergePrs(decision.prs, next.prs), notifyOnComplete: decision.notifyOnComplete };
       } else {
-        decision = { status: "done", prs: [...collectedPrs] };
+        decision = { status: "done", prs: [...collectedPrs], notifyOnComplete: next.notifyOnComplete };
       }
     }
   };
@@ -74,8 +104,15 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact comment body to post to Linear." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
-      await input.linear.commentAndHandBack(input.context.ticketId, params.text);
+      if (decision?.status === "pending") {
+        return {
+          content: [{ type: "text", text: "Already pending — duplicate respond_to_ticket_reporter call was ignored. No comment was posted." }],
+          details: {},
+        };
+      }
+      logger.debug({ ticketId: input.context.ticketId, textLength: params.text.length }, "pi tool: respond_to_ticket_reporter");
+      const footer = "\n\n---\n\n🐻 **Waiting for your input.**\nTo get me back on this:\n1. Add a clarifying comment here or update the ticket description with the missing information\n2. Assign or delegate this ticket back to bear-metal — I'll pick it up automatically from there";
+      await input.linear.commentAndHandBack(input.context.ticketId, params.text + footer);
       setDecision({ status: "pending", prs: mergePrs(input.context.prs, collectedPrs) });
       return {
         content: [{ type: "text", text: "Posted Linear comment, relinquished delegation, and marked dispatch pending." }],
@@ -87,49 +124,89 @@ export async function runPiWorker(input: {
   const agreeWithGithubMessage = defineTool({
     name: "agree_with_github_message",
     label: "Agree with GitHub message",
-    description: "Reply to a GitHub review thread after fixing it, then mark the thread as resolved.",
+    description: "Reply to a GitHub comment after fixing it, then mark it as resolved.",
     parameters: Type.Object({
-      threadId: Type.String({ description: "The GitHub review thread node id." }),
-      text: Type.String({ description: "The exact reply body to post to GitHub." }),
+      id: Type.String({ description: "The id of the open comment to act on (from openComments)." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ threadId: params.threadId }, "pi tool: agree_with_github_message");
+      const kind = commentMap.get(params.id);
+      if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
       const pr = requireSinglePr(input.context.prs);
-      await input.github.replyToReviewThread(
-        pr,
-        params.threadId,
-        params.text,
-        unresolvedThreadsFor(input.context, pr),
-      );
-      await input.github.resolveReviewThread(params.threadId);
-      return {
-        content: [{ type: "text", text: `Replied to and resolved review thread ${params.threadId}.` }],
-        details: {},
-      };
+      if (kind === "thread") {
+        logger.debug({ threadId: params.id }, "pi tool: agree_with_github_message (thread)");
+        await input.github.replyToReviewThread(pr, params.id, "Fixed.", unresolvedThreadsFor(input.context, pr));
+        await input.github.resolveReviewThread(params.id);
+        return {
+          content: [{ type: "text", text: `Replied "Fixed." and resolved review thread ${params.id}.` }],
+          details: {},
+        };
+      } else {
+        logger.debug({ issueCommentId: params.id }, "pi tool: agree_with_github_message (issue comment)");
+        await input.commentStore?.markCompleted(pr, params.id);
+        return {
+          content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
+          details: {},
+        };
+      }
     },
   });
 
   const disagreeWithGithubMessage = defineTool({
     name: "disagree_with_github_message",
     label: "Disagree with GitHub message",
-    description: "Reply to a GitHub review thread with a concrete code-backed explanation. Leaves the thread unresolved.",
+    description: "Reply to a GitHub comment with a concrete code-backed explanation. Leaves it unresolved.",
     parameters: Type.Object({
-      threadId: Type.String({ description: "The GitHub review thread node id." }),
-      text: Type.String({ description: "The exact reply body to post to GitHub." }),
+      id: Type.String({ description: "The id of the open comment to act on (from openComments)." }),
+      text: Type.String({ description: "The exact reply or response body." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ threadId: params.threadId }, "pi tool: disagree_with_github_message");
+      const kind = commentMap.get(params.id);
+      if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
       const pr = requireSinglePr(input.context.prs);
-      await input.github.replyToReviewThread(
-        pr,
-        params.threadId,
-        params.text,
-        unresolvedThreadsFor(input.context, pr),
-      );
-      return {
-        content: [{ type: "text", text: `Replied to review thread ${params.threadId} with disagreement.` }],
-        details: {},
-      };
+      if (kind === "thread") {
+        logger.debug({ threadId: params.id }, "pi tool: disagree_with_github_message (thread)");
+        await input.github.replyToReviewThread(pr, params.id, params.text, unresolvedThreadsFor(input.context, pr));
+        return {
+          content: [{ type: "text", text: `Replied to review thread ${params.id} with disagreement.` }],
+          details: {},
+        };
+      } else {
+        logger.debug({ issueCommentId: params.id }, "pi tool: disagree_with_github_message (issue comment)");
+        await input.github.leaveComment(pr, params.text);
+        await input.commentStore?.markCompleted(pr, params.id);
+        return {
+          content: [{ type: "text", text: `Posted PR comment and recorded issue comment ${params.id} as completed.` }],
+          details: {},
+        };
+      }
+    },
+  });
+
+  const markGithubMessageCompleted = defineTool({
+    name: "mark_github_message_completed",
+    label: "Mark GitHub message completed",
+    description: "Mark a comment as completed when it needs no action (informational, FYI, already handled).",
+    parameters: Type.Object({
+      id: Type.String({ description: "The id of the open comment to mark completed (from openComments)." }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const kind = commentMap.get(params.id);
+      if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
+      if (kind === "thread") {
+        logger.debug({ threadId: params.id }, "pi tool: mark_github_message_completed (thread)");
+        await input.github.resolveReviewThread(params.id);
+        return {
+          content: [{ type: "text", text: `Resolved review thread ${params.id}.` }],
+          details: {},
+        };
+      } else {
+        logger.debug({ issueCommentId: params.id }, "pi tool: mark_github_message_completed (issue comment)");
+        await input.commentStore?.markCompleted(requireSinglePr(input.context.prs), params.id);
+        return {
+          content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
+          details: {},
+        };
+      }
     },
   });
 
@@ -142,7 +219,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact reply body to post to the review thread." }),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
+      logger.debug({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
       const pr = requireSinglePr(input.context.prs);
       await input.github.replyToReviewThread(
         pr,
@@ -158,19 +235,18 @@ export async function runPiWorker(input: {
     },
   });
 
-  const wroteCode = defineTool({
-    name: "wrote_code",
-    label: "Wrote code",
-    description: "Commit, push, and create or update the pull request for a repository with completed code changes.",
+  const pushForReview = defineTool({
+    name: "push_for_review",
+    label: "Push for review",
+    description: "Push and create or update the pull request for a repository with completed code changes.",
     parameters: Type.Object({
       repoRoot: Type.String({ description: "Absolute path to the git repository root containing the changes." }),
-      commitMessage: Type.String({ description: "Commit message to use." }),
       prTitle: Type.String({ description: "Pull request title to use when creating a new PR." }),
       prBody: Type.String({ description: "Pull request body to use when creating a new PR." }),
       baseBranch: Type.Optional(Type.String({ description: "Base branch for a new PR. Defaults to repository default branch." })),
     }),
     execute: async (_toolCallId, params) => {
-      logger.info({ repoRoot: params.repoRoot, commitMessage: params.commitMessage }, "pi tool: wrote_code");
+      logger.debug({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
       // Refresh the .netrc token before pushing — installation tokens expire after 1 hour
       // and pi sessions can run much longer than that.
@@ -180,10 +256,10 @@ export async function runPiWorker(input: {
         `machine github.com login x-access-token password ${freshToken}\n`,
         { mode: 0o600 },
       );
-      await commitAndPush(repoRoot, params.commitMessage, input.gitEnv);
+      await push(repoRoot, input.gitEnv);
       const remote = await getRemoteRef(repoRoot);
       // Design constraint: at most one PR per (owner, repo) per dispatch.
-      // A second wrote_code call against the same repo updates the existing PR
+      // A second push_for_review call against the same repo updates the existing PR
       // rather than creating a new branch/PR within that repo.
       // Check collectedPrs (created earlier in this dispatch) before input.context.prs (from previous dispatch).
       const existingPr =
@@ -192,30 +268,19 @@ export async function runPiWorker(input: {
         null;
       const isNewPr = existingPr === null;
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
-      setDecision({ status: "done", prs: [pr] });
+      // DEN-2329: suppress Slack notifications for bot-only iteration churn.
+      // notifyOnComplete is stored in the result; scheduler fires the Slack DM
+      // later when the ticket reaches waiting_for_human, giving a single DM per
+      // human-review cycle rather than one per push_for_review call.
+      const notify = shouldNotifySlackForPr(input.context, pr);
+      setDecision({ status: "done", prs: [pr], notifyOnComplete: notify });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
       } catch (err) {
         logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
       }
-      // DEN-2329: suppress Slack notifications for bot-only iteration churn
-      // (e.g. Cursor/Baloo nits the agent auto-addresses). Always notify on
-      // new tickets, and on iterations only when at least one unresolved
-      // review thread's latest comment is from a human author.
-      if (input.slack && shouldNotifySlackForPr(input.context, pr)) {
-        // The Slack client logs and swallows its own failures so a Slack outage
-        // doesn't mask a successful commit/push from the rest of the pipeline.
-        await input.slack.notifyPullRequest({
-          kind: isNewPr ? "opened" : "updated",
-          pr,
-          title: params.prTitle,
-          url: `https://github.com/${pr.owner}/${pr.repo}/pull/${pr.number}`,
-          ticketId: input.context.ticketId,
-          ticketUrl: input.context.ticket.issue.url,
-        });
-      }
       return {
-        content: [{ type: "text", text: `Committed and pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
+        content: [{ type: "text", text: `Pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
         details: { pr },
       };
     },
@@ -226,7 +291,8 @@ export async function runPiWorker(input: {
   setApiKeyFromEnv(authStorage, "openai", "OPENAI_API_KEY");
   setApiKeyFromEnv(authStorage, "google", "GOOGLE_API_KEY");
 
-  const prompt = buildWorkerPrompt(input.context);
+  const agentsMd = await readAgentsMd(workspaceRoot);
+  const prompt = buildWorkerPrompt(input.context, { repoRoot: workspaceRoot, agentsMd, customSystemPrompt: input.systemPrompt ?? undefined });
   const workspaceDir = input.context.cloneScript.workspaceDir;
   const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
 
@@ -235,18 +301,30 @@ export async function runPiWorker(input: {
     writeFile(resolve(workspaceDir, "context.json"), JSON.stringify(input.context, null, 2), "utf8"),
     writeFile(resolve(workspaceDir, "prompt.txt"), prompt, "utf8"),
   ]);
-  logger.info({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
+  logger.debug({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
+
+  input.onAgentStarted?.({
+    state: input.context.state,
+    ticket: input.context.ticket,
+    pullRequests: input.context.pullRequests,
+    prs: input.prs ?? [],
+    prompt,
+  });
 
   const isNew = input.context.state === "new";
   const stateTools = isNew
-    ? (["respond_to_ticket_reporter", "wrote_code"] as const)
-    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "wrote_code"] as const);
+    ? (["respond_to_ticket_reporter", "push_for_review"] as const)
+    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "push_for_review"] as const);
   const stateCustomTools = isNew
-    ? [respondToTicketReporter, wroteCode]
-    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, wroteCode];
+    ? [respondToTicketReporter, pushForReview]
+    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
 
   let usage: DispatchUsage | null = null;
-  let toolCalls: DispatchToolCall[] = [];
+  const toolCalls: DispatchToolCall[] = [];
+  // Maps toolCallId → pending args/thought while the tool is executing
+  const pendingArgs = new Map<string, { args: unknown; thought: string | null }>();
+  let currentThought: string | null = null;
+  let toolCallSequence = 0;
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
@@ -261,30 +339,45 @@ export async function runPiWorker(input: {
 
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
-      logger.info({ tool: event.toolName, args: event.args }, "pi tool call");
+      logger.debug({ tool: event.toolName, args: event.args }, "pi tool call");
+      pendingArgs.set(event.toolCallId, { args: event.args, thought: currentThought });
+    } else if (event.type === "tool_execution_end") {
+      const pending = pendingArgs.get(event.toolCallId);
+      pendingArgs.delete(event.toolCallId);
+      const rawResult = renderResultContent(event.result);
+      const outputSize = rawResult.length;
+      const truncated = rawResult.length > MAX_TOOL_CALL_RESULT_CHARS
+        ? `${rawResult.slice(0, MAX_TOOL_CALL_RESULT_CHARS)}… [truncated, ${rawResult.length - MAX_TOOL_CALL_RESULT_CHARS} more chars]`
+        : rawResult;
+      toolCalls.push({
+        id: event.toolCallId,
+        sequence: toolCallSequence++,
+        toolName: event.toolName,
+        argsJson: safeStringify(pending?.args ?? {}),
+        resultText: truncated || null,
+        resultStatus: event.isError ? "error" : "ok",
+        outputSize,
+        thoughtText: pending?.thought ?? null,
+        createdAt: Date.now(),
+      });
+      input.onToolCallProgress?.(toolCalls);
     } else if (event.type === "turn_end") {
       const msg = event.message;
-      if ("role" in msg && msg.role === "assistant" && "content" in msg) {
-        const text = (msg.content as Array<{ type: string; text?: string }>)
-          .filter((c) => c.type === "text" && c.text)
-          .map((c) => c.text!)
-          .join("");
-        if (text) logger.info({ text }, "pi assistant output");
+      if (isRecord(msg) && msg.role === "assistant") {
+        const blocks = contentBlocks(msg as { content: unknown });
+        const text = blocks
+          .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && (b as { text: string }).text.length > 0)
+          .map((b) => (b as { text: string }).text)
+          .join("\n").trim();
+        currentThought = text || null;
+        if (text) logger.debug({ text }, "pi assistant output");
       }
     } else if (event.type === "agent_end") {
-      logger.info({ messageCount: event.messages.length }, "pi agent_end");
-      // DEN-2311: build the thought-process timeline from the full message history. Doing it
-      // here (rather than incrementally on tool_execution_start/end) lets us pair each
-      // assistant tool_use with its matching tool_result regardless of ordering quirks.
-      try {
-        toolCalls = extractToolCalls(event.messages as unknown as ReadonlyArray<unknown>);
-      } catch (err) {
-        logger.warn({ err }, "failed to extract pi tool calls from transcript");
-      }
+      logger.debug({ messageCount: event.messages.length }, "pi agent_end");
     }
   });
 
-  logger.info({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
+  logger.debug({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
 
   let limitHitReason: string | null = null;
 
@@ -292,8 +385,8 @@ export async function runPiWorker(input: {
   const unsubscribeLimits = session.subscribe((event) => {
     if (event.type === "turn_end" && !limitHitReason) {
       const stats = session.getSessionStats();
-      if (stats.tokens.total >= MAX_WORKER_TOKENS) {
-        limitHitReason = `token limit of ${MAX_WORKER_TOKENS.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
+      if (stats.tokens.total >= input.maxWorkerTokens) {
+        limitHitReason = `token limit of ${input.maxWorkerTokens.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
         logger.warn({ ticketId: input.context.ticketId, tokens: stats.tokens.total }, "token limit reached; aborting session");
         session.abort().catch((err) => {
           logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
@@ -305,13 +398,13 @@ export async function runPiWorker(input: {
   // Time limit: fires after 2 hours regardless of turn state.
   const timeoutHandle = setTimeout(() => {
     if (!limitHitReason) {
-      limitHitReason = `time limit of 2 hours reached`;
+      limitHitReason = `time limit of ${input.maxWorkerTimeMs / 60_000} minutes reached`;
       logger.warn({ ticketId: input.context.ticketId }, "time limit reached; aborting session");
       session.abort().catch((err) => {
         logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
       });
     }
-  }, MAX_WORKER_TIME_MS);
+  }, input.maxWorkerTimeMs);
 
   try {
     await session.prompt(prompt);
@@ -325,7 +418,7 @@ export async function runPiWorker(input: {
           modelName: model.name,
           provider: model.provider,
         };
-        logger.info({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
+        logger.debug({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
       }
     } catch (statsError) {
       logger.warn({ statsError }, "failed to capture pi session usage");
@@ -342,13 +435,13 @@ export async function runPiWorker(input: {
     const transcriptPath = resolve(workspaceDir, "session.jsonl");
     try {
       session.exportToJsonl(transcriptPath);
-      logger.info({ transcriptPath }, "pi session transcript saved");
+      logger.debug({ transcriptPath }, "pi session transcript saved");
     } catch (exportError) {
       logger.warn({ exportError }, "failed to export session transcript");
     }
     unsubscribe();
     session.dispose();
-    logger.info({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
+    logger.debug({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
   }
 
   // If a limit was hit and the worker hadn't already set a decision, hand back.
@@ -366,12 +459,11 @@ export async function runPiWorker(input: {
       // Agent disagreed with all threads and made no code changes — replies were posted, work is done.
       decision = { status: "done", prs: mergePrs(input.context.prs, collectedPrs) };
     } else {
-      throw new Error("Pi finished without calling a finish tool (wrote_code or respond_to_ticket_reporter)");
+      throw new Error("Pi finished without calling a finish tool (push_for_review or respond_to_ticket_reporter)");
     }
   }
   // Attach LLM usage stats captured during the just-finished session (DEN-2313).
   const withUsage = usage ? { ...decision, usage } : decision;
-  // Attach the tool-call timeline (DEN-2311). Empty array when no tool calls were captured.
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
 }
 
@@ -387,41 +479,63 @@ export async function runPiWorker(input: {
  * this file: malformed entries are skipped rather than crashing the worker.
  */
 function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] {
-  // Pass 1: index tool_result blocks by their tool_use_id so we can pair them up in one go.
+  // Pass 1: index tool results by their tool call id.
+  // The SDK uses its own internal message format (role:"toolResult", toolCallId, isError)
+  // rather than the Anthropic API wire format (role:"user" with tool_result content blocks).
+  // We handle both so extraction is resilient to future SDK changes.
   const resultsById = new Map<string, { text: string; status: "ok" | "error" }>();
   for (const msg of messages) {
-    if (!isMessage(msg) || msg.role !== "user") continue;
-    for (const block of contentBlocks(msg)) {
-      if (!isRecord(block) || block.type !== "tool_result") continue;
-      const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
+    if (!isRecord(msg)) continue;
+
+    // SDK internal format: standalone ToolResultMessage
+    if (msg.role === "toolResult") {
+      const id = typeof msg.toolCallId === "string" ? msg.toolCallId : null;
       if (!id) continue;
-      const text = renderResultContent(block.content);
-      const status: "ok" | "error" = block.is_error === true ? "error" : "ok";
+      const text = renderResultContent((msg as { content: unknown }).content);
+      const status: "ok" | "error" = msg.isError === true ? "error" : "ok";
       resultsById.set(id, { text, status });
+      continue;
+    }
+
+    // Anthropic API wire format fallback: user message with tool_result content blocks
+    if (msg.role === "user") {
+      for (const block of contentBlocks(msg as { content: unknown })) {
+        if (!isRecord(block) || block.type !== "tool_result") continue;
+        const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
+        if (!id) continue;
+        const text = renderResultContent(block.content);
+        const status: "ok" | "error" = block.is_error === true ? "error" : "ok";
+        resultsById.set(id, { text, status });
+      }
     }
   }
 
-  // Pass 2: emit a step per assistant tool_use, in transcript order, attaching the latest
-  // assistant text block in the same message as the step's thought.
+  // Pass 2: emit a step per tool call in transcript order, attaching the preceding
+  // assistant text as the thought. Handles both SDK format (type:"toolCall", arguments)
+  // and Anthropic API wire format (type:"tool_use", input).
   const steps: DispatchToolCall[] = [];
   let sequence = 0;
   for (const msg of messages) {
-    if (!isMessage(msg) || msg.role !== "assistant") continue;
-    const blocks = contentBlocks(msg);
-    // Collect text blocks first so a tool_use later in the same message inherits the thought
-    // even if the SDK emits text after the tool_use (defensive: tested ordering is text-first).
+    if (!isRecord(msg) || msg.role !== "assistant") continue;
+    const blocks = contentBlocks(msg as { content: unknown });
+    // Collect text blocks first so a tool_use/toolCall later in the same message inherits
+    // the thought even if the SDK emits text after the tool block.
     const thought = blocks
       .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && b.text.length > 0)
       .map((b) => (b as { text: string }).text)
       .join("\n")
       .trim() || null;
     for (const block of blocks) {
-      if (!isRecord(block) || block.type !== "tool_use") continue;
+      if (!isRecord(block)) continue;
+      // SDK format: type === "toolCall"; Anthropic API wire format: type === "tool_use"
+      if (block.type !== "toolCall" && block.type !== "tool_use") continue;
       const id = typeof block.id === "string" && block.id.length > 0
         ? block.id
         : `tc_${sequence}`;
       const toolName = typeof block.name === "string" ? block.name : "unknown";
-      const argsJson = safeStringify(block.input);
+      // SDK format uses "arguments"; Anthropic API wire format uses "input"
+      const args = block.arguments !== undefined ? block.arguments : block.input;
+      const argsJson = safeStringify(args);
       const result = resultsById.get(id) ?? null;
       const rawResult = result?.text ?? null;
       const outputSize = rawResult === null ? null : rawResult.length;
@@ -572,4 +686,15 @@ function setApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: s
   } else {
     logger.warn({ provider, envName }, "API key not set; this provider will be unavailable to the pi agent");
   }
+}
+
+async function readAgentsMd(repoRoot: string): Promise<string | undefined> {
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    try {
+      return await readFile(join(repoRoot, name), "utf8");
+    } catch {
+      // try next
+    }
+  }
+  return undefined;
 }

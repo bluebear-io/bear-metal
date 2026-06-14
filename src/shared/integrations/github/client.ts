@@ -7,6 +7,7 @@ import type {
   CheckRun,
   FailedCheckRun,
   FailedStatus,
+  IssueComment,
   PRState,
   PullRequest,
   PullRequestCommit,
@@ -24,6 +25,7 @@ type OctokitStatus = RestEndpointMethodTypes["repos"]["getCombinedStatusForRef"]
 export interface BotIdentity {
   login: string;
   id: string | null;
+  numericId: number;
 }
 
 export interface GitHubIntegrationOptions {
@@ -70,7 +72,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       const viewer = await installationOctokit.graphql<{ viewer: { id: string | null } }>(
         "query BearMetalViewer { viewer { id } }",
       );
-      this.cachedBotIdentity = { login: `${data.slug}[bot]`, id: viewer.viewer.id };
+      this.cachedBotIdentity = { login: `${data.slug}[bot]`, id: viewer.viewer.id, numericId: data.id };
     }
     return this.cachedBotIdentity;
   }
@@ -98,6 +100,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
         isActionableReviewThread(thread, botIdentity),
       ),
+      hasActionableIssueComments: context.issueComments.length > 0,
       // GitHub returns null while it's still recomputing the merge after a push — don't trigger
       // re-dispatch on null, the next poll will see a definite value.
       hasMergeConflicts: context.mergeable === false,
@@ -144,10 +147,11 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
     const headSha = pullRequest.head.sha;
 
-    const [failedCheckRuns, failedStatuses, reviewThreads] = await Promise.all([
+    const [failedCheckRuns, failedStatuses, reviewThreads, issueComments] = await Promise.all([
       this.getFailedCheckRuns(ref, headSha),
       this.getFailedStatuses(ref, headSha),
       this.getReviewThreads(ref),
+      this.getActionableIssueComments(ref),
     ]);
 
     return {
@@ -157,6 +161,8 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       failedStatuses,
       unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
       reviewThreads,
+      issueComments,
+      completedIssueComments: [],
       // pullRequest.mergeable is typed `boolean | null | undefined`; normalize to boolean|null.
       mergeable: pullRequest.mergeable ?? null,
     };
@@ -304,6 +310,26 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
         body,
       },
     );
+  }
+
+  private async getActionableIssueComments(ref: PullRequestRef): Promise<IssueComment[]> {
+    const response = await this.octokit.graphql<IssueCommentsResponse>(ISSUE_COMMENTS_QUERY, {
+      owner: ref.owner,
+      name: ref.repo,
+      number: ref.number,
+    });
+    return response.repository.pullRequest.comments.nodes
+      .filter((c) => !c.isMinimized)
+      .map((c) => ({
+        id: c.id,
+        databaseId: c.databaseId,
+        body: c.body,
+        author: c.author?.login ?? null,
+        authorId: c.author?.id ?? null,
+        isMinimized: c.isMinimized,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+      }));
   }
 
   private async getFailedCheckRuns(ref: PullRequestRef, sha: string): Promise<FailedCheckRun[]> {
@@ -511,6 +537,47 @@ const REVIEW_THREADS_QUERY = `
                 diffHunk
               }
             }
+          }
+        }
+      }
+    }
+  }
+`;
+
+type IssueCommentsResponse = {
+  repository: {
+    pullRequest: {
+      comments: {
+        nodes: Array<{
+          id: string;
+          databaseId: number;
+          body: string;
+          author: { login: string; id?: string | null } | null;
+          isMinimized: boolean;
+          createdAt: string;
+          updatedAt: string;
+        }>;
+      };
+    };
+  };
+};
+
+const ISSUE_COMMENTS_QUERY = `
+  query BearMetalIssueComments($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        comments(first: 100) {
+          nodes {
+            id
+            databaseId
+            body
+            author {
+              login
+              ... on Node { id }
+            }
+            isMinimized
+            createdAt
+            updatedAt
           }
         }
       }

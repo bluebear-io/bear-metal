@@ -18,7 +18,7 @@ const piMock = vi.hoisted(() => ({
 }));
 
 const gitMock = vi.hoisted(() => ({
-  commitAndPush: vi.fn(async () => {}),
+  push: vi.fn(async () => {}),
   getCurrentBranch: vi.fn(async () => "feature/den-1"),
   getRemoteRef: vi.fn(async () => ({ owner: "acme", repo: "widgets" })),
 }));
@@ -35,7 +35,7 @@ vi.mock("../shared/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared/index.js")>();
   return {
     ...actual,
-    commitAndPush: gitMock.commitAndPush,
+    push: gitMock.push,
     getCurrentBranch: gitMock.getCurrentBranch,
     getRemoteRef: gitMock.getRemoteRef,
   };
@@ -91,23 +91,21 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "agree_with_github_message", {
-        threadId: "thread-1",
-        text: "Fixed in commit abc123.",
+        id: "thread-1",
       });
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
     });
 
-    await runPiWorker({ context, github, linear, gitEnv: {} });
+    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
       "thread-1",
-      "Fixed in commit abc123.",
+      "Fixed.",
       context.pullRequests[0]?.unresolvedReviewThreads,
     );
     expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
@@ -124,18 +122,17 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "disagree_with_github_message", {
-        threadId: "thread-1",
+        id: "thread-1",
         text: "The current code already handles this path.",
       });
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
     });
 
-    await runPiWorker({ context, github, linear, gitEnv: {} });
+    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -162,7 +159,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context, github, linear, gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -184,13 +181,13 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "disagree_with_github_message", {
-        threadId: "thread-1",
+        id: "thread-1",
         text: "No change needed.",
       });
       // agent calls no finish tool — disagree-only, no code changes
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(result).toEqual({ status: "done", prs: context.prs });
   });
@@ -208,7 +205,7 @@ describe("runPiWorker", () => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Question 2." });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ status: "pending", prs: context.prs });
@@ -223,21 +220,20 @@ describe("runPiWorker", () => {
       pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix thread 1",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
-    expect(result).toEqual({ status: "pending", prs: context.prs });
+    expect(result).toMatchObject({ status: "pending", prs: context.prs });
   });
 
-  it("preserves pending decision when wrote_code is called after respond_to_comment_writer", async () => {
+  it("preserves pending decision when push_for_review is called after respond_to_comment_writer", async () => {
     const { runPiWorker } = await import("./pi.js");
     const github = makeGithub();
     const context = makeContext({
@@ -247,21 +243,111 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix thread 1",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(result.status).toBe("pending");
     expect(result.prs).toEqual(context.prs);
   });
 
-  it("registers respond_to_ticket_reporter and wrote_code in new task mode, not iteration tools", async () => {
+  it("agree_with_github_message on issue comment records it in comment store without minimizing", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "agree_with_github_message", {
+        id: "IC_abc123",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
+
+    expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
+    expect(github.resolveReviewThread).not.toHaveBeenCalled();
+    expect(github.replyToReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("disagree_with_github_message on issue comment posts PR comment and records in comment store", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "disagree_with_github_message", {
+        id: "IC_abc123",
+        text: "This gap is not actionable because the spec explicitly defers it.",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
+
+    expect(github.leaveComment).toHaveBeenCalledWith(
+      context.prs[0],
+      "This gap is not actionable because the spec explicitly defers it.",
+    );
+    expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
+    expect(github.replyToReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("mark_github_message_completed on issue comment records it in comment store without minimizing", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "mark_github_message_completed", {
+        id: "IC_abc123",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
+
+    expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
+    expect(github.resolveReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("mark_github_message_completed on review thread resolves it without touching comment store", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const commentStore = makeCommentStore();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "mark_github_message_completed", {
+        id: "thread-1",
+      });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
+
+    expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
+    expect(commentStore.markCompleted).not.toHaveBeenCalled();
+    expect(github.replyToReviewThread).not.toHaveBeenCalled();
+  });
+
+  it("registers respond_to_ticket_reporter and push_for_review in new task mode, not iteration tools", async () => {
     const { runPiWorker } = await import("./pi.js");
     const registeredNames: string[] = [];
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
@@ -273,11 +359,11 @@ describe("runPiWorker", () => {
       context: makeContext({ state: "new" }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(registeredNames).toContain("respond_to_ticket_reporter");
-    expect(registeredNames).toContain("wrote_code");
+    expect(registeredNames).toContain("push_for_review");
     expect(registeredNames).not.toContain("agree_with_github_message");
     expect(registeredNames).not.toContain("disagree_with_github_message");
     expect(registeredNames).not.toContain("respond_to_comment_writer");
@@ -302,13 +388,14 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(registeredNames).toContain("agree_with_github_message");
     expect(registeredNames).toContain("disagree_with_github_message");
     expect(registeredNames).toContain("respond_to_comment_writer");
-    expect(registeredNames).toContain("wrote_code");
+    expect(registeredNames).toContain("mark_github_message_completed");
+    expect(registeredNames).toContain("push_for_review");
     expect(registeredNames).not.toContain("respond_to_ticket_reporter");
   });
 
@@ -316,9 +403,8 @@ describe("runPiWorker", () => {
     const { runPiWorker } = await import("./pi.js");
     const linear = makeLinear();
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -328,162 +414,104 @@ describe("runPiWorker", () => {
       context: makeContext({ prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
       github: makeGithub(),
       linear,
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(linear.moveTicketToInReview).toHaveBeenCalledWith("DEN-1");
-    expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
+    expect(result).toMatchObject({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
   });
 
-  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
+  it("sets notifyOnComplete=true on result for a new PR after push_for_review", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const github = makeGithub();
     github.getDefaultBranch.mockResolvedValue("main");
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "feat: ship",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "feat: ship",
         prBody: "body",
       });
     });
 
-    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
-    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
-      kind: "opened",
-      pr: { owner: "acme", repo: "widgets", number: 42 },
-      title: "feat: ship",
-      url: "https://github.com/acme/widgets/pull/42",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-    });
+    expect(result.notifyOnComplete).toBe(true);
+    expect(result.prs).toEqual([{ owner: "acme", repo: "widgets", number: 42 }]);
   });
 
-  it("sends a slack 'updated' notification when wrote_code runs on an existing PR", async () => {
+  it("sets notifyOnComplete on iteration with unresolved human thread", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix typo",
         prBody: "body",
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [makePullRequestContext()],
       }),
       github: makeGithub(),
-      linear,
-      slack,
-      gitEnv: {},
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(slack.notifyPullRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "updated",
-        pr: { owner: "acme", repo: "widgets", number: 7 },
-        url: "https://github.com/acme/widgets/pull/7",
-        ticketId: "DEN-1",
-      }),
-    );
+    expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("does not require a slack integration to be provided", async () => {
+  it("sets notifyOnComplete=true for a new PR (state=new always notifies)", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
+    const github = makeGithub();
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
+        prTitle: "feat: ship",
+        prBody: "body",
+      });
+    });
+
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
+
+    expect(result.notifyOnComplete).toBe(true);
+  });
+
+  it("sets notifyOnComplete=false on iteration when only bot comments triggered the dispatch", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const botPrContext = makePullRequestContext();
+    botPrContext.reviewThreads[0]!.comments[0]!.author = "cursor[bot]";
+    botPrContext.reviewThreads[0]!.comments[0]!.authorId = "BOT_cursor";
+    botPrContext.unresolvedReviewThreads = botPrContext.reviewThreads;
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
     });
 
     const result = await runPiWorker({
-      context: makeContext({ prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
-      github: makeGithub(),
-      linear,
-      gitEnv: {},
-    });
-
-    expect(result).toEqual({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
-  });
-
-  it("sends a slack 'opened' notification on a new PR after wrote_code", async () => {
-    const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
-    const github = makeGithub();
-    github.getDefaultBranch.mockResolvedValue("main");
-    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
-    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "feat: ship",
-        prTitle: "feat: ship",
-        prBody: "body",
-      });
-    });
-
-    await runPiWorker({ context: makeContext(), github, linear, slack, gitEnv: {} });
-
-    expect(slack.notifyPullRequest).toHaveBeenCalledWith({
-      kind: "opened",
-      pr: { owner: "acme", repo: "widgets", number: 42 },
-      title: "feat: ship",
-      url: "https://github.com/acme/widgets/pull/42",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-    });
-  });
-
-  it("does not send a slack notification on iteration when only bot comments triggered the dispatch", async () => {
-    const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
-    const botPrContext = makePullRequestContext();
-    botPrContext.reviewThreads[0]!.comments[0]!.author = "cursor[bot]";
-    botPrContext.reviewThreads[0]!.comments[0]!.authorId = "BOT_cursor";
-    botPrContext.unresolvedReviewThreads = botPrContext.reviewThreads;
-    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
-        prTitle: "fix",
-        prBody: "body",
-      });
-    });
-
-    await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [botPrContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
-      gitEnv: {},
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(slack.notifyPullRequest).not.toHaveBeenCalled();
+    expect(result.notifyOnComplete).toBe(false);
   });
 
-  it("sends a slack notification on iteration when at least one unresolved thread has a human comment", async () => {
+  it("sets notifyOnComplete=true on iteration when at least one unresolved thread has a human comment", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const mixedPrContext = makePullRequestContext();
     // First thread is a bot; add a second human-authored thread.
     mixedPrContext.reviewThreads[0]!.comments[0]!.author = "baloo[bot]";
@@ -512,64 +540,56 @@ describe("runPiWorker", () => {
     });
     mixedPrContext.unresolvedReviewThreads = mixedPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [mixedPrContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
-      gitEnv: {},
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(slack.notifyPullRequest).toHaveBeenCalledTimes(1);
+    expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("does not send a slack notification on iteration with no unresolved review threads (e.g. CI-failure re-run)", async () => {
+  it("sets notifyOnComplete=false on iteration with no unresolved review threads (e.g. CI-failure re-run)", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const prContext = makePullRequestContext();
     prContext.reviewThreads = [];
     prContext.unresolvedReviewThreads = [];
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [prContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
-      gitEnv: {},
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(slack.notifyPullRequest).not.toHaveBeenCalled();
+    expect(result.notifyOnComplete).toBe(false);
   });
 
-  it("treats our own bear-metal bot replies as non-human (no [bot] suffix in GraphQL login)", async () => {
+  it("sets notifyOnComplete=false when bear-metal bot replies are mistaken for human (no [bot] suffix in GraphQL login)", async () => {
     const { runPiWorker } = await import("./pi.js");
-    const linear = makeLinear();
-    const slack = { notifyPullRequest: vi.fn().mockResolvedValue(undefined) };
     const ownBotPrContext = makePullRequestContext();
     // GraphQL returns the bare slug for app accounts; the node id is what
     // disambiguates a bot from a user.
@@ -577,27 +597,25 @@ describe("runPiWorker", () => {
     ownBotPrContext.reviewThreads[0]!.comments[0]!.authorId = "BOT_kgDOEWhZZw";
     ownBotPrContext.unresolvedReviewThreads = ownBotPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "wrote_code", {
-        repoRoot: "/tmp/workspace/blueden",
-        commitMessage: "fix",
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
         pullRequests: [ownBotPrContext],
       }),
       github: makeGithub(),
-      linear,
-      slack,
-      gitEnv: {},
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(slack.notifyPullRequest).not.toHaveBeenCalled();
+    expect(result.notifyOnComplete).toBe(false);
   });
 
   it("comments and hands the ticket back to its human owner when pending human response", async () => {
@@ -612,10 +630,10 @@ describe("runPiWorker", () => {
         ...makeLinear(),
         commentAndHandBack,
       },
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", "Need a product decision.");
+    expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", expect.stringContaining("Need a product decision."));
     expect(result).toEqual({ status: "pending", prs: [] });
     expect(piMock.sessionDispose).toHaveBeenCalled();
   });
@@ -644,6 +662,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
         branchName: "feature/den-1-build-thing",
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
+        teamKey: "DEN",
         assignee: { id: "creator" },
         delegate: { id: "user-1" },
         priority: 0,
@@ -652,7 +671,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
     },
     pullRequests: [],
     cloneScript: {
-      scriptPath: "/tmp/script.sh",
+      agentWorkdir: "/tmp/workspace/agent",
       workspaceDir: "/tmp/workspace",
       stdout: "",
       stderr: "",
@@ -665,9 +684,11 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
 function makeGithub() {
   return {
     getInstallationToken: vi.fn().mockResolvedValue("test-token"),
+    getBotIdentity: vi.fn().mockResolvedValue({ login: "bear-metal-app[bot]", id: "bot-id", numericId: 12345 }),
     getPullRequestContext: vi.fn(),
     resolveReviewThread: vi.fn(),
     replyToReviewThread: vi.fn(),
+    leaveComment: vi.fn().mockResolvedValue(undefined),
     getDefaultBranch: vi.fn(),
     createPullRequest: vi.fn(),
   };
@@ -679,6 +700,7 @@ function makeLinear() {
     moveTicketToInProgress: vi.fn(),
     moveTicketToInReview: vi.fn(),
     commentAndHandBack: vi.fn(),
+    getUserEmail: vi.fn().mockResolvedValue(null),
   };
 }
 
@@ -714,6 +736,26 @@ function makePullRequestContext() {
     failedStatuses: [],
     unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
     reviewThreads,
+    issueComments: [
+      {
+        id: "IC_abc123",
+        databaseId: 456,
+        body: "Deployment complete.",
+        author: "ci-bot",
+        authorId: null,
+        isMinimized: false,
+        createdAt: "2026-06-09T00:00:00Z",
+        updatedAt: "2026-06-09T00:00:00Z",
+      },
+    ],
+    completedIssueComments: [],
     mergeable: true,
+  };
+}
+
+function makeCommentStore() {
+  return {
+    markCompleted: vi.fn().mockResolvedValue(undefined),
+    getCompleted: vi.fn().mockResolvedValue(new Set<string>()),
   };
 }
