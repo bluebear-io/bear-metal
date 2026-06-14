@@ -19,7 +19,6 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
 import { detectDialect, type DatabaseDialect } from "../manager/config.js";
-import { MAX_ITERATIONS } from "../manager/constants.js";
 function modelFamily(provider: string | null, modelName: string | null): "claude" | "gpt" | "gemini" | "other" {
   const p = (provider ?? "").toLowerCase();
   const m = (modelName ?? "").toLowerCase();
@@ -507,6 +506,8 @@ export interface DbClient {
   // Ticket lifecycle
   upsertTicketDiscovered(ticket: TicketInput): Promise<void>;
   setTicketStatus(ticketId: string, status: BmStatus, notify?: boolean): Promise<void>;
+  /** Returns the current status and notify flag for a ticket, or null if no row exists. For diagnostics only. */
+  readTicketStatus(ticketId: string): Promise<{ status: string; notify: number } | null>;
   /** Atomically transitions a validating ticket to waiting_for_human and resets the notify flag.
    *  Returns true if the notify flag was consumed (Slack DM should fire). */
   tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean>;
@@ -813,7 +814,7 @@ function inRange(date: Date | null, from: Date, to: Date): boolean {
   return date !== null && date >= from && date < to;
 }
 
-function computeThroughput(tasks: PeriodTaskRow[], from: Date, to: Date): ThroughputBlock {
+function computeThroughput(tasks: PeriodTaskRow[], from: Date, to: Date, maxIterations: number): ThroughputBlock {
   let completed = 0;
   let abandoned = 0;
   let discovered = 0;
@@ -823,12 +824,12 @@ function computeThroughput(tasks: PeriodTaskRow[], from: Date, to: Date): Throug
     const updatedAt = parseTimestamp(t.updated_at);
     if (inRange(createdAt, from, to)) discovered += 1;
     if (t.bm_status === "completed" && inRange(completedAt, from, to)) completed += 1;
-    else if (Number(t.attempt_count) >= MAX_ITERATIONS && t.bm_status !== "completed" && inRange(updatedAt, from, to)) abandoned += 1;
+    else if (Number(t.attempt_count) >= maxIterations && t.bm_status !== "completed" && inRange(updatedAt, from, to)) abandoned += 1;
   }
   return { completed, abandoned, discovered };
 }
 
-function computeHealth(tasks: PeriodTaskRow[], ciRuns: PeriodCiRow[], from: Date, to: Date): HealthBlock {
+function computeHealth(tasks: PeriodTaskRow[], ciRuns: PeriodCiRow[], from: Date, to: Date, maxIterations: number): HealthBlock {
   let completed = 0;
   let abandoned = 0;
   let attemptsSum = 0;
@@ -837,7 +838,7 @@ function computeHealth(tasks: PeriodTaskRow[], ciRuns: PeriodCiRow[], from: Date
     const completedAt = parseTimestamp(t.ticket_completed_at);
     const updatedAt = parseTimestamp(t.updated_at);
     const isCompleted = t.bm_status === "completed" && inRange(completedAt, from, to);
-    const isAbandoned = Number(t.attempt_count) >= MAX_ITERATIONS && t.bm_status !== "completed" && inRange(updatedAt, from, to);
+    const isAbandoned = Number(t.attempt_count) >= maxIterations && t.bm_status !== "completed" && inRange(updatedAt, from, to);
     if (!isCompleted && !isAbandoned) continue;
     if (isCompleted) completed += 1;
     else abandoned += 1;
@@ -923,6 +924,7 @@ function computeFailures(
   prs: PeriodPrRow[],
   from: Date,
   to: Date,
+  maxIterations: number,
 ): FailureBlock {
   const inWindowChecks = checks.filter((c) => inRange(parseTimestamp(c.created_at), from, to));
   type CheckBucket = { count: number; latestAt: Date; latestDetailsUrl: string | null };
@@ -943,7 +945,7 @@ function computeFailures(
     .slice(0, 10);
 
   const ticketsAtMaxAttempts: TicketRef[] = tasks
-    .filter((t) => Number(t.attempt_count) >= MAX_ITERATIONS && t.bm_status !== "completed" && inRange(parseTimestamp(t.updated_at), from, to))
+    .filter((t) => Number(t.attempt_count) >= maxIterations && t.bm_status !== "completed" && inRange(parseTimestamp(t.updated_at), from, to))
     .sort((a, b) => (parseTimestamp(b.updated_at)?.getTime() ?? 0) - (parseTimestamp(a.updated_at)?.getTime() ?? 0))
     .slice(0, 20)
     .map((t) => ({ id: t.id, identifier: t.ticket_identifier ?? "", title: t.ticket_title ?? "", url: t.ticket_url ?? "" }));
@@ -1032,13 +1034,20 @@ function computeShipped(tasks: PeriodTaskRow[], prs: PeriodPrRow[], from: Date, 
 export class SqlDbClient implements DbClient {
   private readonly databaseUrl: string;
   private readonly dialect: DatabaseDialect;
+  private readonly maxIterations: number;
   private readonly clock = new MonotonicIsoClock();
   private sqlite: DatabaseSync | null = null;
   private pgPool: pg.Pool | null = null;
 
-  constructor(databaseUrl: string) {
+  constructor(databaseUrl: string, maxIterations = 50) {
     this.databaseUrl = databaseUrl;
     this.dialect = detectDialect(databaseUrl);
+    this.maxIterations = maxIterations;
+  }
+
+  /** Returns the dialect-appropriate scalar two-argument max function name. */
+  private scalarMax(): "MAX" | "GREATEST" {
+    return this.dialect === "sqlite" ? "MAX" : "GREATEST";
   }
 
   /** Rewrite `?` placeholders to `$1, $2, ...` for Postgres. No-op for SQLite. */
@@ -1199,23 +1208,14 @@ export class SqlDbClient implements DbClient {
     // Only overwrite notify when transitioning TO validating (where it carries the DM flag).
     // For all other status writes (in_progress, waiting_for_human, completed) preserve the
     // existing notify value so a re-dispatch to in_progress cannot silently clear a pending notify=1.
-    if (this.dialect === "sqlite") {
-      await this.run(
-        `INSERT INTO ticket_statuses (ticket_id, status, notify, updated_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT (ticket_id) DO UPDATE SET status = excluded.status,
-           notify = CASE WHEN excluded.status = 'validating' THEN excluded.notify ELSE ticket_statuses.notify END,
-           updated_at = excluded.updated_at`,
-        [ticketId, status, notifyInt, now],
-      );
-    } else {
-      await this.run(
-        `INSERT INTO ticket_statuses (ticket_id, status, notify, updated_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT (ticket_id) DO UPDATE SET status = EXCLUDED.status,
-           notify = CASE WHEN EXCLUDED.status = 'validating' THEN EXCLUDED.notify ELSE ticket_statuses.notify END,
-           updated_at = EXCLUDED.updated_at`,
-        [ticketId, status, notifyInt, now],
-      );
-    }
+    const fn = this.scalarMax();
+    await this.run(
+      `INSERT INTO ticket_statuses (ticket_id, status, notify, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (ticket_id) DO UPDATE SET status = excluded.status,
+         notify = CASE WHEN excluded.status = 'validating' THEN ${fn}(ticket_statuses.notify, excluded.notify) ELSE ticket_statuses.notify END,
+         updated_at = excluded.updated_at`,
+      [ticketId, status, notifyInt, now],
+    );
     if (status === "completed") {
       // Stamp ticket_completed_at for throughput/health queries that range-filter on it.
       await this.run(
@@ -1224,6 +1224,14 @@ export class SqlDbClient implements DbClient {
         [now, now, ticketId],
       );
     }
+  }
+
+  async readTicketStatus(ticketId: string): Promise<{ status: string; notify: number } | null> {
+    const rows = await this.query<{ status: string; notify: number }>(
+      `SELECT status, notify FROM ticket_statuses WHERE ticket_id = ?`,
+      [ticketId],
+    );
+    return rows[0] ?? null;
   }
 
   async tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean> {
@@ -2391,15 +2399,15 @@ export class SqlDbClient implements DbClient {
       }
     }
 
-    const throughput = computeThroughput(allTasks, from, to);
-    const throughputPrior = computeThroughput(allTasks, priorFrom, priorTo);
-    const health = computeHealth(allTasks, allCiRuns, from, to);
-    const healthPrior = computeHealth(allTasks, allCiRuns, priorFrom, priorTo);
+    const throughput = computeThroughput(allTasks, from, to, this.maxIterations);
+    const throughputPrior = computeThroughput(allTasks, priorFrom, priorTo, this.maxIterations);
+    const health = computeHealth(allTasks, allCiRuns, from, to, this.maxIterations);
+    const healthPrior = computeHealth(allTasks, allCiRuns, priorFrom, priorTo, this.maxIterations);
     const cost = computeCost(allTasks, from, to);
     const costPrior = computeCost(allTasks, priorFrom, priorTo);
     const time = computeTime(allTasks, from, to);
     const timePrior = computeTime(allTasks, priorFrom, priorTo);
-    const failures = computeFailures(allTasks, checksForFailures, allCiRuns, allPrs, from, to);
+    const failures = computeFailures(allTasks, checksForFailures, allCiRuns, allPrs, from, to, this.maxIterations);
     const shipped = computeShipped(allTasks, allPrs, from, to);
 
     return {

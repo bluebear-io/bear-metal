@@ -27,6 +27,8 @@ export interface TaskWorkerDeps {
   maxReclaims?: number;
   /** Linear user id the manager runs as; used to detect when a task hands the ticket back. */
   agentId?: string;
+  maxWorkerTimeMs?: number;
+  maxWorkerTokens?: number;
 }
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -47,6 +49,8 @@ export class TaskWorker {
   private readonly heartbeatIntervalMs: number;
   private readonly maxReclaims: number;
   private readonly agentId: string | undefined;
+  private readonly maxWorkerTimeMs: number;
+  private readonly maxWorkerTokens: number;
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: TaskWorkerDeps) {
@@ -63,6 +67,8 @@ export class TaskWorker {
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
     this.maxReclaims = deps.maxReclaims ?? DEFAULT_MAX_RECLAIMS;
     this.agentId = deps.agentId;
+    this.maxWorkerTimeMs = deps.maxWorkerTimeMs ?? 2 * 60 * 60 * 1000;
+    this.maxWorkerTokens = deps.maxWorkerTokens ?? 20_000_000;
     this.queue = new PQueue({ concurrency: deps.concurrency });
   }
 
@@ -134,19 +140,17 @@ export class TaskWorker {
     }
     const workerStartedAt = new Date().toISOString();
     void this.db.upsertRunStarted(task.id, this.workerId, workerStartedAt);
-    if (task.input?.state === "new") {
-      void this.db.recordEvent({
-        id: randomUUID(),
-        ticketId: task.ticketId,
-        runId: task.id,
-        workerId: this.workerId,
-        source: "worker",
-        type: "branch_created",
-        summary: `Branch for ${task.input?.ticketId ?? task.ticketId ?? "unknown"}`,
-        payloadJson: null,
-        createdAt: new Date().toISOString(),
-      });
-    }
+    void this.db.recordEvent({
+      id: randomUUID(),
+      ticketId: task.ticketId,
+      runId: task.id,
+      workerId: this.workerId,
+      source: "worker",
+      type: "worker_started",
+      summary: `Worker ${this.workerId} started on ${task.ticketId ?? "unknown"} (${task.input?.state ?? "unknown"})`,
+      payloadJson: null,
+      createdAt: new Date().toISOString(),
+    });
     // Periodic heartbeat proves liveness so the manager's stale-task recovery doesn't reclaim a row
     // owned by a still-running worker. A failed heartbeat (returns false) signals that the lease was
     // lost to a reclaim — we log loudly; runTask still continues but its complete() will fail.
@@ -169,8 +173,36 @@ export class TaskWorker {
         integrations: this.integrations,
         workspaceBuilderCommand: this.workspaceBuilderCommand,
         workspaceBuilderPath: this.workspaceBuilderPath,
+        maxWorkerTimeMs: this.maxWorkerTimeMs,
+        maxWorkerTokens: this.maxWorkerTokens,
         onToolCallProgress: (calls) => {
           void this.db.upsertToolCalls(task.id, JSON.stringify(calls));
+        },
+        onWorkspaceBuilt: (agentWorkdir) => {
+          void this.db.recordEvent({
+            id: randomUUID(),
+            ticketId: task.ticketId,
+            runId: task.id,
+            workerId: this.workerId,
+            source: "worker",
+            type: "workspace_built",
+            summary: `Workspace ready at ${agentWorkdir}`,
+            payloadJson: null,
+            createdAt: new Date().toISOString(),
+          });
+        },
+        onAgentStarted: (payload) => {
+          void this.db.recordEvent({
+            id: randomUUID(),
+            ticketId: task.ticketId,
+            runId: task.id,
+            workerId: this.workerId,
+            source: "worker",
+            type: "agent_started",
+            summary: `Coding agent started — ${payload.ticketId}: ${payload.ticketTitle}${payload.prCount > 0 ? ` (${payload.prCount} PR${payload.prCount > 1 ? "s" : ""})` : ""}`,
+            payloadJson: JSON.stringify(payload),
+            createdAt: new Date().toISOString(),
+          });
         },
       });
     } catch (err) {
@@ -210,6 +242,10 @@ export class TaskWorker {
           }
         }
       } else if (result.status === "done" && result.prs.length > 0) {
+        this.logger.debug(
+          { ticketId: task.ticketId, taskId: task.id, notifyOnComplete: result.notifyOnComplete ?? false },
+          "setting ticket status to validating",
+        );
         void this.db.setTicketStatus(task.ticketId, "validating", result.notifyOnComplete ?? false);
       }
     }
@@ -217,23 +253,15 @@ export class TaskWorker {
     // The writes below are intentionally fire-and-forget: complete() has already released the task
     // so the scheduler can move on. A crash between here and the event/usage/toolCalls writes means
     // the dashboard misses one run's supplementary data — accepted trade-off vs. blocking the slot.
-    void this.db.recordEvent({
-      id: randomUUID(),
-      ticketId: task.ticketId,
-      runId: task.id,
-      workerId: this.workerId,
-      source: "worker",
-      type: "progress",
-      summary: `Worker finished: ${result.status}`,
-      payloadJson: null,
-      createdAt: new Date().toISOString(),
-    });
     void this.db.upsertRunSucceeded(task.id, result.usage ?? null);
     // DEN-2311: persist the agent's thought-process timeline for the dashboard's visualizer.
     if (result.toolCalls && result.toolCalls.length > 0) {
       void this.db.upsertToolCalls(task.id, JSON.stringify(result.toolCalls));
     }
+    // Only emit pr_opened for PRs that weren't already known at dispatch time.
+    const existingPrKeys = new Set((task.input?.prs ?? []).map((p) => `${p.owner}/${p.repo}/${p.number}`));
     for (const pr of result.prs) {
+      if (existingPrKeys.has(`${pr.owner}/${pr.repo}/${pr.number}`)) continue;
       void this.db.recordEvent({
         id: randomUUID(),
         ticketId: task.ticketId,
@@ -246,6 +274,17 @@ export class TaskWorker {
         createdAt: new Date().toISOString(),
       });
     }
+    void this.db.recordEvent({
+      id: randomUUID(),
+      ticketId: task.ticketId,
+      runId: task.id,
+      workerId: this.workerId,
+      source: "worker",
+      type: "progress",
+      summary: `Worker finished: ${result.status}`,
+      payloadJson: null,
+      createdAt: new Date().toISOString(),
+    });
     this.logger.info(
       { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId, resultStatus: result.status },
       "SQL task completed",

@@ -51,6 +51,8 @@ describe("dispatch", () => {
           getUserEmail: vi.fn().mockResolvedValue(null),
         },
       },
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
     });
 
     expect(result).toEqual({ status: "pending", prs: [] });
@@ -82,6 +84,8 @@ describe("dispatch", () => {
         state: "new",
         ticketId: "DEN-1",
         integrations: makeIntegrations(),
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
       });
 
       await expect(stat(join(tempRoot, "agent"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -98,6 +102,8 @@ describe("dispatch", () => {
           state: "new",
           ticketId: "DEN-1",
           integrations: makeIntegrations(),
+          maxWorkerTimeMs: 7_200_000,
+          maxWorkerTokens: 20_000_000,
         }),
       ).rejects.toThrow("boom");
 

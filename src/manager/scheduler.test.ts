@@ -175,6 +175,7 @@ function buildScheduler(deps: {
   concurrency: number;
   taskStaleAfterMs?: number;
   taskMaxReclaims?: number;
+  maxIterations?: number;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -186,6 +187,7 @@ function buildScheduler(deps: {
     pollIntervalMs: 60_000,
     taskStaleAfterMs: deps.taskStaleAfterMs,
     taskMaxReclaims: deps.taskMaxReclaims,
+    maxIterations: deps.maxIterations ?? 50,
   });
 }
 
@@ -593,7 +595,7 @@ describe("Scheduler.tick", () => {
     const linear = new FakeLinear([], { A: makeTicket("a") });
     const github = new FakeGitHub({ status: status(openPr(7), true, false) });
     const handler = new RecordingHandler(db);
-    const scheduler = buildScheduler({ linear, github, db, handler, concurrency: 1 });
+    const scheduler = buildScheduler({ linear, github, db, handler, concurrency: 1, maxIterations: 20 });
 
     await scheduler.tick();
     await scheduler.stop();

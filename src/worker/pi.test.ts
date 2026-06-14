@@ -100,7 +100,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear, gitEnv: {} });
+    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -132,7 +132,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear, gitEnv: {} });
+    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -159,7 +159,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context, github, linear, gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -187,7 +187,7 @@ describe("runPiWorker", () => {
       // agent calls no finish tool — disagree-only, no code changes
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(result).toEqual({ status: "done", prs: context.prs });
   });
@@ -205,7 +205,7 @@ describe("runPiWorker", () => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Question 2." });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.replyToReviewThread).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ status: "pending", prs: context.prs });
@@ -228,7 +228,7 @@ describe("runPiWorker", () => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(result).toMatchObject({ status: "pending", prs: context.prs });
   });
@@ -250,7 +250,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(result.status).toBe("pending");
     expect(result.prs).toEqual(context.prs);
@@ -271,7 +271,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
     expect(github.resolveReviewThread).not.toHaveBeenCalled();
@@ -294,7 +294,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.leaveComment).toHaveBeenCalledWith(
       context.prs[0],
@@ -319,7 +319,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
     expect(github.resolveReviewThread).not.toHaveBeenCalled();
@@ -340,7 +340,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {} });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
     expect(commentStore.markCompleted).not.toHaveBeenCalled();
@@ -359,7 +359,7 @@ describe("runPiWorker", () => {
       context: makeContext({ state: "new" }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(registeredNames).toContain("respond_to_ticket_reporter");
@@ -388,7 +388,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(registeredNames).toContain("agree_with_github_message");
@@ -414,7 +414,7 @@ describe("runPiWorker", () => {
       context: makeContext({ prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
       github: makeGithub(),
       linear,
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(linear.moveTicketToInReview).toHaveBeenCalledWith("DEN-1");
@@ -434,7 +434,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(result.notifyOnComplete).toBe(true);
     expect(result.prs).toEqual([{ owner: "acme", repo: "widgets", number: 42 }]);
@@ -458,7 +458,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(result.notifyOnComplete).toBe(true);
@@ -477,7 +477,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {} });
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000 });
 
     expect(result.notifyOnComplete).toBe(true);
   });
@@ -504,7 +504,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(result.notifyOnComplete).toBe(false);
@@ -555,7 +555,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(result.notifyOnComplete).toBe(true);
@@ -582,7 +582,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(result.notifyOnComplete).toBe(false);
@@ -612,7 +612,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(result.notifyOnComplete).toBe(false);
@@ -630,7 +630,7 @@ describe("runPiWorker", () => {
         ...makeLinear(),
         commentAndHandBack,
       },
-      gitEnv: {},
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
     expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", "Need a product decision.");

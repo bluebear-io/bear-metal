@@ -20,8 +20,7 @@ type TicketPhase = "active" | "parked";
 const TERMINAL_STATE_TYPES = ["completed", "canceled"];
 const TERMINAL_STATE_NAMES = ["Merged"];
 
-export { MAX_ITERATIONS } from "./constants.js";
-import { MAX_ITERATIONS } from "./constants.js";
+
 
 /** A ticket queued for dispatch this tick, carrying the reason its run was triggered. */
 interface DispatchItem {
@@ -81,6 +80,7 @@ export interface SchedulerDeps {
   /** Cap on how many times a single row can be recovered before the manager abandons it. */
   taskMaxReclaims?: number;
   slack?: SlackIntegration;
+  maxIterations: number;
 }
 
 const DEFAULT_TASK_STALE_AFTER_MS = 5 * 60_000;
@@ -182,7 +182,7 @@ export class Scheduler {
     );
 
     const toDispatch = [...refreshed, ...admitted];
-    const eligible = await enforceIterationLimit(toDispatch, db, linear, logger);
+    const eligible = await enforceIterationLimit(toDispatch, db, linear, logger, this.deps.maxIterations);
     await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
     const trackedAfter = await db.listTracked();
@@ -382,22 +382,6 @@ async function evaluateTicket(
       { ticket: ticket.identifier, count: statuses.length, resuming, hasMergeConflicts },
       "pull requests need work; re-dispatching",
     );
-    if (!testsFailed) {
-      const summary = hasMergeConflicts
-        ? "Re-dispatched: merge conflicts on PR head"
-        : "Re-dispatched: unresolved review or resumed";
-      void db.recordEvent({
-        id: randomUUID(),
-        ticketId: ticket.id,
-        runId: null,
-        workerId: null,
-        source: "manager",
-        type: "delegated_back",
-        summary,
-        payloadJson: null,
-        createdAt: new Date().toISOString(),
-      });
-    }
   }
   // Priority: failing checks > merge conflicts > everything else. CI is the most
   // common re-trigger so it stays first; conflicts are the next most concrete signal.
@@ -504,9 +488,33 @@ async function refreshTrackedTickets(
         } else {
           void db.setTicketStatus(ticket.id, "in_progress");
           toDispatch.push({ context: decision.context, trigger: decision.trigger });
+          if (decision.trigger !== "ci_failure") {
+            void db.recordEvent({
+              id: randomUUID(),
+              ticketId: ticket.id,
+              runId: null,
+              workerId: null,
+              source: "manager",
+              type: "delegated_back",
+              summary: decision.trigger === "merge_conflict"
+                ? "Re-dispatched: merge conflicts on PR head"
+                : "Re-dispatched: unresolved review or resumed",
+              payloadJson: null,
+              createdAt: new Date().toISOString(),
+            });
+          }
         }
       } else if (decision.phase === "active") {
+        const preTransition = await db.readTicketStatus(ticket.id);
+        logger.debug(
+          { ticket: ticket.identifier, dbStatus: preTransition?.status, dbNotify: preTransition?.notify },
+          "ticket_statuses before tryTransitionToWaitingForHuman",
+        );
         const shouldDm = await db.tryTransitionToWaitingForHuman(ticket.id);
+        logger.debug(
+          { ticket: ticket.identifier, shouldDm, hasSlack: !!slack, prCount: decision.context.prs.length },
+          "tryTransitionToWaitingForHuman result",
+        );
         if (shouldDm && slack && decision.context.prs.length > 0) {
           const prRef = decision.context.prs[0]!;
           try {
@@ -623,6 +631,7 @@ async function enforceIterationLimit(
   db: DbClient,
   linear: LinearSource,
   logger: Logger,
+  maxIterations: number,
 ): Promise<DispatchItem[]> {
   const eligible: DispatchItem[] = [];
   for (const item of items) {
@@ -630,14 +639,14 @@ async function enforceIterationLimit(
     // Tasks are keyed by ticket UUID (ticket.id); Linear APIs also use the UUID.
     try {
       const count = await db.getIterationCount(ctx.ticket.id);
-      if (count >= MAX_ITERATIONS) {
+      if (count >= maxIterations) {
         logger.warn(
           { ticket: ctx.ticket.identifier, count },
           "iteration limit reached; handing back",
         );
         await linear.commentAndHandBack(
           ctx.ticket.id,
-          `Reached the maximum iteration limit of ${MAX_ITERATIONS}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
+          `Reached the maximum iteration limit of ${maxIterations}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
         );
         await db.setSlotStatus(ctx.ticket.id, "released");
       } else {

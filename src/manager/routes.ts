@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { MAX_TICKET_PAGE_SIZE, type DbClient, type ListTicketsOptions, type TicketListItem } from "../db/client.js";
-import { MAX_ITERATIONS } from "./constants.js";
 
 const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "completed"] as const;
 type BmStatus = (typeof BM_STATUSES)[number];
@@ -80,7 +79,7 @@ function serializeTicket(item: TicketListItem) {
   };
 }
 
-export function createRouter(db: DbClient): Router {
+export function createRouter(db: DbClient, maxIterations: number): Router {
   const router = Router();
 
   router.get("/health", (_req, res) => {
@@ -88,7 +87,7 @@ export function createRouter(db: DbClient): Router {
   });
 
   router.get("/config", (_req, res) => {
-    res.json({ maxIterations: MAX_ITERATIONS });
+    res.json({ maxIterations });
   });
 
   router.get("/tickets/filters", async (_req, res, next) => {

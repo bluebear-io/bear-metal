@@ -47,7 +47,7 @@ if (!slack) {
     "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
   );
 }
-const db = new SqlDbClient(config.databaseUrl);
+const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
 await db.initSchema();
 
 const agentId = await linear.getAgentId().catch((err) => {
@@ -67,6 +67,7 @@ const scheduler = new Scheduler({
   pollIntervalMs: config.pollIntervalMs,
   taskStaleAfterMs: config.taskStaleAfterMs,
   taskMaxReclaims: config.taskMaxReclaims,
+  maxIterations: config.maxIterations,
   slack,
 });
 const taskWorker = new TaskWorker({
@@ -80,6 +81,8 @@ const taskWorker = new TaskWorker({
   agentId,
   workspaceBuilderCommand: config.workspaceBuilderCommand ?? undefined,
   workspaceBuilderPath: config.workspaceBuilderPath ?? undefined,
+  maxWorkerTimeMs: config.maxWorkerTimeMs,
+  maxWorkerTokens: config.maxWorkerTokens,
 });
 
 if (config.testTicketId) {
@@ -104,7 +107,7 @@ if (config.testTicketId) {
   process.exit(exitCode);
 }
 
-const app = createApp(db);
+const app = createApp(db, config.maxIterations);
 const server = app.listen(config.backendPort, () => {
   logger.info({ port: config.backendPort }, "dashboard server listening");
   logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");

@@ -32,6 +32,12 @@ export interface Config {
   taskStaleAfterMs: number;
   /** After this many recoveries of the same row, the manager abandons it (terminal + slot release). */
   taskMaxReclaims: number;
+  /** Max dispatch cycles per ticket before the manager hands back to the human. */
+  maxIterations: number;
+  /** Max wall-clock time in ms for a single worker session before it is aborted. */
+  maxWorkerTimeMs: number;
+  /** Max tokens consumed in a single worker session before it is aborted. */
+  maxWorkerTokens: number;
 }
 
 function requiredEnv(name: string): string {
@@ -58,7 +64,7 @@ function boolEnv(name: string, fallback: boolean): boolean {
   return raw === "true" || raw === "1";
 }
 
-function positiveIntEnv(name: string, fallback: number): number {
+export function positiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw === "") {
     return fallback;
@@ -89,6 +95,9 @@ export function loadConfig(): Readonly<Config> {
     taskHeartbeatIntervalMs: positiveIntEnv("TASK_HEARTBEAT_INTERVAL_MS", 30_000),
     taskStaleAfterMs: positiveIntEnv("TASK_STALE_AFTER_MS", 5 * 60_000),
     taskMaxReclaims: positiveIntEnv("TASK_MAX_RECLAIMS", 3),
+    maxIterations: positiveIntEnv("MAX_ITERATIONS", 50),
+    maxWorkerTimeMs: positiveIntEnv("MAX_WORKER_TIME_MS", 2 * 60 * 60 * 1000),
+    maxWorkerTokens: positiveIntEnv("MAX_WORKER_TOKENS", 20_000_000),
     ...loadSlackConfig(),
   });
 }

@@ -17,6 +17,8 @@ export interface WorkerProcessDeps extends WorkerIntegrations {
   workspaceBuilderCommand?: string;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
   workspaceBuilderPath?: string;
+  maxWorkerTimeMs: number;
+  maxWorkerTokens: number;
 }
 
 export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContext) => Promise<WorkerResponse> {
@@ -36,6 +38,8 @@ export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContex
       integrations: deps,
       workspaceBuilderCommand: deps.workspaceBuilderCommand,
       workspaceBuilderPath: deps.workspaceBuilderPath,
+      maxWorkerTimeMs: deps.maxWorkerTimeMs,
+      maxWorkerTokens: deps.maxWorkerTokens,
     });
     return { status: result.status };
   };

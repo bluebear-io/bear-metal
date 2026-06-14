@@ -28,8 +28,6 @@ const logger = createLogger({
   pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
 });
 
-const MAX_WORKER_TIME_MS = 2 * 60 * 60 * 1000; // 2 hours
-const MAX_WORKER_TOKENS = 20_000_000;            // 20M tokens
 
 // Cap on the per-tool-call result body we persist to the dashboard. Tool outputs (file reads,
 // grep results) can be megabytes; the UI only needs enough to give the operator context. We
@@ -43,6 +41,8 @@ export async function runPiWorker(input: {
   commentStore?: WorkerCommentStore;
   gitEnv: NodeJS.ProcessEnv;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
+  maxWorkerTimeMs: number;
+  maxWorkerTokens: number;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
   const workspaceRoot = input.context.cloneScript.agentWorkdir;
@@ -360,8 +360,8 @@ export async function runPiWorker(input: {
   const unsubscribeLimits = session.subscribe((event) => {
     if (event.type === "turn_end" && !limitHitReason) {
       const stats = session.getSessionStats();
-      if (stats.tokens.total >= MAX_WORKER_TOKENS) {
-        limitHitReason = `token limit of ${MAX_WORKER_TOKENS.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
+      if (stats.tokens.total >= input.maxWorkerTokens) {
+        limitHitReason = `token limit of ${input.maxWorkerTokens.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
         logger.warn({ ticketId: input.context.ticketId, tokens: stats.tokens.total }, "token limit reached; aborting session");
         session.abort().catch((err) => {
           logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
@@ -373,13 +373,13 @@ export async function runPiWorker(input: {
   // Time limit: fires after 2 hours regardless of turn state.
   const timeoutHandle = setTimeout(() => {
     if (!limitHitReason) {
-      limitHitReason = `time limit of 2 hours reached`;
+      limitHitReason = `time limit of ${input.maxWorkerTimeMs / 60_000} minutes reached`;
       logger.warn({ ticketId: input.context.ticketId }, "time limit reached; aborting session");
       session.abort().catch((err) => {
         logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
       });
     }
-  }, MAX_WORKER_TIME_MS);
+  }, input.maxWorkerTimeMs);
 
   try {
     await session.prompt(prompt);
