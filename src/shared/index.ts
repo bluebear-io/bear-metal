@@ -40,9 +40,11 @@ export type {
 export {
   SlackIntegration,
   formatNotificationText,
+  formatNeedsInputText,
   type SlackIntegrationOptions,
   type PullRequestNotification,
   type PullRequestNotificationKind,
+  type NeedsInputNotification,
 } from "./integrations/slack/client.js";
 export type { TicketContext, WorkOutcome, WorkerResponse, WorkerStatus } from "./types.js";
 export type {

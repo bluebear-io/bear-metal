@@ -239,6 +239,8 @@ function CopyableBlock({ content, tall }: { content: string; tall?: boolean }) {
     void navigator.clipboard.writeText(content).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {
+      console.warn("Clipboard write failed");
     });
   };
   return (

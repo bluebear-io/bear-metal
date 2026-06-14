@@ -30,6 +30,14 @@ export interface PullRequestNotification {
   recipientEmail?: string;
 }
 
+export interface NeedsInputNotification {
+  /** Linear ticket identifier (e.g. "DEN-2305"). */
+  ticketId: string;
+  ticketUrl: string;
+  /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
+  recipientEmail?: string;
+}
+
 const DEFAULT_API_BASE_URL = "https://slack.com/api";
 
 /**
@@ -66,6 +74,19 @@ export class SlackIntegration implements Integration {
    */
   async notifyPullRequest(notification: PullRequestNotification): Promise<void> {
     const text = formatNotificationText(notification);
+    const channel = notification.recipientEmail
+      ? await this.resolveUserChannel(notification.recipientEmail)
+      : this.channel;
+    await this.postMessage(channel, text);
+  }
+
+  /**
+   * Post a "Needs your input" notification when the agent hands a ticket back
+   * without a PR (e.g. after respond_to_ticket_reporter). DMs the assignee when
+   * `recipientEmail` is set; falls back to the configured channel.
+   */
+  async notifyNeedsInput(notification: NeedsInputNotification): Promise<void> {
+    const text = formatNeedsInputText(notification);
     const channel = notification.recipientEmail
       ? await this.resolveUserChannel(notification.recipientEmail)
       : this.channel;
@@ -148,4 +169,12 @@ export function formatNotificationText(notification: PullRequestNotification): s
   const prLink = `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`;
   const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
   return `${icon} *PR ${verb}* ${prLink} — ${safeTitle} (ticket: ${ticketLabel})`;
+}
+
+export function formatNeedsInputText(notification: NeedsInputNotification): string {
+  const { ticketId, ticketUrl } = notification;
+  if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
+  const safeTicketId = escapeSlackMrkdwn(ticketId);
+  const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
+  return `:raising_hand: *Needs your input* ${ticketLabel} — bear-metal is waiting for clarification. Add a comment on the ticket and re-delegate to resume.`;
 }

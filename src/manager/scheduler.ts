@@ -410,6 +410,20 @@ async function refreshTrackedTickets(
           "worker handed ticket back; removed from tracking",
         );
         await db.setSlotStatus(slot.ticketId!, "released");
+        if (slack) {
+          try {
+            const recipientEmail = ticket.assignee
+              ? (await linear.getUserEmail(ticket.assignee.id)) ?? undefined
+              : undefined;
+            await slack.notifyNeedsInput({
+              ticketId: ticket.identifier,
+              ticketUrl: ticket.url,
+              recipientEmail,
+            });
+          } catch (err) {
+            logger.warn({ err, ticketId: ticket.id }, "failed to send needs_input Slack notification");
+          }
+        }
         continue;
       }
       const knownPrs = knownPrsForSlot(slot);
