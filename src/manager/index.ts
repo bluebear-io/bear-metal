@@ -113,7 +113,7 @@ if (config.testTicketId) {
 const app = createServer({ tasks });
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, "health server listening");
-  logger.info({ port: config.port, pid: process.pid }, "make me a pizza");
+  logger.info({ port: config.port, pid: process.pid }, "make me a pizza like a beautiful BEAR!");
 });
 
 scheduler.start();
