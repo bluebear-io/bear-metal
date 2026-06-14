@@ -1,7 +1,6 @@
 import { mkdir, rm } from "node:fs/promises";
-import { resolve } from "node:path";
 import { createLogger } from "../shared/index.js";
-import { getPackageRoot, runCloneScript, workspaceForTicket } from "./clone.js";
+import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
@@ -25,7 +24,10 @@ export interface DispatchInput {
   ticketId: string;
   prs?: PullRequestRef[];
   integrations: WorkerIntegrations;
-  packageRoot?: string;
+  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
+  workspaceBuilderCommand?: string;
+  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
+  workspaceBuilderPath?: string;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
 }
 
@@ -35,16 +37,14 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   validateDispatchInputs(state, ticketId, prs);
 
   const { github, linear, commentStore } = integrations;
-  const packageRoot = input.packageRoot ?? getPackageRoot(import.meta.url);
-  const workspaceDir = workspaceForTicket(packageRoot, ticketId);
+  const workspaceDir = workspaceForTicket(ticketId);
 
   await mkdir(workspaceDir, { recursive: true });
 
   logger.debug({ ticketId, state, prCount: prs.length, workspaceDir }, "dispatch starting");
 
-  const githubToken = await github.getInstallationToken();
-
-  const [ticket, rawPullRequests, cloneScript, botIdentity] = await Promise.all([
+  const [githubToken, ticket, rawPullRequests, botIdentity] = await Promise.all([
+    github.getInstallationToken(),
     linear.getTicketContext(ticketId).then((t) => {
       logger.debug({ ticketId }, "linear ticket fetched");
       return t;
@@ -57,15 +57,22 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
         }),
       ),
     ),
-    runCloneScript({ packageRoot, workspaceDir, githubToken }).then((r) => {
-      logger.debug({ workspaceDir, scriptPath: r.scriptPath }, "clone script completed");
-      return r;
-    }),
     github.getBotIdentity().then((identity) => {
       logger.debug({ login: identity.login }, "bot identity fetched");
       return identity;
     }),
   ]);
+
+  const cloneScript = await runWorkspaceBuilder({
+    workspaceDir,
+    githubToken,
+    ticket: ticket.issue,
+    builderCommand: input.workspaceBuilderCommand,
+    builderPath: input.workspaceBuilderPath,
+  }).then((r) => {
+    logger.debug({ workspaceDir, agentWorkdir: r.agentWorkdir }, "workspace builder completed");
+    return r;
+  });
 
   // Filter issue comments already processed in prior sessions so PI doesn't re-handle them.
   const pullRequests = commentStore
@@ -111,14 +118,13 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return result;
   } finally {
     await rm(cloneScript.netrcDir, { recursive: true, force: true });
-    // Housekeeping: drop the checked-out blueden tree (and its nested sub-repos)
-    // so disk usage doesn't grow with every ticket. The next dispatch will re-clone.
-    const checkoutDir = resolve(workspaceDir, "blueden");
+    // Housekeeping: drop the agent workdir so disk usage doesn't grow with every ticket.
+    // The next dispatch will re-clone via the workspace builder.
     try {
-      await rm(checkoutDir, { recursive: true, force: true });
-      logger.info({ ticketId, checkoutDir }, "removed checked-out workspace folder");
+      await rm(cloneScript.agentWorkdir, { recursive: true, force: true });
+      logger.info({ ticketId, agentWorkdir: cloneScript.agentWorkdir }, "removed agent workdir");
     } catch (error) {
-      logger.error({ ticketId, checkoutDir, error }, "failed to remove checked-out workspace folder");
+      logger.error({ ticketId, agentWorkdir: cloneScript.agentWorkdir, error }, "failed to remove agent workdir");
     }
   }
 }

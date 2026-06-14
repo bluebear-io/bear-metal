@@ -32,7 +32,6 @@ describe("TaskWorker", () => {
     expect(runDispatch).toHaveBeenCalledWith(expect.objectContaining({
       ...input,
       integrations: expect.any(Object),
-      packageRoot: undefined,
     }));
     expect(db.completed).toEqual([
       {

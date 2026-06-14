@@ -78,6 +78,8 @@ const taskWorker = new TaskWorker({
   heartbeatIntervalMs: config.taskHeartbeatIntervalMs,
   maxReclaims: config.taskMaxReclaims,
   agentId,
+  workspaceBuilderCommand: config.workspaceBuilderCommand ?? undefined,
+  workspaceBuilderPath: config.workspaceBuilderPath ?? undefined,
 });
 
 if (config.testTicketId) {

@@ -45,7 +45,7 @@ export async function runPiWorker(input: {
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
-  const workspaceRoot = resolve(input.context.cloneScript.workspaceDir, "blueden");
+  const workspaceRoot = input.context.cloneScript.agentWorkdir;
 
   // PRs accumulate across multiple push_for_review calls (one per repo in this dispatch).
   // A pending decision (respond_*) carries the accumulated set so the manager keeps tracking them.

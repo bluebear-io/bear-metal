@@ -7,6 +7,10 @@ export function detectDialect(databaseUrl: string): DatabaseDialect {
 }
 
 export interface Config {
+  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
+  workspaceBuilderCommand: string | null;
+  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
+  workspaceBuilderPath: string | null;
   linearApiToken: string;
   githubAppId: number;
   githubAppPrivateKey: string;
@@ -69,6 +73,7 @@ function positiveIntEnv(name: string, fallback: number): number {
 /** Load and validate configuration from the environment. Fails fast on bad input. */
 export function loadConfig(): Readonly<Config> {
   return Object.freeze({
+    ...loadWorkspaceBuilderConfig(),
     linearApiToken: requiredEnv("LINEAR_API_TOKEN"),
     githubAppId: requiredPositiveIntEnv("GITHUB_APP_ID"),
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
@@ -101,4 +106,23 @@ function loadSlackConfig(): { slackBotToken: string | null; slackNotificationCha
     );
   }
   return { slackBotToken: token, slackNotificationChannel: channel };
+}
+
+/**
+ * Exactly one of WORKSPACE_BUILDER_COMMAND (inline bash) or WORKSPACE_BUILDER_PATH (file path)
+ * must be set. Setting both or neither is a misconfiguration caught at startup.
+ */
+function loadWorkspaceBuilderConfig(): {
+  workspaceBuilderCommand: string | null;
+  workspaceBuilderPath: string | null;
+} {
+  const command = process.env.WORKSPACE_BUILDER_COMMAND?.trim() || null;
+  const path = process.env.WORKSPACE_BUILDER_PATH?.trim() || null;
+  if (command && path) {
+    throw new Error("WORKSPACE_BUILDER_COMMAND and WORKSPACE_BUILDER_PATH are mutually exclusive — set exactly one");
+  }
+  if (!command && !path) {
+    throw new Error("Either WORKSPACE_BUILDER_COMMAND or WORKSPACE_BUILDER_PATH must be set");
+  }
+  return { workspaceBuilderCommand: command, workspaceBuilderPath: path };
 }

@@ -11,6 +11,7 @@ export function makeTicket(id: string, overrides: Partial<Ticket> = {}): Ticket 
     status: { name: "Todo", type: "unstarted" },
     priority: 0,
     labels: ["bear-metal"],
+    teamKey: "DEN",
     assignee: { id: "creator" },
     // Default delegate to the agent the scheduler tests run as ("user-1"), so a refreshed
     // ticket reads as "mine"; park/resume tests override with a different id.

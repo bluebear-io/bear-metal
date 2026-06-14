@@ -16,7 +16,10 @@ export interface TaskWorkerDeps {
   concurrency: number;
   pollIntervalMs: number;
   workerId?: string;
-  packageRoot?: string;
+  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
+  workspaceBuilderCommand?: string;
+  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
+  workspaceBuilderPath?: string;
   runDispatch?: DispatchRunner;
   /** How often to refresh the per-task heartbeat row. Falls back to a derived value if unset. */
   heartbeatIntervalMs?: number;
@@ -37,7 +40,8 @@ export class TaskWorker {
   private readonly queue: PQueue;
   private readonly concurrency: number;
   private readonly pollIntervalMs: number;
-  private readonly packageRoot: string | undefined;
+  private readonly workspaceBuilderCommand: string | undefined;
+  private readonly workspaceBuilderPath: string | undefined;
   private readonly runDispatch: DispatchRunner;
   private readonly startedAtMs: number;
   private readonly heartbeatIntervalMs: number;
@@ -52,7 +56,8 @@ export class TaskWorker {
     this.integrations = deps.integrations;
     this.concurrency = deps.concurrency;
     this.pollIntervalMs = deps.pollIntervalMs;
-    this.packageRoot = deps.packageRoot;
+    this.workspaceBuilderCommand = deps.workspaceBuilderCommand;
+    this.workspaceBuilderPath = deps.workspaceBuilderPath;
     this.runDispatch = deps.runDispatch ?? dispatch;
     this.startedAtMs = Date.now();
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
@@ -162,7 +167,8 @@ export class TaskWorker {
       result = await this.runDispatch({
         ...task.input!,
         integrations: this.integrations,
-        packageRoot: this.packageRoot,
+        workspaceBuilderCommand: this.workspaceBuilderCommand,
+        workspaceBuilderPath: this.workspaceBuilderPath,
         onToolCallProgress: (calls) => {
           void this.db.upsertToolCalls(task.id, JSON.stringify(calls));
         },

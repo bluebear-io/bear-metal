@@ -10,12 +10,11 @@ const dispatchMock = vi.hoisted(() => ({
 }));
 
 vi.mock("./clone.js", () => ({
-  getPackageRoot: () => "/tmp/package-root",
   workspaceForTicket: () => dispatchMock.workspaceDir,
-  runCloneScript: async () => {
+  runWorkspaceBuilder: async () => {
     dispatchMock.calls.push("clone");
     return {
-      scriptPath: "/tmp/package-root/scripts/clone-target-repos.sh",
+      agentWorkdir: join(dispatchMock.workspaceDir, "agent"),
       workspaceDir: dispatchMock.workspaceDir,
       stdout: "",
       stderr: "",
@@ -45,22 +44,7 @@ describe("dispatch", () => {
       integrations: {
         github: makeGithub(),
         linear: {
-          getTicketContext: vi.fn(async () => ({
-            issue: {
-              id: "issue-id",
-              identifier: "DEN-1",
-              title: "Build thing",
-              description: null,
-              url: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-              branchName: "feature/den-1-build-thing",
-              status: { name: "Todo", type: "unstarted" },
-              labels: ["bear-metal"],
-              assignee: { id: "creator" },
-              delegate: { id: "agent" },
-          priority: 0,
-            },
-            comments: [],
-          })),
+          getTicketContext: vi.fn(async () => makeTicketContext()),
           moveTicketToInProgress,
           moveTicketToInReview: vi.fn(),
           commentAndHandBack: vi.fn(),
@@ -80,9 +64,9 @@ describe("dispatch", () => {
     beforeEach(async () => {
       tempRoot = await mkdtemp(join(tmpdir(), "dispatch-cleanup-"));
       dispatchMock.workspaceDir = tempRoot;
-      // Simulate a checked-out tree from a previous clone.
-      await mkdir(join(tempRoot, "blueden", "bear-metal"), { recursive: true });
-      await writeFile(join(tempRoot, "blueden", "marker.txt"), "present", "utf8");
+      // Simulate a checked-out tree from a previous workspace builder run.
+      await mkdir(join(tempRoot, "agent", "src"), { recursive: true });
+      await writeFile(join(tempRoot, "agent", "marker.txt"), "present", "utf8");
     });
 
     afterEach(async () => {
@@ -90,7 +74,7 @@ describe("dispatch", () => {
       dispatchMock.workspaceDir = "/tmp/dispatch-workspace";
     });
 
-    it("removes the checked-out blueden folder after Pi finishes", async () => {
+    it("removes the agent workdir after Pi finishes", async () => {
       const { dispatch } = await import("./dispatch.js");
       dispatchMock.calls.length = 0;
 
@@ -100,10 +84,10 @@ describe("dispatch", () => {
         integrations: makeIntegrations(),
       });
 
-      await expect(stat(join(tempRoot, "blueden"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(join(tempRoot, "agent"))).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    it("removes the checked-out blueden folder even when Pi throws", async () => {
+    it("removes the agent workdir even when Pi throws", async () => {
       const pi = await import("./pi.js");
       const spy = vi.spyOn(pi, "runPiWorker").mockRejectedValueOnce(new Error("boom"));
       const { dispatch } = await import("./dispatch.js");
@@ -117,32 +101,37 @@ describe("dispatch", () => {
         }),
       ).rejects.toThrow("boom");
 
-      await expect(stat(join(tempRoot, "blueden"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(join(tempRoot, "agent"))).rejects.toMatchObject({ code: "ENOENT" });
       spy.mockRestore();
     });
   });
 });
 
+function makeTicketContext() {
+  return {
+    issue: {
+      id: "issue-id",
+      identifier: "DEN-1",
+      title: "Build thing",
+      description: null,
+      url: "https://linear.app/bluebear/issue/DEN-1/build-thing",
+      branchName: "feature/den-1-build-thing",
+      status: { name: "Todo", type: "unstarted" },
+      labels: ["bear-metal"],
+      teamKey: "DEN",
+      assignee: { id: "creator" },
+      delegate: { id: "agent" },
+      priority: 0,
+    },
+    comments: [],
+  };
+}
+
 function makeIntegrations() {
   return {
     github: makeGithub(),
     linear: {
-      getTicketContext: vi.fn(async () => ({
-        issue: {
-          id: "issue-id",
-          identifier: "DEN-1",
-          title: "Build thing",
-          description: null,
-          url: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-          branchName: "feature/den-1-build-thing",
-          status: { name: "Todo", type: "unstarted" },
-          labels: ["bear-metal"],
-          assignee: { id: "creator" },
-          delegate: { id: "agent" },
-          priority: 0,
-        },
-        comments: [],
-      })),
+      getTicketContext: vi.fn(async () => makeTicketContext()),
       moveTicketToInProgress: vi.fn(async () => {}),
       moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),

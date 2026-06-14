@@ -145,11 +145,13 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   }
 
   private async toTicket(issue: Issue): Promise<Ticket> {
-    const state = await issue.state;
+    const [state, labels, team] = await Promise.all([issue.state, issue.labels(), issue.team]);
     if (!state) {
       throw new Error(`Linear issue ${issue.identifier} has no workflow state`);
     }
-    const labels = await issue.labels();
+    if (!team) {
+      throw new Error(`Linear issue ${issue.identifier} has no team`);
+    }
     return {
       id: issue.id,
       identifier: issue.identifier,
@@ -160,6 +162,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       status: { name: state.name, type: state.type },
       priority: issue.priority ?? 0,
       labels: labels.nodes.map((node) => node.name),
+      teamKey: team.key,
       assignee: issue.assigneeId ? { id: issue.assigneeId } : null,
       delegate: issue.delegateId ? { id: issue.delegateId } : null,
       createdAt: issue.createdAt.toISOString(),

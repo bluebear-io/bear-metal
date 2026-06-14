@@ -41,6 +41,7 @@ describe("worker contract", () => {
           branchName: "feature/den-1-fix-thing",
           status: { name: "Todo", type: "unstarted" },
           labels: ["bear-metal"],
+          teamKey: "DEN",
           assignee: { id: "creator" },
           delegate: { id: "user-1" },
           priority: 0,
@@ -60,7 +61,7 @@ describe("worker contract", () => {
         },
       ],
       cloneScript: {
-        scriptPath: "/tmp/script.sh",
+        agentWorkdir: "/tmp/workspace/agent",
         workspaceDir: "/tmp/workspace",
         stdout: "",
         stderr: "",
@@ -95,6 +96,7 @@ describe("worker contract", () => {
           branchName: "feature/den-2-new-thing",
           status: { name: "Todo", type: "unstarted" },
           labels: ["bear-metal"],
+          teamKey: "DEN",
           assignee: { id: "creator" },
           delegate: { id: "user-1" },
           priority: 0,
@@ -103,7 +105,7 @@ describe("worker contract", () => {
       },
       pullRequests: [],
       cloneScript: {
-        scriptPath: "/tmp/script.sh",
+        agentWorkdir: "/tmp/workspace/agent",
         workspaceDir: "/tmp/workspace",
         stdout: "",
         stderr: "",

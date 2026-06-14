@@ -94,7 +94,7 @@ describe("runPiWorker", () => {
         id: "thread-1",
       });
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -126,7 +126,7 @@ describe("runPiWorker", () => {
         text: "The current code already handles this path.",
       });
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -221,7 +221,7 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -244,7 +244,7 @@ describe("runPiWorker", () => {
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -404,7 +404,7 @@ describe("runPiWorker", () => {
     const linear = makeLinear();
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "fix",
       });
@@ -428,7 +428,7 @@ describe("runPiWorker", () => {
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "feat: ship",
         prBody: "body",
       });
@@ -444,7 +444,7 @@ describe("runPiWorker", () => {
     const { runPiWorker } = await import("./pi.js");
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix typo",
         prBody: "body",
       });
@@ -471,7 +471,7 @@ describe("runPiWorker", () => {
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "feat: ship",
         prBody: "body",
       });
@@ -490,7 +490,7 @@ describe("runPiWorker", () => {
     botPrContext.unresolvedReviewThreads = botPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
@@ -541,7 +541,7 @@ describe("runPiWorker", () => {
     mixedPrContext.unresolvedReviewThreads = mixedPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
@@ -568,7 +568,7 @@ describe("runPiWorker", () => {
     prContext.unresolvedReviewThreads = [];
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
@@ -598,7 +598,7 @@ describe("runPiWorker", () => {
     ownBotPrContext.unresolvedReviewThreads = ownBotPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/blueden",
+        repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
         prBody: "body",
       });
@@ -662,6 +662,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
         branchName: "feature/den-1-build-thing",
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
+        teamKey: "DEN",
         assignee: { id: "creator" },
         delegate: { id: "user-1" },
         priority: 0,
@@ -670,7 +671,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
     },
     pullRequests: [],
     cloneScript: {
-      scriptPath: "/tmp/script.sh",
+      agentWorkdir: "/tmp/workspace/agent",
       workspaceDir: "/tmp/workspace",
       stdout: "",
       stderr: "",

@@ -97,7 +97,8 @@ export type WorkerIntegrations = {
 };
 
 export type CloneScriptResult = {
-  scriptPath: string;
+  /** Absolute path where the agent runs — populated by the workspace builder. */
+  agentWorkdir: string;
   workspaceDir: string;
   stdout: string;
   stderr: string;
