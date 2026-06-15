@@ -1,4 +1,4 @@
-<img src="cover.png" alt="Bear Metal in the data center" />
+<img src="cover.jpg" alt="Bear Metal in the data center" />
 
 ---
 
