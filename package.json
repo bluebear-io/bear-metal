@@ -23,7 +23,7 @@
     "better-sqlite3": "12.10.0",
     "dotenv": "17.4.2",
     "express": "4.22.2",
-    "p-queue": "9.2.0",
+    "p-queue": "9.3.0",
     "pg": "8.20.0",
     "pino": "10.3.1",
     "typebox": "1.1.38"
