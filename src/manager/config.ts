@@ -167,7 +167,7 @@ function loadLlmConfig(): { llmProvider: LlmProvider; llmApiKey: string } {
     );
   }
   const { provider, envName } = found[0]!;
-  return { llmProvider: provider, llmApiKey: process.env[envName]! };
+  return { llmProvider: provider, llmApiKey: process.env[envName]!.trim() };
 }
 
 /**
