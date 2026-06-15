@@ -50,7 +50,7 @@ export interface RunPayload {
   endedAt: number | null;
   stopReason: StopReason | null;
   error: string | null;
-  // LLM usage stats from the pi agent session (DEN-2313). Nullable: unknown for older runs
+  // LLM usage stats from the pi agent session. Nullable: unknown for older runs
   // and for runs that crashed before any model call.
   promptTokens: number | null;
   completionTokens: number | null;
@@ -89,7 +89,7 @@ export interface ReviewThreadPayload {
 }
 
 /**
- * One step in the agent's tool-call timeline for a single run (DEN-2311). The worker sends the
+ * One step in the agent's tool-call timeline for a single run. The worker sends the
  * full ordered list at run completion; the backend replaces all rows for the run id.
  */
 export interface RunToolCallPayload {

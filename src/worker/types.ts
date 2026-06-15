@@ -9,7 +9,7 @@ import type {
 
 export type DispatchState = "new" | "iteration";
 
-/** LLM usage stats from the pi agent session, surfaced for cost/efficacy analytics (DEN-2313). */
+/** LLM usage stats from the pi agent session, surfaced for cost/efficacy analytics. */
 export interface DispatchUsage {
   promptTokens: number;
   completionTokens: number;
@@ -18,7 +18,7 @@ export interface DispatchUsage {
 }
 
 /**
- * One step of the agent's tool-call timeline (DEN-2311). Captured from the pi session
+ * One step of the agent's tool-call timeline. Captured from the pi session
  * transcript at run end so the dashboard can render a thought-process tree.
  */
 export interface DispatchToolCall {

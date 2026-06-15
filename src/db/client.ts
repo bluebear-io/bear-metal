@@ -1252,7 +1252,7 @@ export class SqlDbClient implements DbClient {
     // Update the existing undispatched row for this ticket if one exists;
     // otherwise insert a new task row (direct dispatch without prior discovery).
     // Use input.ticketIssueId (UUID) as the DB key — ticket_id stores the Linear UUID,
-    // not the human-readable identifier (e.g. "DEN-2369").
+    // not the human-readable identifier (e.g. "ABC-123").
     const existing = await this.query<{ id: string }>(
       `SELECT id FROM tasks WHERE ticket_id = ? AND dispatch_state IS NULL AND result_status IS NULL AND slot_status = 'active'
        ORDER BY created_at DESC, id DESC LIMIT 1`,

@@ -9,11 +9,11 @@ const logger = createLogger({ level: "silent", name: "test" });
 
 describe("TaskWorker", () => {
   it("acquires a task with its worker id and writes the dispatch result", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
       status: "done",
-      prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 7 }],
+      prs: [{ owner: "your-org", repo: "bear-metal", number: 7 }],
     }));
     const worker = new TaskWorker({
       logger,
@@ -43,14 +43,14 @@ describe("TaskWorker", () => {
         taskId: "task-1",
         result: {
           status: "done",
-          prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 7 }],
+          prs: [{ owner: "your-org", repo: "bear-metal", number: 7 }],
         },
       },
     ]);
   });
 
   it("records run lifecycle events in the db", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ id: "task-1", attemptNumber: 2, input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
       status: "done",
@@ -85,7 +85,7 @@ describe("TaskWorker", () => {
   });
 
   it("marks the row crashed when runDispatch throws so the task isn't left acquired forever", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => {
       throw new Error("boom");
@@ -118,7 +118,7 @@ describe("TaskWorker", () => {
   });
 
   it("heartbeats the in-flight task on the configured interval and stops once dispatch returns", async () => {
-    const input = { state: "new" as const, ticketId: "DEN-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ id: "task-1", input }));
 
     // Hold dispatch open so we can observe heartbeats firing while the task is in flight.
@@ -165,7 +165,7 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
     ticketId: "lin_1",
     dispatchState: "new",
     attemptNumber: 1,
-    input: { state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "lin_1" },
+    input: { state: "new", ticketId: "ABC-1", prs: [], trigger: "new", ticketIssueId: "lin_1" },
     workerId: null,
     resultStatus: null,
     result: null,

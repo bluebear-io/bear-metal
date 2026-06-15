@@ -9,42 +9,42 @@ describe("formatNotificationText", () => {
   it("formats an 'opened' message", () => {
     const text = formatNotificationText({
       kind: "opened",
-      pr: { owner: "acme", repo: "blueden", number: 42 },
+      pr: { owner: "acme", repo: "repo", number: 42 },
       title: "Add slack notifier",
-      url: "https://github.com/acme/blueden/pull/42",
-      ticketId: "DEN-2305",
-      ticketUrl: "https://linear.app/x/DEN-2305",
+      url: "https://github.com/acme/repo/pull/42",
+      ticketId: "PROJ-4",
+      ticketUrl: "https://linear.app/x/PROJ-4",
     });
     expect(text).toBe(
-      ":bear: PR opened <https://github.com/acme/blueden/pull/42|acme/blueden#42> for ticket <https://linear.app/x/DEN-2305|DEN-2305> — Add slack notifier",
+      ":bear: PR opened <https://github.com/acme/repo/pull/42|acme/repo#42> for ticket <https://linear.app/x/PROJ-4|PROJ-4> — Add slack notifier",
     );
   });
 
   it("escapes Slack mrkdwn special chars in title and ticket id to prevent link injection", () => {
     const text = formatNotificationText({
       kind: "opened",
-      pr: { owner: "acme", repo: "blueden", number: 1 },
+      pr: { owner: "acme", repo: "repo", number: 1 },
       title: "Check <https://evil.com|this> & stuff",
-      url: "https://github.com/acme/blueden/pull/1",
-      ticketId: "DEN-<1>",
-      ticketUrl: "https://linear.app/x/DEN-1",
+      url: "https://github.com/acme/repo/pull/1",
+      ticketId: "ABC-<1>",
+      ticketUrl: "https://linear.app/x/ABC-1",
     });
     expect(text).toContain("Check &lt;https://evil.com|this&gt; &amp; stuff");
-    expect(text).toContain("DEN-&lt;1&gt;");
+    expect(text).toContain("ABC-&lt;1&gt;");
     expect(text).not.toContain("<https://evil.com|this>");
   });
 
   it("formats an 'updated' message with ticket link", () => {
     const text = formatNotificationText({
       kind: "updated",
-      pr: { owner: "acme", repo: "blueden", number: 7 },
+      pr: { owner: "acme", repo: "repo", number: 7 },
       title: "Fix flakes",
-      url: "https://github.com/acme/blueden/pull/7",
-      ticketId: "DEN-9",
-      ticketUrl: "https://linear.app/x/DEN-9",
+      url: "https://github.com/acme/repo/pull/7",
+      ticketId: "ABC-9",
+      ticketUrl: "https://linear.app/x/ABC-9",
     });
     expect(text).toBe(
-      "Updated PR <https://github.com/acme/blueden/pull/7|acme/blueden#7> for ticket <https://linear.app/x/DEN-9|DEN-9> — Fix flakes",
+      "Updated PR <https://github.com/acme/repo/pull/7|acme/repo#7> for ticket <https://linear.app/x/ABC-9|ABC-9> — Fix flakes",
     );
   });
 });
@@ -52,22 +52,22 @@ describe("formatNotificationText", () => {
 describe("formatNeedsInputText", () => {
   it("formats a needs-input message with raising_hand icon and ticket link", () => {
     const text = formatNeedsInputText({
-      ticketId: "DEN-2369",
-      ticketUrl: "https://linear.app/x/DEN-2369",
+      ticketId: "PROJ-5",
+      ticketUrl: "https://linear.app/x/PROJ-5",
       title: "fix the widget",
     });
     expect(text).toBe(
-      ":raising_hand: Needs your input on ticket <https://linear.app/x/DEN-2369|DEN-2369> — fix the widget",
+      ":raising_hand: Needs your input on ticket <https://linear.app/x/PROJ-5|PROJ-5> — fix the widget",
     );
   });
 
   it("escapes mrkdwn special chars in ticket id", () => {
     const text = formatNeedsInputText({
-      ticketId: "DEN-<99>",
-      ticketUrl: "https://linear.app/x/DEN-99",
+      ticketId: "ABC-<99>",
+      ticketUrl: "https://linear.app/x/ABC-99",
       title: "some ticket",
     });
-    expect(text).toContain("DEN-&lt;99&gt;");
+    expect(text).toContain("ABC-&lt;99&gt;");
   });
 });
 
@@ -85,11 +85,11 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "blueden", number: 1 },
+      pr: { owner: "acme", repo: "repo", number: 1 },
       title: "Hello",
       url: "https://example.com/pr/1",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/x/DEN-1",
+      ticketId: "ABC-1",
+      ticketUrl: "https://linear.app/x/ABC-1",
     });
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -118,11 +118,11 @@ describe("SlackIntegration", () => {
     await expect(
       slack.notifyPullRequest({
         kind: "updated",
-        pr: { owner: "acme", repo: "blueden", number: 2 },
+        pr: { owner: "acme", repo: "repo", number: 2 },
         title: "Hi",
         url: "https://example.com/pr/2",
-        ticketId: "DEN-2",
-        ticketUrl: "https://linear.app/x/DEN-2",
+        ticketId: "ABC-2",
+        ticketUrl: "https://linear.app/x/ABC-2",
       }),
     ).resolves.toBeUndefined();
   });
@@ -139,11 +139,11 @@ describe("SlackIntegration", () => {
     await expect(
       slack.notifyPullRequest({
         kind: "opened",
-        pr: { owner: "acme", repo: "blueden", number: 3 },
+        pr: { owner: "acme", repo: "repo", number: 3 },
         title: "Hi",
         url: "https://example.com/pr/3",
-        ticketId: "DEN-3",
-        ticketUrl: "https://linear.app/x/DEN-3",
+        ticketId: "ABC-3",
+        ticketUrl: "https://linear.app/x/ABC-3",
       }),
     ).resolves.toBeUndefined();
   });
@@ -162,11 +162,11 @@ describe("SlackIntegration", () => {
     await expect(
       slack.notifyPullRequest({
         kind: "opened",
-        pr: { owner: "acme", repo: "blueden", number: 4 },
+        pr: { owner: "acme", repo: "repo", number: 4 },
         title: "Hi",
         url: "https://example.com/pr/4",
-        ticketId: "DEN-4",
-        ticketUrl: "https://linear.app/x/DEN-4",
+        ticketId: "ABC-4",
+        ticketUrl: "https://linear.app/x/ABC-4",
       }),
     ).resolves.toBeUndefined();
   });
@@ -193,11 +193,11 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "blueden", number: 1 },
+      pr: { owner: "acme", repo: "repo", number: 1 },
       title: "Hello",
       url: "https://example.com/pr/1",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/x/DEN-1",
+      ticketId: "ABC-1",
+      ticketUrl: "https://linear.app/x/ABC-1",
       recipientEmail: "user@example.com",
     });
 
@@ -226,11 +226,11 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "blueden", number: 1 },
+      pr: { owner: "acme", repo: "repo", number: 1 },
       title: "Hello",
       url: "https://example.com/pr/1",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/x/DEN-1",
+      ticketId: "ABC-1",
+      ticketUrl: "https://linear.app/x/ABC-1",
       recipientEmail: "unknown@example.com",
     });
 
@@ -254,11 +254,11 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "blueden", number: 1 },
+      pr: { owner: "acme", repo: "repo", number: 1 },
       title: "Hello",
       url: "https://example.com/pr/1",
-      ticketId: "DEN-1",
-      ticketUrl: "https://linear.app/x/DEN-1",
+      ticketId: "ABC-1",
+      ticketUrl: "https://linear.app/x/ABC-1",
       recipientEmail: "user@example.com",
     });
 
@@ -279,8 +279,8 @@ describe("SlackIntegration", () => {
     });
 
     await slack.notifyNeedsInput({
-      ticketId: "DEN-2369",
-      ticketUrl: "https://linear.app/x/DEN-2369",
+      ticketId: "PROJ-5",
+      ticketUrl: "https://linear.app/x/PROJ-5",
       title: "fix the widget",
     });
 
@@ -289,7 +289,7 @@ describe("SlackIntegration", () => {
     const body = JSON.parse(postInit?.body as string);
     expect(body.channel).toBe("C12345");
     expect(body.text).toContain(":raising_hand:");
-    expect(body.text).toContain("DEN-2369");
+    expect(body.text).toContain("PROJ-5");
   });
 
   it("notifyNeedsInput DMs the assignee when recipientEmail resolves", async () => {
@@ -308,8 +308,8 @@ describe("SlackIntegration", () => {
     });
 
     await slack.notifyNeedsInput({
-      ticketId: "DEN-2369",
-      ticketUrl: "https://linear.app/x/DEN-2369",
+      ticketId: "PROJ-5",
+      ticketUrl: "https://linear.app/x/PROJ-5",
       title: "fix the widget",
       recipientEmail: "user@example.com",
     });

@@ -23,7 +23,7 @@ export interface PullRequestNotification {
   title: string;
   /** PR HTML url. */
   url: string;
-  /** Originating Linear ticket identifier (e.g. "DEN-2305"). */
+  /** Originating Linear ticket identifier (e.g. "PROJ-4"). */
   ticketId: string;
   ticketUrl: string;
   /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
@@ -31,7 +31,7 @@ export interface PullRequestNotification {
 }
 
 export interface NeedsInputNotification {
-  /** Linear ticket identifier (e.g. "DEN-2305"). */
+  /** Linear ticket identifier (e.g. "PROJ-4"). */
   ticketId: string;
   ticketUrl: string;
   /** Linear ticket title. */

@@ -12,12 +12,12 @@ describe("ManagerTicketHandler", () => {
   it("enqueues a new task and returns the SQL task id", async () => {
     const db = new FakeDb();
     const handler = new ManagerTicketHandler({ logger, db: db as unknown as DbClient });
-    const ctx = makeContext("den-1");
+    const ctx = makeContext("abc-1");
 
     const outcome = await handler.handle(ctx, "new");
 
     expect(db.enqueued).toEqual([
-      { state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "den-1" },
+      { state: "new", ticketId: "ABC-1", prs: [], trigger: "new", ticketIssueId: "abc-1" },
     ]);
     expect(outcome.status).toBe("pending");
     expect(outcome.taskId).toBe("task-1");
@@ -29,8 +29,8 @@ describe("ManagerTicketHandler", () => {
 
     await handler.handle(
       {
-        ticket: makeContext("den-2").ticket,
-        prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 5 }],
+        ticket: makeContext("abc-2").ticket,
+        prs: [{ owner: "your-org", repo: "bear-metal", number: 5 }],
       },
       "delegated_back",
     );
@@ -38,10 +38,10 @@ describe("ManagerTicketHandler", () => {
     expect(db.enqueued).toEqual([
       {
         state: "iteration",
-        ticketId: "DEN-2",
-        prs: [{ owner: "bluebear-io", repo: "bear-metal", number: 5 }],
+        ticketId: "ABC-2",
+        prs: [{ owner: "your-org", repo: "bear-metal", number: 5 }],
         trigger: "delegated_back",
-        ticketIssueId: "den-2",
+        ticketIssueId: "abc-2",
       },
     ]);
   });
@@ -49,7 +49,7 @@ describe("ManagerTicketHandler", () => {
   it("records a dispatched event in the db after enqueue", async () => {
     const db = new FakeDb();
     const handler = new ManagerTicketHandler({ logger, db: db as unknown as DbClient });
-    const ctx = makeContext("den-1");
+    const ctx = makeContext("abc-1");
 
     await handler.handle(ctx, "new");
 
@@ -59,7 +59,7 @@ describe("ManagerTicketHandler", () => {
     expect(db.recordEventCalls).toHaveLength(1);
     expect(db.recordEventCalls[0]).toEqual(
       expect.objectContaining({
-        ticketId: "den-1",
+        ticketId: "abc-1",
         runId: "task-1",
         source: "manager",
         type: "dispatched",

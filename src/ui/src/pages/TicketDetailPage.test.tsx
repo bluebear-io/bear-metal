@@ -17,11 +17,11 @@ const mockUseTicketDetail = vi.mocked(useTicketDetail);
 const ticketDetail: TicketDetail = {
   ticket: {
     id: "lin_2",
-    identifier: "DEN-3002",
+    identifier: "PROJ-2",
     title: "Retry failed CI build",
     description: "CI needs another run after fixing the flaky assertion.",
-    url: "https://linear.app/blueden/issue/DEN-3002/retry-failed-ci-build",
-    branchName: "codex/den-3002-retry-failed-ci-build",
+    url: "https://linear.app/your-workspace/issue/PROJ-2/retry-failed-ci-build",
+    branchName: "codex/abc-3002-retry-failed-ci-build",
     linearStatusName: "In Progress",
     linearStatusType: "started",
     labelsJson: JSON.stringify(["backend", "ci"]),
@@ -94,12 +94,12 @@ const ticketDetail: TicketDetail = {
       id: "pr_1501",
       ticketId: "lin_2",
       number: 1501,
-      title: "DEN-3002 Retry failed CI build",
-      headRef: "codex/den-3002-retry-failed-ci-build",
+      title: "PROJ-2 Retry failed CI build",
+      headRef: "codex/abc-3002-retry-failed-ci-build",
       state: "open",
       draft: false,
       merged: false,
-      url: "https://github.com/blueden/bear-metal/pull/1501",
+      url: "https://github.com/your-org/bear-metal/pull/1501",
       lastRunId: "run_2",
       createdAt: "2026-06-09T08:45:00.000Z",
       updatedAt: "2026-06-09T09:15:00.000Z",
@@ -115,7 +115,7 @@ const ticketDetail: TicketDetail = {
               id: "cmt_1",
               body: "Should this guard against null PR?",
               author: "reviewer-a",
-              url: "https://github.com/blueden/bear-metal/pull/1501#discussion_r1",
+              url: "https://github.com/your-org/bear-metal/pull/1501#discussion_r1",
               createdAt: "2026-06-09T08:33:00.000Z",
               updatedAt: "2026-06-09T08:33:00.000Z",
               path: "src/manager/scheduler.ts",
@@ -170,7 +170,7 @@ describe("TicketDetailPage", () => {
 
     renderPage();
 
-    expect(screen.getByText("DEN-3002")).toBeVisible();
+    expect(screen.getByText("PROJ-2")).toBeVisible();
     expect(screen.getByText(/attempt 2/i)).toBeVisible();
     expect(screen.getByRole("link", { name: /#1501/i })).toBeVisible();
     expect(screen.getAllByText(/^failed$/i).length).toBeGreaterThan(0);

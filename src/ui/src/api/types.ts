@@ -130,7 +130,7 @@ export interface Run {
   provider: string | null;
   createdAt: string;
   worker: Worker | null;
-  /** Ordered tool-call timeline for the thought-process visualizer (DEN-2311). */
+  /** Ordered tool-call timeline for the thought-process visualizer. */
   toolCalls: RunToolCall[];
 }
 

@@ -1,0 +1,5 @@
+# Code owners for bear-metal.
+# Owners are requested for review automatically on every PR.
+# See: https://docs.github.com/articles/about-code-owners
+
+* @bluebear-io/engineering

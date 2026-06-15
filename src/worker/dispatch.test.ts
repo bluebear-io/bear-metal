@@ -40,7 +40,7 @@ describe("dispatch", () => {
 
     const result = await dispatch({
       state: "new",
-      ticketId: "DEN-1",
+      ticketId: "ABC-1",
       prs: [],
       integrations: {
         github: makeGithub(),
@@ -57,7 +57,7 @@ describe("dispatch", () => {
     });
 
     expect(result).toEqual({ status: "pending", prs: [] });
-    expect(moveTicketToInProgress).toHaveBeenCalledWith("DEN-1");
+    expect(moveTicketToInProgress).toHaveBeenCalledWith("ABC-1");
     expect(dispatchMock.calls.indexOf("in-progress")).toBeLessThan(dispatchMock.calls.indexOf("pi"));
   });
 
@@ -83,7 +83,7 @@ describe("dispatch", () => {
 
       await dispatch({
         state: "new",
-        ticketId: "DEN-1",
+        ticketId: "ABC-1",
         prs: [],
         integrations: makeIntegrations(),
         maxWorkerTimeMs: 7_200_000,
@@ -102,7 +102,7 @@ describe("dispatch", () => {
       await expect(
         dispatch({
           state: "new",
-          ticketId: "DEN-1",
+          ticketId: "ABC-1",
           prs: [],
           integrations: makeIntegrations(),
           maxWorkerTimeMs: 7_200_000,
@@ -120,14 +120,14 @@ function makeTicketContext() {
   return {
     issue: {
       id: "issue-id",
-      identifier: "DEN-1",
+      identifier: "ABC-1",
       title: "Build thing",
       description: null,
-      url: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-      branchName: "feature/den-1-build-thing",
+      url: "https://linear.app/your-workspace/issue/ABC-1/build-thing",
+      branchName: "feature/abc-1-build-thing",
       status: { name: "Todo", type: "unstarted" },
       labels: ["bear-metal"],
-      teamKey: "DEN",
+      teamKey: "ABC",
       assignee: { id: "creator" },
       delegate: { id: "agent" },
       priority: 0,

@@ -52,8 +52,8 @@ describe("loadConfig", () => {
   });
 
   it("reads TEST_TICKET_ID when set", () => {
-    Object.assign(process.env, REQUIRED, { TEST_TICKET_ID: "DEN-9999" });
-    expect(loadConfig().testTicketId).toBe("DEN-9999");
+    Object.assign(process.env, REQUIRED, { TEST_TICKET_ID: "ABC-9999" });
+    expect(loadConfig().testTicketId).toBe("ABC-9999");
   });
 
   it("defaults testTicketId to null when TEST_TICKET_ID is unset", () => {
