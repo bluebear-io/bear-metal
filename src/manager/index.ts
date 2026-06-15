@@ -111,7 +111,7 @@ if (config.testTicketId) {
 const app = createApp(db, config.maxIterations);
 const server = app.listen(config.backendPort, () => {
   logger.info({ port: config.backendPort }, "dashboard server listening");
-  logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+  logger.info({ port: config.backendPort, pid: process.pid }, "blablabla");
 });
 
 scheduler.start();
