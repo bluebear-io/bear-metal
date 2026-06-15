@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.74.0",
-    "@linear/sdk": "84.0.0",
+    "@linear/sdk": "86.0.0",
     "@octokit/auth-app": "8.2.0",
     "@octokit/rest": "22.0.1",
     "better-sqlite3": "12.10.0",
