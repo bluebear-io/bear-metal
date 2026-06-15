@@ -1,195 +1,234 @@
-<img src="docs/assets/logo.png" alt="Bear Metal" width="160" />
+<img src="cover.jpg" alt="Bear Metal in the data center" />
 
-# bear-metal
+---
 
-Background coding agent. Takes tickets from Linear, hands them to a worker that
-solves them with an LLM, and opens a GitHub PR.
+# Bear Metal
 
-## Scope (current)
+<img src="logo.png" alt="Bear Metal logo" align="right" width="160" />
 
-This repository currently contains one package with a **manager** and **worker**.
-The manager polls Linear tickets delegated to the user associated with `LINEAR_API_TOKEN`, looks up the
-GitHub PR for active tickets with a known worker-returned PR ref, and maintains
-its concurrency slots in the SQL-backed `tasks` table. The worker atomically
-acquires a task row, gathers Linear/GitHub context, runs the repository clone
-hook, invokes Pi, and writes the dispatch result (`pending` or `done`) back to
-that task row.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml)
+[![CodeQL](https://github.com/bluebear-io/bear-metal/actions/workflows/dynamic%2Fgithub-code-scanning%2Fcodeql/badge.svg)](https://github.com/bluebear-io/bear-metal/security/code-scanning)
+[![GitHub release](https://img.shields.io/github/v/release/bluebear-io/bear-metal)](https://github.com/bluebear-io/bear-metal/releases/latest)
+[![GitHub issues](https://img.shields.io/github/issues/bluebear-io/bear-metal)](https://github.com/bluebear-io/bear-metal/issues)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![GitHub last commit](https://img.shields.io/github/last-commit/bluebear-io/bear-metal)](https://github.com/bluebear-io/bear-metal/commits/main)
 
-## Layout
+Autonomous coding agent. Picks up tasks from Linear, implements them, and opens pull requests ready to merge. Runs continuously in the background.
 
-Single package (one process, one container). `manager`, `worker`, and `shared` are
-folders under `src/`, each with a barrel `index.ts`:
+<br clear="right" />
 
-```
-src/
-  shared/   logger, Linear + GitHub integrations, shared types
-  worker/   Pi solver, called in-process by the manager
-  manager/  config, in-memory state, ticket handler, scheduler, health server
-            └─ index.ts  ← entrypoint (dist/manager/index.js)
-```
+## How to deploy
+
+1. Create a GitHub App and note your credentials — [GitHub App guide](#github-app)
+2. Create a Linear API token — [Linear guide](#linear)
+3. Get an API key from at least one LLM provider — [Anthropic](#anthropic) · [OpenAI](#openai) · [Google](#google)
+4. Define how bear-metal should clone your repository — [Workspace builder](#workspace-builder)
+5. *(optional)* Set up a persistent database — point `DATABASE_URL` at a PostgreSQL instance or a mounted SQLite file. Without this, bear-metal defaults to a local SQLite file that will be lost if the container restarts.
+6. *(optional)* Create a Slack app for PR notifications — [Slack guide](#slack)
+7. *(optional)* Write a custom system prompt to inject project-specific instructions — [Custom system prompt](#custom-system-prompt)
+8. Set up your environment variables — [full list](#environment-variables), example file at [`.env.example`](.env.example)
+9. Deploy via the [public image](https://ghcr.io/bluebear-io/bear-metal) (`ghcr.io/bluebear-io/bear-metal:latest`) or from source with `npm start`
+
+---
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in the required values:
+### Environment variables
 
 | Var | Required | Default | Purpose |
 |-----|----------|---------|---------|
-| `LINEAR_API_TOKEN` | yes | — | Linear auth (assignee resolved automatically via viewer query) |
-| `GITHUB_APP_ID` | yes | — | GitHub App id (numeric) |
+| `LINEAR_API_TOKEN` | yes | — | Linear API token (bot user) |
+| `GITHUB_APP_ID` | yes | — | GitHub App ID (numeric) |
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
-| `GITHUB_APP_INSTALLATION_ID` | yes | — | installation id (numeric) |
-| `WORKSPACE_BUILDER_COMMAND` | yes* | — | Inline bash script for workspace setup (see [Workspace Builder](#workspace-builder)) |
-| `WORKSPACE_BUILDER_PATH` | yes* | — | Path to a workspace builder script file (see [Workspace Builder](#workspace-builder)) |
-| `DATABASE_URL` | no | `sqlite:./bear-metal-manager.sqlite` | task queue database; supports `sqlite:<path>` and `postgres://...` |
-| `WORKER_CONCURRENCY` | no | `5` | max tickets worked in parallel |
-| `POLL_INTERVAL_MS` | no | `60000` | poll cadence |
-| `PORT` | no | `3000` | health server port |
+| `GITHUB_APP_INSTALLATION_ID` | yes | — | Installation ID (numeric) |
+| `WORKSPACE_BUILDER_COMMAND` | yes* | — | Inline bash to clone/setup workspace |
+| `WORKSPACE_BUILDER_PATH` | yes* | — | Path to workspace builder script |
+| `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key |
+| `OPENAI_API_KEY` | yes** | — | OpenAI API key |
+| `GOOGLE_API_KEY` | yes** | — | Google API key |
+| `SYSTEM_PROMPT_PATH` | no | — | Path to a custom system prompt file |
+| `SYSTEM_PROMPT` | no | — | Inline custom system prompt (mutually exclusive with `SYSTEM_PROMPT_PATH`) |
+| `DATABASE_URL` | no | `sqlite:./bear-metal.sqlite` | Task queue DB (`sqlite:<path>` or `postgres://…`) |
+| `WORKER_CONCURRENCY` | no | `5` | Max parallel tickets |
+| `POLL_INTERVAL_MS` | no | `60000` | Poll cadence (ms) |
+| `MAX_ITERATIONS` | no | `50` | Max agent cycles per ticket before handing back to human |
+| `MAX_WORKER_TIME_MS` | no | `7200000` | Max wall-clock time per session (2 h) |
+| `MAX_WORKER_TOKENS` | no | `20000000` | Max tokens per session (20 M) |
+| `TASK_HEARTBEAT_INTERVAL_MS` | no | `30000` | Worker heartbeat cadence |
+| `TASK_STALE_AFTER_MS` | no | `300000` | Recover a task if no heartbeat for this long |
+| `TASK_MAX_RECLAIMS` | no | `3` | Abandon a task row after this many recoveries |
+| `BACKEND_PORT` | no | `3100` | API + dashboard server port |
+| `SLACK_BOT_TOKEN` | no | — | Slack bot OAuth token (`xoxb-…`) |
+| `SLACK_NOTIFICATION_CHANNEL` | no | — | Slack channel ID or `#channel-name` |
 | `LOG_LEVEL` | no | `info` | pino log level |
-| `LOG_PRETTY` | no | `false` | colorized, human-readable logs (dev); JSON when false |
+| `LOG_PRETTY` | no | `false` | Human-readable logs for local dev |
 
 *Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
 
-The worker also needs Pi model credentials supported by
-`@earendil-works/pi-coding-agent`, such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-or `GOOGLE_API_KEY`.
+**At least one LLM key is required.
 
-## SQL Task Handoff
+Example file at [`.env.example`](.env.example)
 
-The manager-to-worker handoff uses a SQL table named `tasks`:
+### Workspace builder
 
-```sql
-tasks (
-  id TEXT PRIMARY KEY,
-  ticket_id TEXT NOT NULL,
-  dispatch_state TEXT NOT NULL,
-  input_json TEXT NOT NULL,
-  worker_id TEXT NULL,
-  result_status TEXT NULL,
-  result_json TEXT NULL,
-  slot_status TEXT NOT NULL DEFAULT 'active',
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
-  completed_at TIMESTAMP NULL,
-  released_at TIMESTAMP NULL
-)
-```
+Before invoking the coding agent, bear-metal runs a workspace builder to clone and prepare the target repository. You must provide one via env var. The builder must populate `AGENT_WORKDIR` and exit 0 on success — a non-zero exit aborts the task.
 
-`worker_id IS NULL AND result_status IS NULL` means the row has not been
-acquired. `worker_id IS NOT NULL AND result_status IS NULL` means a worker is
-running it. `result_status IS NOT NULL` is the return value from the worker's
-dispatch function, with the full dispatch result in `result_json`.
+Examples:
 
-Each dispatch attempt is a separate row. The latest row per `ticket_id` is also
-the manager's durable slot record while `slot_status` is `active` or `parked`;
-`released` rows no longer occupy concurrency. The manager derives the known PR
-only from the latest row's `result_json.pr` or `input_json.pr`; it does not scan
-GitHub branches or commit messages to discover PRs.
-
-## Workspace Builder
-
-Before invoking the coding agent, the worker runs a **workspace builder** to
-clone and set up the target repository. You must provide one via env var.
-
-Bear-metal creates `AGENT_WORKDIR`, runs the builder, then runs the agent inside
-`AGENT_WORKDIR`. The builder must populate that directory and exit 0 on success.
-A non-zero exit aborts the task.
-
-**Input env vars passed to the builder:**
-
-| Var | Example |
-|-----|---------|
-| `AGENT_WORKDIR` | `/tmp/bear-metal-workspace-DEN-123/agent` |
-| `TICKET_ID` | `DEN-123` |
-| `TICKET_TITLE` | `Fix the auth bug` |
-| `TICKET_URL` | `https://linear.app/...` |
-| `TICKET_TEAM` | `DEN` |
-| `TICKET_TAGS` | `repo:backend,priority:high` (comma-separated Linear labels) |
-| `TICKET_DESCRIPTION` | full ticket body |
-
-### Single repo (`WORKSPACE_BUILDER_COMMAND`)
-
-One-liner — no file to mount:
+**Single repo:**
 
 ```bash
-WORKSPACE_BUILDER_COMMAND=git clone git@github.com:your-org/your-repo "$AGENT_WORKDIR"
+WORKSPACE_BUILDER_COMMAND=git clone git@github.com:your-user/your-repo "$AGENT_WORKDIR"
 ```
+This works if your bear metal deployment always codes within this particular repository.
 
-### Umbrella repo with sub-repos (`WORKSPACE_BUILDER_COMMAND`)
-
-Clone the umbrella, then run its sub-repo clone script:
+**Umbrella repo with sub-repos:**
 
 ```bash
 WORKSPACE_BUILDER_COMMAND=<<'EOF'
-git clone git@github.com:your-org/umbrella "$AGENT_WORKDIR"
-cd "$AGENT_WORKDIR" && scripts/clone-repos.sh
+git clone git@github.com:your-user/umbrella "$AGENT_WORKDIR"
+cd "$AGENT_WORKDIR"
+# clone sub repositories inside
 EOF
 ```
+This works if your bear metal deployment always codes within a repository that contains other repositories.
 
-### Dynamic multi-repo routing by tag (`WORKSPACE_BUILDER_PATH`)
+**Multi-repo routing by ticket tags:**
 
-For complex logic, mount a script file and point to it:
+For complex logic, write a script file and point to it:
 
 ```bash
 WORKSPACE_BUILDER_PATH=/scripts/build-workspace.sh
 ```
 
+`/scripts/build-workspace.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
 if echo "$TICKET_TAGS" | grep -q "repo:frontend"; then
-  git clone git@github.com:your-org/frontend "$AGENT_WORKDIR"
-elif echo "$TICKET_TAGS" | grep -q "repo:backend"; then
-  git clone git@github.com:your-org/backend "$AGENT_WORKDIR"
-else
-  git clone git@github.com:your-org/monorepo "$AGENT_WORKDIR"
+  git clone git@github.com:your-user/frontend "$AGENT_WORKDIR/frontend"
+fi
+if echo "$TICKET_TAGS" | grep -q "repo:backend"; then
+  git clone git@github.com:your-user/backend "$AGENT_WORKDIR/backend"
+fi
+if echo "$TICKET_TAGS" | grep -q "repo:shared"; then
+  git clone git@github.com:your-user/shared "$AGENT_WORKDIR/shared"
 fi
 ```
+This works when your bear metal deployment handles multiple repositories. Tag each ticket with the repos it touches and the agent wakes up with all of them as subdirectories of `AGENT_WORKDIR`.
 
-## Develop
+**Environment variables passed to the builder:**
 
-```bash
-npm install      # install workspace deps
-npm run build    # type-check + compile all packages
-npm test         # run unit tests
-```
+| Var | Example |
+|-----|---------|
+| `AGENT_WORKDIR` | `/tmp/bear-metal-workspace-ABC-123/agent` |
+| `TICKET_ID` | `ABC-123` |
+| `TICKET_TITLE` | `Fix the auth bug` |
+| `TICKET_URL` | `https://linear.app/...` |
+| `TICKET_TEAM` | `ABC` |
+| `TICKET_TAGS` | `repo:backend,priority:high` (comma-separated Linear labels) |
+| `TICKET_DESCRIPTION` | full ticket body |
 
-## Dashboard DB
+Bear-metal creates `AGENT_WORKDIR`, runs the builder, then runs the agent inside `AGENT_WORKDIR`.
 
-The dashboard backend (`src/backend/`) reads and writes its own database — separate from the
-manager's task queue. Pick the engine by URL scheme via `BEAR_METAL_DATABASE_URL`:
+### Custom system prompt
 
-```
-BEAR_METAL_DATABASE_URL=sqlite:./bear-metal.db                    # local dev / tests
-BEAR_METAL_DATABASE_URL=postgres://user:pass@host:5432/bear_metal # production
-```
-
-The schema is created on first connect (`CREATE TABLE IF NOT EXISTS`) — no separate migrate
-step. FK enforcement is intentionally disabled at the session level because writes are
-best-effort and can arrive out of order (a child row can land before its parent).
-
-The dashboard's `BEAR_METAL_DATABASE_URL` and the manager's `DATABASE_URL` are independent —
-they can point at the same Postgres instance (different table sets) or different ones.
-
-## Backfill (dashboard DB)
-
-The dashboard reads from its own SQLite file (`BEAR_METAL_DB_PATH`). If you need
-to pre-populate it from history — e.g. after a fresh deploy or to recover from a
-corrupted file — run the backfill tool. It walks every Linear ticket delegated
-to the agent (across all states, including completed/canceled/merged), enriches
-each with the matching GitHub PR(s) + check runs, and writes a coherent ticket
-bundle to the dashboard DB.
+Bear-metal injects a default system prompt with coding-agent instructions. You can extend it with project-specific context, conventions, or rules:
 
 ```bash
-# Reads Linear + GitHub credentials from the same env vars the manager uses.
-BEAR_METAL_DB_PATH=./bear-metal.db npx tsx src/backend/backfill/index.ts
+# File-based (system-prompt.md is gitignored by default)
+SYSTEM_PROMPT_PATH=./system-prompt.md
 
-# Flags
-#   --dry-run      Read everything, write nothing; print the would-be summary.
-#   --limit N      Stop after N tickets (useful for testing).
-#   --verbose      Per-ticket log lines instead of just a final summary.
+# Or inline
+SYSTEM_PROMPT="Always write tests. Prefer small, focused PRs."
 ```
 
-Re-runs are safe — tickets already in the DB are left untouched, including
-all of their runs / PRs / CI runs / events. Only newly-delegated tickets get
-inserted on subsequent runs.
+Set at most one. The custom prompt is appended to the built in prompt.
+
+---
+
+## Quick guides
+
+### GitHub App
+
+Bear-metal authenticates as a GitHub App installation. Create one at **github.com → Settings → Developer settings → GitHub Apps → New GitHub App**:
+
+- **Repository permissions**: Contents (R/W), Pull requests (R/W), Metadata (R), Checks (R)
+- Leave webhooks disabled — bear-metal polls, it does not receive events
+
+After creating the app:
+
+1. Note the **App ID** on the app settings page → `GITHUB_APP_ID`
+2. Under **Private keys** → **Generate a private key** → download the `.pem` file
+3. Convert newlines for the env var:
+   ```bash
+   awk '{printf "%s\\n", $0}' your-key.pem
+   ```
+   Paste the result into `GITHUB_APP_PRIVATE_KEY`
+4. **Install** the app on your org or specific repos (app settings → Install App)
+5. After install, the URL contains the installation ID:
+   `github.com/settings/installations/123456789` → `GITHUB_APP_INSTALLATION_ID`
+
+### Linear
+
+Bear-metal polls as the Linear user whose token you provide. Tickets delegated to that user are picked up automatically.
+
+Go to **Linear → Settings → API → Personal API keys → Create key** → `LINEAR_API_TOKEN`
+
+The bot user must be a full Linear workspace member (not a guest) so it can be assigned tickets.
+
+> **Delegation model:** bear-metal picks up tickets that are *delegated* to the bot user, not just assigned. In Linear, open a ticket → click the assignee → choose **Delegate** and select the bot account. The original assignee stays on the ticket; bear-metal works it on their behalf and hands it back when done.
+
+### Anthropic
+
+Get an API key from the [Anthropic Console](https://console.anthropic.com) → **API Keys** → **Create Key** → `ANTHROPIC_API_KEY`
+
+### OpenAI
+
+Get an API key from the [OpenAI Platform](https://platform.openai.com) → **API keys** → **Create new secret key** → `OPENAI_API_KEY`
+
+### Google
+
+Get an API key from [Google AI Studio](https://aistudio.google.com) → **Get API key** → `GOOGLE_API_KEY`
+
+### Slack
+
+Create a Slack app at **api.slack.com/apps → Create New App → From scratch**:
+
+1. Under **OAuth & Permissions → Bot Token Scopes**: add `chat:write` and `chat:write.public`
+2. Install to your workspace → copy the **Bot User OAuth Token** (`xoxb-…`) → `SLACK_BOT_TOKEN`
+3. Get the channel ID: right-click the target channel → **View channel details** → copy the ID at the bottom (e.g. `C0123456789`) → `SLACK_NOTIFICATION_CHANNEL`
+
+---
+
+## Contributing & local dev
+
+```bash
+git clone https://github.com/bluebear-io/bear-metal
+cd bear-metal
+npm install
+cp .env.example .env   # fill in credentials
+```
+
+Run the full stack (manager + UI dev server):
+
+```bash
+npm run dev:all   # manager on :3100, UI on :5273
+```
+
+Run just the manager (no UI):
+
+```bash
+npm run dev
+```
+
+Build and test:
+
+```bash
+npm run build   # type-check + compile
+npm test        # run tests
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions and pull request guidelines.

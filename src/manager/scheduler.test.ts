@@ -195,7 +195,7 @@ function buildScheduler(deps: {
   });
 }
 
-describe("Scheduler.tick stale-task recovery (DEN-2334)", () => {
+describe("Scheduler.tick stale-task recovery", () => {
   it("reclaims an acquired task whose worker stopped heartbeating so the slot doesn't stay stuck", async () => {
     const db = await makeDb();
     // Simulate a worker that crashed mid-run: row has worker_id IS NOT NULL, result_status IS NULL,

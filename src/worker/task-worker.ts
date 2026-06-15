@@ -269,7 +269,7 @@ export class TaskWorker {
     // so the scheduler can move on. A crash between here and the event/usage/toolCalls writes means
     // the dashboard misses one run's supplementary data — accepted trade-off vs. blocking the slot.
     void this.db.upsertRunSucceeded(task.id, result.usage ?? null);
-    // DEN-2311: persist the agent's thought-process timeline for the dashboard's visualizer.
+    // persist the agent's thought-process timeline for the dashboard's visualizer.
     if (result.toolCalls && result.toolCalls.length > 0) {
       void this.db.upsertToolCalls(task.id, JSON.stringify(result.toolCalls));
     }

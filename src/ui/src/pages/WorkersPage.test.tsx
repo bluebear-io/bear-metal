@@ -19,7 +19,7 @@ const workers: WorkerListItem[] = [
     lastHeartbeatAt: "2026-06-09T10:06:00.000Z",
     startedAt: "2026-06-09T10:00:00.000Z",
     updatedAt: "2026-06-09T10:06:00.000Z",
-    currentTicketIdentifier: "DEN-3004",
+    currentTicketIdentifier: "PROJ-3",
     currentTicketTitle: "Investigate manager dispatch",
     currentRun: {
       id: "run-1",
@@ -32,7 +32,7 @@ const workers: WorkerListItem[] = [
       endedAt: null,
       createdAt: "2026-06-09T10:00:00.000Z",
       ticketId: "ticket-1",
-      ticketIdentifier: "DEN-3004",
+      ticketIdentifier: "PROJ-3",
       ticketTitle: "Investigate manager dispatch",
       runtimeMs: 360_000,
     },
@@ -76,7 +76,7 @@ describe("WorkersPage", () => {
     expect(screen.getByRole("heading", { name: "Workers" })).toBeVisible();
     expect(screen.getByText("worker-1")).toBeVisible();
     expect(screen.getByText("busy")).toBeVisible();
-    expect(screen.getByText("DEN-3004")).toBeVisible();
+    expect(screen.getByText("PROJ-3")).toBeVisible();
     expect(screen.getByText("running")).toBeVisible();
     expect(screen.getByText("6m")).toBeVisible();
     expect(screen.getByText("healthy")).toBeVisible();

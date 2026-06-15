@@ -268,7 +268,7 @@ export async function runPiWorker(input: {
         null;
       const isNewPr = existingPr === null;
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
-      // DEN-2329: suppress Slack notifications for bot-only iteration churn.
+      // suppress Slack notifications for bot-only iteration churn.
       // notifyOnComplete is stored in the result; scheduler fires the Slack DM
       // later when the ticket reaches waiting_for_human, giving a single DM per
       // human-review cycle rather than one per push_for_review call.
@@ -462,12 +462,12 @@ export async function runPiWorker(input: {
       throw new Error("Pi finished without calling a finish tool (push_for_review or respond_to_ticket_reporter)");
     }
   }
-  // Attach LLM usage stats captured during the just-finished session (DEN-2313).
+  // Attach LLM usage stats captured during the just-finished session.
   const withUsage = usage ? { ...decision, usage } : decision;
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
 }
 
-// ---- Thought-process extraction (DEN-2311) ------------------------------
+// ---- Thought-process extraction ------------------------------
 
 /**
  * Walk the pi session message history and build a flat, ordered list of tool calls. Each

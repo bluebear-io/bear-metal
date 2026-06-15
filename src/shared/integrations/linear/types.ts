@@ -25,7 +25,7 @@ export interface Ticket {
    */
   priority: number;
   labels: string[];
-  /** Linear team key, e.g. "DEN". Used by workspace builders to route per-team. */
+  /** Linear team key, e.g. "ABC". Used by workspace builders to route per-team. */
   teamKey: string;
   /** Human owner of the ticket (stays the creator even when an agent is delegated to it). */
   assignee: { id: string } | null;

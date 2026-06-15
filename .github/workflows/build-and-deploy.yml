@@ -1,4 +1,4 @@
-# bear-metal CI/CD (DEN-2370)
+# bear-metal CI/CD
 #
 # PR / push to main: typecheck + tests + docker build (verify only, no push)
 # Release / workflow_dispatch: build + push to ghcr.io + push to ECR (dev)

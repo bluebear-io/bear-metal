@@ -19,7 +19,7 @@ const piMock = vi.hoisted(() => ({
 
 const gitMock = vi.hoisted(() => ({
   push: vi.fn(async () => {}),
-  getCurrentBranch: vi.fn(async () => "feature/den-1"),
+  getCurrentBranch: vi.fn(async () => "feature/abc-1"),
   getRemoteRef: vi.fn(async () => ({ owner: "acme", repo: "widgets" })),
 }));
 
@@ -417,7 +417,7 @@ describe("runPiWorker", () => {
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(linear.moveTicketToInReview).toHaveBeenCalledWith("DEN-1");
+    expect(linear.moveTicketToInReview).toHaveBeenCalledWith("ABC-1");
     expect(result).toMatchObject({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
   });
 
@@ -633,7 +633,7 @@ describe("runPiWorker", () => {
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(commentAndHandBack).toHaveBeenCalledWith("DEN-1", expect.stringContaining("Need a product decision."));
+    expect(commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("Need a product decision."));
     expect(result).toEqual({ status: "pending", prs: [] });
     expect(piMock.sessionDispose).toHaveBeenCalled();
   });
@@ -650,19 +650,19 @@ function executeTool(customTools: TestTool[], name: string, params: unknown): Pr
 function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputContext {
   return {
     state: "new",
-    ticketId: "DEN-1",
+    ticketId: "ABC-1",
     prs: [],
     ticket: {
       issue: {
         id: "issue-id",
-        identifier: "DEN-1",
+        identifier: "ABC-1",
         title: "Build thing",
         description: null,
-        url: "https://linear.app/bluebear/issue/DEN-1/build-thing",
-        branchName: "feature/den-1-build-thing",
+        url: "https://linear.app/your-workspace/issue/ABC-1/build-thing",
+        branchName: "feature/abc-1-build-thing",
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
-        teamKey: "DEN",
+        teamKey: "ABC",
         assignee: { id: "creator" },
         delegate: { id: "user-1" },
         priority: 0,

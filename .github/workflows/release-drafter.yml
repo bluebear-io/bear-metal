@@ -21,7 +21,7 @@ on:
   # Allow manual trigger to update draft release
   workflow_dispatch:
 
-# DEN-737: Prevent multiple release drafter runs from stacking up
+# Prevent multiple release drafter runs from stacking up
 concurrency:
   group: release-drafter-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

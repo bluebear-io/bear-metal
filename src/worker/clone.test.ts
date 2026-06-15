@@ -20,15 +20,15 @@ vi.mock("../shared/command.js", () => ({
 
 const ticket = {
   id: "abc",
-  identifier: "DEN-1",
+  identifier: "ABC-1",
   title: "Test ticket",
   description: "A test",
-  url: "https://linear.app/test/issue/DEN-1",
-  branchName: "feature/den-1-test",
+  url: "https://linear.app/test/issue/ABC-1",
+  branchName: "feature/abc-1-test",
   status: { name: "In Progress", type: "started" },
   priority: 0,
-  labels: ["repo:blueden", "priority:high"],
-  teamKey: "DEN",
+  labels: ["repo:myrepo", "priority:high"],
+  teamKey: "ABC",
   assignee: null,
   delegate: null,
 };
@@ -41,7 +41,7 @@ describe("runWorkspaceBuilder", () => {
   it("removes an existing agent workdir before running the builder", async () => {
     const { runWorkspaceBuilder } = await import("./clone.js");
     const root = await mkdtempRoot();
-    const workspaceDir = join(root, "workspace", "DEN-1");
+    const workspaceDir = join(root, "workspace", "ABC-1");
     const agentWorkdir = join(workspaceDir, "agent");
     await mkdir(agentWorkdir, { recursive: true });
     await writeFile(join(agentWorkdir, "stale.txt"), "stale", "utf8");
@@ -70,7 +70,7 @@ describe("runWorkspaceBuilder", () => {
   it("passes ticket context env vars to the builder", async () => {
     const { runWorkspaceBuilder } = await import("./clone.js");
     const root = await mkdtempRoot();
-    const workspaceDir = join(root, "workspace", "DEN-1");
+    const workspaceDir = join(root, "workspace", "ABC-1");
 
     try {
       await runWorkspaceBuilder({ workspaceDir, githubToken: "tok", ticket, builderCommand: "echo hi" });
@@ -80,11 +80,11 @@ describe("runWorkspaceBuilder", () => {
         [expect.any(String)],
         expect.objectContaining({
           env: expect.objectContaining({
-            TICKET_ID: "DEN-1",
+            TICKET_ID: "ABC-1",
             TICKET_TITLE: "Test ticket",
-            TICKET_URL: "https://linear.app/test/issue/DEN-1",
-            TICKET_TEAM: "DEN",
-            TICKET_TAGS: "repo:blueden,priority:high",
+            TICKET_URL: "https://linear.app/test/issue/ABC-1",
+            TICKET_TEAM: "ABC",
+            TICKET_TAGS: "repo:myrepo,priority:high",
             TICKET_DESCRIPTION: "A test",
             AGENT_WORKDIR: join(workspaceDir, "agent"),
           }),

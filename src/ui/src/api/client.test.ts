@@ -15,11 +15,11 @@ const mockFetch = (body: unknown, init?: { ok?: boolean; status?: number }) => {
 
 const ticket: TicketListItem = {
   id: "ticket_1",
-  identifier: "DEN-2271",
+  identifier: "PROJ-1",
   title: "Add API client",
   description: null,
-  url: "https://linear.app/blueden/issue/DEN-2271",
-  branchName: "codex/den-2271",
+  url: "https://linear.app/your-workspace/issue/PROJ-1",
+  branchName: "codex/abc-2271",
   linearStatusName: "Todo",
   linearStatusType: "unstarted",
   labelsJson: "[]",
@@ -58,7 +58,7 @@ const worker: WorkerListItem = {
   lastHeartbeatAt: "2026-06-09T10:07:00.000Z",
   startedAt: "2026-06-09T10:00:00.000Z",
   updatedAt: "2026-06-09T10:07:00.000Z",
-  currentTicketIdentifier: "DEN-2271",
+  currentTicketIdentifier: "PROJ-1",
   currentTicketTitle: "Add API client",
   currentRun: {
     id: "run_1",
@@ -71,7 +71,7 @@ const worker: WorkerListItem = {
     endedAt: null,
     createdAt: "2026-06-09T10:01:00.000Z",
     ticketId: "ticket_1",
-    ticketIdentifier: "DEN-2271",
+    ticketIdentifier: "PROJ-1",
     ticketTitle: "Add API client",
     runtimeMs: 360000,
   },

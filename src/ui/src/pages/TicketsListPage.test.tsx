@@ -7,11 +7,11 @@ import TicketsListPage from "./TicketsListPage.js";
 
 const mockTicket: TicketListItem = {
   id: "ticket_1",
-  identifier: "DEN-2271",
+  identifier: "PROJ-1",
   title: "Tickets list page",
   description: null,
-  url: "https://linear.app/blueden/issue/DEN-2271",
-  branchName: "codex/den-2271-u3",
+  url: "https://linear.app/your-workspace/issue/PROJ-1",
+  branchName: "codex/abc-2271-u3",
   linearStatusName: "Done",
   linearStatusType: "completed",
   labelsJson: "[]",
@@ -32,7 +32,7 @@ const mockTicket: TicketListItem = {
     createdAt: "2026-06-09T10:01:00.000Z",
   },
   latestWorkerName: "worker-1",
-  latestPr: { number: 42, url: "https://github.com/blueden/bear-metal/pull/42", state: "open", merged: false },
+  latestPr: { number: 42, url: "https://github.com/your-org/bear-metal/pull/42", state: "open", merged: false },
 };
 
 function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketListItem {
@@ -40,12 +40,12 @@ function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketL
 }
 
 const multipleTickets: TicketListItem[] = [
-  makeTicket("ticket_done", "DEN-1", "completed"),
-  makeTicket("ticket_progress", "DEN-2", "in_progress"),
-  makeTicket("ticket_progress2", "DEN-3", "in_progress"),
-  makeTicket("ticket_waiting", "DEN-4", "waiting_for_human"),
-  makeTicket("ticket_waiting2", "DEN-5", "waiting_for_human"),
-  makeTicket("ticket_validating", "DEN-6", "validating"),
+  makeTicket("ticket_done", "ABC-1", "completed"),
+  makeTicket("ticket_progress", "ABC-2", "in_progress"),
+  makeTicket("ticket_progress2", "ABC-3", "in_progress"),
+  makeTicket("ticket_waiting", "ABC-4", "waiting_for_human"),
+  makeTicket("ticket_waiting2", "ABC-5", "waiting_for_human"),
+  makeTicket("ticket_validating", "ABC-6", "validating"),
 ];
 
 const filterOptions: TicketFilterOptions = {
@@ -104,14 +104,14 @@ describe("TicketsListPage", () => {
 
     expect(screen.getByRole("heading", { name: "Tickets" })).toBeVisible();
     const list = screen.getByRole("region", { name: "Tickets list" });
-    expect(within(list).getByRole("link", { name: "DEN-2271" })).toHaveAttribute("href", "https://linear.app/blueden/issue/DEN-2271");
+    expect(within(list).getByRole("link", { name: "PROJ-1" })).toHaveAttribute("href", "https://linear.app/your-workspace/issue/PROJ-1");
     expect(within(list).getByText("completed")).toBeVisible();
     expect(within(list).getByText("succeeded")).toBeVisible();
     expect(within(list).getByText("1/5")).toBeVisible();
     expect(within(list).getByText("worker-1")).toBeVisible();
     expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute(
       "href",
-      "https://github.com/blueden/bear-metal/pull/42",
+      "https://github.com/your-org/bear-metal/pull/42",
     );
   });
 
@@ -125,26 +125,26 @@ describe("TicketsListPage", () => {
     expect(within(list).getAllByRole("row")).toHaveLength(multipleTickets.length + 1); // +1 for the header row.
 
     fireEvent.click(screen.getByRole("button", { name: /Completed/ }));
-    expect(within(list).getByRole("link", { name: "DEN-1" })).toBeVisible();
-    expect(within(list).queryByRole("link", { name: "DEN-2" })).toBeNull();
+    expect(within(list).getByRole("link", { name: "ABC-1" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "ABC-2" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /In progress/ }));
-    expect(within(list).getByRole("link", { name: "DEN-2" })).toBeVisible();
-    expect(within(list).getByRole("link", { name: "DEN-3" })).toBeVisible();
-    expect(within(list).queryByRole("link", { name: "DEN-1" })).toBeNull();
+    expect(within(list).getByRole("link", { name: "ABC-2" })).toBeVisible();
+    expect(within(list).getByRole("link", { name: "ABC-3" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "ABC-1" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Waiting for human/ }));
-    expect(within(list).getByRole("link", { name: "DEN-4" })).toBeVisible();
-    expect(within(list).getByRole("link", { name: "DEN-5" })).toBeVisible();
-    expect(within(list).queryByRole("link", { name: "DEN-2" })).toBeNull();
+    expect(within(list).getByRole("link", { name: "ABC-4" })).toBeVisible();
+    expect(within(list).getByRole("link", { name: "ABC-5" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "ABC-2" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Validating/ }));
-    expect(within(list).getByRole("link", { name: "DEN-6" })).toBeVisible();
-    expect(within(list).queryByRole("link", { name: "DEN-1" })).toBeNull();
+    expect(within(list).getByRole("link", { name: "ABC-6" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "ABC-1" })).toBeNull();
   });
 
   it("shows empty state when filter has no matches", () => {
-    mockTickets = [makeTicket("ticket_done", "DEN-1", "completed")];
+    mockTickets = [makeTicket("ticket_done", "ABC-1", "completed")];
     renderWithProviders(<TicketsListPage />, "/tickets");
 
     fireEvent.click(screen.getByRole("button", { name: /Backlog/ }));
