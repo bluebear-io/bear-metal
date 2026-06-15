@@ -20,7 +20,7 @@
     "@linear/sdk": "84.0.0",
     "@octokit/auth-app": "8.2.0",
     "@octokit/rest": "22.0.1",
-    "better-sqlite3": "12.10.0",
+    "better-sqlite3": "12.10.1",
     "dotenv": "17.4.2",
     "express": "4.22.2",
     "p-queue": "9.2.0",
