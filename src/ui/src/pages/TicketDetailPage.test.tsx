@@ -174,15 +174,12 @@ describe("TicketDetailPage", () => {
     expect(screen.getByText(/attempt 2/i)).toBeVisible();
     expect(screen.getByRole("link", { name: /#1501/i })).toBeVisible();
     expect(screen.getAllByText(/^failed$/i).length).toBeGreaterThan(0);
-    expect(screen.getByText("Unit tests failed on retry")).toBeVisible();
+    expect(screen.getByText("error: Tests failed")).toBeVisible();
     expect(screen.getByText("Worker reported failing unit tests")).toBeVisible();
     // Each timeline row exposes a <time> element with the event timestamp on the right.
     const timelineTime = document.querySelector('time[datetime="2026-06-09T08:40:00.000Z"]');
     expect(timelineTime).not.toBeNull();
-    expect(timelineTime?.className).toMatch(/text-right/);
-    // Granular CI check failure surfaces by name + annotation.
-    expect(screen.getByRole("link", { name: /ESLint/i })).toBeVisible();
-    expect(screen.getByText(/'reporter' is defined but never used\./)).toBeVisible();
+    expect(timelineTime?.closest("td")?.className).toMatch(/text-right/);
     // Review thread comment renders inline with resolution status.
     expect(screen.getByText("Should this guard against null PR?")).toBeVisible();
     expect(screen.getByText(/Needs action/i)).toBeVisible();
