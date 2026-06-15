@@ -1,0 +1,14 @@
+system-prompt.md
+node_modules/
+dist/
+workspace/
+*.tsbuildinfo
+.env*
+!.env.example
+npm-debug.log*
+# Local runtime artifacts created by `npm run dev:all` (dashboard + task-queue SQLite DBs)
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
