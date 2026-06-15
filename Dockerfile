@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist dist
+COPY --from=builder /app/src/db/schema.sql dist/db/schema.sql
 # Built UI served by the backend at /
 COPY --from=ui-builder /app/ui/dist ui-dist
 COPY scripts scripts
