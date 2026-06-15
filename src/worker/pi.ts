@@ -7,7 +7,6 @@ import {
   createLogger,
   getCurrentBranch,
   getRemoteRef,
-  type ReviewThreadComment,
 } from "../shared/index.js";
 import type {
   DispatchResult,
@@ -268,12 +267,9 @@ export async function runPiWorker(input: {
         null;
       const isNewPr = existingPr === null;
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
-      // suppress Slack notifications for bot-only iteration churn.
-      // notifyOnComplete is stored in the result; scheduler fires the Slack DM
-      // later when the ticket reaches waiting_for_human, giving a single DM per
-      // human-review cycle rather than one per push_for_review call.
-      const notify = shouldNotifySlackForPr(input.context, pr);
-      setDecision({ status: "done", prs: [pr], notifyOnComplete: notify });
+      // notifyOnComplete triggers a Slack DM when the ticket reaches waiting_for_human.
+      // Always notify: new = PR opened, iteration = PR updated.
+      setDecision({ status: "done", prs: [pr], notifyOnComplete: true });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
       } catch (err) {
@@ -611,30 +607,6 @@ function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequ
     }
   }
   return out;
-}
-
-function shouldNotifySlackForPr(context: WorkerInputContext, pr: PullRequestRef): boolean {
-  if (context.state === "new") return true;
-  const threads = unresolvedThreadsFor(context, pr);
-  // Iteration with no unresolved review threads ⇒ triggered by CI failure or
-  // automatic re-delegation, not by a human request. Stay quiet — humans only
-  // want pings for updates they explicitly asked for.
-  if (threads.length === 0) return false;
-  return threads.some((thread) => {
-    const latest = thread.comments[thread.comments.length - 1];
-    return latest ? isHumanAuthor(latest) : false;
-  });
-}
-
-// Authoritative signal is the GitHub GraphQL node-ID prefix on the author:
-// "U_…" = real user, "BOT_…" = GitHub App (including our own bear-metal-app,
-// whose GraphQL login is the bare slug with no "[bot]" suffix). When the
-// node ID is missing we fall back to the REST-style "<slug>[bot]" login
-// convention used by external bots like cursor[bot] / baloo[bot].
-function isHumanAuthor(comment: ReviewThreadComment): boolean {
-  if (comment.authorId) return comment.authorId.startsWith("U_");
-  if (!comment.author) return false;
-  return !comment.author.endsWith("[bot]");
 }
 
 function unresolvedThreadsFor(context: WorkerInputContext, pr: PullRequestRef) {

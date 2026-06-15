@@ -482,7 +482,7 @@ describe("runPiWorker", () => {
     expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("sets notifyOnComplete=false on iteration when only bot comments triggered the dispatch", async () => {
+  it("sets notifyOnComplete=true on iteration even when only bot comments triggered the dispatch", async () => {
     const { runPiWorker } = await import("./pi.js");
     const botPrContext = makePullRequestContext();
     botPrContext.reviewThreads[0]!.comments[0]!.author = "cursor[bot]";
@@ -507,7 +507,7 @@ describe("runPiWorker", () => {
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(result.notifyOnComplete).toBe(false);
+    expect(result.notifyOnComplete).toBe(true);
   });
 
   it("sets notifyOnComplete=true on iteration when at least one unresolved thread has a human comment", async () => {
@@ -561,7 +561,7 @@ describe("runPiWorker", () => {
     expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("sets notifyOnComplete=false on iteration with no unresolved review threads (e.g. CI-failure re-run)", async () => {
+  it("sets notifyOnComplete=true on iteration even with no unresolved review threads (e.g. CI-failure re-run)", async () => {
     const { runPiWorker } = await import("./pi.js");
     const prContext = makePullRequestContext();
     prContext.reviewThreads = [];
@@ -585,10 +585,10 @@ describe("runPiWorker", () => {
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(result.notifyOnComplete).toBe(false);
+    expect(result.notifyOnComplete).toBe(true);
   });
 
-  it("sets notifyOnComplete=false when bear-metal bot replies are mistaken for human (no [bot] suffix in GraphQL login)", async () => {
+  it("sets notifyOnComplete=true even when bear-metal bot replied last (no [bot] suffix in GraphQL login)", async () => {
     const { runPiWorker } = await import("./pi.js");
     const ownBotPrContext = makePullRequestContext();
     // GraphQL returns the bare slug for app accounts; the node id is what
@@ -615,7 +615,7 @@ describe("runPiWorker", () => {
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
     });
 
-    expect(result.notifyOnComplete).toBe(false);
+    expect(result.notifyOnComplete).toBe(true);
   });
 
   it("comments and hands the ticket back to its human owner when pending human response", async () => {
