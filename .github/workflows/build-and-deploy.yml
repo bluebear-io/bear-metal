@@ -68,7 +68,7 @@ jobs:
 
       - name: Configure AWS credentials
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ env.DEV_ACCOUNT_ID }}:role/GithubActionsLambdaDeployRole
           role-session-name: bear-metal-build
