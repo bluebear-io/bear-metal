@@ -147,7 +147,7 @@ describe("TicketsListPage", () => {
     mockTickets = [makeTicket("ticket_done", "ABC-1", "completed")];
     renderWithProviders(<TicketsListPage />, "/tickets");
 
-    fireEvent.click(screen.getByRole("button", { name: /Backlog/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Validating/ }));
     expect(screen.getByText("No tickets match these filters.")).toBeVisible();
   });
 

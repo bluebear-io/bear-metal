@@ -15,7 +15,7 @@
     "lucide-react": "0.544.0",
     "react": "19.1.2",
     "react-dom": "19.1.2",
-    "react-router-dom": "6.30.3"
+    "react-router-dom": "6.30.4"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.0",
@@ -30,6 +30,9 @@
     "tailwindcss": "4.3.0",
     "typescript": "5.9.2",
     "vite": "7.3.3",
-    "vitest": "3.2.4"
+    "vitest": "3.2.6"
+  },
+  "overrides": {
+    "esbuild": "^0.28.1"
   }
 }
