@@ -29,6 +29,8 @@ export interface TaskWorkerDeps {
   agentId: string | undefined;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
+  llmProvider: string;
+  llmApiKey: string;
 }
 
 export class TaskWorker {
@@ -49,6 +51,8 @@ export class TaskWorker {
   private readonly agentId: string | undefined;
   private readonly maxWorkerTimeMs: number;
   private readonly maxWorkerTokens: number;
+  private readonly llmProvider: string;
+  private readonly llmApiKey: string;
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: TaskWorkerDeps) {
@@ -68,6 +72,8 @@ export class TaskWorker {
     this.agentId = deps.agentId;
     this.maxWorkerTimeMs = deps.maxWorkerTimeMs;
     this.maxWorkerTokens = deps.maxWorkerTokens;
+    this.llmProvider = deps.llmProvider;
+    this.llmApiKey = deps.llmApiKey;
     this.queue = new PQueue({ concurrency: deps.concurrency });
   }
 
@@ -175,6 +181,8 @@ export class TaskWorker {
         systemPrompt: this.systemPrompt,
         maxWorkerTimeMs: this.maxWorkerTimeMs,
         maxWorkerTokens: this.maxWorkerTokens,
+        llmProvider: this.llmProvider,
+        llmApiKey: this.llmApiKey,
         onToolCallProgress: (calls) => {
           void this.db.upsertToolCalls(task.id, JSON.stringify(calls));
         },

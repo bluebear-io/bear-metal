@@ -27,7 +27,7 @@ describe("TaskWorker", () => {
       maxReclaims: 3,
       agentId: undefined,
       maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
+      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
     });
 
     await worker.tick();
@@ -68,7 +68,7 @@ describe("TaskWorker", () => {
       maxReclaims: 3,
       agentId: undefined,
       maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
+      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
     });
 
     await worker.tick();
@@ -102,7 +102,7 @@ describe("TaskWorker", () => {
       heartbeatIntervalMs: 30_000,
       agentId: undefined,
       maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
+      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
     });
 
     await worker.tick();
@@ -140,7 +140,7 @@ describe("TaskWorker", () => {
       maxReclaims: 3,
       agentId: undefined,
       maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
+      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
     });
 
     await worker.tick();

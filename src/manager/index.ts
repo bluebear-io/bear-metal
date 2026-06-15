@@ -84,6 +84,8 @@ const taskWorker = new TaskWorker({
   systemPrompt: config.systemPrompt,
   maxWorkerTimeMs: config.maxWorkerTimeMs,
   maxWorkerTokens: config.maxWorkerTokens,
+  llmProvider: config.llmProvider,
+  llmApiKey: config.llmApiKey,
 });
 
 if (config.testTicketId) {

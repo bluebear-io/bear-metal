@@ -8,6 +8,7 @@ const REQUIRED = {
   GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\\nabc\\n-----END RSA PRIVATE KEY-----",
   GITHUB_APP_INSTALLATION_ID: "67890",
   WORKSPACE_BUILDER_COMMAND: "git clone git@github.com:org/repo \"$AGENT_WORKDIR\"",
+  ANTHROPIC_API_KEY: "sk-ant-test",
 };
 
 let snapshot: NodeJS.ProcessEnv;
@@ -27,6 +28,9 @@ beforeEach(() => {
     "BACKEND_PORT",
     "LOG_LEVEL",
     "TEST_TICKET_ID",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
   ]) {
     delete process.env[key];
   }

@@ -34,6 +34,12 @@ const logger = createLogger({
 // still record the untruncated length in `outputSize` so the UI can flag truncated payloads.
 const MAX_TOOL_CALL_RESULT_CHARS = 8_000;
 
+const DEFAULT_MODEL_IDS: Record<string, string> = {
+  anthropic: "claude-opus-4-7",
+  openai: "gpt-5.4",
+  google: "gemini-3.1-pro-preview",
+};
+
 export async function runPiWorker(input: {
   context: WorkerInputContext;
   github: WorkerGitHub;
@@ -52,6 +58,8 @@ export async function runPiWorker(input: {
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
+  llmProvider: string;
+  llmApiKey: string;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
   const workspaceRoot = input.context.cloneScript.agentWorkdir;
@@ -283,21 +291,22 @@ export async function runPiWorker(input: {
   });
 
   const authStorage = AuthStorage.create();
-  setApiKeyFromEnv(authStorage, "anthropic", "ANTHROPIC_API_KEY");
-  setApiKeyFromEnv(authStorage, "openai", "OPENAI_API_KEY");
-  setApiKeyFromEnv(authStorage, "google", "GOOGLE_API_KEY");
+  authStorage.setRuntimeApiKey(input.llmProvider, input.llmApiKey);
+  const modelRegistry = ModelRegistry.create(authStorage);
+  const defaultModelId = DEFAULT_MODEL_IDS[input.llmProvider];
+  if (!defaultModelId) {
+    throw new Error(`Unknown LLM provider: ${input.llmProvider}`);
+  }
+  const modelId = process.env.LLM_MODEL?.trim() || defaultModelId;
+  const model = modelRegistry.find(input.llmProvider, modelId);
+  if (!model) {
+    throw new Error(`No model found for provider "${input.llmProvider}" / model "${modelId}"`);
+  }
 
   const agentsMd = await readAgentsMd(workspaceRoot);
   const prompt = buildWorkerPrompt(input.context, { repoRoot: workspaceRoot, agentsMd, customSystemPrompt: input.systemPrompt ?? undefined });
   const workspaceDir = input.context.cloneScript.workspaceDir;
   const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
-
-  await mkdir(workspaceDir, { recursive: true });
-  await Promise.all([
-    writeFile(resolve(workspaceDir, "context.json"), JSON.stringify(input.context, null, 2), "utf8"),
-    writeFile(resolve(workspaceDir, "prompt.txt"), prompt, "utf8"),
-  ]);
-  logger.debug({ workspaceDir }, "wrote context.json and prompt.txt to workspace");
 
   input.onAgentStarted?.({
     state: input.context.state,
@@ -324,7 +333,8 @@ export async function runPiWorker(input: {
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
     authStorage,
-    modelRegistry: ModelRegistry.create(authStorage),
+    modelRegistry,
+    model,
     sessionManager: SessionManager.inMemory(),
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls", ...stateTools],
     customTools: [
@@ -360,6 +370,9 @@ export async function runPiWorker(input: {
     } else if (event.type === "turn_end") {
       const msg = event.message;
       if (isRecord(msg) && msg.role === "assistant") {
+        if ((msg as Record<string, unknown>).stopReason === "error") {
+          logger.error({ errorMessage: (msg as Record<string, unknown>).errorMessage }, "pi LLM call failed");
+        }
         const blocks = contentBlocks(msg as { content: unknown });
         const text = blocks
           .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && (b as { text: string }).text.length > 0)
@@ -649,15 +662,6 @@ function requireSinglePr(prs: PullRequestRef[]): PullRequestRef {
     throw new Error("Review-thread tools are only supported for single-PR iterations");
   }
   return prs[0]!;
-}
-
-function setApiKeyFromEnv(authStorage: AuthStorage, provider: string, envName: string): void {
-  const apiKey = process.env[envName];
-  if (apiKey) {
-    authStorage.setRuntimeApiKey(provider, apiKey);
-  } else {
-    logger.warn({ provider, envName }, "API key not set; this provider will be unavailable to the pi agent");
-  }
 }
 
 async function readAgentsMd(repoRoot: string): Promise<string | undefined> {

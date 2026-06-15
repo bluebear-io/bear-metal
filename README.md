@@ -47,6 +47,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 | `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key |
 | `OPENAI_API_KEY` | yes** | — | OpenAI API key |
 | `GOOGLE_API_KEY` | yes** | — | Google API key |
+| `LLM_MODEL` | no | provider default | Override the model ID (e.g. `claude-sonnet-4-6`, `gpt-4o`) |
 | `SYSTEM_PROMPT_PATH` | no | — | Path to a custom system prompt file |
 | `SYSTEM_PROMPT` | no | — | Inline custom system prompt (mutually exclusive with `SYSTEM_PROMPT_PATH`) |
 | `DATABASE_URL` | no | `sqlite:./bear-metal.sqlite` | Task queue DB (`sqlite:<path>` or `postgres://…`) |
@@ -66,7 +67,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 *Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
 
-**At least one LLM key is required.
+**Exactly one LLM key must be set. The first set key in the order listed above determines the provider and its default model.
 
 Example file at [`.env.example`](.env.example)
 

@@ -19,6 +19,8 @@ export interface WorkerProcessDeps extends WorkerIntegrations {
   workspaceBuilderPath?: string;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
+  llmProvider: string;
+  llmApiKey: string;
 }
 
 export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContext) => Promise<WorkerResponse> {
@@ -40,6 +42,8 @@ export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContex
       workspaceBuilderPath: deps.workspaceBuilderPath,
       maxWorkerTimeMs: deps.maxWorkerTimeMs,
       maxWorkerTokens: deps.maxWorkerTokens,
+      llmProvider: deps.llmProvider,
+      llmApiKey: deps.llmApiKey,
     });
     return { status: result.status };
   };

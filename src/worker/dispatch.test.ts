@@ -53,7 +53,7 @@ describe("dispatch", () => {
         },
       },
       maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
+      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
     });
 
     expect(result).toEqual({ status: "pending", prs: [] });
@@ -87,7 +87,7 @@ describe("dispatch", () => {
         prs: [],
         integrations: makeIntegrations(),
         maxWorkerTimeMs: 7_200_000,
-        maxWorkerTokens: 20_000_000,
+        maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
       });
 
       await expect(stat(join(tempRoot, "agent"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -106,7 +106,7 @@ describe("dispatch", () => {
           prs: [],
           integrations: makeIntegrations(),
           maxWorkerTimeMs: 7_200_000,
-          maxWorkerTokens: 20_000_000,
+          maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
         }),
       ).rejects.toThrow("boom");
 

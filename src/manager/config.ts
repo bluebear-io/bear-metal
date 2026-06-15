@@ -8,7 +8,11 @@ export function detectDialect(databaseUrl: string): DatabaseDialect {
   throw new Error(`Unsupported DATABASE_URL scheme: ${databaseUrl}`);
 }
 
+export type LlmProvider = "anthropic" | "openai" | "google";
+
 export interface Config {
+  llmProvider: LlmProvider;
+  llmApiKey: string;
   /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
   workspaceBuilderCommand: string | null;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
@@ -85,6 +89,7 @@ export function loadConfig(): Readonly<Config> {
   return Object.freeze({
     ...loadWorkspaceBuilderConfig(),
     ...loadSystemPromptConfig(),
+    ...loadLlmConfig(),
     linearApiToken: requiredEnv("LINEAR_API_TOKEN"),
     githubAppId: requiredPositiveIntEnv("GITHUB_APP_ID"),
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
@@ -140,6 +145,29 @@ function loadSystemPromptConfig(): { systemPrompt: string | null } {
     }
   }
   return { systemPrompt: inline };
+}
+
+/**
+ * Exactly one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY must be set.
+ * The first set key in that order is the provider bear-metal will use.
+ */
+function loadLlmConfig(): { llmProvider: LlmProvider; llmApiKey: string } {
+  const candidates: { provider: LlmProvider; envName: string }[] = [
+    { provider: "anthropic", envName: "ANTHROPIC_API_KEY" },
+    { provider: "openai", envName: "OPENAI_API_KEY" },
+    { provider: "google", envName: "GOOGLE_API_KEY" },
+  ];
+  const found = candidates.filter(({ envName }) => !!process.env[envName]?.trim());
+  if (found.length === 0) {
+    throw new Error("At least one LLM API key must be set: ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY");
+  }
+  if (found.length > 1) {
+    throw new Error(
+      `Exactly one LLM API key must be set, but found: ${found.map((f) => f.envName).join(", ")}`,
+    );
+  }
+  const { provider, envName } = found[0]!;
+  return { llmProvider: provider, llmApiKey: process.env[envName]! };
 }
 
 /**

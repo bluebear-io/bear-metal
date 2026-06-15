@@ -42,6 +42,8 @@ export interface DispatchInput {
   }) => void;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
+  llmProvider: string;
+  llmApiKey: string;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -131,7 +133,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   logger.debug({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, systemPrompt: input.systemPrompt, onAgentStarted: input.onAgentStarted, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens, prs });
+    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, systemPrompt: input.systemPrompt, onAgentStarted: input.onAgentStarted, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens, llmProvider: input.llmProvider, llmApiKey: input.llmApiKey, prs });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
