@@ -2022,7 +2022,8 @@ export class SqlDbClient implements DbClient {
     let parsed: unknown;
     try {
       parsed = JSON.parse(rows[0]!.tool_calls_json);
-    } catch {
+    } catch (e) {
+      console.warn(`getToolCallDetail: malformed tool_calls_json for task ${runId}`, e);
       return null;
     }
     if (!Array.isArray(parsed)) return null;
