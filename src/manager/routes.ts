@@ -182,6 +182,24 @@ export function createRouter(db: DbClient, maxIterations: number): Router {
     }
   });
 
+  router.get("/tool-calls/:runId/:sequence", async (req, res, next) => {
+    try {
+      const sequence = Number(req.params.sequence);
+      if (!Number.isInteger(sequence) || sequence < 0) {
+        res.status(400).json({ error: "sequence must be a non-negative integer" });
+        return;
+      }
+      const detail = await db.getToolCallDetail(req.params.runId, sequence);
+      if (!detail) {
+        res.status(404).json({ error: "tool call not found" });
+        return;
+      }
+      res.json(detail);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get("/tickets/:id", async (req, res, next) => {
     try {
       const detail = await db.getTicketDetail(req.params.id);

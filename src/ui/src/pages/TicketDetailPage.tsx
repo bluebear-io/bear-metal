@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { useConfig, useTicketDetail } from "../api/queries.js";
+import { useConfig, useTicketDetail, useToolCallDetail } from "../api/queries.js";
 import type {
   PullRequest,
   ReviewThread,
@@ -306,6 +306,10 @@ const LogRow = ({ item }: { item: LogItem }) => {
   const tc = isToolCall ? item.data : null;
   const ev = !isToolCall ? item.data : null;
 
+  // staleTime: Infinity in useToolCallDetail ensures repeated open/close of the
+  // same row makes only one network request.
+  const detailQuery = useToolCallDetail(tc?.runId ?? "", tc?.sequence ?? 0, open && isToolCall);
+
   const label = isToolCall ? "agent" : ev!.source;
   const statusKey = isToolCall
     ? (tc!.resultStatus ?? "unknown")
@@ -346,26 +350,35 @@ const LogRow = ({ item }: { item: LogItem }) => {
           <td colSpan={4} className="border-t border-border-default bg-bg-page px-4 py-3 max-w-0 w-full">
             <div className="flex flex-col gap-3 overflow-hidden">
               {isToolCall && tc ? (
-                <>
-                  {tc.thoughtText && (
-                    <div>
-                      <div className="text-xs font-semibold uppercase text-text-muted">Thought</div>
-                      <CopyableBlock content={tc.thoughtText} />
-                    </div>
-                  )}
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-text-muted">Input</div>
-                    <CopyableBlock content={prettyJson(tc.argsJson)} />
+                detailQuery.isPending ? (
+                  <div className="flex items-center gap-2 text-xs text-text-muted">
+                    <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-border-default border-t-text-secondary" />
+                    Loading…
                   </div>
-                  <div>
-                    <div className="text-xs font-semibold uppercase text-text-muted">Output</div>
-                    {tc.resultText === null ? (
-                      <p className="mt-1 text-xs text-text-muted">No result captured.</p>
-                    ) : (
-                      <CopyableBlock content={tc.resultText} />
+                ) : detailQuery.isError ? (
+                  <p className="text-xs text-text-muted">Failed to load tool call details.</p>
+                ) : detailQuery.data ? (
+                  <>
+                    {detailQuery.data.thoughtText && (
+                      <div>
+                        <div className="text-xs font-semibold uppercase text-text-muted">Thought</div>
+                        <CopyableBlock content={detailQuery.data.thoughtText} />
+                      </div>
                     )}
-                  </div>
-                </>
+                    <div>
+                      <div className="text-xs font-semibold uppercase text-text-muted">Input</div>
+                      <CopyableBlock content={prettyJson(detailQuery.data.argsJson)} />
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold uppercase text-text-muted">Output</div>
+                      {detailQuery.data.resultText === null ? (
+                        <p className="mt-1 text-xs text-text-muted">No result captured.</p>
+                      ) : (
+                        <CopyableBlock content={detailQuery.data.resultText} />
+                      )}
+                    </div>
+                  </>
+                ) : null
               ) : (
                 <div className="flex flex-col gap-1 text-sm text-text-secondary">
                   <span><span className="font-medium text-text-muted">source:</span> {ev!.source}</span>

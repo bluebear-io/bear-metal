@@ -7,6 +7,7 @@ import {
   fetchTicketDetail,
   fetchTicketFilters,
   fetchTickets,
+  fetchToolCallDetail,
   fetchWorkers,
   type SummaryRange,
 } from "./client.js";
@@ -29,6 +30,14 @@ export const useTicketDetail = (id: string) =>
     queryKey: ["ticket", id],
     queryFn: () => fetchTicketDetail(id),
     refetchInterval: 5000,
+  });
+
+export const useToolCallDetail = (runId: string, sequence: number, enabled: boolean) =>
+  useQuery({
+    queryKey: ["toolcall", runId, sequence],
+    queryFn: () => fetchToolCallDetail(runId, sequence),
+    enabled,
+    staleTime: Infinity,
   });
 
 export const useWorkers = () =>
