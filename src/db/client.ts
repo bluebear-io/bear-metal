@@ -2019,14 +2019,10 @@ export class SqlDbClient implements DbClient {
       [runId],
     );
     if (rows.length === 0 || !rows[0]!.tool_calls_json) return null;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rows[0]!.tool_calls_json);
-    } catch (e) {
-      console.warn("getToolCallDetail: malformed tool_calls_json for task", runId, e);
-      return null;
+    const parsed: unknown = JSON.parse(rows[0]!.tool_calls_json);
+    if (!Array.isArray(parsed)) {
+      throw new Error(`tool_calls_json for task ${runId} is not an array`);
     }
-    if (!Array.isArray(parsed)) return null;
     const entry = parsed.find((tc, idx) => {
       const t = tc as Record<string, unknown>;
       const seq = t.sequence != null ? Number(t.sequence) : idx;
