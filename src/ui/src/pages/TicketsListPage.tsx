@@ -14,7 +14,7 @@ const Dash = () => <span className="text-text-muted">-</span>;
 const TicketLink = ({ ticket }: { ticket: TicketListItem }) => (
   <a
     href={ticket.url}
-    className="font-medium text-primary transition hover:text-text-primary hover:underline"
+    className="font-medium text-primary transition hover:underline"
     target="_blank"
     rel="noreferrer"
     onClick={(e) => e.stopPropagation()}
@@ -31,7 +31,7 @@ const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
   return (
     <a
       href={ticket.latestPr.url}
-      className="font-medium text-primary transition hover:text-text-primary hover:underline"
+      className="font-medium text-primary transition hover:underline"
       target="_blank"
       rel="noreferrer"
       onClick={(e) => e.stopPropagation()}
@@ -151,7 +151,7 @@ export default function TicketsListPage() {
           />
           <button
             type="submit"
-            className="rounded-md border border-primary bg-primary/10 px-3 py-1 text-sm font-medium text-text-primary hover:bg-primary/20"
+            className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-sm font-medium text-text-primary transition hover:border-primary hover:text-primary"
           >
             Search
           </button>
@@ -159,7 +159,7 @@ export default function TicketsListPage() {
             <button
               type="button"
               onClick={clearFilters}
-              className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-sm text-text-secondary hover:text-text-primary"
+              className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-sm font-medium text-text-primary transition hover:border-primary hover:text-primary"
             >
               Clear
             </button>
@@ -244,8 +244,8 @@ export default function TicketsListPage() {
               className={
                 "rounded-full border px-3 py-1 text-sm transition " +
                 (isActive
-                  ? "border-primary bg-primary/10 text-text-primary"
-                  : "border-border-default bg-bg-card text-text-secondary hover:text-text-primary")
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border-default bg-bg-card text-text-secondary transition hover:border-primary hover:text-primary")
               }
             >
               {btnLabel}
