@@ -137,7 +137,6 @@ const ticketDetail: TicketDetail = {
       source: "worker",
       type: "run_failed",
       summary: "Worker reported failing unit tests",
-      payloadJson: null,
       createdAt: "2026-06-09T08:40:00.000Z",
     },
   ],

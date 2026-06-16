@@ -256,12 +256,15 @@ export interface RunToolCallRow {
   runId: string;
   sequence: number;
   toolName: string;
+  resultStatus: string | null;
+  createdAt: Date;
+}
+
+export interface ToolCallDetail {
   argsJson: string;
   resultText: string | null;
-  resultStatus: string | null;
   outputSize: number | null;
   thoughtText: string | null;
-  createdAt: Date;
 }
 
 export interface RunWithUsage {
@@ -296,7 +299,6 @@ export interface TicketDetail {
     source: string;
     type: string;
     summary: string;
-    payloadJson: string | null;
     createdAt: Date;
   }>;
 }
@@ -506,6 +508,8 @@ export interface DbClient {
   listTickets(options: ListTicketsOptions): Promise<ListTicketsResult>;
   listTicketFilterOptions(): Promise<TicketFilterOptions>;
   getTicketDetail(id: string): Promise<TicketDetail | null>;
+  getToolCallDetail(runId: string, sequence: number): Promise<ToolCallDetail | null>;
+  getEventPayload(eventId: string): Promise<string | null>;
   listWorkers(): Promise<WorkerListItem[]>;
   listModelComparison(): Promise<ModelComparisonRow[]>;
   getPeriodSummary(options: PeriodSummaryOptions): Promise<PeriodSummary>;
@@ -1894,6 +1898,8 @@ export class SqlDbClient implements DbClient {
           try {
             const parsed = JSON.parse(r.tool_calls_json) as unknown;
             if (Array.isArray(parsed)) {
+              // Heavy fields (argsJson, resultText, outputSize, thoughtText) are
+              // lazy-loaded via getToolCallDetail to keep this response small.
               toolCalls = parsed.map((tc: unknown, idx: number) => {
                 const t = tc as Record<string, unknown>;
                 return {
@@ -1901,11 +1907,7 @@ export class SqlDbClient implements DbClient {
                   runId: r.id,
                   sequence: Number(t.sequence ?? idx),
                   toolName: String(t.toolName ?? t.tool_name ?? ""),
-                  argsJson: String(t.argsJson ?? t.args_json ?? "{}"),
-                  resultText: t.resultText != null ? String(t.resultText) : null,
                   resultStatus: t.resultStatus != null ? String(t.resultStatus) : null,
-                  outputSize: t.outputSize != null ? Number(t.outputSize) : null,
-                  thoughtText: t.thoughtText != null ? String(t.thoughtText) : null,
                   createdAt: parseTimestamp(t.createdAt as string) ?? new Date(),
                 };
               });
@@ -2004,14 +2006,46 @@ export class SqlDbClient implements DbClient {
       source: e.source,
       type: e.type,
       summary: e.summary,
-      payloadJson: e.payload_json,
       createdAt: parseTimestampRequired(e.created_at, "created_at"),
     }));
 
     return { ticket, runs, pullRequests, events };
   }
 
+  async getToolCallDetail(runId: string, sequence: number): Promise<ToolCallDetail | null> {
+    const rows = await this.query<{ tool_calls_json: string | null }>(
+      `SELECT tool_calls_json FROM tasks WHERE id = ?`,
+      [runId],
+    );
+    if (rows.length === 0 || !rows[0]!.tool_calls_json) return null;
+    const parsed: unknown = JSON.parse(rows[0]!.tool_calls_json);
+    if (!Array.isArray(parsed)) {
+      throw new Error(`tool_calls_json for task ${runId} is not an array`);
+    }
+    const entry = parsed.find((tc, idx) => {
+      const t = tc as Record<string, unknown>;
+      const seq = t.sequence != null ? Number(t.sequence) : idx;
+      return seq === sequence;
+    }) as Record<string, unknown> | undefined;
+    if (!entry) return null;
+    return {
+      argsJson: String(entry.argsJson ?? entry.args_json ?? "{}"),
+      resultText: entry.resultText != null ? String(entry.resultText) : null,
+      outputSize: entry.outputSize != null ? Number(entry.outputSize) : null,
+      thoughtText: entry.thoughtText != null ? String(entry.thoughtText) : null,
+    };
+  }
+
   // -------------------------------------------------------------------------
+  async getEventPayload(eventId: string): Promise<string | null> {
+    const rows = await this.query<{ payload_json: string | null }>(
+      `SELECT payload_json FROM events WHERE id = ?`,
+      [eventId],
+    );
+    if (rows.length === 0) return null;
+    return rows[0]!.payload_json;
+  }
+
   // Dashboard reads — listWorkers
   // -------------------------------------------------------------------------
 

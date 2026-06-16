@@ -4,9 +4,11 @@ import {
   fetchConfig,
   fetchModelComparison,
   fetchSummary,
+  fetchEventPayload,
   fetchTicketDetail,
   fetchTicketFilters,
   fetchTickets,
+  fetchToolCallDetail,
   fetchWorkers,
   type SummaryRange,
 } from "./client.js";
@@ -29,6 +31,22 @@ export const useTicketDetail = (id: string) =>
     queryKey: ["ticket", id],
     queryFn: () => fetchTicketDetail(id),
     refetchInterval: 5000,
+  });
+
+export const useToolCallDetail = (runId: string, sequence: number, enabled: boolean) =>
+  useQuery({
+    queryKey: ["toolcall", runId, sequence],
+    queryFn: () => fetchToolCallDetail(runId, sequence),
+    enabled,
+    staleTime: Infinity,
+  });
+
+export const useEventPayload = (eventId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ["event-payload", eventId],
+    queryFn: () => fetchEventPayload(eventId),
+    enabled,
+    staleTime: Infinity,
   });
 
 export const useWorkers = () =>

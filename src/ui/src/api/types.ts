@@ -104,12 +104,16 @@ export interface RunToolCall {
   runId: string;
   sequence: number;
   toolName: string;
+  resultStatus: "ok" | "error" | "unknown" | null;
+  createdAt: string;
+}
+
+/** Heavy per-tool-call fields, fetched lazily when a row is expanded. */
+export interface ToolCallDetail {
   argsJson: string;
   resultText: string | null;
-  resultStatus: "ok" | "error" | "unknown" | null;
   outputSize: number | null;
   thoughtText: string | null;
-  createdAt: string;
 }
 
 export interface Run {
@@ -266,7 +270,6 @@ export interface TicketEvent {
   source: "manager" | "worker" | "ci";
   type: string;
   summary: string;
-  payloadJson: string | null;
   createdAt: string;
 }
 

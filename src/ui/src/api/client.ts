@@ -7,6 +7,7 @@ import type {
   TicketFilterOptions,
   TicketListQuery,
   TicketListResponse,
+  ToolCallDetail,
   WorkerListItem,
 } from "./types.js";
 
@@ -69,6 +70,17 @@ export async function fetchTicketFilters(): Promise<TicketFilterOptions> {
 
 export async function fetchTicketDetail(id: string): Promise<TicketDetail> {
   return getJson<TicketDetail>(`/api/tickets/${encodeURIComponent(id)}`);
+}
+
+export async function fetchToolCallDetail(runId: string, sequence: number): Promise<ToolCallDetail> {
+  return getJson<ToolCallDetail>(
+    `/api/tool-calls/${encodeURIComponent(runId)}/${encodeURIComponent(String(sequence))}`,
+  );
+}
+
+export async function fetchEventPayload(eventId: string): Promise<string | null> {
+  const body = await getJson<{ payloadJson: string | null }>(`/api/events/${encodeURIComponent(eventId)}/payload`);
+  return body.payloadJson;
 }
 
 export async function fetchWorkers(): Promise<WorkerListItem[]> {
