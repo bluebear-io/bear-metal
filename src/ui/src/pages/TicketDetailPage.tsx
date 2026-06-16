@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { useConfig, useTicketDetail, useToolCallDetail } from "../api/queries.js";
+import { useConfig, useEventPayload, useTicketDetail, useToolCallDetail } from "../api/queries.js";
 import type {
   PullRequest,
   ReviewThread,
@@ -306,9 +306,8 @@ const LogRow = ({ item }: { item: LogItem }) => {
   const tc = isToolCall ? item.data : null;
   const ev = !isToolCall ? item.data : null;
 
-  // staleTime: Infinity in useToolCallDetail ensures repeated open/close of the
-  // same row makes only one network request.
   const detailQuery = useToolCallDetail(tc?.runId ?? "", tc?.sequence ?? 0, open && isToolCall);
+  const payloadQuery = useEventPayload(ev?.id ?? "", open && !isToolCall);
 
   const label = isToolCall ? "agent" : ev!.source;
   const statusKey = isToolCall
@@ -384,20 +383,20 @@ const LogRow = ({ item }: { item: LogItem }) => {
                   <span><span className="font-medium text-text-muted">source:</span> {ev!.source}</span>
                   <span><span className="font-medium text-text-muted">type:</span> {ev!.type.replaceAll("_", " ")}</span>
                   <span><span className="font-medium text-text-muted">summary:</span> {ev!.summary}</span>
-                  {ev!.payloadJson && (() => {
+                  {payloadQuery.data ? (() => {
                     let content: string;
                     let tall = false;
                     if (ev!.type === "agent_started") {
                       try {
-                        const parsed = JSON.parse(ev!.payloadJson) as { prompt?: string };
+                        const parsed = JSON.parse(payloadQuery.data) as { prompt?: string };
                         if (parsed.prompt) { content = parsed.prompt; tall = true; }
-                        else { content = prettyJson(ev!.payloadJson); }
-                      } catch { content = prettyJson(ev!.payloadJson); }
+                        else { content = prettyJson(payloadQuery.data); }
+                      } catch { content = prettyJson(payloadQuery.data); }
                     } else {
-                      content = prettyJson(ev!.payloadJson);
+                      content = prettyJson(payloadQuery.data);
                     }
                     return <CopyableBlock content={content} tall={tall} />;
-                  })()}
+                  })() : null}
                 </div>
               )}
             </div>

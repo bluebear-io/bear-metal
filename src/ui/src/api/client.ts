@@ -78,6 +78,11 @@ export async function fetchToolCallDetail(runId: string, sequence: number): Prom
   );
 }
 
+export async function fetchEventPayload(eventId: string): Promise<string | null> {
+  const body = await getJson<{ payloadJson: string | null }>(`/api/events/${encodeURIComponent(eventId)}/payload`);
+  return body.payloadJson;
+}
+
 export async function fetchWorkers(): Promise<WorkerListItem[]> {
   const body = await getJson<{ workers: WorkerListItem[] }>("/api/workers");
 

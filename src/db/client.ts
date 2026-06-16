@@ -299,7 +299,6 @@ export interface TicketDetail {
     source: string;
     type: string;
     summary: string;
-    payloadJson: string | null;
     createdAt: Date;
   }>;
 }
@@ -510,6 +509,7 @@ export interface DbClient {
   listTicketFilterOptions(): Promise<TicketFilterOptions>;
   getTicketDetail(id: string): Promise<TicketDetail | null>;
   getToolCallDetail(runId: string, sequence: number): Promise<ToolCallDetail | null>;
+  getEventPayload(eventId: string): Promise<string | null>;
   listWorkers(): Promise<WorkerListItem[]>;
   listModelComparison(): Promise<ModelComparisonRow[]>;
   getPeriodSummary(options: PeriodSummaryOptions): Promise<PeriodSummary>;
@@ -2006,7 +2006,6 @@ export class SqlDbClient implements DbClient {
       source: e.source,
       type: e.type,
       summary: e.summary,
-      payloadJson: e.payload_json,
       createdAt: parseTimestampRequired(e.created_at, "created_at"),
     }));
 
@@ -2038,6 +2037,15 @@ export class SqlDbClient implements DbClient {
   }
 
   // -------------------------------------------------------------------------
+  async getEventPayload(eventId: string): Promise<string | null> {
+    const rows = await this.query<{ payload_json: string | null }>(
+      `SELECT payload_json FROM events WHERE id = ?`,
+      [eventId],
+    );
+    if (rows.length === 0) return null;
+    return rows[0]!.payload_json;
+  }
+
   // Dashboard reads — listWorkers
   // -------------------------------------------------------------------------
 

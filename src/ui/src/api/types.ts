@@ -270,7 +270,6 @@ export interface TicketEvent {
   source: "manager" | "worker" | "ci";
   type: string;
   summary: string;
-  payloadJson: string | null;
   createdAt: string;
 }
 

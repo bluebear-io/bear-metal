@@ -200,6 +200,15 @@ export function createRouter(db: DbClient, maxIterations: number): Router {
     }
   });
 
+  router.get("/events/:id/payload", async (req, res, next) => {
+    try {
+      const payload = await db.getEventPayload(req.params.id);
+      res.json({ payloadJson: payload });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get("/tickets/:id", async (req, res, next) => {
     try {
       const detail = await db.getTicketDetail(req.params.id);
