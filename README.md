@@ -1,14 +1,12 @@
-<img src="cover.jpg" alt="Bear Metal in the data center" />
+<img src="logo.png" alt="Bear Metal" />
 
 ---
 
 # Bear Metal
 
-<img src="logo.png" alt="Bear Metal logo" align="right" width="160" />
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml)
-[![CodeQL](https://github.com/bluebear-io/bear-metal/actions/workflows/dynamic%2Fgithub-code-scanning%2Fcodeql/badge.svg)](https://github.com/bluebear-io/bear-metal/security/code-scanning)
+[![CodeQL](https://github.com/bluebear-io/bear-metal/actions/workflows/codeql.yml/badge.svg)](https://github.com/bluebear-io/bear-metal/actions/workflows/codeql.yml)
 [![GitHub release](https://img.shields.io/github/v/release/bluebear-io/bear-metal)](https://github.com/bluebear-io/bear-metal/releases/latest)
 [![GitHub issues](https://img.shields.io/github/issues/bluebear-io/bear-metal)](https://github.com/bluebear-io/bear-metal/issues)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -16,7 +14,21 @@
 
 Autonomous coding agent. Picks up tasks from Linear, implements them, and opens pull requests ready to merge. Runs continuously in the background.
 
-<br clear="right" />
+## Table of contents
+
+- [How to deploy](#how-to-deploy)
+- [Configuration](#configuration)
+  - [Environment variables](#environment-variables)
+  - [Workspace builder](#workspace-builder)
+  - [Custom system prompt](#custom-system-prompt)
+- [Quick guides](#quick-guides)
+  - [GitHub App](#github-app)
+  - [Linear](#linear)
+  - [Anthropic](#anthropic)
+  - [OpenAI](#openai)
+  - [Google](#google)
+  - [Slack](#slack)
+- [Contributing & local dev](#contributing--local-dev)
 
 ## How to deploy
 

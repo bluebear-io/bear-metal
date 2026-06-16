@@ -107,6 +107,7 @@ jobs:
           tags: |
             ${{ steps.tags.outputs.ghcr_tags }}
             ${{ steps.tags.outputs.ecr_tags }}
+          build-args: APP_VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64

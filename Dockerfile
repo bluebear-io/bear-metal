@@ -7,11 +7,12 @@ COPY src src
 RUN npm run build
 
 FROM node:22-slim AS ui-builder
+ARG APP_VERSION=dev
 WORKDIR /app/ui
 COPY src/ui/package.json src/ui/package-lock.json ./
 RUN npm ci
 COPY src/ui/ ./
-RUN npm run build
+RUN APP_VERSION=$APP_VERSION npm run build
 
 FROM node:22-slim AS runner
 WORKDIR /app
