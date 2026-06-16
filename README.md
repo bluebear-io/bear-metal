@@ -7,6 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml)
 [![CodeQL](https://github.com/bluebear-io/bear-metal/actions/workflows/dynamic%2Fgithub-code-scanning%2Fcodeql/badge.svg)](https://github.com/bluebear-io/bear-metal/security/code-scanning)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/bluebear-io/bear-metal/badge)](https://securityscorecards.dev/viewer/?uri=github.com/bluebear-io/bear-metal)
 [![GitHub release](https://img.shields.io/github/v/release/bluebear-io/bear-metal)](https://github.com/bluebear-io/bear-metal/releases/latest)
 [![GitHub issues](https://img.shields.io/github/issues/bluebear-io/bear-metal)](https://github.com/bluebear-io/bear-metal/issues)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
