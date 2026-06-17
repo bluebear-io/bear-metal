@@ -26,6 +26,8 @@ export interface BotIdentity {
   login: string;
   id: string | null;
   numericId: number;
+  /** Bot user's numeric REST ID — distinct from the App's numeric ID and used for commit matching. */
+  userNumericId: number;
 }
 
 export interface GitHubIntegrationOptions {
@@ -69,10 +71,14 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       }
       const token = await this.getInstallationToken();
       const installationOctokit = new Octokit({ auth: token });
-      const viewer = await installationOctokit.graphql<{ viewer: { id: string | null } }>(
-        "query BearMetalViewer { viewer { id } }",
-      );
-      this.cachedBotIdentity = { login: `${data.slug}[bot]`, id: viewer.viewer.id, numericId: data.id };
+      const botLogin = `${data.slug}[bot]`;
+      const [viewer, { data: user }] = await Promise.all([
+        installationOctokit.graphql<{ viewer: { id: string | null } }>(
+          "query BearMetalViewer { viewer { id } }",
+        ),
+        installationOctokit.request("GET /users/{username}", { username: botLogin }),
+      ]);
+      this.cachedBotIdentity = { login: botLogin, id: viewer.viewer.id, numericId: data.id, userNumericId: user.id };
     }
     return this.cachedBotIdentity;
   }
@@ -88,7 +94,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
 
   /** PR merge/close state plus the work signals the manager dispatches on. */
   async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
-    const [pr, context, commits, botIdentity] = await Promise.all([
+    const [pr, context, commits, bearMetalIdentity] = await Promise.all([
       this.getPullRequest(ref),
       this.getPullRequestContext(ref),
       this.getPullRequestCommits(ref),
@@ -98,20 +104,20 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
-        isActionableReviewThread(thread, botIdentity),
+        isActionableReviewThread(thread, bearMetalIdentity),
       ),
       hasActionableIssueComments: context.issueComments.length > 0,
       // GitHub returns null while it's still recomputing the merge after a push — don't trigger
       // re-dispatch on null, the next poll will see a definite value.
       hasMergeConflicts: context.mergeable === false,
-      humanTookOver: isHumanTakeover(commits, botIdentity),
+      humanTookOver: isHumanTakeover(commits, bearMetalIdentity),
       context,
     };
   }
 
   /**
    * Commits on the PR head branch, oldest-first (the order GitHub returns).
-   * Used by the scheduler to detect a human takeover — a non-bot commit pushed after bear-metal's last one.
+   * Used by the scheduler to detect a human takeover — a non-bear-metal commit pushed after bear-metal's last one.
    */
   async getPullRequestCommits(ref: PullRequestRef): Promise<PullRequestCommit[]> {
     const commits: PullRequestCommit[] = [];
@@ -405,31 +411,36 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
  * latest commit on the branch is not bear-metal's — someone pushed after the agent and owns it now.
  * If bear-metal never pushed a commit, this returns false (nothing to take over from).
  */
-export function isHumanTakeover(commits: PullRequestCommit[], bot: BotIdentity | string): boolean {
+export function isHumanTakeover(commits: PullRequestCommit[], bearMetal: BotIdentity | string): boolean {
   if (commits.length === 0) {
     return false;
   }
-  const botLogin = typeof bot === "string" ? bot : bot.login;
-  const isBotCommit = (commit: PullRequestCommit): boolean =>
-    commit.author?.login === botLogin || commit.committer?.login === botLogin;
-  if (!commits.some(isBotCommit)) {
+  // Prefer numeric ID matching — login matching fails when GitHub can't resolve the bot email.
+  const isBearMetalCommit =
+    typeof bearMetal !== "string"
+      ? (commit: PullRequestCommit): boolean =>
+          commit.author?.id === bearMetal.userNumericId || commit.committer?.id === bearMetal.userNumericId
+      : (commit: PullRequestCommit): boolean =>
+          commit.author?.login === bearMetal || commit.committer?.login === bearMetal;
+  const firstBearMetalIdx = commits.findIndex(isBearMetalCommit);
+  if (firstBearMetalIdx === -1) {
     return false;
   }
-  const latest = commits[commits.length - 1]!;
-  return !isBotCommit(latest);
+  // Any non-bear-metal commit after the first bear-metal commit is a takeover, even if bear-metal pushed again later.
+  return commits.slice(firstBearMetalIdx + 1).some((c) => !isBearMetalCommit(c));
 }
 
 /** A thread is actionable when the latest comment is not from bear-metal — i.e. it needs a response. */
-export function isActionableReviewThread(thread: ReviewThread, bot: BotIdentity | string): boolean {
+export function isActionableReviewThread(thread: ReviewThread, bearMetal: BotIdentity | string): boolean {
   const latestComment = thread.comments.at(-1);
   if (!latestComment) {
     return true;
   }
-  const botIdentity = typeof bot === "string" ? { login: bot, id: null } : bot;
-  if (latestComment.authorId && botIdentity.id) {
-    return latestComment.authorId !== botIdentity.id;
+  const bearMetalIdentity = typeof bearMetal === "string" ? { login: bearMetal, id: null } : bearMetal;
+  if (latestComment.authorId && bearMetalIdentity.id) {
+    return latestComment.authorId !== bearMetalIdentity.id;
   }
-  return latestComment.author !== botIdentity.login;
+  return latestComment.author !== bearMetalIdentity.login;
 }
 
 function toPullRequest(

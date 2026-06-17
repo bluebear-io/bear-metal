@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isActionableReviewThread, isHumanTakeover } from "./client.js";
+import { isActionableReviewThread, isHumanTakeover, type BotIdentity } from "./client.js";
 import type { PullRequestCommit, ReviewThread } from "./types.js";
 
 function makeThread(comments: Array<{ author: string | null }>): ReviewThread {
@@ -104,5 +104,45 @@ describe("isHumanTakeover", () => {
   it("treats unmatched commit author (null) as not bear-metal", () => {
     const unknown: PullRequestCommit = { sha: "a", author: null, committer: null };
     expect(isHumanTakeover([commit("x", botLogin), unknown], botLogin)).toBe(true);
+  });
+
+  it("returns true for [bot, human, bot] — bot pushed again after human took over", () => {
+    expect(
+      isHumanTakeover(
+        [commit("a", botLogin), commit("b", "alice"), commit("c", botLogin)],
+        botLogin,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("isHumanTakeover — numeric ID matching (BotIdentity)", () => {
+  const BOT_USER_ID = 292051303;
+  const HUMAN_ID = 99;
+  const bot: BotIdentity = { login: "bear-metal-app[bot]", id: null, numericId: 1, userNumericId: BOT_USER_ID };
+
+  function botCommit(sha: string): PullRequestCommit {
+    // Simulates real bot commits: author unresolved (null), committer matched by ID.
+    return { sha, author: null, committer: { login: "installer", id: BOT_USER_ID } };
+  }
+
+  function humanCommit(sha: string): PullRequestCommit {
+    return { sha, author: { login: "alice", id: HUMAN_ID }, committer: { login: "alice", id: HUMAN_ID } };
+  }
+
+  it("returns false when no bot commit exists", () => {
+    expect(isHumanTakeover([humanCommit("a"), humanCommit("b")], bot)).toBe(false);
+  });
+
+  it("returns false when all commits after the first bot commit are also bot", () => {
+    expect(isHumanTakeover([botCommit("a"), botCommit("b"), botCommit("c")], bot)).toBe(false);
+  });
+
+  it("returns true when a human commit follows a bot commit", () => {
+    expect(isHumanTakeover([botCommit("a"), humanCommit("b")], bot)).toBe(true);
+  });
+
+  it("returns true for [bot, human, bot] — bot pushing again does not reset takeover", () => {
+    expect(isHumanTakeover([botCommit("a"), humanCommit("b"), botCommit("c")], bot)).toBe(true);
   });
 });

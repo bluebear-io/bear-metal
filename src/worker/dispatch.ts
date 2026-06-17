@@ -119,7 +119,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   await linear.moveTicketToInProgress(ticketId);
   logger.debug({ ticketId }, "linear ticket moved to in progress");
 
-  const botEmail = `${botIdentity.numericId}+${botIdentity.login}@users.noreply.github.com`;
+  const botEmail = `${botIdentity.userNumericId}+${botIdentity.login}@users.noreply.github.com`;
   const gitEnv: NodeJS.ProcessEnv = {
     HOME: cloneScript.netrcDir,
     GIT_CONFIG_COUNT: "1",
