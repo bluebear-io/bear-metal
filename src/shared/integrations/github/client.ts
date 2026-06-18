@@ -37,7 +37,6 @@ export interface GitHubIntegrationOptions {
   installationId: number;
 }
 
-/** GitHub integration. Extend with more capabilities (merge, review, ...) as needed. */
 export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
   private readonly octokit: Octokit;
@@ -224,7 +223,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return data.default_branch;
   }
 
-  /** Every repo the App installation can access. Used by the backfill tool to enumerate where to look for PRs. */
   async listInstallationRepositories(): Promise<Array<{ owner: string; repo: string }>> {
     const repos: Array<{ owner: string; repo: string }> = [];
     let page = 1;
@@ -241,10 +239,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return repos;
   }
 
-  /**
-   * Pull requests for a head branch, across all states by default. Used by the backfill tool to
-   * locate the PR(s) Linear's `gitBranchName` corresponds to, including merged and closed ones.
-   */
   async listPullRequestsForBranch(
     owner: string,
     repo: string,
@@ -273,7 +267,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return prs;
   }
 
-  /** Every check run for a ref. The backfill tool keeps the latest per workflow when synthesizing ci_runs. */
   async listCheckRunsForRef(owner: string, repo: string, ref: string): Promise<CheckRun[]> {
     const runs: CheckRun[] = [];
     let page = 1;
@@ -373,7 +366,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return data.statuses.filter(isFailedStatus).map((status) => ({ status: status as JsonValue }));
   }
 
-  /** Every review thread on the PR — resolved + unresolved — so dashboards can render full conversations. */
   private async getReviewThreads(ref: PullRequestRef): Promise<ReviewThread[]> {
     const response = await this.octokit.graphql<ReviewThreadsResponse>(REVIEW_THREADS_QUERY, {
       owner: ref.owner,
@@ -415,7 +407,7 @@ export function isHumanTakeover(commits: PullRequestCommit[], bearMetal: BotIden
   if (commits.length === 0) {
     return false;
   }
-  // Prefer numeric ID matching — login matching fails when GitHub can't resolve the bot email.
+  // Numeric ID is more reliable than login when GitHub can't resolve the bot email.
   const isBearMetalCommit =
     typeof bearMetal !== "string"
       ? (commit: PullRequestCommit): boolean =>
@@ -426,11 +418,9 @@ export function isHumanTakeover(commits: PullRequestCommit[], bearMetal: BotIden
   if (firstBearMetalIdx === -1) {
     return false;
   }
-  // Any non-bear-metal commit after the first bear-metal commit is a takeover, even if bear-metal pushed again later.
   return commits.slice(firstBearMetalIdx + 1).some((c) => !isBearMetalCommit(c));
 }
 
-/** A thread is actionable when the latest comment is not from bear-metal — i.e. it needs a response. */
 export function isActionableReviewThread(thread: ReviewThread, bearMetal: BotIdentity | string): boolean {
   const latestComment = thread.comments.at(-1);
   if (!latestComment) {

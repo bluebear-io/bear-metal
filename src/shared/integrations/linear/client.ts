@@ -16,7 +16,6 @@ const TERMINAL_STATE_TYPES = ["completed", "canceled"];
  */
 const EXCLUDED_STATE_NAMES = ["Merged"];
 
-/** Linear integration. Extend with more capabilities (find, label, ...) as needed. */
 export class LinearIntegration implements Integration, CommentCapable<string> {
   readonly name = "linear";
   private readonly client: LinearClient;
@@ -26,7 +25,6 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     this.client = new LinearClient({ apiKey: options.token });
   }
 
-  /** Resolves the Linear user ID for the API token in use. Result is cached after the first call. */
   async getAgentId(): Promise<string> {
     if (!this.cachedAgentId) {
       const viewer = await this.client.viewer;
@@ -50,11 +48,6 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
   }
 
-  /**
-   * Every issue delegated to the agent across all states, including completed/canceled/merged.
-   * Used by the backfill tool to reconstruct dashboard history — the active-only `findDelegatedTickets`
-   * is wrong for that purpose because it filters terminal states out.
-   */
   async findAllDelegatedTickets(agentId: string): Promise<Ticket[]> {
     const user = await this.client.user(agentId);
     const issues: Issue[] = [];
@@ -117,17 +110,11 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     await issue.update({ stateId: state.id });
   }
 
-  /**
-   * Hand the ticket back to its human owner: comment, then relinquish the agent's delegation.
-   * Clearing `delegateId` is what un-parks the manager's hold — the human re-delegates to resume.
-   */
   async commentAndHandBack(ticketId: string, body: string): Promise<void> {
     await this.client.createComment({ issueId: ticketId, body });
     await this.handBack(ticketId);
   }
 
-  /** Relinquish the agent's delegation without commenting. Used when a PR merges and the
-   * ticket should return to its human assignee. */
   async handBack(ticketId: string): Promise<void> {
     const issue = await this.client.issue(ticketId);
     await issue.update({ delegateId: null });

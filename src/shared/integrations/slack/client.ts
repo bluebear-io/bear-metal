@@ -69,11 +69,6 @@ export class SlackIntegration implements Integration {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  /**
-   * Post a "PR opened" or "PR updated" notification. When `recipientEmail` is set,
-   * resolves it to a Slack user ID (DM) via `users.lookupByEmail`; falls back to
-   * the configured channel on lookup failure. Failures are logged but never thrown.
-   */
   async notifyPullRequest(notification: PullRequestNotification): Promise<void> {
     const text = formatNotificationText(notification);
     const channel = notification.recipientEmail
@@ -82,11 +77,6 @@ export class SlackIntegration implements Integration {
     await this.postMessage(channel, text);
   }
 
-  /**
-   * Post a "Needs your input" notification when the agent hands a ticket back
-   * without a PR (e.g. after respond_to_ticket_reporter). DMs the assignee when
-   * `recipientEmail` is set; falls back to the configured channel.
-   */
   async notifyNeedsInput(notification: NeedsInputNotification): Promise<void> {
     const text = formatNeedsInputText(notification);
     const channel = notification.recipientEmail

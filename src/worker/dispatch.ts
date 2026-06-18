@@ -90,7 +90,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return r;
   });
 
-  // Filter issue comments already processed in prior sessions so PI doesn't re-handle them.
   const pullRequests = commentStore
     ? await Promise.all(
         rawPullRequests.map(async (ctx, idx) => {
@@ -138,8 +137,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return result;
   } finally {
     await rm(cloneScript.netrcDir, { recursive: true, force: true });
-    // Housekeeping: drop the agent workdir so disk usage doesn't grow with every ticket.
-    // The next dispatch will re-clone via the workspace builder.
     try {
       await rm(cloneScript.agentWorkdir, { recursive: true, force: true });
       logger.info({ ticketId, agentWorkdir: cloneScript.agentWorkdir }, "removed agent workdir");

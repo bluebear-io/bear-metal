@@ -64,13 +64,9 @@ export async function runPiWorker(input: {
   let decision: DispatchResult | undefined;
   const workspaceRoot = input.context.cloneScript.agentWorkdir;
 
-  // PRs accumulate across multiple push_for_review calls (one per repo in this dispatch).
-  // A pending decision (respond_*) carries the accumulated set so the manager keeps tracking them.
   const collectedPrs: PullRequestRef[] = [];
 
-  // Map from GitHub node ID → comment kind, built once per dispatch from the
-  // fetched PR context. Tools use this to route without inspecting ID prefixes.
-  // An ID absent from this map was not shown to PI and must not be acted on.
+  // IDs absent from this map were not shown to the agent and must not be acted on.
   const commentMap = new Map<string, "thread" | "issue_comment">();
   for (const pr of input.context.pullRequests) {
     for (const thread of pr.unresolvedReviewThreads) {
@@ -92,9 +88,8 @@ export async function runPiWorker(input: {
       };
     } else {
       collectedPrs.push(...next.prs);
-      // Preserve a pending decision across subsequent push_for_review calls: once a
-      // respond_* tool has handed control back to a human, additional code
-      // pushes must not silently flip the dispatch result to "done".
+      // Once a respond_* tool has handed control back to a human, subsequent push_for_review
+      // calls must not flip the result back to "done".
       if (decision?.status === "pending") {
         decision = { status: "pending", prs: mergePrs(decision.prs, next.prs), notifyOnComplete: decision.notifyOnComplete };
       } else {
@@ -255,8 +250,7 @@ export async function runPiWorker(input: {
     execute: async (_toolCallId, params) => {
       logger.debug({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
-      // Refresh the .netrc token before pushing — installation tokens expire after 1 hour
-      // and pi sessions can run much longer than that.
+      // Installation tokens expire after 1 hour; refresh before pushing.
       const freshToken = await input.github.getInstallationToken();
       await writeFile(
         resolve(input.context.cloneScript.netrcDir, ".netrc"),
@@ -265,18 +259,14 @@ export async function runPiWorker(input: {
       );
       await push(repoRoot, input.gitEnv);
       const remote = await getRemoteRef(repoRoot);
-      // Design constraint: at most one PR per (owner, repo) per dispatch.
-      // A second push_for_review call against the same repo updates the existing PR
-      // rather than creating a new branch/PR within that repo.
-      // Check collectedPrs (created earlier in this dispatch) before input.context.prs (from previous dispatch).
+      // At most one PR per (owner, repo) per dispatch: a second push_for_review against the same repo
+      // updates the existing PR. Check collectedPrs before input.context.prs to prefer the current dispatch.
       const existingPr =
         collectedPrs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
         input.context.prs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
         null;
       const isNewPr = existingPr === null;
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
-      // notifyOnComplete triggers a Slack DM when the ticket reaches waiting_for_human.
-      // Always notify: new = PR opened, iteration = PR updated.
       setDecision({ status: "done", prs: [pr], notifyOnComplete: true });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
@@ -326,7 +316,6 @@ export async function runPiWorker(input: {
 
   let usage: DispatchUsage | null = null;
   const toolCalls: DispatchToolCall[] = [];
-  // Maps toolCallId → pending args/thought while the tool is executing
   const pendingArgs = new Map<string, { args: unknown; thought: string | null }>();
   let currentThought: string | null = null;
   let toolCallSequence = 0;
@@ -390,7 +379,6 @@ export async function runPiWorker(input: {
 
   let limitHitReason: string | null = null;
 
-  // Token limit: checked after every turn.
   const unsubscribeLimits = session.subscribe((event) => {
     if (event.type === "turn_end" && !limitHitReason) {
       const stats = session.getSessionStats();
@@ -404,7 +392,6 @@ export async function runPiWorker(input: {
     }
   });
 
-  // Time limit: fires after 2 hours regardless of turn state.
   const timeoutHandle = setTimeout(() => {
     if (!limitHitReason) {
       limitHitReason = `time limit of ${input.maxWorkerTimeMs / 60_000} minutes reached`;
@@ -453,7 +440,6 @@ export async function runPiWorker(input: {
     logger.debug({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
   }
 
-  // If a limit was hit and the worker hadn't already set a decision, hand back.
   if (limitHitReason && !decision) {
     logger.info({ ticketId: input.context.ticketId, reason: limitHitReason }, "limit hit without prior decision; handing back");
     await input.linear.commentAndHandBack(
@@ -465,18 +451,15 @@ export async function runPiWorker(input: {
 
   if (!decision) {
     if (input.context.state === "iteration") {
-      // Agent disagreed with all threads and made no code changes — replies were posted, work is done.
+      // Agent disagreed with all threads and pushed no code — the replies constitute a complete response.
       decision = { status: "done", prs: mergePrs(input.context.prs, collectedPrs) };
     } else {
       throw new Error("Pi finished without calling a finish tool (push_for_review or respond_to_ticket_reporter)");
     }
   }
-  // Attach LLM usage stats captured during the just-finished session.
   const withUsage = usage ? { ...decision, usage } : decision;
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
 }
-
-// ---- Thought-process extraction ------------------------------
 
 /**
  * Walk the pi session message history and build a flat, ordered list of tool calls. Each
@@ -488,15 +471,11 @@ export async function runPiWorker(input: {
  * this file: malformed entries are skipped rather than crashing the worker.
  */
 function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] {
-  // Pass 1: index tool results by their tool call id.
-  // The SDK uses its own internal message format (role:"toolResult", toolCallId, isError)
-  // rather than the Anthropic API wire format (role:"user" with tool_result content blocks).
-  // We handle both so extraction is resilient to future SDK changes.
+  // Pass 1: index results by id. SDK uses role:"toolResult"; Anthropic wire format uses role:"user" + tool_result blocks.
   const resultsById = new Map<string, { text: string; status: "ok" | "error" }>();
   for (const msg of messages) {
     if (!isRecord(msg)) continue;
 
-    // SDK internal format: standalone ToolResultMessage
     if (msg.role === "toolResult") {
       const id = typeof msg.toolCallId === "string" ? msg.toolCallId : null;
       if (!id) continue;
@@ -506,7 +485,6 @@ function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] 
       continue;
     }
 
-    // Anthropic API wire format fallback: user message with tool_result content blocks
     if (msg.role === "user") {
       for (const block of contentBlocks(msg as { content: unknown })) {
         if (!isRecord(block) || block.type !== "tool_result") continue;
@@ -519,16 +497,12 @@ function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] 
     }
   }
 
-  // Pass 2: emit a step per tool call in transcript order, attaching the preceding
-  // assistant text as the thought. Handles both SDK format (type:"toolCall", arguments)
-  // and Anthropic API wire format (type:"tool_use", input).
+  // Pass 2: emit steps in order. SDK uses type:"toolCall"+arguments; wire format uses type:"tool_use"+input.
   const steps: DispatchToolCall[] = [];
   let sequence = 0;
   for (const msg of messages) {
     if (!isRecord(msg) || msg.role !== "assistant") continue;
     const blocks = contentBlocks(msg as { content: unknown });
-    // Collect text blocks first so a tool_use/toolCall later in the same message inherits
-    // the thought even if the SDK emits text after the tool block.
     const thought = blocks
       .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && b.text.length > 0)
       .map((b) => (b as { text: string }).text)
@@ -536,13 +510,11 @@ function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] 
       .trim() || null;
     for (const block of blocks) {
       if (!isRecord(block)) continue;
-      // SDK format: type === "toolCall"; Anthropic API wire format: type === "tool_use"
       if (block.type !== "toolCall" && block.type !== "tool_use") continue;
       const id = typeof block.id === "string" && block.id.length > 0
         ? block.id
         : `tc_${sequence}`;
       const toolName = typeof block.name === "string" ? block.name : "unknown";
-      // SDK format uses "arguments"; Anthropic API wire format uses "input"
       const args = block.arguments !== undefined ? block.arguments : block.input;
       const argsJson = safeStringify(args);
       const result = resultsById.get(id) ?? null;

@@ -27,15 +27,11 @@ export async function runWorkspaceBuilder(input: RunWorkspaceBuilderInput): Prom
 
   const agentWorkdir = resolve(workspaceDir, "agent");
 
-  // Clean slate — remove any leftover agent workdir from a prior run before rebuilding.
   await rm(agentWorkdir, { recursive: true, force: true });
   await mkdir(agentWorkdir, { recursive: true });
 
-  // Write .netrc to a private temp dir so the token is never visible in ps aux.
-  // HOME is overridden to that dir for the duration of the script so sub-clones inherit the same credentials.
-  // SSH URLs (git@github.com:...) are rewritten to HTTPS via GIT_CONFIG_* so the container doesn't need an SSH client.
-  // The netrcDir is NOT deleted here — it is returned and must be cleaned up by the caller after the full dispatch
-  // (including pi's git push) completes.
+  // netrcDir is intentionally not deleted here — it must stay alive through pi's git push.
+  // HOME is overridden to it so sub-clones inherit credentials; SSH URLs are rewritten to HTTPS via GIT_CONFIG_*.
   const netrcDir = await mkdtemp(resolve(tmpdir(), "bear-metal-clone-"));
   await chmod(netrcDir, 0o700);
 

@@ -84,7 +84,6 @@ export function positiveIntEnv(name: string, fallback: number): number {
   return value;
 }
 
-/** Load and validate configuration from the environment. Fails fast on bad input. */
 export function loadConfig(): Readonly<Config> {
   return Object.freeze({
     ...loadWorkspaceBuilderConfig(),

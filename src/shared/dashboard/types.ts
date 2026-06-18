@@ -1,5 +1,3 @@
-// src/shared/dashboard/types.ts
-
 export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";

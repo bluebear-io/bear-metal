@@ -14,7 +14,6 @@ export async function push(repoRoot: string, env: NodeJS.ProcessEnv): Promise<vo
     throw new Error(`Refusing to push task changes directly on ${branch}; create or check out a task branch first`);
   }
 
-  // Check for unpushed commits. If no upstream exists yet (first push), allow unconditionally.
   try {
     const unpushed = (await git(["log", "@{u}..HEAD", "--oneline"], repoRoot, env)).stdout.trim();
     if (!unpushed) {
