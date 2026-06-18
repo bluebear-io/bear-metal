@@ -100,8 +100,6 @@ export function createRouter(db: DbClient, maxIterations: number): Router {
 
   router.get("/tickets", async (req, res, next) => {
     try {
-      // Accept the legacy single `status` param alongside the new `statuses` list so existing
-      // clients keep working while the dashboard moves to the multi-select.
       const legacyStatus = req.query.status;
       const statusList = readList(req.query.statuses);
       if (legacyStatus !== undefined) {
@@ -252,9 +250,6 @@ export function createRouter(db: DbClient, maxIterations: number): Router {
         res.status(400).json({ error: "from must be before to" });
         return;
       }
-      // The summary loads the relevant rows in full and computes both the current and prior
-      // windows in JS — bound the requested window so an arbitrary range can't pull in the
-      // entire dataset and starve the worker.
       if (to.getTime() - from.getTime() > MAX_SUMMARY_WINDOW_MS) {
         res.status(400).json({ error: `summary window must be ${MAX_SUMMARY_WINDOW_DAYS} days or less` });
         return;

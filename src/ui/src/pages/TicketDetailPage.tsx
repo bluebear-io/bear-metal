@@ -231,8 +231,6 @@ const PullRequestSection = ({ pullRequests }: { pullRequests: PullRequest[] }) =
   </Section>
 );
 
-// ---- Unified event log --------------------------------------------------
-
 function CopyableBlock({ content, tall }: { content: string; tall?: boolean }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {

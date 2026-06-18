@@ -89,7 +89,6 @@ const taskWorker = new TaskWorker({
 });
 
 if (config.testTicketId) {
-  // Test mode: handle exactly one ticket end-to-end and exit.
   logger.info({ ticketId: config.testTicketId }, "test mode: running single-ticket pipeline");
   let exitCode = 0;
   try {

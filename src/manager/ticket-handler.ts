@@ -7,11 +7,6 @@ export interface ManagerTicketHandlerDeps {
   db: DbClient;
 }
 
-/**
- * Decision owner for a single ticket. Given the full merged Linear + GitHub data,
- * it decides what to do and which metadata to use, then records a SQL task for a
- * worker to acquire.
- */
 export class ManagerTicketHandler {
   private readonly logger: Logger;
   private readonly db: DbClient;
@@ -29,10 +24,10 @@ export class ManagerTicketHandler {
     );
     const task = await this.db.enqueue({
       state,
-      ticketId: ctx.ticket.identifier,  // keep identifier for display/JSON
+      ticketId: ctx.ticket.identifier,
       prs: ctx.prs.map((pr) => ({ owner: pr.owner, repo: pr.repo, number: pr.number })),
       trigger,
-      ticketIssueId: ctx.ticket.id,  // UUID — used as DB key
+      ticketIssueId: ctx.ticket.id,
     });
     void this.db.recordEvent({
       id: randomUUID(),

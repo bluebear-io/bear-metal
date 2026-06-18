@@ -1,16 +1,3 @@
-/**
- * Unified database client for bear-metal.
- *
- * Single source of truth for all SQL. Replaces:
- *   - Drizzle ORM (src/backend/db/client.ts, repository.ts, writer.ts)
- *   - DashboardReporter HTTP calls (src/manager/dashboardReporter.ts)
- *   - TaskQueue (src/manager/tasks.ts)
- *
- * Supports SQLite (via node:sqlite DatabaseSync) and Postgres (via pg.Pool).
- * All `?` placeholders are rewritten to `$1, $2, ...` for Postgres via this.sql().
- * Dialect fork is limited to acquireNext and reclaimStaleTasks.
- */
-
 import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -28,10 +15,6 @@ function modelFamily(provider: string | null, modelName: string | null): "claude
   return "other";
 }
 
-// ---------------------------------------------------------------------------
-// Types ported from src/backend/db/types.ts + repository.ts
-// ---------------------------------------------------------------------------
-
 export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
 
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
@@ -39,7 +22,6 @@ export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export type StopReason = "completed" | "timeout" | "crash" | "error";
 
-// Raw DB row shapes (snake_case, matching the tasks table columns)
 export interface TaskRow {
   id: string;
   ticket_id: string | null;
@@ -82,10 +64,6 @@ export interface TaskRow {
   completed_at: string | null;
   released_at: string | null;
 }
-
-// ---------------------------------------------------------------------------
-// Task queue types (ported from src/manager/tasks.ts)
-// ---------------------------------------------------------------------------
 
 export type SlotStatus = "active" | "parked" | "released";
 export type DispatchState = "new" | "iteration";
@@ -147,10 +125,6 @@ export interface TaskSlot {
   slotStatus: Exclude<SlotStatus, "released">;
   latestTask: TaskRecord;
 }
-
-// ---------------------------------------------------------------------------
-// Dashboard / Repository types (ported from src/backend/db/repository.ts)
-// ---------------------------------------------------------------------------
 
 export const DEFAULT_TICKET_PAGE_SIZE = 50;
 export const MAX_TICKET_PAGE_SIZE = 200;
@@ -408,10 +382,6 @@ export interface PeriodSummaryOptions {
   to: Date;
 }
 
-// ---------------------------------------------------------------------------
-// Input types for write methods
-// ---------------------------------------------------------------------------
-
 export interface TicketInput {
   id: string;
   identifier: string;
@@ -456,15 +426,9 @@ export interface EventInput {
   createdAt: string;
 }
 
-// ---------------------------------------------------------------------------
-// DbClient interface
-// ---------------------------------------------------------------------------
-
 export interface DbClient {
-  // Schema
   initSchema(): Promise<void>;
 
-  // Ticket lifecycle
   upsertTicketDiscovered(ticket: TicketInput): Promise<void>;
   setTicketStatus(ticketId: string, status: BmStatus, notify?: boolean): Promise<void>;
   /** Returns the current status and notify flag for a ticket, or null if no row exists. For diagnostics only. */
@@ -473,25 +437,20 @@ export interface DbClient {
    *  Returns true if the notify flag was consumed (Slack DM should fire). */
   tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean>;
 
-  // Run lifecycle
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
   upsertRunCrashed(taskId: string, error: string): Promise<void>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
-  // PR / CI
   upsertPullRequest(id: string, ticketId: string, data: PullRequestInputData): Promise<void>;
   markPrNotified(prId: string): Promise<void>;
   getPrNotifiedAt(prId: string): Promise<Date | null>;
 
-  // Events
   recordEvent(event: EventInput): Promise<void>;
 
-  // Comment store
   markCompleted(pr: PullRequestRef, commentId: string): Promise<void>;
   getCompleted(pr: PullRequestRef): Promise<Set<string>>;
 
-  // Task queue
   enqueue(input: DispatchTaskInput): Promise<TaskRecord>;
   acquireNext(workerId: string): Promise<TaskRecord | null>;
   complete(taskId: string, result: DispatchResult): Promise<void>;
@@ -504,7 +463,6 @@ export interface DbClient {
   markCrashed(taskId: string, workerId: string, maxReclaims: number): Promise<ReclaimResult | null>;
   close(): Promise<void>;
 
-  // Read (dashboard)
   listTickets(options: ListTicketsOptions): Promise<ListTicketsResult>;
   listTicketFilterOptions(): Promise<TicketFilterOptions>;
   getTicketDetail(id: string): Promise<TicketDetail | null>;
@@ -515,15 +473,11 @@ export interface DbClient {
   getPeriodSummary(options: PeriodSummaryOptions): Promise<PeriodSummary>;
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000;
 const WORKER_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const DEV_HOURS_PER_TICKET = 4;
 // ---------------------------------------------------------------------------
-// Monotonic ISO clock (same as tasks.ts — prevents duplicate timestamps)
+// Monotonic ISO clock — prevents duplicate timestamps across rapid writes
 // ---------------------------------------------------------------------------
 
 class MonotonicIsoClock {
@@ -537,19 +491,11 @@ class MonotonicIsoClock {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: extract sqlite file path from URL
-// ---------------------------------------------------------------------------
-
 function sqlitePath(databaseUrl: string): string {
   const path = databaseUrl.slice("sqlite:".length);
   if (!path) throw new Error("SQLite DATABASE_URL must include a file path");
   return path;
 }
-
-// ---------------------------------------------------------------------------
-// Row parsing helpers
-// ---------------------------------------------------------------------------
 
 function parseTimestamp(value: string | Date | null | undefined): Date | null {
   if (value == null) return null;
@@ -720,10 +666,6 @@ function clampPage(value: number | undefined): number {
 function likeEscape(raw: string): string {
   return raw.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
-
-// ---------------------------------------------------------------------------
-// Period summary helpers (JS aggregation, ported from repository.ts)
-// ---------------------------------------------------------------------------
 
 interface PeriodTaskRow {
   id: string;
@@ -924,10 +866,6 @@ function computeShipped(tasks: PeriodTaskRow[], prs: PeriodPrRow[], from: Date, 
   return { byRepo };
 }
 
-// ---------------------------------------------------------------------------
-// SqlDbClient implementation
-// ---------------------------------------------------------------------------
-
 export class SqlDbClient implements DbClient {
   private readonly databaseUrl: string;
   private readonly dialect: DatabaseDialect;
@@ -942,12 +880,10 @@ export class SqlDbClient implements DbClient {
     this.maxIterations = maxIterations;
   }
 
-  /** Returns the dialect-appropriate scalar two-argument max function name. */
   private scalarMax(): "MAX" | "GREATEST" {
     return this.dialect === "sqlite" ? "MAX" : "GREATEST";
   }
 
-  /** Rewrite `?` placeholders to `$1, $2, ...` for Postgres. No-op for SQLite. */
   private sql(q: string): string {
     if (this.dialect === "sqlite") return q;
     let i = 0;
@@ -982,10 +918,6 @@ export class SqlDbClient implements DbClient {
     const result = await this.requirePg().query(this.sql(sql), params);
     return { changes: result.rowCount ?? 0 };
   }
-
-  // -------------------------------------------------------------------------
-  // Schema
-  // -------------------------------------------------------------------------
 
   async initSchema(): Promise<void> {
     const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.sql");
@@ -1064,14 +996,8 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Ticket lifecycle
-  // -------------------------------------------------------------------------
-
   async upsertTicketDiscovered(ticket: TicketInput): Promise<void> {
     const now = this.clock.nowIso();
-    // Insert a new row only when no active row exists for this ticket yet.
-    // If a row already exists, update the ticket metadata fields on the latest row.
     const existing = await this.query<{ id: string }>(
       `SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
       [ticket.id],
@@ -1102,9 +1028,7 @@ export class SqlDbClient implements DbClient {
   async setTicketStatus(ticketId: string, status: BmStatus, notify: boolean = false): Promise<void> {
     const now = this.clock.nowIso();
     const notifyInt = notify ? 1 : 0;
-    // Only overwrite notify when transitioning TO validating (where it carries the DM flag).
-    // For all other status writes (in_progress, waiting_for_human, completed) preserve the
-    // existing notify value so a re-dispatch to in_progress cannot silently clear a pending notify=1.
+    // Preserve notify across non-validating transitions: a re-dispatch to in_progress must not clear a pending notify=1.
     const fn = this.scalarMax();
     await this.run(
       `INSERT INTO ticket_statuses (ticket_id, status, notify, updated_at) VALUES (?, ?, ?, ?)
@@ -1114,7 +1038,6 @@ export class SqlDbClient implements DbClient {
       [ticketId, status, notifyInt, now],
     );
     if (status === "completed") {
-      // Stamp ticket_completed_at for throughput/health queries that range-filter on it.
       await this.run(
         `UPDATE tasks SET ticket_completed_at = COALESCE(ticket_completed_at, ?), updated_at = ?
          WHERE id = (SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`,
@@ -1133,7 +1056,6 @@ export class SqlDbClient implements DbClient {
 
   async tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean> {
     const now = this.clock.nowIso();
-    // Atomically flip status + consume notify flag. Affected 1 row means notify was 1.
     const res = await this.run(
       `UPDATE ticket_statuses SET status = 'waiting_for_human', notify = 0, updated_at = ?
        WHERE ticket_id = ? AND status = 'validating' AND notify = 1`,
@@ -1142,7 +1064,6 @@ export class SqlDbClient implements DbClient {
     if (res.changes === 1) {
       return true;
     }
-    // notify was already 0 — still transition status, just don't DM.
     await this.run(
       `UPDATE ticket_statuses SET status = 'waiting_for_human', updated_at = ?
        WHERE ticket_id = ? AND status = 'validating'`,
@@ -1150,10 +1071,6 @@ export class SqlDbClient implements DbClient {
     );
     return false;
   }
-
-  // -------------------------------------------------------------------------
-  // Run lifecycle
-  // -------------------------------------------------------------------------
 
   async upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void> {
     const now = this.clock.nowIso();
@@ -1198,10 +1115,6 @@ export class SqlDbClient implements DbClient {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // PR / CI
-  // -------------------------------------------------------------------------
-
   async upsertPullRequest(id: string, ticketId: string, data: PullRequestInputData): Promise<void> {
     const now = this.clock.nowIso();
     await this.run(
@@ -1234,10 +1147,6 @@ export class SqlDbClient implements DbClient {
     return rows.length > 0 ? parseTimestamp(rows[0]!.notified_at) : null;
   }
 
-  // -------------------------------------------------------------------------
-  // Events
-  // -------------------------------------------------------------------------
-
   async recordEvent(event: EventInput): Promise<void> {
     await this.run(
       `INSERT INTO events (id, ticket_id, run_id, worker_id, source, type, summary, payload_json, created_at)
@@ -1247,16 +1156,9 @@ export class SqlDbClient implements DbClient {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Task queue — enqueue
-  // -------------------------------------------------------------------------
-
   async enqueue(input: DispatchTaskInput): Promise<TaskRecord> {
     const now = this.clock.nowIso();
-    // Update the existing undispatched row for this ticket if one exists;
-    // otherwise insert a new task row (direct dispatch without prior discovery).
-    // Use input.ticketIssueId (UUID) as the DB key — ticket_id stores the Linear UUID,
-    // not the human-readable identifier (e.g. "ABC-123").
+    // ticket_id stores the Linear UUID, not the human-readable identifier (e.g. "ABC-123").
     const existing = await this.query<{ id: string }>(
       `SELECT id FROM tasks WHERE ticket_id = ? AND dispatch_state IS NULL AND result_status IS NULL AND slot_status = 'active'
        ORDER BY created_at DESC, id DESC LIMIT 1`,
@@ -1279,8 +1181,6 @@ export class SqlDbClient implements DbClient {
       return rowToTaskRecord(rows[0]);
     }
 
-    // No discovered row — insert a new one, copying ticket metadata from the most recent
-    // existing row so identifier/title remain visible in the UI across iteration re-dispatches.
     const metaRows = await this.query<{
       ticket_identifier: string | null;
       ticket_title: string | null;
@@ -1321,10 +1221,6 @@ export class SqlDbClient implements DbClient {
     return rowToTaskRecord(rows[0]);
   }
 
-  // -------------------------------------------------------------------------
-  // Task queue — acquireNext (dialect fork)
-  // -------------------------------------------------------------------------
-
   async acquireNext(workerId: string): Promise<TaskRecord | null> {
     const now = this.clock.nowIso();
 
@@ -1360,7 +1256,6 @@ export class SqlDbClient implements DbClient {
       }
     }
 
-    // Postgres: SELECT ... FOR UPDATE SKIP LOCKED
     const pool = this.requirePg();
     const client = await pool.connect();
     try {
@@ -1392,10 +1287,6 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Task queue — complete
-  // -------------------------------------------------------------------------
-
   async complete(taskId: string, result: DispatchResult): Promise<void> {
     const now = this.clock.nowIso();
     const update = await this.run(
@@ -1407,10 +1298,6 @@ export class SqlDbClient implements DbClient {
       throw new Error(`Cannot complete task that is missing, unacquired, or already completed: ${taskId}`);
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Task queue — list / count
-  // -------------------------------------------------------------------------
 
   async listTracked(): Promise<TaskSlot[]> {
     if (this.dialect === "sqlite") {
@@ -1424,7 +1311,6 @@ export class SqlDbClient implements DbClient {
       `);
       return rows.map(rowToSlot);
     }
-    // Postgres: DISTINCT ON is more efficient than ROW_NUMBER for this pattern
     const rows = await this.query<TaskRow>(`
       SELECT * FROM (
         SELECT DISTINCT ON (ticket_id) * FROM tasks ORDER BY ticket_id, created_at DESC, id DESC
@@ -1458,10 +1344,6 @@ export class SqlDbClient implements DbClient {
     return Number(rows[0]?.cnt ?? 0);
   }
 
-  // -------------------------------------------------------------------------
-  // Task queue — setSlotStatus
-  // -------------------------------------------------------------------------
-
   async setSlotStatus(ticketId: string, status: SlotStatus): Promise<TaskRecord> {
     const now = this.clock.nowIso();
     if (this.dialect === "sqlite") {
@@ -1494,10 +1376,6 @@ export class SqlDbClient implements DbClient {
     return rowToTaskRecord(result.rows[0]);
   }
 
-  // -------------------------------------------------------------------------
-  // Task queue — iteration count
-  // -------------------------------------------------------------------------
-
   async getIterationCount(ticketId: string): Promise<number> {
     const rows = await this.query<{ count: number | string }>(
       `SELECT COUNT(*) as count FROM tasks WHERE ticket_id = ?`,
@@ -1505,10 +1383,6 @@ export class SqlDbClient implements DbClient {
     );
     return Number(rows[0]?.count ?? 0);
   }
-
-  // -------------------------------------------------------------------------
-  // Task queue — heartbeat
-  // -------------------------------------------------------------------------
 
   async heartbeat(taskId: string, workerId: string): Promise<boolean> {
     const now = this.clock.nowIso();
@@ -1519,10 +1393,6 @@ export class SqlDbClient implements DbClient {
     );
     return result.changes === 1;
   }
-
-  // -------------------------------------------------------------------------
-  // Task queue — reclaim stale tasks (dialect fork)
-  // -------------------------------------------------------------------------
 
   async reclaimStaleTasks(options: ReclaimStaleOptions): Promise<ReclaimResult[]> {
     if (this.dialect === "sqlite") {
@@ -1581,10 +1451,6 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Task queue — markCrashed
-  // -------------------------------------------------------------------------
-
   async markCrashed(taskId: string, workerId: string, maxReclaims: number): Promise<ReclaimResult | null> {
     if (this.dialect === "sqlite") {
       const db = this.requireSqlite();
@@ -1613,10 +1479,6 @@ export class SqlDbClient implements DbClient {
       client.release();
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Internal recovery helpers
-  // -------------------------------------------------------------------------
 
   private sqliteApplyRecovery(db: DatabaseSync, row: TaskRow, maxReclaims: number, reason: string): ReclaimResult {
     const now = this.clock.nowIso();
@@ -1678,10 +1540,6 @@ export class SqlDbClient implements DbClient {
     return { task: rowToTaskRecord(abandon.rows[0]), action: "abandoned", reason, previousWorkerId };
   }
 
-  // -------------------------------------------------------------------------
-  // Close
-  // -------------------------------------------------------------------------
-
   async close(): Promise<void> {
     this.sqlite?.close();
     this.sqlite = null;
@@ -1689,15 +1547,10 @@ export class SqlDbClient implements DbClient {
     this.pgPool = null;
   }
 
-  // -------------------------------------------------------------------------
-  // Dashboard reads — listTickets
-  // -------------------------------------------------------------------------
-
   async listTickets(options: ListTicketsOptions): Promise<ListTicketsResult> {
     const page = clampPage(options.page);
     const pageSize = clampPageSize(options.pageSize);
 
-    // Build WHERE clause for the ticket (latest task per ticket_id) query
     const conditions: string[] = [];
     const params: unknown[] = [];
 
@@ -1737,7 +1590,6 @@ export class SqlDbClient implements DbClient {
 
     const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
 
-    // Fetch the latest task row per ticket using window function; join ticket_statuses for current status.
     const ticketRows = await this.query<TaskRow>(
       this.sql(`
         SELECT ranked.*, ts.status AS ts_status FROM (
@@ -1759,7 +1611,6 @@ export class SqlDbClient implements DbClient {
     const ticketIds = ticketRows.map((r) => r.ticket_id).filter((id): id is string => id !== null);
     const prPlaceholders = ticketIds.map(() => "?").join(", ");
 
-    // Fetch supporting data in parallel
     const prRows = ticketIds.length > 0
       ? await this.query<{ id: string; ticket_id: string; number: number; url: string; state: string; merged: number | boolean; updated_at: string }>(
           this.sql(`SELECT id, ticket_id, number, url, state, merged, updated_at FROM pull_requests WHERE ticket_id IN (${prPlaceholders}) ORDER BY updated_at DESC`),
@@ -1770,13 +1621,9 @@ export class SqlDbClient implements DbClient {
     const latestPrByTicket = new Map<string, typeof prRows[number]>();
     for (const pr of prRows) if (pr.ticket_id && !latestPrByTicket.has(pr.ticket_id)) latestPrByTicket.set(pr.ticket_id, pr);
 
-    // Collect distinct worker IDs from task rows that have a worker
     const workerIds = Array.from(new Set(ticketRows.map((r) => r.worker_id).filter((id): id is string => id !== null)));
     let workerNameById = new Map<string, string>();
     if (workerIds.length > 0) {
-      // Workers are now stored as tasks rows with a known worker_id and worker_started_at —
-      // we derive names from the worker_id field directly (no separate workers table in new schema).
-      // Use worker_id as the name fallback.
       for (const wid of workerIds) workerNameById.set(wid, wid);
     }
 
@@ -1791,7 +1638,6 @@ export class SqlDbClient implements DbClient {
       return item;
     });
 
-    // JS-side filters (worker, stopReason) that depend on run data
     const workerFilter = options.workerIds && options.workerIds.length > 0 ? new Set(options.workerIds) : null;
     const stopReasonFilter = options.stopReasons && options.stopReasons.length > 0 ? new Set<string>(options.stopReasons) : null;
     const filtered = enriched.filter((row) => {
@@ -1804,10 +1650,6 @@ export class SqlDbClient implements DbClient {
     const start = (page - 1) * pageSize;
     return { items: filtered.slice(start, start + pageSize), total, page, pageSize };
   }
-
-  // -------------------------------------------------------------------------
-  // Dashboard reads — listTicketFilterOptions
-  // -------------------------------------------------------------------------
 
   async listTicketFilterOptions(): Promise<TicketFilterOptions> {
     const labelRows = await this.query<{ ticket_labels_json: string }>(
@@ -1831,7 +1673,6 @@ export class SqlDbClient implements DbClient {
     const stopReasons = new Set<string>();
     for (const { stop_reason } of stopRows) if (stop_reason) stopReasons.add(stop_reason);
 
-    // Workers: distinct worker_ids from tasks that have started a run
     const workerRows = await this.query<{ worker_id: string }>(
       `SELECT DISTINCT worker_id FROM tasks WHERE worker_id IS NOT NULL AND run_status IS NOT NULL ORDER BY worker_id`,
     );
@@ -1868,12 +1709,7 @@ export class SqlDbClient implements DbClient {
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Dashboard reads — getTicketDetail
-  // -------------------------------------------------------------------------
-
   async getTicketDetail(id: string): Promise<TicketDetail | null> {
-    // id is the ticket_id (Linear issue id)
     const taskRows = await this.query<TaskRow>(
       `SELECT t.*, ts.status AS ts_status
          FROM tasks t
@@ -1884,11 +1720,9 @@ export class SqlDbClient implements DbClient {
     );
     if (taskRows.length === 0) return null;
 
-    // Use the latest task row for ticket metadata
     const latestTaskRow = taskRows[taskRows.length - 1]!;
     const ticket = rowToTicketListItem(latestTaskRow);
 
-    // Build RunWithUsage from each task row (each row = one run attempt)
     const runs: RunWithUsage[] = taskRows
       .filter((r) => r.run_status !== null)
       .map((r) => {
@@ -1898,8 +1732,6 @@ export class SqlDbClient implements DbClient {
           try {
             const parsed = JSON.parse(r.tool_calls_json) as unknown;
             if (Array.isArray(parsed)) {
-              // Heavy fields (argsJson, resultText, outputSize, thoughtText) are
-              // lazy-loaded via getToolCallDetail to keep this response small.
               toolCalls = parsed.map((tc: unknown, idx: number) => {
                 const t = tc as Record<string, unknown>;
                 return {
@@ -1938,7 +1770,6 @@ export class SqlDbClient implements DbClient {
         };
       });
 
-    // Pull requests
     const prRows = await this.query<{
       id: string; ticket_id: string; number: number; title: string; head_ref: string;
       state: string; draft: number | boolean; merged: number | boolean; url: string;
@@ -1990,7 +1821,6 @@ export class SqlDbClient implements DbClient {
       };
     });
 
-    // Events
     const eventRows = await this.query<{
       id: string; ticket_id: string | null; run_id: string | null; worker_id: string | null;
       source: string; type: string; summary: string; payload_json: string | null; created_at: string;
@@ -2036,7 +1866,6 @@ export class SqlDbClient implements DbClient {
     };
   }
 
-  // -------------------------------------------------------------------------
   async getEventPayload(eventId: string): Promise<string | null> {
     const rows = await this.query<{ payload_json: string | null }>(
       `SELECT payload_json FROM events WHERE id = ?`,
@@ -2046,12 +1875,8 @@ export class SqlDbClient implements DbClient {
     return rows[0]!.payload_json;
   }
 
-  // Dashboard reads — listWorkers
-  // -------------------------------------------------------------------------
-
   async listWorkers(): Promise<WorkerListItem[]> {
     const now = new Date();
-    // Workers are identified by distinct worker_ids that have active or recent task rows
     type WorkerRow = {
       worker_id: string;
       id: string;
@@ -2141,10 +1966,6 @@ export class SqlDbClient implements DbClient {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Dashboard reads — listModelComparison
-  // -------------------------------------------------------------------------
-
   async listModelComparison(): Promise<ModelComparisonRow[]> {
     const rows = await this.query<{
       run_status: string | null;
@@ -2206,10 +2027,6 @@ export class SqlDbClient implements DbClient {
     return result;
   }
 
-  // -------------------------------------------------------------------------
-  // Dashboard reads — getPeriodSummary
-  // -------------------------------------------------------------------------
-
   async getPeriodSummary({ from, to }: PeriodSummaryOptions): Promise<PeriodSummary> {
     const durationMs = to.getTime() - from.getTime();
     const priorFrom = new Date(from.getTime() - durationMs);
@@ -2217,7 +2034,6 @@ export class SqlDbClient implements DbClient {
     const outerFrom = priorFrom;
     const outerTo = to;
 
-    // Fetch all relevant data in parallel; bound to outerFrom–outerTo to cover both current and prior windows
     const [allTasks, allPrs] = await Promise.all([
       this.query<PeriodTaskRow>(
         `SELECT t.id, t.ticket_id, t.ticket_identifier, t.ticket_title, t.ticket_url, t.ticket_labels_json,
@@ -2258,10 +2074,6 @@ export class SqlDbClient implements DbClient {
       shipped,
     };
   }
-
-  // -------------------------------------------------------------------------
-  // Comment store
-  // -------------------------------------------------------------------------
 
   async markCompleted(pr: PullRequestRef, commentId: string): Promise<void> {
     const now = this.clock.nowIso();

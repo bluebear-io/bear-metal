@@ -114,12 +114,10 @@ export class TaskWorker {
         // manager side. If the cap is reached the row is abandoned (terminal pending + slot released)
         // and the scheduler re-admits the ticket as a fresh start next tick.
         void this.db.markCrashed(task.id, this.workerId, this.maxReclaims).then((res) => {
-          if (res) {
-            this.logger.warn(
-              { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId, action: res.action, reclaimCount: res.task.reclaimCount },
-              "crashed task recovered",
-            );
-          }
+          if (res) this.logger.warn(
+            { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId, action: res.action, reclaimCount: res.task.reclaimCount },
+            "crashed task recovered",
+          );
         }).catch((recoveryErr) => {
           this.logger.error({ err: recoveryErr, taskId: task.id, workerId: this.workerId }, "crashed task recovery failed");
         });
@@ -156,9 +154,6 @@ export class TaskWorker {
       payloadJson: null,
       createdAt: new Date().toISOString(),
     });
-    // Periodic heartbeat proves liveness so the manager's stale-task recovery doesn't reclaim a row
-    // owned by a still-running worker. A failed heartbeat (returns false) signals that the lease was
-    // lost to a reclaim — we log loudly; runTask still continues but its complete() will fail.
     const heartbeat = setInterval(() => {
       void this.db.heartbeat(task.id, this.workerId).then((ok) => {
         if (!ok) {
@@ -247,19 +242,14 @@ export class TaskWorker {
     }
     await this.db.complete(task.id, result);
 
-    // Update ticket status based on the dispatch result.
     if (task.ticketId) {
       if (result.status === "pending") {
-        // Determine if delegation was dropped (worker called commentAndHandBack / respond_to_ticket_reporter).
-        // Only check if we know the agentId; skip if not configured.
         if (this.agentId) {
           try {
             const freshCtx = await this.integrations.linear.getTicketContext(task.ticketId);
             if (freshCtx.issue.delegate?.id !== this.agentId) {
               void this.db.setTicketStatus(task.ticketId, "waiting_for_human");
             }
-            // else: delegation still held (respond_to_comment_writer path) — leave in_progress;
-            // scheduler will re-dispatch on the next tick and update status then.
           } catch (err) {
             this.logger.warn({ err, ticketId: task.ticketId }, "failed to check delegation for status update");
           }
@@ -273,15 +263,11 @@ export class TaskWorker {
       }
     }
 
-    // The writes below are intentionally fire-and-forget: complete() has already released the task
-    // so the scheduler can move on. A crash between here and the event/usage/toolCalls writes means
-    // the dashboard misses one run's supplementary data — accepted trade-off vs. blocking the slot.
+    // Fire-and-forget: complete() already released the slot; crashes here only lose dashboard supplementary data.
     void this.db.upsertRunSucceeded(task.id, result.usage ?? null);
-    // persist the agent's thought-process timeline for the dashboard's visualizer.
     if (result.toolCalls && result.toolCalls.length > 0) {
       void this.db.upsertToolCalls(task.id, JSON.stringify(result.toolCalls));
     }
-    // Only emit pr_opened for PRs that weren't already known at dispatch time.
     const existingPrKeys = new Set((task.input?.prs ?? []).map((p) => `${p.owner}/${p.repo}/${p.number}`));
     for (const pr of result.prs) {
       if (existingPrKeys.has(`${pr.owner}/${pr.repo}/${pr.number}`)) continue;
