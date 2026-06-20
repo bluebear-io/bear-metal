@@ -9,9 +9,8 @@ describe("formatNotificationText", () => {
   it("formats an 'opened' message", () => {
     const text = formatNotificationText({
       kind: "opened",
-      pr: { owner: "acme", repo: "repo", number: 42 },
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 42 }, url: "https://github.com/acme/repo/pull/42" }],
       title: "Add slack notifier",
-      url: "https://github.com/acme/repo/pull/42",
       ticketId: "PROJ-4",
       ticketUrl: "https://linear.app/x/PROJ-4",
     });
@@ -23,9 +22,8 @@ describe("formatNotificationText", () => {
   it("escapes Slack mrkdwn special chars in title and ticket id to prevent link injection", () => {
     const text = formatNotificationText({
       kind: "opened",
-      pr: { owner: "acme", repo: "repo", number: 1 },
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 1 }, url: "https://github.com/acme/repo/pull/1" }],
       title: "Check <https://evil.com|this> & stuff",
-      url: "https://github.com/acme/repo/pull/1",
       ticketId: "ABC-<1>",
       ticketUrl: "https://linear.app/x/ABC-1",
     });
@@ -34,12 +32,76 @@ describe("formatNotificationText", () => {
     expect(text).not.toContain("<https://evil.com|this>");
   });
 
+  it("formats a multi-PR 'opened' message listing every PR link", () => {
+    const text = formatNotificationText({
+      kind: "opened",
+      prs: [
+        { pr: { owner: "acme", repo: "backend", number: 11 }, url: "https://github.com/acme/backend/pull/11" },
+        { pr: { owner: "acme", repo: "frontend", number: 22 }, url: "https://github.com/acme/frontend/pull/22" },
+      ],
+      title: "Cross-repo change",
+      ticketId: "DEN-123",
+      ticketUrl: "https://linear.app/x/DEN-123",
+    });
+    expect(text).toBe(
+      ":bear: PRs opened for ticket <https://linear.app/x/DEN-123|DEN-123> \u2014 Cross-repo change\n" +
+        "<https://github.com/acme/backend/pull/11|acme/backend#11>, " +
+        "<https://github.com/acme/frontend/pull/22|acme/frontend#22>",
+    );
+  });
+
+  it("formats a multi-PR 'updated' message listing every PR link", () => {
+    const text = formatNotificationText({
+      kind: "updated",
+      prs: [
+        { pr: { owner: "acme", repo: "backend", number: 11 }, url: "https://github.com/acme/backend/pull/11" },
+        { pr: { owner: "acme", repo: "frontend", number: 22 }, url: "https://github.com/acme/frontend/pull/22" },
+      ],
+      title: "Cross-repo change",
+      ticketId: "DEN-123",
+      ticketUrl: "https://linear.app/x/DEN-123",
+    });
+    expect(text).toBe(
+      "PRs updated for ticket <https://linear.app/x/DEN-123|DEN-123> \u2014 Cross-repo change\n" +
+        "<https://github.com/acme/backend/pull/11|acme/backend#11>, " +
+        "<https://github.com/acme/frontend/pull/22|acme/frontend#22>",
+    );
+  });
+
+  it("escapes mrkdwn special chars in owner/repo for every PR in multi-PR mode", () => {
+    const text = formatNotificationText({
+      kind: "opened",
+      prs: [
+        { pr: { owner: "a<b", repo: "r&r", number: 1 }, url: "https://github.com/x/y/pull/1" },
+        { pr: { owner: "c>d", repo: "r2", number: 2 }, url: "https://github.com/x/y/pull/2" },
+      ],
+      title: "<evil>",
+      ticketId: "DEN-<9>",
+      ticketUrl: "https://linear.app/x/DEN-9",
+    });
+    expect(text).toContain("a&lt;b/r&amp;r#1");
+    expect(text).toContain("c&gt;d/r2#2");
+    expect(text).toContain("DEN-&lt;9&gt;");
+    expect(text).toContain("&lt;evil&gt;");
+  });
+
+  it("throws when prs is empty", () => {
+    expect(() =>
+      formatNotificationText({
+        kind: "opened",
+        prs: [],
+        title: "x",
+        ticketId: "DEN-1",
+        ticketUrl: "https://linear.app/x/DEN-1",
+      }),
+    ).toThrow();
+  });
+
   it("formats an 'updated' message with ticket link", () => {
     const text = formatNotificationText({
       kind: "updated",
-      pr: { owner: "acme", repo: "repo", number: 7 },
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 7 }, url: "https://github.com/acme/repo/pull/7" }],
       title: "Fix flakes",
-      url: "https://github.com/acme/repo/pull/7",
       ticketId: "ABC-9",
       ticketUrl: "https://linear.app/x/ABC-9",
     });
@@ -85,9 +147,8 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "repo", number: 1 },
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 1 }, url: "https://example.com/pr/1" }],
       title: "Hello",
-      url: "https://example.com/pr/1",
       ticketId: "ABC-1",
       ticketUrl: "https://linear.app/x/ABC-1",
     });
@@ -118,9 +179,8 @@ describe("SlackIntegration", () => {
     await expect(
       slack.notifyPullRequest({
         kind: "updated",
-        pr: { owner: "acme", repo: "repo", number: 2 },
+        prs: [{ pr: { owner: "acme", repo: "repo", number: 2 }, url: "https://example.com/pr/2" }],
         title: "Hi",
-        url: "https://example.com/pr/2",
         ticketId: "ABC-2",
         ticketUrl: "https://linear.app/x/ABC-2",
       }),
@@ -139,9 +199,8 @@ describe("SlackIntegration", () => {
     await expect(
       slack.notifyPullRequest({
         kind: "opened",
-        pr: { owner: "acme", repo: "repo", number: 3 },
+        prs: [{ pr: { owner: "acme", repo: "repo", number: 3 }, url: "https://example.com/pr/3" }],
         title: "Hi",
-        url: "https://example.com/pr/3",
         ticketId: "ABC-3",
         ticketUrl: "https://linear.app/x/ABC-3",
       }),
@@ -162,9 +221,8 @@ describe("SlackIntegration", () => {
     await expect(
       slack.notifyPullRequest({
         kind: "opened",
-        pr: { owner: "acme", repo: "repo", number: 4 },
+        prs: [{ pr: { owner: "acme", repo: "repo", number: 4 }, url: "https://example.com/pr/4" }],
         title: "Hi",
-        url: "https://example.com/pr/4",
         ticketId: "ABC-4",
         ticketUrl: "https://linear.app/x/ABC-4",
       }),
@@ -193,9 +251,8 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "repo", number: 1 },
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 1 }, url: "https://example.com/pr/1" }],
       title: "Hello",
-      url: "https://example.com/pr/1",
       ticketId: "ABC-1",
       ticketUrl: "https://linear.app/x/ABC-1",
       recipientEmail: "user@example.com",
@@ -226,9 +283,8 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "repo", number: 1 },
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 1 }, url: "https://example.com/pr/1" }],
       title: "Hello",
-      url: "https://example.com/pr/1",
       ticketId: "ABC-1",
       ticketUrl: "https://linear.app/x/ABC-1",
       recipientEmail: "unknown@example.com",
@@ -254,9 +310,8 @@ describe("SlackIntegration", () => {
 
     await slack.notifyPullRequest({
       kind: "opened",
-      pr: { owner: "acme", repo: "repo", number: 1 },
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 1 }, url: "https://example.com/pr/1" }],
       title: "Hello",
-      url: "https://example.com/pr/1",
       ticketId: "ABC-1",
       ticketUrl: "https://linear.app/x/ABC-1",
       recipientEmail: "user@example.com",

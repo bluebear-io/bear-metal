@@ -498,35 +498,52 @@ async function refreshTrackedTickets(
           "tryTransitionToWaitingForHuman result",
         );
         if (shouldDm && slack && decision.context.prs.length > 0) {
-          const prRef = decision.context.prs[0]!;
           try {
-            const prDbId = `${prRef.owner}/${prRef.repo}#${prRef.number}`;
-            const [prStatus, prNotifiedAt, recipientEmail] = await Promise.all([
-              github.getPullRequestStatus(prRef),
-              db.getPrNotifiedAt(prDbId),
-              ticket.assignee ? linear.getUserEmail(ticket.assignee.id) : Promise.resolve(null),
-            ]);
-            await slack.notifyPullRequest({
-              kind: prNotifiedAt == null ? "opened" : "updated",
-              pr: prRef,
-              title: ticket.title,
-              url: prStatus.pr.url,
-              ticketId: ticket.identifier,
-              ticketUrl: ticket.url,
-              recipientEmail: recipientEmail ?? undefined,
-            });
-            await db.markPrNotified(prDbId);
-            void db.recordEvent({
-              id: randomUUID(),
-              ticketId: ticket.id,
-              runId: slot.latestTask.id,
-              workerId: null,
-              source: "manager",
-              type: "user_notified",
-              summary: `user notified via Slack — PR #${prRef.number} in ${prRef.repo}`,
-              payloadJson: recipientEmail ? JSON.stringify({ recipientEmail }) : null,
-              createdAt: new Date().toISOString(),
-            });
+            const recipientEmail = ticket.assignee
+              ? await linear.getUserEmail(ticket.assignee.id)
+              : null;
+            const perPr = await Promise.all(
+              decision.context.prs.map(async (prRef) => {
+                const prDbId = `${prRef.owner}/${prRef.repo}#${prRef.number}`;
+                const [prStatus, prNotifiedAt] = await Promise.all([
+                  github.getPullRequestStatus(prRef),
+                  db.getPrNotifiedAt(prDbId),
+                ]);
+                return {
+                  prRef,
+                  prDbId,
+                  url: prStatus.pr.url,
+                  kind: (prNotifiedAt == null ? "opened" : "updated") as "opened" | "updated",
+                };
+              }),
+            );
+            const groups: Array<"opened" | "updated"> = ["opened", "updated"];
+            for (const kind of groups) {
+              const items = perPr.filter((p) => p.kind === kind);
+              if (items.length === 0) continue;
+              await slack.notifyPullRequest({
+                kind,
+                prs: items.map((p) => ({ pr: p.prRef, url: p.url })),
+                title: ticket.title,
+                ticketId: ticket.identifier,
+                ticketUrl: ticket.url,
+                recipientEmail: recipientEmail ?? undefined,
+              });
+              for (const p of items) {
+                await db.markPrNotified(p.prDbId);
+                void db.recordEvent({
+                  id: randomUUID(),
+                  ticketId: ticket.id,
+                  runId: slot.latestTask.id,
+                  workerId: null,
+                  source: "manager",
+                  type: "user_notified",
+                  summary: `user notified via Slack — PR #${p.prRef.number} in ${p.prRef.repo}`,
+                  payloadJson: recipientEmail ? JSON.stringify({ recipientEmail }) : null,
+                  createdAt: new Date().toISOString(),
+                });
+              }
+            }
           } catch (err) {
             logger.warn({ err, ticketId: ticket.id }, "failed to send waiting_for_human Slack DM");
           }
