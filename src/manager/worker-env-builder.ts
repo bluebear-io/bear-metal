@@ -11,11 +11,9 @@ export interface RunWorkerEnvironmentBuilderInput {
   /** Path to an executable script. Mutually exclusive with command. */
   path?: string | null;
   logger: Logger;
-  /** Override the bash execution timeout. Defaults to 10 minutes. */
-  timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Operator-controlled startup hook. Prepares the Bear Metal process environment
@@ -24,7 +22,7 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
  * Inherits process.env. Not scoped to AGENT_WORKDIR; not exposed to the coding agent.
  */
 export async function runWorkerEnvironmentBuilder(input: RunWorkerEnvironmentBuilderInput): Promise<void> {
-  const { command, path, logger, timeoutMs = DEFAULT_TIMEOUT_MS } = input;
+  const { command, path, logger } = input;
 
   if (command && path) {
     throw new Error(
@@ -53,7 +51,7 @@ export async function runWorkerEnvironmentBuilder(input: RunWorkerEnvironmentBui
   try {
     const result = await runCommand("bash", [scriptPath], {
       cwd: process.cwd(),
-      timeoutMs,
+      timeoutMs: TIMEOUT_MS,
     });
     logger.info(
       { stdoutLen: result.stdout.length, stderrLen: result.stderr.length },
