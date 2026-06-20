@@ -42,7 +42,7 @@ export async function runWorkerEnvironmentBuilder(input: RunWorkerEnvironmentBui
     await chmod(tempDir, 0o700);
     scriptPath = resolve(tempDir, "worker-environment-builder.sh");
     const content = command.startsWith("#!")
-      ? command
+      ? command.replace(/^(#!.*\n?)/, "$1set -euo pipefail\n")
       : `#!/usr/bin/env bash\nset -euo pipefail\n${command}`;
     await writeFile(scriptPath, content, { mode: 0o700 });
   } else {
