@@ -20,6 +20,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 - [Configuration](#configuration)
   - [Environment variables](#environment-variables)
   - [Workspace builder](#workspace-builder)
+  - [Worker environment builder](#worker-environment-builder)
   - [Custom system prompt](#custom-system-prompt)
 - [Quick guides](#quick-guides)
   - [GitHub App](#github-app)
@@ -56,6 +57,8 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 | `GITHUB_APP_INSTALLATION_ID` | yes | — | Installation ID (numeric) |
 | `WORKSPACE_BUILDER_COMMAND` | yes* | — | Inline bash to clone/setup workspace |
 | `WORKSPACE_BUILDER_PATH` | yes* | — | Path to workspace builder script |
+| `WORKER_ENVIRONMENT_BUILDER_COMMAND` | no*** | — | Inline bash run once at startup to prepare the worker environment |
+| `WORKER_ENVIRONMENT_BUILDER_PATH` | no*** | — | Path to a worker environment builder script |
 | `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key |
 | `OPENAI_API_KEY` | yes** | — | OpenAI API key |
 | `GOOGLE_API_KEY` | yes** | — | Google API key |
@@ -80,6 +83,8 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 *Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
 
 **Exactly one LLM key must be set. The first set key in the order listed above determines the provider and its default model.
+
+***Both worker environment builder vars are optional. Set at most one; setting both fails startup.
 
 Example file at [`.env.example`](.env.example)
 
@@ -145,6 +150,40 @@ This works when your bear metal deployment handles multiple repositories. Tag ea
 | `TICKET_DESCRIPTION` | full ticket body |
 
 Bear-metal creates `AGENT_WORKDIR`, runs the builder, then runs the agent inside `AGENT_WORKDIR`.
+
+### Worker environment builder
+
+The **workspace builder** above runs **per ticket** and prepares the repository under `AGENT_WORKDIR`. The **worker environment builder** is different: it runs **once at process startup**, inside the already-running Bear Metal container/process, **before** the scheduler and task worker start. Use it to install language toolchains, package managers, OS libraries, or CLIs that your workspace builder or the coding agent needs.
+
+Bear Metal does not ship with Go, Rust, Python, pnpm, etc. baked in — it stays language-agnostic. If your tickets target a Go repo, install Go here; if they target a Rust repo, install Cargo here; and so on. This is a configuration hook, not a custom-image requirement.
+
+Both env vars are optional and mutually exclusive:
+
+- **`WORKER_ENVIRONMENT_BUILDER_COMMAND`** — inline bash. Bear Metal writes it to a temp file and executes it with `bash`.
+- **`WORKER_ENVIRONMENT_BUILDER_PATH`** — path to an executable script (mounted or baked into a custom image).
+
+If neither is set, Bear Metal starts normally with no environment preparation. If both are set, startup fails with a clear configuration error. If the builder exits non-zero, startup fails and the scheduler / task worker never start.
+
+The builder inherits the normal Bear Metal process environment (env vars, mounted credentials, etc.). It runs in the Bear Metal process, **not** inside `AGENT_WORKDIR` and **not** per ticket. It is operator-controlled startup code and is not exposed to the coding agent as a tool.
+
+**Example — install Go before working on Go repos:**
+
+```bash
+WORKER_ENVIRONMENT_BUILDER_COMMAND=<<'EOF'
+set -euo pipefail
+GO_VERSION=1.23.4
+curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+tar -C /usr/local -xzf /tmp/go.tgz
+ln -sf /usr/local/go/bin/go /usr/local/bin/go
+go version
+EOF
+```
+
+**Example — point at a maintained script:**
+
+```bash
+WORKER_ENVIRONMENT_BUILDER_PATH=/scripts/install-toolchains.sh
+```
 
 ### Custom system prompt
 

@@ -14,6 +14,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
+import { runWorkerEnvironmentBuilder } from "./worker-env-builder.js";
 
 const config = loadConfig();
 const logger = createLogger({ level: config.logLevel, name: "manager", pretty: config.logPretty });
@@ -47,6 +48,12 @@ if (!slack) {
     "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
   );
 }
+await runWorkerEnvironmentBuilder({
+  command: config.workerEnvironmentBuilderCommand,
+  path: config.workerEnvironmentBuilderPath,
+  logger,
+});
+
 const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
 await db.initSchema();
 
