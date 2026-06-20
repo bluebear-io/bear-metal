@@ -17,6 +17,10 @@ export interface Config {
   workspaceBuilderCommand: string | null;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
   workspaceBuilderPath: string | null;
+  /** Inline bash script run once at process startup to prepare the worker environment. Mutually exclusive with workerEnvironmentBuilderPath. */
+  workerEnvironmentBuilderCommand: string | null;
+  /** Path to an executable script run once at process startup to prepare the worker environment. Mutually exclusive with workerEnvironmentBuilderCommand. */
+  workerEnvironmentBuilderPath: string | null;
   /** Custom system prompt content injected into the agent prompt. Mutually exclusive with systemPromptPath. */
   systemPrompt: string | null;
   linearApiToken: string;
@@ -87,6 +91,7 @@ export function positiveIntEnv(name: string, fallback: number): number {
 export function loadConfig(): Readonly<Config> {
   return Object.freeze({
     ...loadWorkspaceBuilderConfig(),
+    ...loadWorkerEnvironmentBuilderConfig(),
     ...loadSystemPromptConfig(),
     ...loadLlmConfig(),
     linearApiToken: requiredEnv("LINEAR_API_TOKEN"),
@@ -186,4 +191,22 @@ function loadWorkspaceBuilderConfig(): {
     throw new Error("Either WORKSPACE_BUILDER_COMMAND or WORKSPACE_BUILDER_PATH must be set");
   }
   return { workspaceBuilderCommand: command, workspaceBuilderPath: path };
+}
+
+/**
+ * Both WORKER_ENVIRONMENT_BUILDER_COMMAND and WORKER_ENVIRONMENT_BUILDER_PATH are optional, but mutually exclusive.
+ * Neither set means no environment preparation runs at startup.
+ */
+function loadWorkerEnvironmentBuilderConfig(): {
+  workerEnvironmentBuilderCommand: string | null;
+  workerEnvironmentBuilderPath: string | null;
+} {
+  const command = process.env.WORKER_ENVIRONMENT_BUILDER_COMMAND?.trim() || null;
+  const path = process.env.WORKER_ENVIRONMENT_BUILDER_PATH?.trim() || null;
+  if (command && path) {
+    throw new Error(
+      "WORKER_ENVIRONMENT_BUILDER_COMMAND and WORKER_ENVIRONMENT_BUILDER_PATH are mutually exclusive — set at most one",
+    );
+  }
+  return { workerEnvironmentBuilderCommand: command, workerEnvironmentBuilderPath: path };
 }

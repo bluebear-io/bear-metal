@@ -22,6 +22,8 @@ beforeEach(() => {
     "GITHUB_APP_INSTALLATION_ID",
     "WORKSPACE_BUILDER_COMMAND",
     "WORKSPACE_BUILDER_PATH",
+    "WORKER_ENVIRONMENT_BUILDER_COMMAND",
+    "WORKER_ENVIRONMENT_BUILDER_PATH",
     "DATABASE_URL",
     "WORKER_CONCURRENCY",
     "POLL_INTERVAL_MS",
@@ -107,5 +109,34 @@ describe("loadConfig", () => {
     const config = loadConfig();
     expect(config.workspaceBuilderPath).toBe("/scripts/build.sh");
     expect(config.workspaceBuilderCommand).toBeNull();
+  });
+
+  it("leaves worker environment builder unset by default", () => {
+    Object.assign(process.env, REQUIRED);
+    const config = loadConfig();
+    expect(config.workerEnvironmentBuilderCommand).toBeNull();
+    expect(config.workerEnvironmentBuilderPath).toBeNull();
+  });
+
+  it("accepts WORKER_ENVIRONMENT_BUILDER_COMMAND alone", () => {
+    Object.assign(process.env, REQUIRED, { WORKER_ENVIRONMENT_BUILDER_COMMAND: "apt-get install -y golang" });
+    const config = loadConfig();
+    expect(config.workerEnvironmentBuilderCommand).toBe("apt-get install -y golang");
+    expect(config.workerEnvironmentBuilderPath).toBeNull();
+  });
+
+  it("accepts WORKER_ENVIRONMENT_BUILDER_PATH alone", () => {
+    Object.assign(process.env, REQUIRED, { WORKER_ENVIRONMENT_BUILDER_PATH: "/scripts/install-toolchains.sh" });
+    const config = loadConfig();
+    expect(config.workerEnvironmentBuilderPath).toBe("/scripts/install-toolchains.sh");
+    expect(config.workerEnvironmentBuilderCommand).toBeNull();
+  });
+
+  it("throws when both WORKER_ENVIRONMENT_BUILDER_COMMAND and WORKER_ENVIRONMENT_BUILDER_PATH are set", () => {
+    Object.assign(process.env, REQUIRED, {
+      WORKER_ENVIRONMENT_BUILDER_COMMAND: "apt-get install -y golang",
+      WORKER_ENVIRONMENT_BUILDER_PATH: "/scripts/install-toolchains.sh",
+    });
+    expect(() => loadConfig()).toThrow(/WORKER_ENVIRONMENT_BUILDER_COMMAND and WORKER_ENVIRONMENT_BUILDER_PATH/);
   });
 });
