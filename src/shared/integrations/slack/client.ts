@@ -16,13 +16,18 @@ export interface SlackIntegrationOptions {
 
 export type PullRequestNotificationKind = "opened" | "updated";
 
-export interface PullRequestNotification {
-  kind: PullRequestNotificationKind;
+export interface PullRequestNotificationItem {
   pr: PullRequestRef;
-  /** Linear ticket title. */
-  title: string;
   /** PR HTML url. */
   url: string;
+}
+
+export interface PullRequestNotification {
+  kind: PullRequestNotificationKind;
+  /** PRs to include in the notification. Single-PR keeps the legacy wording; multi-PR lists every link in one message. */
+  prs: PullRequestNotificationItem[];
+  /** Linear ticket title. */
+  title: string;
   /** Originating Linear ticket identifier (e.g. "PROJ-4"). */
   ticketId: string;
   ticketUrl: string;
@@ -151,17 +156,29 @@ function escapeSlackMrkdwn(text: string): string {
 }
 
 export function formatNotificationText(notification: PullRequestNotification): string {
-  const { kind, pr, title, url, ticketId, ticketUrl } = notification;
-  if (!url.startsWith("https://")) throw new Error(`Invalid PR URL: ${url}`);
+  const { kind, prs, title, ticketId, ticketUrl } = notification;
+  if (prs.length === 0) throw new Error("PullRequestNotification requires at least one PR");
   if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
+  for (const item of prs) {
+    if (!item.url.startsWith("https://")) throw new Error(`Invalid PR URL: ${item.url}`);
+  }
   const safeTitle = escapeSlackMrkdwn(title);
   const safeTicketId = escapeSlackMrkdwn(ticketId);
-  const prLink = `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`;
   const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
-  if (kind === "opened") {
-    return `:bear: PR opened ${prLink} for ticket ${ticketLabel} — ${safeTitle}`;
+  const prLinks = prs.map(({ pr, url }) =>
+    `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`,
+  );
+  if (prs.length === 1) {
+    const prLink = prLinks[0]!;
+    if (kind === "opened") {
+      return `:bear: PR opened ${prLink} for ticket ${ticketLabel} — ${safeTitle}`;
+    }
+    return `Updated PR ${prLink} for ticket ${ticketLabel} — ${safeTitle}`;
   }
-  return `Updated PR ${prLink} for ticket ${ticketLabel} — ${safeTitle}`;
+  const header = kind === "opened"
+    ? `:bear: PRs opened for ticket ${ticketLabel} — ${safeTitle}`
+    : `PRs updated for ticket ${ticketLabel} — ${safeTitle}`;
+  return `${header}\n${prLinks.join(", ")}`;
 }
 
 export function formatNeedsInputText(notification: NeedsInputNotification): string {
