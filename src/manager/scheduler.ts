@@ -530,7 +530,14 @@ async function refreshTrackedTickets(
                 recipientEmail: recipientEmail ?? undefined,
               });
               for (const p of items) {
-                await db.markPrNotified(p.prDbId);
+                try {
+                  await db.markPrNotified(p.prDbId);
+                } catch (markErr) {
+                  logger.warn(
+                    { err: markErr, ticketId: ticket.id, prDbId: p.prDbId },
+                    "failed to mark PR as notified after Slack send",
+                  );
+                }
                 void db.recordEvent({
                   id: randomUUID(),
                   ticketId: ticket.id,
