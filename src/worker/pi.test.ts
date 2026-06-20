@@ -195,10 +195,34 @@ describe("runPiWorker", () => {
   it("allows respond_to_comment_writer to be called for multiple threads without crashing", async () => {
     const { runPiWorker } = await import("./pi.js");
     const github = makeGithub();
+    const prContext = makePullRequestContext();
+    prContext.reviewThreads.push({
+      id: "thread-2",
+      isResolved: false,
+      path: "src/file.ts",
+      line: 2,
+      comments: [
+        {
+          id: "comment-2",
+          databaseId: 124,
+          body: "Another concern.",
+          author: "reviewer",
+          authorId: "U_reviewer" as string | null,
+          url: "https://github.com/acme/widgets/pull/7#discussion_r124",
+          createdAt: "2026-06-09T00:00:00Z",
+          updatedAt: "2026-06-09T00:00:00Z",
+          path: "src/file.ts",
+          line: 2,
+          originalLine: 2,
+          diffHunk: "@@",
+        },
+      ],
+    });
+    prContext.unresolvedReviewThreads = prContext.reviewThreads;
     const context = makeContext({
       state: "iteration",
       prs: [{ owner: "acme", repo: "widgets", number: 7 }],
-      pullRequests: [makePullRequestContext()],
+      pullRequests: [prContext],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Question 1." });
@@ -225,7 +249,7 @@ describe("runPiWorker", () => {
         prTitle: "fix",
         prBody: "fix",
       });
-      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Blocked here." });
     });
 
     const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key" });
@@ -242,7 +266,7 @@ describe("runPiWorker", () => {
       pullRequests: [makePullRequestContext()],
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
-      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Blocked here." });
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Blocked here." });
       await executeTool(customTools, "push_for_review", {
         repoRoot: "/tmp/workspace/agent",
         prTitle: "fix",
@@ -254,6 +278,68 @@ describe("runPiWorker", () => {
 
     expect(result.status).toBe("pending");
     expect(result.prs).toEqual(context.prs);
+  });
+
+  it("routes review-thread tools to the correct PR when multiple PRs are in context", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const prA = makePullRequestContext();
+    const prB = makePullRequestContext();
+    // Give PR B distinct thread/issue-comment ids; node ids are globally unique on GitHub.
+    prB.reviewThreads[0]!.id = "thread-B1";
+    prB.unresolvedReviewThreads = prB.reviewThreads;
+    prB.issueComments[0]!.id = "IC_def456";
+    const context = makeContext({
+      state: "iteration",
+      prs: [
+        { owner: "acme", repo: "widgets", number: 7 },
+        { owner: "acme", repo: "gadgets", number: 9 },
+      ],
+      pullRequests: [prA, prB],
+    });
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "agree_with_github_message", { id: "thread-B1" });
+      await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Question." });
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key" });
+
+    expect(github.replyToReviewThread).toHaveBeenCalledWith(
+      context.prs[1],
+      "thread-B1",
+      "Fixed.",
+      prB.unresolvedReviewThreads,
+    );
+    expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-B1");
+    expect(github.replyToReviewThread).toHaveBeenCalledWith(
+      context.prs[0],
+      "thread-1",
+      "Question.",
+      prA.unresolvedReviewThreads,
+    );
+  });
+
+  it("throws when review-thread tool is called with an unknown comment id", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const context = makeContext({
+      state: "iteration",
+      prs: [{ owner: "acme", repo: "widgets", number: 7 }],
+      pullRequests: [makePullRequestContext()],
+    });
+    let caught: unknown;
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      try {
+        await executeTool(customTools, "agree_with_github_message", { id: "thread-unknown" });
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key" });
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/Unknown comment id/);
   });
 
   it("agree_with_github_message on issue comment records it in comment store without minimizing", async () => {

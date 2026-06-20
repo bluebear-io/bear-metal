@@ -68,12 +68,18 @@ export async function runPiWorker(input: {
 
   // IDs absent from this map were not shown to the agent and must not be acted on.
   const commentMap = new Map<string, "thread" | "issue_comment">();
-  for (const pr of input.context.pullRequests) {
-    for (const thread of pr.unresolvedReviewThreads) {
+  // GitHub review-thread and issue-comment node IDs are globally unique, so a single id
+  // unambiguously identifies the PR it belongs to even with multiple PRs in context.
+  const commentToPr = new Map<string, PullRequestRef>();
+  for (let i = 0; i < input.context.pullRequests.length; i++) {
+    const pr = input.context.prs[i]!;
+    for (const thread of input.context.pullRequests[i]!.unresolvedReviewThreads) {
       commentMap.set(thread.id, "thread");
+      commentToPr.set(thread.id, pr);
     }
-    for (const comment of pr.issueComments) {
+    for (const comment of input.context.pullRequests[i]!.issueComments) {
       commentMap.set(comment.id, "issue_comment");
+      commentToPr.set(comment.id, pr);
     }
   }
 
@@ -133,7 +139,8 @@ export async function runPiWorker(input: {
     execute: async (_toolCallId, params) => {
       const kind = commentMap.get(params.id);
       if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
-      const pr = requireSinglePr(input.context.prs);
+      const pr = commentToPr.get(params.id);
+      if (!pr) throw new Error(`Unknown comment id: ${params.id}`);
       if (kind === "thread") {
         logger.debug({ threadId: params.id }, "pi tool: agree_with_github_message (thread)");
         await input.github.replyToReviewThread(pr, params.id, "Fixed.", unresolvedThreadsFor(input.context, pr));
@@ -164,7 +171,8 @@ export async function runPiWorker(input: {
     execute: async (_toolCallId, params) => {
       const kind = commentMap.get(params.id);
       if (!kind) throw new Error(`Unknown comment id: ${params.id}`);
-      const pr = requireSinglePr(input.context.prs);
+      const pr = commentToPr.get(params.id);
+      if (!pr) throw new Error(`Unknown comment id: ${params.id}`);
       if (kind === "thread") {
         logger.debug({ threadId: params.id }, "pi tool: disagree_with_github_message (thread)");
         await input.github.replyToReviewThread(pr, params.id, params.text, unresolvedThreadsFor(input.context, pr));
@@ -203,7 +211,9 @@ export async function runPiWorker(input: {
         };
       } else {
         logger.debug({ issueCommentId: params.id }, "pi tool: mark_github_message_completed (issue comment)");
-        await input.commentStore?.markCompleted(requireSinglePr(input.context.prs), params.id);
+        const pr = commentToPr.get(params.id);
+        if (!pr) throw new Error(`Unknown comment id: ${params.id}`);
+        await input.commentStore?.markCompleted(pr, params.id);
         return {
           content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
           details: {},
@@ -222,7 +232,8 @@ export async function runPiWorker(input: {
     }),
     execute: async (_toolCallId, params) => {
       logger.debug({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
-      const pr = requireSinglePr(input.context.prs);
+      const pr = commentToPr.get(params.threadId);
+      if (!pr) throw new Error(`Unknown comment id: ${params.threadId}`);
       await input.github.replyToReviewThread(
         pr,
         params.threadId,
@@ -595,8 +606,6 @@ function mergePrs(base: PullRequestRef[], collected: PullRequestRef[]): PullRequ
 }
 
 function unresolvedThreadsFor(context: WorkerInputContext, pr: PullRequestRef) {
-  // Review-thread tools run only in single-PR iterations (enforced by requireSinglePr),
-  // so we always read the threads of the sole fetched PR context.
   const idx = context.prs.findIndex(
     (p) => p.owner === pr.owner && p.repo === pr.repo && p.number === pr.number,
   );
@@ -624,16 +633,6 @@ async function createPullRequestForRepo(
     base,
     body: params.prBody,
   });
-}
-
-function requireSinglePr(prs: PullRequestRef[]): PullRequestRef {
-  if (prs.length === 0) {
-    throw new Error("This tool requires an existing pull request");
-  }
-  if (prs.length > 1) {
-    throw new Error("Review-thread tools are only supported for single-PR iterations");
-  }
-  return prs[0]!;
 }
 
 async function readAgentsMd(repoRoot: string): Promise<string | undefined> {
