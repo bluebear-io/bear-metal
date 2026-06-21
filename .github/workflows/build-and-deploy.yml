@@ -31,9 +31,16 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            src/ui/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install UI dependencies
+        run: npm ci
+        working-directory: src/ui
 
       - name: Typecheck
         run: npm run typecheck
