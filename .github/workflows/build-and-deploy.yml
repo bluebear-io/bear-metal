@@ -1,7 +1,7 @@
 # bear-metal CI/CD
 #
 # PR / push to main: typecheck + tests + docker build (verify only, no push)
-# Release / workflow_dispatch: build + push to ghcr.io + push to ECR (dev)
+# Release / workflow_dispatch: build + push to ghcr.io (public image)
 
 name: Build and Deploy
 
@@ -19,11 +19,6 @@ concurrency:
 
 permissions:
   contents: read
-
-env:
-  AWS_REGION: us-east-1
-  DEV_ACCOUNT_ID: "571938892820"
-  ECR_REPO: bear-metal
 
 jobs:
   test:
@@ -53,7 +48,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -69,33 +63,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure AWS credentials
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ env.DEV_ACCOUNT_ID }}:role/GithubActionsLambdaDeployRole
-          role-session-name: bear-metal-build
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        id: ecr_login
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Generate image tags
         id: tags
         run: |
           GHCR_REPO="ghcr.io/${{ github.repository_owner }}/bear-metal"
-          ECR_REPO="${{ steps.ecr_login.outputs.registry }}/${{ env.ECR_REPO }}"
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "ghcr_tags=${GHCR_REPO}:${{ github.ref_name }},${GHCR_REPO}:latest" >> "$GITHUB_OUTPUT"
-            echo "ecr_tags=${ECR_REPO}:${{ github.ref_name }},${ECR_REPO}:latest" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "ghcr_tags=${GHCR_REPO}:latest" >> "$GITHUB_OUTPUT"
-            echo "ecr_tags=${ECR_REPO}:latest" >> "$GITHUB_OUTPUT"
           else
             echo "ghcr_tags=${GHCR_REPO}:build-check" >> "$GITHUB_OUTPUT"
-            echo "ecr_tags=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push image
@@ -104,9 +81,7 @@ jobs:
           context: .
           file: Dockerfile
           push: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
-          tags: |
-            ${{ steps.tags.outputs.ghcr_tags }}
-            ${{ steps.tags.outputs.ecr_tags }}
+          tags: ${{ steps.tags.outputs.ghcr_tags }}
           build-args: APP_VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
