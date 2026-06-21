@@ -1665,42 +1665,39 @@ export class SqlDbClient implements DbClient {
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const filteredTicketsCte = `
+      WITH latest AS (
+        SELECT * FROM (
+          SELECT tasks.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS rn
+          FROM tasks
+          WHERE ticket_id IS NOT NULL
+        ) ranked
+        WHERE rn = 1
+      ),
+      filtered AS (
+        SELECT latest.*, ts.status AS ts_status
+        FROM latest
+        LEFT JOIN ticket_statuses ts ON ts.ticket_id = latest.ticket_id
+        ${whereClause}
+      )
+    `;
 
-    const ticketRows = await this.query<TaskRow & { total_count: number | string }>(
+    const countRows = await this.query<{ total_count: number | string }>(
+      this.sql(`${filteredTicketsCte} SELECT COUNT(*) AS total_count FROM filtered`),
+      params,
+    );
+    const total = Number(countRows[0]?.total_count ?? 0);
+
+    const pageRows = await this.query<TaskRow>(
       this.sql(`
-        WITH latest AS (
-          SELECT * FROM (
-            SELECT tasks.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS rn
-            FROM tasks
-            WHERE ticket_id IS NOT NULL
-          ) ranked
-          WHERE rn = 1
-        ),
-        filtered AS (
-          SELECT latest.*, ts.status AS ts_status
-          FROM latest
-          LEFT JOIN ticket_statuses ts ON ts.ticket_id = latest.ticket_id
-          ${whereClause}
-        ),
-        counted AS (
-          SELECT COUNT(*) AS total_count FROM filtered
-        ),
-        paged AS (
-          SELECT filtered.*
-          FROM filtered
-          ORDER BY created_at DESC, id DESC
-          LIMIT ? OFFSET ?
-        )
-        SELECT paged.*, counted.total_count
-        FROM counted
-        LEFT JOIN paged ON 1 = 1
-        ORDER BY paged.created_at DESC, paged.id DESC
+        ${filteredTicketsCte}
+        SELECT filtered.*
+        FROM filtered
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?
       `),
       [...params, pageSize, offset],
     );
-
-    const total = Number(ticketRows[0]?.total_count ?? 0);
-    const pageRows = ticketRows.filter((row) => row.id !== null && row.id !== undefined);
     if (pageRows.length === 0) {
       return { items: [], total, page, pageSize };
     }

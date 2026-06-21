@@ -81,8 +81,8 @@ describe("SqlDbClient listTickets", () => {
       const firstPage = await db.listTickets({ page: 1, pageSize: 2 });
       const secondPage = await db.listTickets({ page: 2, pageSize: 2 });
 
-      expect(queries[0]).toContain("LIMIT ?");
-      expect(queries[0]).toContain("OFFSET ?");
+      expect(queries.some((sql) => sql.includes("LIMIT ?"))).toBe(true);
+      expect(queries.some((sql) => sql.includes("OFFSET ?"))).toBe(true);
       expect(firstPage.total).toBe(3);
       expect(firstPage.items).toHaveLength(2);
       expect(new Set(firstPage.items.map((item) => item.ticketId)).size).toBe(2);
