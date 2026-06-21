@@ -48,14 +48,25 @@ if (!slack) {
     "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
   );
 }
+
+const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
+await db.initSchema();
+
+// Start the HTTP server (full API + UI) before runWorkerEnvironmentBuilder so
+// the container healthcheck and dashboard are available while the builder runs
+// (which can take up to 30 minutes). The worker/scheduler loops only start
+// after the builder completes. Skipped in single-ticket test mode.
+const server = config.testTicketId
+  ? undefined
+  : createApp(db, config.maxIterations).listen(config.backendPort, () => {
+      logger.info({ port: config.backendPort }, "dashboard server listening");
+    });
+
 await runWorkerEnvironmentBuilder({
   command: config.workerEnvironmentBuilderCommand,
   path: config.workerEnvironmentBuilderPath,
   logger,
 });
-
-const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
-await db.initSchema();
 
 const agentId = await linear.getAgentId().catch((err) => {
   logger.warn({ err }, "failed to resolve Linear agent id; task delegation checks disabled");
@@ -116,11 +127,7 @@ if (config.testTicketId) {
   process.exit(exitCode);
 }
 
-const app = createApp(db, config.maxIterations);
-const server = app.listen(config.backendPort, () => {
-  logger.info({ port: config.backendPort }, "dashboard server listening");
-  logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
-});
+logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 
 scheduler.start();
 taskWorker.start();
@@ -136,6 +143,10 @@ function shutdown(signal: string): void {
   void Promise.all([scheduler.stop(), taskWorker.stop()])
     .then(() => db.close())
     .then(() => {
+      if (!server) {
+        process.exit(0);
+        return;
+      }
       server.close(() => {
         logger.info({ signal }, "dashboard server closed, goodnight 🌙");
         process.exit(0);
