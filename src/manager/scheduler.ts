@@ -678,6 +678,7 @@ async function enforceIterationLimit(
           ctx.ticket.id,
           `Reached the maximum iteration limit of ${maxIterations}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
         );
+        await db.setTicketStatus(ctx.ticket.id, "failed");
         await db.setSlotStatus(ctx.ticket.id, "released");
       } else {
         eligible.push(item);
@@ -799,4 +800,3 @@ async function completeStaleTicket(db: DbClient, ticket: Ticket, summary: string
     createdAt: new Date().toISOString(),
   });
 }
-

@@ -46,12 +46,13 @@ const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
   );
 };
 
-type FilterKey = "all" | "in_progress" | "validating" | "waiting_for_human" | "completed";
+type FilterKey = "all" | "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
 const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<BmStatus>> = {
   in_progress: ["in_progress"],
   validating: ["validating"],
   waiting_for_human: ["waiting_for_human"],
+  failed: ["failed"],
   completed: ["completed"],
 };
 
@@ -60,6 +61,7 @@ const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
   { key: "in_progress", label: "In progress" },
   { key: "validating", label: "Validating" },
   { key: "waiting_for_human", label: "Waiting for human" },
+  { key: "failed", label: "Failed" },
   { key: "completed", label: "Completed" },
 ];
 

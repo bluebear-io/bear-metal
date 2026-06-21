@@ -611,6 +611,7 @@ describe("Scheduler.tick", () => {
     expect(linear.commentAndHandBackCalls).toHaveLength(1);
     expect(linear.commentAndHandBackCalls[0]?.ticketId).toBe("a");
     expect(linear.commentAndHandBackCalls[0]?.body).toContain("maximum iteration limit of 20");
+    expect(await db.readTicketStatus("a")).toEqual({ status: "failed", notify: 0 });
     expect(await db.countTracked()).toBe(0);
   });
 

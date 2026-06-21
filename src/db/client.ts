@@ -15,7 +15,7 @@ function modelFamily(provider: string | null, modelName: string | null): "claude
   return "other";
 }
 
-export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
+export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
@@ -1791,7 +1791,7 @@ export class SqlDbClient implements DbClient {
     );
     const workers = workerRows.map((w) => ({ id: w.worker_id, name: w.worker_id }));
 
-    const allBmStatuses: BmStatus[] = ["in_progress", "validating", "waiting_for_human", "completed"];
+    const allBmStatuses: BmStatus[] = ["in_progress", "validating", "waiting_for_human", "failed", "completed"];
 
     const countRows = await this.query<{ status: string | null; cnt: number }>(
       this.sql(`

@@ -68,10 +68,11 @@ const multipleTickets: TicketListItem[] = [
   makeTicket("ticket_waiting", "ABC-4", "waiting_for_human"),
   makeTicket("ticket_waiting2", "ABC-5", "waiting_for_human"),
   makeTicket("ticket_validating", "ABC-6", "validating"),
+  makeTicket("ticket_failed", "ABC-7", "failed"),
 ];
 
 const filterOptions: TicketFilterOptions = {
-  bmStatuses: ["completed", "in_progress", "waiting_for_human"],
+  bmStatuses: ["completed", "in_progress", "waiting_for_human", "failed"],
   statusCounts: {},
   stopReasons: ["completed", "timeout"],
   labels: ["bear-metal", "module:bff"],
@@ -192,6 +193,10 @@ describe("TicketsListPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /Validating/ }));
     expect(within(list).getByRole("link", { name: "ABC-6" })).toBeVisible();
     expect(within(list).queryByRole("link", { name: "ABC-1" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Failed/ }));
+    expect(within(list).getByRole("link", { name: "ABC-7" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "ABC-6" })).toBeNull();
   });
 
   it("shows empty state when filter has no matches", () => {
