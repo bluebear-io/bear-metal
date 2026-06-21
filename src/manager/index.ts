@@ -128,7 +128,10 @@ if (config.testTicketId) {
   process.exit(exitCode);
 }
 
-mountFullApi(app!, db, config.maxIterations);
+if (!app || !server) {
+  throw new Error("BUG: app/server must be defined outside test-ticket mode");
+}
+mountFullApi(app, db, config.maxIterations);
 logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 
 scheduler.start();
