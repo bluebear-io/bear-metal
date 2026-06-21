@@ -1,5 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../test/utils.js";
 import type { BmStatus, TicketFilterOptions, TicketListItem, TicketListQuery, TicketListResponse } from "../api/types.js";
@@ -59,9 +59,13 @@ const filterOptions: TicketFilterOptions = {
 
 let mockTickets: TicketListItem[] = [mockTicket];
 const lastQuery: { value: TicketListQuery | undefined } = { value: undefined };
+let fetchNextPage = vi.fn();
+let hasNextPage = false;
+let isFetchingNextPage = false;
+let triggerIntersection: (() => void) | null = null;
 
-function makeResponse(tickets: TicketListItem[]): TicketListResponse {
-  return { tickets, total: tickets.length, page: 1, pageSize: 50 };
+function makeResponse(tickets: TicketListItem[], total = tickets.length, page = 1): TicketListResponse {
+  return { tickets, total, page, pageSize: 50 };
 }
 
 vi.mock("../api/queries.js", () => ({
@@ -72,9 +76,14 @@ vi.mock("../api/queries.js", () => ({
         const tickets = q.bmStatuses
           ? mockTickets.filter((t) => q.bmStatuses!.includes(t.bmStatus))
           : mockTickets;
-        return makeResponse(tickets);
+        return {
+          pages: [makeResponse(tickets)],
+        };
       },
       error: null,
+      fetchNextPage,
+      hasNextPage,
+      isFetchingNextPage,
       isFetching: false,
       isLoading: false,
       refetch: vi.fn(),
@@ -98,9 +107,26 @@ describe("TicketsListPage", () => {
   beforeEach(() => {
     mockTickets = [mockTicket];
     lastQuery.value = undefined;
+    fetchNextPage = vi.fn();
+    hasNextPage = false;
+    isFetchingNextPage = false;
+    triggerIntersection = null;
+    vi.stubGlobal("IntersectionObserver", vi.fn((callback: IntersectionObserverCallback) => {
+      triggerIntersection = () => callback([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+      return {
+        observe: vi.fn(),
+        unobserve: vi.fn(),
+        disconnect: vi.fn(),
+        takeRecords: vi.fn(),
+      };
+    }));
   });
 
-  it("renders ticket status, latest run, attempts, worker, and PR link", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders ticket status, latest run, attempts, and PR link", () => {
     renderWithProviders(<TicketsListPage />, "/tickets");
 
     expect(screen.getByRole("heading", { name: "Tickets" })).toBeVisible();
@@ -109,7 +135,6 @@ describe("TicketsListPage", () => {
     expect(within(list).getByText("completed")).toBeVisible();
     expect(within(list).getByText("succeeded")).toBeVisible();
     expect(within(list).getByText("1/5")).toBeVisible();
-    expect(within(list).getByText("worker-1")).toBeVisible();
     expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute(
       "href",
       "https://github.com/your-org/bear-metal/pull/42",
@@ -159,7 +184,8 @@ describe("TicketsListPage", () => {
     fireEvent.submit(screen.getByRole("search"));
 
     expect(lastQuery.value?.q).toBe("flaky");
-    expect(lastQuery.value?.page).toBe(1);
+    expect(lastQuery.value?.page).toBeUndefined();
+    expect(lastQuery.value?.pageSize).toBe(50);
   });
 
   it("populates dropdowns from filter options and pushes selections into the query", () => {
@@ -181,5 +207,15 @@ describe("TicketsListPage", () => {
     const stopSelect = screen.getByLabelText("Filter by failure reason") as HTMLSelectElement;
     fireEvent.change(stopSelect, { target: { value: "timeout" } });
     expect(lastQuery.value?.stopReasons).toEqual(["timeout"]);
+  });
+
+  it("loads the next ticket page from the bottom sentinel", () => {
+    hasNextPage = true;
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    expect(screen.getByTestId("tickets-scroll-sentinel")).toBeInTheDocument();
+    triggerIntersection?.();
+
+    expect(fetchNextPage).toHaveBeenCalledOnce();
   });
 });

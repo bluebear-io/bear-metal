@@ -1602,6 +1602,7 @@ export class SqlDbClient implements DbClient {
   async listTickets(options: ListTicketsOptions): Promise<ListTicketsResult> {
     const page = clampPage(options.page);
     const pageSize = clampPageSize(options.pageSize);
+    const offset = (page - 1) * pageSize;
 
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -1640,27 +1641,60 @@ export class SqlDbClient implements DbClient {
       conditions.push(`(${labelClauses.join(" OR ")})`);
     }
 
-    const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
-
-    const ticketRows = await this.query<TaskRow>(
-      this.sql(`
-        SELECT ranked.*, ts.status AS ts_status FROM (
-          SELECT tasks.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS rn
-          FROM tasks
-          WHERE ticket_id IS NOT NULL
-        ) ranked
-        LEFT JOIN ticket_statuses ts ON ts.ticket_id = ranked.ticket_id
-        WHERE rn = 1 ${whereClause}
-        ORDER BY ranked.created_at DESC
-      `),
-      params,
-    );
-
-    if (ticketRows.length === 0) {
-      return { items: [], total: 0, page, pageSize };
+    if (options.workerIds && options.workerIds.length > 0) {
+      const placeholders = options.workerIds.map(() => "?").join(", ");
+      conditions.push(`worker_id IN (${placeholders})`);
+      params.push(...options.workerIds);
     }
 
-    const ticketIds = ticketRows.map((r) => r.ticket_id).filter((id): id is string => id !== null);
+    if (options.stopReasons && options.stopReasons.length > 0) {
+      const placeholders = options.stopReasons.map(() => "?").join(", ");
+      conditions.push(`stop_reason IN (${placeholders})`);
+      params.push(...options.stopReasons);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const ticketRows = await this.query<TaskRow & { total_count: number | string }>(
+      this.sql(`
+        WITH latest AS (
+          SELECT * FROM (
+            SELECT tasks.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS rn
+            FROM tasks
+            WHERE ticket_id IS NOT NULL
+          ) ranked
+          WHERE rn = 1
+        ),
+        filtered AS (
+          SELECT latest.*, ts.status AS ts_status
+          FROM latest
+          LEFT JOIN ticket_statuses ts ON ts.ticket_id = latest.ticket_id
+          ${whereClause}
+        ),
+        counted AS (
+          SELECT COUNT(*) AS total_count FROM filtered
+        ),
+        paged AS (
+          SELECT filtered.*
+          FROM filtered
+          ORDER BY created_at DESC, id DESC
+          LIMIT ? OFFSET ?
+        )
+        SELECT paged.*, counted.total_count
+        FROM counted
+        LEFT JOIN paged ON 1 = 1
+        ORDER BY paged.created_at DESC, paged.id DESC
+      `),
+      [...params, pageSize, offset],
+    );
+
+    const total = Number(ticketRows[0]?.total_count ?? 0);
+    const pageRows = ticketRows.filter((row) => row.id !== null && row.id !== undefined);
+    if (pageRows.length === 0) {
+      return { items: [], total, page, pageSize };
+    }
+
+    const ticketIds = pageRows.map((r) => r.ticket_id).filter((id): id is string => id !== null);
     const prPlaceholders = ticketIds.map(() => "?").join(", ");
 
     const prRows = ticketIds.length > 0
@@ -1673,13 +1707,13 @@ export class SqlDbClient implements DbClient {
     const latestPrByTicket = new Map<string, typeof prRows[number]>();
     for (const pr of prRows) if (pr.ticket_id && !latestPrByTicket.has(pr.ticket_id)) latestPrByTicket.set(pr.ticket_id, pr);
 
-    const workerIds = Array.from(new Set(ticketRows.map((r) => r.worker_id).filter((id): id is string => id !== null)));
+    const workerIds = Array.from(new Set(pageRows.map((r) => r.worker_id).filter((id): id is string => id !== null)));
     let workerNameById = new Map<string, string>();
     if (workerIds.length > 0) {
       for (const wid of workerIds) workerNameById.set(wid, wid);
     }
 
-    const enriched: TicketListItem[] = ticketRows.map((row) => {
+    const enriched: TicketListItem[] = pageRows.map((row) => {
       const item = rowToTicketListItem(row);
       item.latestRun = row.run_status !== null ? toLatestRunSummary(row) : null;
       item.latestWorkerName = row.worker_id ? workerNameById.get(row.worker_id) ?? row.worker_id : null;
@@ -1690,17 +1724,7 @@ export class SqlDbClient implements DbClient {
       return item;
     });
 
-    const workerFilter = options.workerIds && options.workerIds.length > 0 ? new Set(options.workerIds) : null;
-    const stopReasonFilter = options.stopReasons && options.stopReasons.length > 0 ? new Set<string>(options.stopReasons) : null;
-    const filtered = enriched.filter((row) => {
-      if (workerFilter && (row.latestRun?.workerId == null || !workerFilter.has(row.latestRun.workerId))) return false;
-      if (stopReasonFilter && (row.latestRun?.stopReason == null || !stopReasonFilter.has(row.latestRun.stopReason))) return false;
-      return true;
-    });
-
-    const total = filtered.length;
-    const start = (page - 1) * pageSize;
-    return { items: filtered.slice(start, start + pageSize), total, page, pageSize };
+    return { items: enriched, total, page, pageSize };
   }
 
   async listTicketFilterOptions(): Promise<TicketFilterOptions> {

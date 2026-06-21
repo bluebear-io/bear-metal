@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useConfig, useTicketFilterOptions, useTickets } from "../api/queries.js";
@@ -58,7 +58,7 @@ const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
   { key: "completed", label: "Completed" },
 ];
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 20;
 
 const selectClasses =
   "rounded-md border border-border-default bg-bg-card px-2 py-1 text-sm text-text-primary " +
@@ -73,10 +73,10 @@ export default function TicketsListPage() {
   const [label, setLabel] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<BmStatus | "">("");
   const [stopReason, setStopReason] = useState<StopReason | "">("");
-  const [page, setPage] = useState<number>(1);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   const query = useMemo<TicketListQuery>(() => {
-    const q: TicketListQuery = { page, pageSize: PAGE_SIZE };
+    const q: TicketListQuery = { pageSize: PAGE_SIZE };
     if (appliedSearch.trim()) q.q = appliedSearch.trim();
     if (workerId) q.workerIds = [workerId];
     if (label) q.labels = [label];
@@ -90,30 +90,41 @@ export default function TicketsListPage() {
       q.bmStatuses = [...FILTER_STATUSES[filter]];
     }
     return q;
-  }, [appliedSearch, workerId, label, statusFilter, stopReason, page, filter]);
+  }, [appliedSearch, workerId, label, statusFilter, stopReason, filter]);
 
   const ticketsQuery = useTickets(query);
   const filtersQuery = useTicketFilterOptions();
   const configQuery = useConfig();
 
-  const response = ticketsQuery.data;
-  const tickets = response?.tickets ?? [];
-  const total = response?.total ?? 0;
+  const pages = ticketsQuery.data?.pages ?? [];
+  const tickets = pages.flatMap((page) => page.tickets);
+  const total = pages[0]?.total ?? 0;
   const filterOptions = filtersQuery.data;
 
-  // Category filtering is done on the server (see `query` above), so the current page IS already
-  // the filtered set. Per-category badge counts would need a dedicated summary endpoint to be
+  // Category filtering is done on the server (see `query` above), so loaded pages are already
+  // filtered. Per-category badge counts would need a dedicated summary endpoint to be
   // accurate across pages — we intentionally don't show stale per-page counts here.
   const visibleTickets = tickets;
 
   const hasActiveServerFilter =
     Boolean(appliedSearch.trim()) || Boolean(workerId) || Boolean(label) || Boolean(statusFilter) || Boolean(stopReason);
-  const pageSize = response?.pageSize ?? PAGE_SIZE;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !ticketsQuery.hasNextPage || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting) && ticketsQuery.hasNextPage && !ticketsQuery.isFetchingNextPage) {
+        void ticketsQuery.fetchNextPage();
+      }
+    });
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [ticketsQuery.fetchNextPage, ticketsQuery.hasNextPage, ticketsQuery.isFetchingNextPage]);
 
   const submitSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    setPage(1);
     setAppliedSearch(searchInput);
   };
 
@@ -124,12 +135,10 @@ export default function TicketsListPage() {
     setLabel("");
     setStatusFilter("");
     setStopReason("");
-    setPage(1);
   };
 
   const setCategory = (key: FilterKey) => {
     setFilter(key);
-    setPage(1);
   };
 
   return (
@@ -172,7 +181,7 @@ export default function TicketsListPage() {
             <select
               aria-label="Filter by worker"
               value={workerId}
-              onChange={(e) => { setWorkerId(e.target.value); setPage(1); }}
+              onChange={(e) => { setWorkerId(e.target.value); }}
               className={selectClasses}
             >
               <option value="">Any worker</option>
@@ -187,7 +196,7 @@ export default function TicketsListPage() {
             <select
               aria-label="Filter by label"
               value={label}
-              onChange={(e) => { setLabel(e.target.value); setPage(1); }}
+              onChange={(e) => { setLabel(e.target.value); }}
               className={selectClasses}
             >
               <option value="">Any label</option>
@@ -202,7 +211,7 @@ export default function TicketsListPage() {
             <select
               aria-label="Filter by state"
               value={statusFilter}
-              onChange={(e) => { setStatusFilter(e.target.value as BmStatus | ""); setPage(1); }}
+              onChange={(e) => { setStatusFilter(e.target.value as BmStatus | ""); }}
               className={selectClasses}
             >
               <option value="">Any state</option>
@@ -217,7 +226,7 @@ export default function TicketsListPage() {
             <select
               aria-label="Filter by failure reason"
               value={stopReason}
-              onChange={(e) => { setStopReason(e.target.value as StopReason | ""); setPage(1); }}
+              onChange={(e) => { setStopReason(e.target.value as StopReason | ""); }}
               className={selectClasses}
             >
               <option value="">Any reason</option>
@@ -311,31 +320,10 @@ export default function TicketsListPage() {
             </table>
           </div>
 
-          {total > pageSize ? (
-            <nav aria-label="Tickets pagination" className="flex items-center justify-between text-sm">
-              <span className="text-text-secondary">
-                Page {page} of {totalPages} &middot; {total} tickets
-              </span>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-text-secondary hover:text-text-primary disabled:opacity-40"
-                >
-                  Previous
-                </button>
-                <button
-                  type="button"
-                  disabled={page >= totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  className="rounded-md border border-border-default bg-bg-card px-3 py-1 text-text-secondary hover:text-text-primary disabled:opacity-40"
-                >
-                  Next
-                </button>
-              </div>
-            </nav>
-          ) : null}
+          <div ref={loadMoreRef} data-testid="tickets-scroll-sentinel" className="h-2" />
+          <div className="text-sm text-text-secondary" aria-live="polite">
+            {ticketsQuery.isFetchingNextPage ? "Loading more tickets..." : `Showing ${visibleTickets.length} of ${total} tickets`}
+          </div>
         </section>
       </QueryBoundary>
     </main>

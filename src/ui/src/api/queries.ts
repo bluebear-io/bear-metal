@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import {
   fetchConfig,
@@ -12,14 +12,17 @@ import {
   fetchWorkers,
   type SummaryRange,
 } from "./client.js";
-import type { BmStatus, TicketListQuery } from "./types.js";
+import type { TicketListQuery } from "./types.js";
 
-export const useTickets = (query?: BmStatus | TicketListQuery) => {
-  // Serialize the query to make the cache key deterministic; useQuery requires a stable key.
-  const key = typeof query === "string" ? { status: query } : query ?? {};
-  return useQuery({
-    queryKey: ["tickets", key],
-    queryFn: () => fetchTickets(query),
+export const useTickets = (query: TicketListQuery = {}) => {
+  return useInfiniteQuery({
+    queryKey: ["tickets", query],
+    initialPageParam: query.page ?? 1,
+    queryFn: ({ pageParam }) => fetchTickets({ ...query, page: Number(pageParam) }),
+    getNextPageParam: (lastPage) => {
+      const loaded = lastPage.page * lastPage.pageSize;
+      return loaded < lastPage.total ? lastPage.page + 1 : undefined;
+    },
   });
 };
 
