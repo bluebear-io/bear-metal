@@ -38,10 +38,10 @@ describe("App", () => {
   it("toggles the document theme class", async () => {
     renderWithProviders(<App />, "/");
 
-    // Starts in "system" state; first click → "light"
-    await userEvent.click(screen.getByRole("button", { name: "System theme" }));
-    // Second click → "dark"
-    await userEvent.click(screen.getByRole("button", { name: "Light theme" }));
+    // Open the settings dropdown
+    await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+    // Select "Dark" theme
+    await userEvent.click(screen.getByRole("button", { name: "Dark" }));
     expect(document.documentElement).toHaveClass("dark");
   });
 });

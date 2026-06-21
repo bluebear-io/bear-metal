@@ -36,6 +36,8 @@ export interface LinearSource {
   /** Post a comment on the ticket and then relinquish delegation. */
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
   getUserEmail(userId: string): Promise<string | null>;
+  /** Returns a map of ticket ID → assignee display name; null for unassigned tickets. */
+  getTicketAssignees(ticketIds: string[]): Promise<Map<string, string | null>>;
   /** Returns open GitHub PR refs attached to the ticket, parsed from Linear attachments. */
   getPullRequestRefs(ticketId: string): Promise<PullRequestRef[]>;
 }

@@ -30,6 +30,7 @@ beforeEach(() => {
     "BACKEND_PORT",
     "LOG_LEVEL",
     "TEST_TICKET_ID",
+    "API_ONLY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "GOOGLE_API_KEY",
@@ -55,6 +56,7 @@ describe("loadConfig", () => {
     expect(config.backendPort).toBe(3100);
     expect(config.logLevel).toBe("info");
     expect(config.testTicketId).toBeNull();
+    expect(config.apiOnly).toBe(false);
   });
 
   it("reads TEST_TICKET_ID when set", () => {
@@ -65,6 +67,11 @@ describe("loadConfig", () => {
   it("defaults testTicketId to null when TEST_TICKET_ID is unset", () => {
     Object.assign(process.env, REQUIRED);
     expect(loadConfig().testTicketId).toBeNull();
+  });
+
+  it("reads API_ONLY when set", () => {
+    Object.assign(process.env, REQUIRED, { API_ONLY: "true" });
+    expect(loadConfig().apiOnly).toBe(true);
   });
 
   it("restores real newlines in the App private key", () => {

@@ -1,5 +1,6 @@
 import "dotenv/config";
 
+import { SqlDbClient } from "../db/client.js";
 import {
   createLogger,
   GitHubIntegration,
@@ -7,7 +8,6 @@ import {
   SlackIntegration,
   type TicketContext,
 } from "../shared/index.js";
-import { SqlDbClient } from "../db/client.js";
 import { TaskWorker } from "../worker/index.js";
 
 import { createApp } from "./app.js";
@@ -25,6 +25,7 @@ logger.info(
     githubInstallationId: config.githubAppInstallationId,
     concurrency: config.workerConcurrency,
     pollIntervalMs: config.pollIntervalMs,
+    apiOnly: config.apiOnly,
   },
   "config loaded",
 );
@@ -38,10 +39,10 @@ const github = new GitHubIntegration({
 const slack =
   config.slackBotToken && config.slackNotificationChannel
     ? new SlackIntegration({
-        token: config.slackBotToken,
-        channel: config.slackNotificationChannel,
-        logger: createLogger({ level: config.logLevel, name: "slack", pretty: config.logPretty }),
-      })
+      token: config.slackBotToken,
+      channel: config.slackNotificationChannel,
+      logger: createLogger({ level: config.logLevel, name: "slack", pretty: config.logPretty }),
+    })
     : undefined;
 if (!slack) {
   logger.warn(
@@ -55,82 +56,87 @@ await db.initSchema();
 // Start the HTTP server (full API + UI) before runWorkerEnvironmentBuilder so
 // the container healthcheck and dashboard are available while the builder runs
 // (which can take up to 30 minutes). The worker/scheduler loops only start
-// after the builder completes. Skipped in single-ticket test mode.
-const server = config.testTicketId
-  ? undefined
-  : createApp(db, config.maxIterations).listen(config.backendPort, () => {
-      logger.info({ port: config.backendPort }, "dashboard server listening");
-    });
-
-await runWorkerEnvironmentBuilder({
-  command: config.workerEnvironmentBuilderCommand,
-  path: config.workerEnvironmentBuilderPath,
-  logger,
+// after the builder completes. Skipped only in single-ticket test mode.
+const server = createApp(db, config.maxIterations, linear).listen(config.backendPort, () => {
+  logger.info({ port: config.backendPort }, "dashboard server listening");
 });
 
-const agentId = await linear.getAgentId().catch((err) => {
-  logger.warn({ err }, "failed to resolve Linear agent id; task delegation checks disabled");
-  return undefined;
-});
+let scheduler: Scheduler | null = null;
+let taskWorker: TaskWorker | null = null;
 
-const handler = new ManagerTicketHandler({ logger, db });
+if (config.apiOnly) {
+  logger.info("API-only mode: scheduler and worker disabled");
+} else {
+  await runWorkerEnvironmentBuilder({
+    command: config.workerEnvironmentBuilderCommand,
+    path: config.workerEnvironmentBuilderPath,
+    logger,
+  });
 
-const scheduler = new Scheduler({
-  logger,
-  linear,
-  github,
-  db,
-  handler,
-  concurrency: config.workerConcurrency,
-  pollIntervalMs: config.pollIntervalMs,
-  taskStaleAfterMs: config.taskStaleAfterMs,
-  taskMaxReclaims: config.taskMaxReclaims,
-  maxIterations: config.maxIterations,
-  slack,
-});
-const taskWorker = new TaskWorker({
-  logger,
-  db,
-  integrations: { github, linear, slack, commentStore: db },
-  concurrency: config.workerConcurrency,
-  pollIntervalMs: config.pollIntervalMs,
-  heartbeatIntervalMs: config.taskHeartbeatIntervalMs,
-  maxReclaims: config.taskMaxReclaims,
-  agentId,
-  workspaceBuilderCommand: config.workspaceBuilderCommand ?? undefined,
-  workspaceBuilderPath: config.workspaceBuilderPath ?? undefined,
-  systemPrompt: config.systemPrompt,
-  maxWorkerTimeMs: config.maxWorkerTimeMs,
-  maxWorkerTokens: config.maxWorkerTokens,
-  llmProvider: config.llmProvider,
-  llmApiKey: config.llmApiKey,
-});
+  const agentId = await linear.getAgentId().catch((err) => {
+    logger.warn({ err }, "failed to resolve Linear agent id; task delegation checks disabled");
+    return undefined;
+  });
 
-if (config.testTicketId) {
-  logger.info({ ticketId: config.testTicketId }, "test mode: running single-ticket pipeline");
-  let exitCode = 0;
-  try {
-    const ticket = await linear.getTicket(config.testTicketId);
-    const ctx: TicketContext = { ticket, prs: [] };
-    await handler.handle(ctx, "new");
-    await taskWorker.tick();
-    await taskWorker.stop();
-    logger.info({ ticketId: config.testTicketId }, "test mode: pipeline complete");
-  } catch (err) {
-    logger.error({ err, ticketId: config.testTicketId }, "test mode: pipeline failed");
-    exitCode = 1;
-  } finally {
-    // Always close the db so the DB connection is released and the SQLite WAL is checkpointed,
-    // even when the pipeline throws partway through.
-    await db.close();
+  const handler = new ManagerTicketHandler({ logger, db });
+
+  scheduler = new Scheduler({
+    logger,
+    linear,
+    github,
+    db,
+    handler,
+    concurrency: config.workerConcurrency,
+    pollIntervalMs: config.pollIntervalMs,
+    taskStaleAfterMs: config.taskStaleAfterMs,
+    taskMaxReclaims: config.taskMaxReclaims,
+    maxIterations: config.maxIterations,
+    slack,
+  });
+  taskWorker = new TaskWorker({
+    logger,
+    db,
+    integrations: { github, linear, slack, commentStore: db },
+    concurrency: config.workerConcurrency,
+    pollIntervalMs: config.pollIntervalMs,
+    heartbeatIntervalMs: config.taskHeartbeatIntervalMs,
+    maxReclaims: config.taskMaxReclaims,
+    agentId,
+    workspaceBuilderCommand: config.workspaceBuilderCommand ?? undefined,
+    workspaceBuilderPath: config.workspaceBuilderPath ?? undefined,
+    systemPrompt: config.systemPrompt,
+    maxWorkerTimeMs: config.maxWorkerTimeMs,
+    maxWorkerTokens: config.maxWorkerTokens,
+    llmProvider: config.llmProvider,
+    llmApiKey: config.llmApiKey,
+  });
+
+  if (config.testTicketId) {
+    logger.info({ ticketId: config.testTicketId }, "test mode: running single-ticket pipeline");
+    let exitCode = 0;
+    try {
+      const ticket = await linear.getTicket(config.testTicketId);
+      const ctx: TicketContext = { ticket, prs: [] };
+      await handler.handle(ctx, "new");
+      await taskWorker.tick();
+      await taskWorker.stop();
+      logger.info({ ticketId: config.testTicketId }, "test mode: pipeline complete");
+    } catch (err) {
+      logger.error({ err, ticketId: config.testTicketId }, "test mode: pipeline failed");
+      exitCode = 1;
+    } finally {
+      // Always close the db so the DB connection is released and the SQLite WAL is checkpointed,
+      // even when the pipeline throws partway through.
+      await db.close();
+    }
+    process.exit(exitCode);
   }
-  process.exit(exitCode);
+
+  logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+
+  scheduler.start();
+  taskWorker.start();
 }
-
-logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
-
-scheduler.start();
-taskWorker.start();
 
 let shuttingDown = false;
 function shutdown(signal: string): void {
@@ -140,7 +146,7 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   logger.info({ signal }, "shutting down");
   logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
-  void Promise.all([scheduler.stop(), taskWorker.stop()])
+  void Promise.all([scheduler?.stop(), taskWorker?.stop()])
     .then(() => db.close())
     .then(() => {
       if (!server) {

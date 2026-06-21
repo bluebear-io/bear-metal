@@ -41,6 +41,7 @@ const ticket: TicketListItem = {
   },
   latestWorkerName: "runner-1",
   latestPr: { number: 14, url: "https://github.com/acme/repo/pull/14", state: "open", merged: false },
+  assigneeName: "alice",
 };
 
 const detail: TicketDetail = {

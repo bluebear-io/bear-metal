@@ -70,6 +70,39 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     return user.email ?? null;
   }
 
+  async getTicketAssignees(ticketIds: string[]): Promise<Map<string, string | null>> {
+    if (ticketIds.length === 0) return new Map();
+
+    const issuesConn = await this.client.issues({
+      filter: { id: { in: ticketIds } },
+      first: ticketIds.length,
+    });
+
+    const ticketAssignee = new Map<string, string>(); // ticket_id → assignee user id
+    const uniqueAssigneeIds = new Set<string>();
+    for (const issue of issuesConn.nodes) {
+      if (issue.assigneeId) {
+        ticketAssignee.set(issue.id, issue.assigneeId);
+        uniqueAssigneeIds.add(issue.assigneeId);
+      }
+    }
+
+    const userNames = new Map<string, string>(); // user_id → display name
+    await Promise.all(
+      [...uniqueAssigneeIds].map(async (userId) => {
+        const user = await this.client.user(userId);
+        userNames.set(userId, user.email ?? user.displayName ?? user.name ?? userId);
+      }),
+    );
+
+    const result = new Map<string, string | null>();
+    for (const ticketId of ticketIds) {
+      const assigneeId = ticketAssignee.get(ticketId);
+      result.set(ticketId, assigneeId ? (userNames.get(assigneeId) ?? null) : null);
+    }
+    return result;
+  }
+
   async getTicketContext(id: string): Promise<LinearTicketContext> {
     const issue = await this.client.issue(id);
     const [ticket, comments] = await Promise.all([this.toTicket(issue), this.getComments(issue)]);

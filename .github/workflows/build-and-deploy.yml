@@ -41,6 +41,10 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run UI tests
+        run: npm test
+        working-directory: src/ui
+
   build:
     name: Build Docker image
     needs: [test]

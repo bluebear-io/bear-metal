@@ -22,6 +22,7 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  assigneeName: string | null;
 }
 
 export type StopReason = "completed" | "timeout" | "crash" | "error";

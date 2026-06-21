@@ -34,6 +34,7 @@ export interface Config {
   logLevel: string;
   logPretty: boolean;
   testTicketId: string | null;
+  apiOnly: boolean;
   /** Optional Slack bot token (xoxb-...). When set together with slackNotificationChannel, PR open/update notifications are sent. */
   slackBotToken: string | null;
   /** Optional Slack channel id or name receiving PR notifications. */
@@ -106,6 +107,7 @@ export function loadConfig(): Readonly<Config> {
     logLevel: process.env.LOG_LEVEL || "info",
     logPretty: boolEnv("LOG_PRETTY", false),
     testTicketId: process.env.TEST_TICKET_ID?.trim() || null,
+    apiOnly: boolEnv("API_ONLY", false),
     taskHeartbeatIntervalMs: positiveIntEnv("TASK_HEARTBEAT_INTERVAL_MS", 30_000),
     taskStaleAfterMs: positiveIntEnv("TASK_STALE_AFTER_MS", 5 * 60_000),
     taskMaxReclaims: positiveIntEnv("TASK_MAX_RECLAIMS", 3),

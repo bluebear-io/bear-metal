@@ -33,6 +33,7 @@ const mockTicket: TicketListItem = {
   },
   latestWorkerName: "worker-1",
   latestPr: { number: 42, url: "https://github.com/your-org/bear-metal/pull/42", state: "open", merged: false },
+  assigneeName: null,
 };
 
 function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketListItem {

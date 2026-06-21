@@ -122,6 +122,9 @@ class FakeLinear implements LinearSource {
   async getUserEmail(_userId: string): Promise<string | null> {
     return null;
   }
+  async getTicketAssignees(_ticketIds: string[]): Promise<Map<string, string | null>> {
+    return new Map();
+  }
   async getPullRequestRefs(_ticketId: string): Promise<{ owner: string; repo: string; number: number }[]> {
     return [];
   }
