@@ -82,10 +82,6 @@ function serializeTicket(item: TicketListItem) {
 export function createRouter(db: DbClient, maxIterations: number): Router {
   const router = Router();
 
-  router.get("/health", (_req, res) => {
-    res.json({ status: "ok" });
-  });
-
   router.get("/config", (_req, res) => {
     res.json({ maxIterations });
   });

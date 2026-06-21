@@ -10,7 +10,7 @@ import {
 import { SqlDbClient } from "../db/client.js";
 import { TaskWorker } from "../worker/index.js";
 
-import { createApp } from "./app.js";
+import { createBootstrapApp, mountFullApi } from "./app.js";
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
@@ -48,6 +48,18 @@ if (!slack) {
     "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
   );
 }
+
+// Start the HTTP server with only /api/health mounted before running the
+// worker environment builder (which can take up to 30 minutes) so the
+// container healthcheck reports healthy throughout startup. Skipped in
+// single-ticket test mode where no server is needed.
+const app = config.testTicketId ? undefined : createBootstrapApp();
+const server = app
+  ? app.listen(config.backendPort, () => {
+      logger.info({ port: config.backendPort }, "dashboard server listening (bootstrap)");
+    })
+  : undefined;
+
 await runWorkerEnvironmentBuilder({
   command: config.workerEnvironmentBuilderCommand,
   path: config.workerEnvironmentBuilderPath,
@@ -116,11 +128,8 @@ if (config.testTicketId) {
   process.exit(exitCode);
 }
 
-const app = createApp(db, config.maxIterations);
-const server = app.listen(config.backendPort, () => {
-  logger.info({ port: config.backendPort }, "dashboard server listening");
-  logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
-});
+mountFullApi(app!, db, config.maxIterations);
+logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 
 scheduler.start();
 taskWorker.start();
@@ -136,6 +145,10 @@ function shutdown(signal: string): void {
   void Promise.all([scheduler.stop(), taskWorker.stop()])
     .then(() => db.close())
     .then(() => {
+      if (!server) {
+        process.exit(0);
+        return;
+      }
       server.close(() => {
         logger.info({ signal }, "dashboard server closed, goodnight 🌙");
         process.exit(0);
