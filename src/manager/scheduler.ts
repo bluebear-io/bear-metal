@@ -156,6 +156,11 @@ export class Scheduler {
     logger.debug({ tracked: tracked.length, inFlight }, "poll tick started");
 
     const refreshed = await refreshTrackedTickets(db, linear, github, agentId, logger, this.deps.slack);
+    try {
+      await reconcileStaleWaitingForHuman(db, linear, github, agentId, logger);
+    } catch (err) {
+      logger.error({ err }, "stale waiting_for_human reconciliation failed");
+    }
     const admitted = await admitNewTickets(
       db,
       linear,
@@ -576,9 +581,16 @@ async function admitNewTickets(
   if (free <= 0) {
     return [];
   }
-  const [candidates, tracked] = await Promise.all([linear.findDelegatedTickets(agentId), db.listTracked()]);
-  const trackedTicketIds = new Set(tracked.map((slot) => slot.ticketId));
-  const admitted = selectAdmissions(candidates, (id) => trackedTicketIds.has(id), free);
+  const [candidates, tracked, waitingIds] = await Promise.all([
+    linear.findDelegatedTickets(agentId),
+    db.listTracked(),
+    db.listWaitingForHumanTicketIds(),
+  ]);
+  // A waiting_for_human ticket whose slot was released (e.g. stale post-reconcile case) is
+  // invisible to listTracked() but must still be excluded from admission so we don't silently
+  // re-admit it as a brand-new task.
+  const excludedIds = new Set<string | null>([...tracked.map((slot) => slot.ticketId), ...waitingIds]);
+  const admitted = selectAdmissions(candidates, (id) => excludedIds.has(id), free);
   const contexts: DispatchItem[] = [];
   for (const ticket of admitted) {
     const prs = await linear.getPullRequestRefs(ticket.id).catch((err) => {
@@ -699,5 +711,90 @@ function knownPrsForSlot(slot: TaskSlot): PullRequestRef[] {
 
 function isTerminalLinearTicket(ticket: Ticket): boolean {
   return TERMINAL_STATE_TYPES.includes(ticket.status.type) || TERMINAL_STATE_NAMES.includes(ticket.status.name);
+}
+
+/**
+ * Reconcile `ticket_statuses.status = 'waiting_for_human'` rows whose slot has been released and
+ * therefore never go through `refreshTrackedTickets`. Without this, terminal Linear state
+ * (Done/Canceled/Merged) and resolved PRs after the slot was released leave the UI showing stale
+ * `waiting_for_human` forever.
+ *
+ * Rules (see DEN-2563):
+ *   - Linear terminal -> mark completed, ensure slot released. No hand back.
+ *   - All known PRs resolved (merged or closed) AND at least one merged -> hand back if still
+ *     delegated to Bear Metal, mark completed, ensure slot released.
+ *   - Anything else (partial resolution, closed-unmerged only, clean open) -> leave alone.
+ *     Releasing a non-terminal waiting_for_human row would let admission re-admit it as a new
+ *     task on the next tick.
+ */
+async function reconcileStaleWaitingForHuman(
+  db: DbClient,
+  linear: LinearSource,
+  github: GitHubSource,
+  agentId: string,
+  logger: Logger,
+): Promise<void> {
+  const stale = await db.listStaleWaitingForHuman();
+  for (const row of stale) {
+    try {
+      const ticket = await linear.getTicket(row.ticketId);
+      const knownPrs = row.latestTask.result?.prs ?? row.latestTask.input?.prs ?? [];
+
+      if (isTerminalLinearTicket(ticket)) {
+        await completeStaleTicket(
+          db,
+          ticket,
+          `completed ${ticket.identifier} (Linear: ${ticket.status.name})`,
+        );
+        logger.info(
+          { ticket: ticket.identifier, linearStatus: ticket.status.name },
+          "reconciled stale waiting_for_human: linear terminal",
+        );
+        continue;
+      }
+
+      if (knownPrs.length === 0) {
+        continue;
+      }
+
+      const prStatuses = await Promise.all(
+        knownPrs.map((pr) => github.getPullRequestStatus(pr)),
+      );
+      const allResolved = prStatuses.every((s) => s.pr.merged || s.pr.state === "closed");
+      const anyMerged = prStatuses.some((s) => s.pr.merged);
+
+      if (allResolved && anyMerged) {
+        if (ticket.delegate?.id === agentId) {
+          await linear.handBack(ticket.id);
+          logger.info(
+            { ticket: ticket.identifier },
+            "reconciled stale waiting_for_human: handed back after merge",
+          );
+        }
+        await completeStaleTicket(db, ticket, `completed ${ticket.identifier}`);
+      }
+    } catch (err) {
+      logger.error(
+        { err, ticketId: row.ticketId, taskId: row.latestTask.id },
+        "stale waiting_for_human reconciliation failed for ticket",
+      );
+    }
+  }
+}
+
+async function completeStaleTicket(db: DbClient, ticket: Ticket, summary: string): Promise<void> {
+  await db.setTicketStatus(ticket.id, "completed");
+  await db.setSlotStatus(ticket.id, "released");
+  void db.recordEvent({
+    id: randomUUID(),
+    ticketId: ticket.id,
+    runId: null,
+    workerId: null,
+    source: "manager",
+    type: "ticket_completed",
+    summary,
+    payloadJson: null,
+    createdAt: new Date().toISOString(),
+  });
 }
 

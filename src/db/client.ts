@@ -126,6 +126,11 @@ export interface TaskSlot {
   latestTask: TaskRecord;
 }
 
+export interface StaleWaitingForHumanRow {
+  ticketId: string;
+  latestTask: TaskRecord;
+}
+
 export const DEFAULT_TICKET_PAGE_SIZE = 50;
 export const MAX_TICKET_PAGE_SIZE = 200;
 
@@ -455,6 +460,11 @@ export interface DbClient {
   acquireNext(workerId: string): Promise<TaskRecord | null>;
   complete(taskId: string, result: DispatchResult): Promise<void>;
   listTracked(): Promise<TaskSlot[]>;
+  /** Latest task row per ticket where ticket_statuses.status = 'waiting_for_human' AND slot_status = 'released'.
+   *  These rows are invisible to listTracked() and so never get terminal-state reconciliation through the normal refresh loop. */
+  listStaleWaitingForHuman(): Promise<StaleWaitingForHumanRow[]>;
+  /** Linear ticket ids whose ticket_statuses.status is 'waiting_for_human' — used to exclude them from new-task admission. */
+  listWaitingForHumanTicketIds(): Promise<string[]>;
   countTracked(): Promise<number>;
   setSlotStatus(ticketId: string, status: SlotStatus): Promise<TaskRecord>;
   getIterationCount(ticketId: string): Promise<number>;
@@ -609,6 +619,14 @@ function rowToSlot(row: TaskRow): TaskSlot {
     slotStatus: latestTask.slotStatus,
     latestTask,
   };
+}
+
+function rowToStaleWaitingForHumanRow(row: TaskRow): StaleWaitingForHumanRow {
+  const latestTask = rowToTaskRecord(row);
+  if (latestTask.ticketId === null) {
+    throw new Error(`Stale waiting_for_human row has no ticket_id: ${latestTask.id}`);
+  }
+  return { ticketId: latestTask.ticketId, latestTask };
 }
 
 function rowToTicketListItem(row: TaskRow): TicketListItem {
@@ -1319,6 +1337,40 @@ export class SqlDbClient implements DbClient {
       ORDER BY created_at ASC, id ASC
     `);
     return rows.map(rowToSlot);
+  }
+
+  async listStaleWaitingForHuman(): Promise<StaleWaitingForHumanRow[]> {
+    if (this.dialect === "sqlite") {
+      const rows = await this.query<TaskRow>(`
+        SELECT ranked.* FROM (
+          SELECT tasks.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS rn
+          FROM tasks
+          WHERE ticket_id IS NOT NULL
+        ) ranked
+        JOIN ticket_statuses ts ON ts.ticket_id = ranked.ticket_id
+        WHERE ranked.rn = 1 AND ts.status = 'waiting_for_human' AND ranked.slot_status = 'released'
+        ORDER BY ranked.created_at ASC, ranked.id ASC
+      `);
+      return rows.map(rowToStaleWaitingForHumanRow);
+    }
+    const rows = await this.query<TaskRow>(`
+      SELECT latest.* FROM (
+        SELECT DISTINCT ON (ticket_id) * FROM tasks
+        WHERE ticket_id IS NOT NULL
+        ORDER BY ticket_id, created_at DESC, id DESC
+      ) latest
+      JOIN ticket_statuses ts ON ts.ticket_id = latest.ticket_id
+      WHERE ts.status = 'waiting_for_human' AND latest.slot_status = 'released'
+      ORDER BY latest.created_at ASC, latest.id ASC
+    `);
+    return rows.map(rowToStaleWaitingForHumanRow);
+  }
+
+  async listWaitingForHumanTicketIds(): Promise<string[]> {
+    const rows = await this.query<{ ticket_id: string }>(
+      `SELECT ticket_id FROM ticket_statuses WHERE status = 'waiting_for_human'`,
+    );
+    return rows.map((r) => r.ticket_id);
   }
 
   async countTracked(): Promise<number> {

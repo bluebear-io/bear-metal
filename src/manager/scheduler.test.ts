@@ -731,3 +731,141 @@ describe("Scheduler.tick", () => {
     expect(linear.handBackCalls).toEqual(["a"]);
   });
 });
+
+describe("Scheduler.tick stale waiting_for_human reconciliation", () => {
+  async function seedStaleWaitingForHuman(
+    db: DbClient,
+    ticketId: string,
+    prs: PullRequestRef[],
+  ): Promise<void> {
+    await seedCompletedTask(db, { state: "new", ticketId, prs: [] }, { status: "done", prs });
+    const issueId = ticketId.toLowerCase();
+    await db.setTicketStatus(issueId, "waiting_for_human");
+    await db.setSlotStatus(issueId, "released");
+  }
+
+  it("marks Bear Metal status completed and keeps slot released when Linear ticket is Done", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
+    const terminal = makeTicket("a", { status: { name: "Done", type: "completed" } });
+    const linear = new FakeLinear([], { a: terminal });
+    const github = new FakeGitHub();
+    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.readTicketStatus("a")).toEqual({ status: "completed", notify: 0 });
+    expect(await db.countTracked()).toBe(0);
+    // No GitHub call needed when Linear is already terminal.
+    expect(github.statusCalls).toHaveLength(0);
+    // Linear terminal path must not hand back.
+    expect(linear.handBackCalls).toEqual([]);
+  });
+
+  it("marks Bear Metal status completed when Linear ticket is Canceled", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
+    const canceled = makeTicket("a", { status: { name: "Canceled", type: "canceled" } });
+    const linear = new FakeLinear([], { a: canceled });
+    const scheduler = buildScheduler({
+      linear,
+      github: new FakeGitHub(),
+      db,
+      handler: new RecordingHandler(db),
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.readTicketStatus("a")).toEqual({ status: "completed", notify: 0 });
+    expect(await db.countTracked()).toBe(0);
+    expect(linear.handBackCalls).toEqual([]);
+  });
+
+  it("completes and hands back when all known PRs are resolved and at least one was merged", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", [prRef(7), prRef(8)]);
+    const linear = new FakeLinear([], { a: makeTicket("a") });
+    const github = new FakeGitHub({
+      statusByNumber: {
+        7: status(openPr(7, { merged: true, state: "closed" })),
+        8: status(openPr(8, { state: "closed" })),
+      },
+    });
+    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.readTicketStatus("a")).toEqual({ status: "completed", notify: 0 });
+    expect(linear.handBackCalls).toEqual(["a"]);
+  });
+
+  it("does not complete a multi-PR ticket while any PR is still open", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", [prRef(7), prRef(8)]);
+    const linear = new FakeLinear([], { a: makeTicket("a") });
+    const github = new FakeGitHub({
+      statusByNumber: {
+        7: status(openPr(7, { merged: true, state: "closed" })),
+        8: status(openPr(8)),
+      },
+    });
+    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+    expect(linear.handBackCalls).toEqual([]);
+  });
+
+  it("keeps waiting_for_human when the only known PR is closed-unmerged and Linear is non-terminal", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
+    const linear = new FakeLinear([], { a: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7, { state: "closed" })) });
+    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+    expect(linear.handBackCalls).toEqual([]);
+  });
+
+  it("keeps waiting_for_human when the known PR is clean and open and Linear is non-terminal", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
+    const linear = new FakeLinear([], { a: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7)) });
+    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+    expect(linear.handBackCalls).toEqual([]);
+  });
+
+  it("does not re-admit a non-terminal released waiting_for_human ticket as a new task", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
+    // Linear still reports the ticket as delegated to the agent — admitNewTickets would happily
+    // pick it up if the new exclusion list missed it.
+    const stillDelegated = makeTicket("a");
+    const linear = new FakeLinear([stillDelegated], { a: stillDelegated });
+    const github = new FakeGitHub({ status: status(openPr(7)) });
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github, db, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(await db.countTracked()).toBe(0);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+});
