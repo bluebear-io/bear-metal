@@ -10,7 +10,7 @@ import {
 import { SqlDbClient } from "../db/client.js";
 import { TaskWorker } from "../worker/index.js";
 
-import { createBootstrapApp, mountFullApi } from "./app.js";
+import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
@@ -49,25 +49,24 @@ if (!slack) {
   );
 }
 
-// Start the HTTP server with only /api/health mounted before running the
-// worker environment builder (which can take up to 30 minutes) so the
-// container healthcheck reports healthy throughout startup. Skipped in
-// single-ticket test mode where no server is needed.
-const app = config.testTicketId ? undefined : createBootstrapApp();
-const server = app
-  ? app.listen(config.backendPort, () => {
-      logger.info({ port: config.backendPort }, "dashboard server listening (bootstrap)");
-    })
-  : undefined;
+const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
+await db.initSchema();
+
+// Start the HTTP server (full API + UI) before runWorkerEnvironmentBuilder so
+// the container healthcheck and dashboard are available while the builder runs
+// (which can take up to 30 minutes). The worker/scheduler loops only start
+// after the builder completes. Skipped in single-ticket test mode.
+const server = config.testTicketId
+  ? undefined
+  : createApp(db, config.maxIterations).listen(config.backendPort, () => {
+      logger.info({ port: config.backendPort }, "dashboard server listening");
+    });
 
 await runWorkerEnvironmentBuilder({
   command: config.workerEnvironmentBuilderCommand,
   path: config.workerEnvironmentBuilderPath,
   logger,
 });
-
-const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
-await db.initSchema();
 
 const agentId = await linear.getAgentId().catch((err) => {
   logger.warn({ err }, "failed to resolve Linear agent id; task delegation checks disabled");
@@ -128,10 +127,6 @@ if (config.testTicketId) {
   process.exit(exitCode);
 }
 
-if (!app || !server) {
-  throw new Error("BUG: app/server must be defined outside test-ticket mode");
-}
-mountFullApi(app, db, config.maxIterations);
 logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 
 scheduler.start();
