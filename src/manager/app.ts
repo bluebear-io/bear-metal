@@ -14,11 +14,9 @@ const indexHtml = existsSync(INDEX_HTML_PATH) ? readFileSync(INDEX_HTML_PATH, "u
 export function createApp(db: DbClient, maxIterations: number): Express {
   const app = express();
   app.use(express.json());
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok" });
-  });
   app.use("/api", createRouter(db, maxIterations));
   app.use(express.static(UI_DIST));
+  // SPA fallback — all non-API routes serve index.html so React Router handles them
   app.get("*", (_req, res) => {
     if (!indexHtml) { res.status(404).send("UI not built"); return; }
     res.type("html").send(indexHtml);
