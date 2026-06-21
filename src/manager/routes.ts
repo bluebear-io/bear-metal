@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { MAX_TICKET_PAGE_SIZE, type DbClient, type ListTicketsOptions, type TicketListItem } from "../db/client.js";
+import type { LinearSource } from "./scheduler.js";
 
-const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "completed"] as const;
+const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "failed", "completed"] as const;
 type BmStatus = (typeof BM_STATUSES)[number];
 const STOP_REASONS = ["completed", "timeout", "crash", "error"] as const;
 type StopReason = (typeof STOP_REASONS)[number];
@@ -57,7 +58,7 @@ function readOptionalInt(value: unknown, name: string): number | undefined {
   return n;
 }
 
-function serializeTicket(item: TicketListItem) {
+function serializeTicket(item: TicketListItem, assigneeName: string | null | undefined) {
   return {
     id: item.ticketId,
     identifier: item.ticketIdentifier,
@@ -75,11 +76,12 @@ function serializeTicket(item: TicketListItem) {
     completedAt: item.ticketCompletedAt?.toISOString() ?? null,
     latestRun: item.latestRun,
     latestWorkerName: item.latestWorkerName,
-    latestPr: item.latestPr,
+    pullRequests: item.pullRequests,
+    assigneeName: assigneeName ?? null,
   };
 }
 
-export function createRouter(db: DbClient, maxIterations: number): Router {
+export function createRouter(db: DbClient, maxIterations: number, linear: LinearSource): Router {
   const router = Router();
 
   router.get("/health", (_req, res) => {
@@ -169,8 +171,10 @@ export function createRouter(db: DbClient, maxIterations: number): Router {
       };
 
       const result = await db.listTickets(opts);
+      const ticketIds = result.items.map((t) => t.ticketId).filter((id): id is string => id !== null);
+      const assignees = await linear.getTicketAssignees(ticketIds);
       res.json({
-        tickets: result.items.map(serializeTicket),
+        tickets: result.items.map((t) => serializeTicket(t, t.ticketId ? assignees.get(t.ticketId) : null)),
         total: result.total,
         page: result.page,
         pageSize: result.pageSize,
@@ -214,7 +218,9 @@ export function createRouter(db: DbClient, maxIterations: number): Router {
         res.status(404).json({ error: "ticket not found" });
         return;
       }
-      res.json({ ...detail, ticket: serializeTicket(detail.ticket) });
+      const tid = detail.ticket.ticketId;
+      const assignees = tid ? await linear.getTicketAssignees([tid]) : new Map<string, string | null>();
+      res.json({ ...detail, ticket: serializeTicket(detail.ticket, tid ? assignees.get(tid) : null) });
     } catch (err) {
       next(err);
     }

@@ -10,6 +10,8 @@ import { TicketDetailPage } from "./TicketDetailPage.js";
 vi.mock("../api/queries.js", () => ({
   useTicketDetail: vi.fn(),
   useConfig: vi.fn().mockReturnValue({ data: { maxIterations: 20 } }),
+  useToolCallDetail: vi.fn().mockReturnValue({ data: null, isLoading: false }),
+  useEventPayload: vi.fn().mockReturnValue({ data: null, isLoading: false }),
 }));
 
 const mockUseTicketDetail = vi.mocked(useTicketDetail);
@@ -30,6 +32,7 @@ const ticketDetail: TicketDetail = {
     createdAt: "2026-06-09T08:00:00.000Z",
     updatedAt: "2026-06-09T09:20:00.000Z",
     completedAt: null,
+    assigneeName: null,
   },
   runs: [
     {

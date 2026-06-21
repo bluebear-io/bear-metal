@@ -4,7 +4,7 @@ const toneColorByStatus: Record<string, string> = {
   completed: "var(--color-status-green)",
   passed: "var(--color-status-green)",
   merged: "var(--color-status-green)",
-  succeeded: "var(--color-text-muted)",
+  succeeded: "var(--color-status-green)",
   waiting_for_human: "var(--color-status-orange)",
   healthy: "var(--color-status-green)",
   abandoned: "var(--color-status-red)",
@@ -32,9 +32,7 @@ export interface StatusBadgeProps {
   status: string;
 }
 
-const STATUS_LABELS: Partial<Record<string, string>> = {
-  heartbeat_stale: "stale",
-};
+const STATUS_LABELS: Partial<Record<string, string>> = {};
 
 const humanizeStatus = (status: string): string => STATUS_LABELS[status] ?? status.replaceAll("_", " ");
 

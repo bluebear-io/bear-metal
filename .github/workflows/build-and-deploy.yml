@@ -31,15 +31,26 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            src/ui/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install UI dependencies
+        run: npm ci
+        working-directory: src/ui
 
       - name: Typecheck
         run: npm run typecheck
 
       - name: Run tests
         run: npm test
+
+      - name: Run UI tests
+        run: npm test
+        working-directory: src/ui
 
   build:
     name: Build Docker image

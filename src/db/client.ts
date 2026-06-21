@@ -15,7 +15,7 @@ function modelFamily(provider: string | null, modelName: string | null): "claude
   return "other";
 }
 
-export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
+export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
@@ -153,6 +153,17 @@ export interface CurrentRunSummary extends LatestRunSummary {
   runtimeMs: number | null;
 }
 
+export interface TicketListPullRequest {
+  id: string;
+  number: number;
+  title: string;
+  headRef: string;
+  url: string;
+  state: string;
+  draft: boolean;
+  merged: boolean;
+}
+
 export interface TicketListItem {
   id: string;
   ticketId: string | null;
@@ -171,7 +182,7 @@ export interface TicketListItem {
   updatedAt: Date;
   latestRun: LatestRunSummary | null;
   latestWorkerName: string | null;
-  latestPr: { number: number; url: string; state: string; merged: boolean } | null;
+  pullRequests: TicketListPullRequest[];
 }
 
 export interface ListTicketsOptions {
@@ -648,7 +659,7 @@ function rowToTicketListItem(row: TaskRow): TicketListItem {
     updatedAt: parseTimestampRequired(row.updated_at, "updated_at"),
     latestRun: null,
     latestWorkerName: null,
-    latestPr: null,
+    pullRequests: [],
   };
 }
 
@@ -1602,6 +1613,7 @@ export class SqlDbClient implements DbClient {
   async listTickets(options: ListTicketsOptions): Promise<ListTicketsResult> {
     const page = clampPage(options.page);
     const pageSize = clampPageSize(options.pageSize);
+    const offset = (page - 1) * pageSize;
 
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -1640,67 +1652,113 @@ export class SqlDbClient implements DbClient {
       conditions.push(`(${labelClauses.join(" OR ")})`);
     }
 
-    const whereClause = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
+    if (options.workerIds && options.workerIds.length > 0) {
+      const placeholders = options.workerIds.map(() => "?").join(", ");
+      conditions.push(`worker_id IN (${placeholders})`);
+      params.push(...options.workerIds);
+    }
 
-    const ticketRows = await this.query<TaskRow>(
-      this.sql(`
-        SELECT ranked.*, ts.status AS ts_status FROM (
+    if (options.stopReasons && options.stopReasons.length > 0) {
+      const placeholders = options.stopReasons.map(() => "?").join(", ");
+      conditions.push(`stop_reason IN (${placeholders})`);
+      params.push(...options.stopReasons);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const filteredTicketsCte = `
+      WITH latest AS (
+        SELECT * FROM (
           SELECT tasks.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS rn
           FROM tasks
           WHERE ticket_id IS NOT NULL
         ) ranked
-        LEFT JOIN ticket_statuses ts ON ts.ticket_id = ranked.ticket_id
-        WHERE rn = 1 ${whereClause}
-        ORDER BY ranked.created_at DESC
-      `),
+        WHERE rn = 1
+      ),
+      filtered AS (
+        SELECT latest.*, ts.status AS ts_status
+        FROM latest
+        LEFT JOIN ticket_statuses ts ON ts.ticket_id = latest.ticket_id
+        ${whereClause}
+      )
+    `;
+
+    const countRows = await this.query<{ total_count: number | string }>(
+      this.sql(`${filteredTicketsCte} SELECT COUNT(*) AS total_count FROM filtered`),
       params,
     );
+    const total = Number(countRows[0]?.total_count ?? 0);
 
-    if (ticketRows.length === 0) {
-      return { items: [], total: 0, page, pageSize };
+    const pageRows = await this.query<TaskRow>(
+      this.sql(`
+        ${filteredTicketsCte}
+        SELECT filtered.*
+        FROM filtered
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?
+      `),
+      [...params, pageSize, offset],
+    );
+    if (pageRows.length === 0) {
+      return { items: [], total, page, pageSize };
     }
 
-    const ticketIds = ticketRows.map((r) => r.ticket_id).filter((id): id is string => id !== null);
+    const ticketIds = pageRows.map((r) => r.ticket_id).filter((id): id is string => id !== null);
     const prPlaceholders = ticketIds.map(() => "?").join(", ");
 
     const prRows = ticketIds.length > 0
-      ? await this.query<{ id: string; ticket_id: string; number: number; url: string; state: string; merged: number | boolean; updated_at: string }>(
-          this.sql(`SELECT id, ticket_id, number, url, state, merged, updated_at FROM pull_requests WHERE ticket_id IN (${prPlaceholders}) ORDER BY updated_at DESC`),
+      ? await this.query<{
+          id: string;
+          ticket_id: string;
+          number: number;
+          title: string;
+          head_ref: string;
+          url: string;
+          state: string;
+          draft: number | boolean;
+          merged: number | boolean;
+          updated_at: string;
+        }>(
+          this.sql(
+            `SELECT id, ticket_id, number, title, head_ref, url, state, draft, merged, updated_at
+             FROM pull_requests
+             WHERE ticket_id IN (${prPlaceholders})
+             ORDER BY updated_at DESC`,
+          ),
           ticketIds,
         )
       : [];
 
-    const latestPrByTicket = new Map<string, typeof prRows[number]>();
-    for (const pr of prRows) if (pr.ticket_id && !latestPrByTicket.has(pr.ticket_id)) latestPrByTicket.set(pr.ticket_id, pr);
+    const prsByTicket = new Map<string, TicketListPullRequest[]>();
+    for (const pr of prRows) {
+      const ticketPrs = prsByTicket.get(pr.ticket_id) ?? [];
+      ticketPrs.push({
+        id: pr.id,
+        number: pr.number,
+        title: pr.title,
+        headRef: pr.head_ref,
+        url: pr.url,
+        state: pr.state,
+        draft: intBool(pr.draft),
+        merged: intBool(pr.merged),
+      });
+      prsByTicket.set(pr.ticket_id, ticketPrs);
+    }
 
-    const workerIds = Array.from(new Set(ticketRows.map((r) => r.worker_id).filter((id): id is string => id !== null)));
+    const workerIds = Array.from(new Set(pageRows.map((r) => r.worker_id).filter((id): id is string => id !== null)));
     let workerNameById = new Map<string, string>();
     if (workerIds.length > 0) {
       for (const wid of workerIds) workerNameById.set(wid, wid);
     }
 
-    const enriched: TicketListItem[] = ticketRows.map((row) => {
+    const enriched: TicketListItem[] = pageRows.map((row) => {
       const item = rowToTicketListItem(row);
       item.latestRun = row.run_status !== null ? toLatestRunSummary(row) : null;
       item.latestWorkerName = row.worker_id ? workerNameById.get(row.worker_id) ?? row.worker_id : null;
-      const latestPr = row.ticket_id ? latestPrByTicket.get(row.ticket_id) : null;
-      item.latestPr = latestPr
-        ? { number: latestPr.number, url: latestPr.url, state: latestPr.state, merged: intBool(latestPr.merged) }
-        : null;
+      item.pullRequests = row.ticket_id ? prsByTicket.get(row.ticket_id) ?? [] : [];
       return item;
     });
 
-    const workerFilter = options.workerIds && options.workerIds.length > 0 ? new Set(options.workerIds) : null;
-    const stopReasonFilter = options.stopReasons && options.stopReasons.length > 0 ? new Set<string>(options.stopReasons) : null;
-    const filtered = enriched.filter((row) => {
-      if (workerFilter && (row.latestRun?.workerId == null || !workerFilter.has(row.latestRun.workerId))) return false;
-      if (stopReasonFilter && (row.latestRun?.stopReason == null || !stopReasonFilter.has(row.latestRun.stopReason))) return false;
-      return true;
-    });
-
-    const total = filtered.length;
-    const start = (page - 1) * pageSize;
-    return { items: filtered.slice(start, start + pageSize), total, page, pageSize };
+    return { items: enriched, total, page, pageSize };
   }
 
   async listTicketFilterOptions(): Promise<TicketFilterOptions> {
@@ -1730,7 +1788,7 @@ export class SqlDbClient implements DbClient {
     );
     const workers = workerRows.map((w) => ({ id: w.worker_id, name: w.worker_id }));
 
-    const allBmStatuses: BmStatus[] = ["in_progress", "validating", "waiting_for_human", "completed"];
+    const allBmStatuses: BmStatus[] = ["in_progress", "validating", "waiting_for_human", "failed", "completed"];
 
     const countRows = await this.query<{ status: string | null; cnt: number }>(
       this.sql(`

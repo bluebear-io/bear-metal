@@ -54,10 +54,11 @@ const TicketSummary = ({ ticket, maxIterations }: { ticket: Ticket; maxIteration
         </div>
         <Field label="Linear status" value={`${ticket.linearStatusName} (${ticket.linearStatusType})`} />
         <Field label="Attempts" value={`${ticket.attemptCount} / ${maxIterations ?? "?"}`} />
+        <Field label="Owner" value={ticket.assigneeName ?? "—"} />
         <Field label="Branch" value={ticket.branchName} />
         <Field label="Updated" value={formatDateTime(ticket.updatedAt)} />
         <Field label="Completed" value={formatDateTime(ticket.completedAt)} />
-        <div className="min-w-0 sm:col-span-2 lg:col-span-4">
+        <div className="min-w-0">
           <dt className="text-xs font-medium uppercase text-text-muted">Labels</dt>
           <dd className="mt-2 flex flex-wrap gap-2">
             {labels.length === 0 ? (

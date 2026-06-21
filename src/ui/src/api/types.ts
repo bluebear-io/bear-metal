@@ -2,7 +2,7 @@ export interface Config {
   maxIterations: number;
 }
 
-export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "completed";
+export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
@@ -22,6 +22,7 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  assigneeName: string | null;
 }
 
 export type StopReason = "completed" | "timeout" | "crash" | "error";
@@ -42,7 +43,16 @@ export interface TicketListItem extends Ticket {
   latestRun: LatestRunSummary | null;
   /** Worker name for the most recent attempt; surfaced for the filter bar + list display. */
   latestWorkerName: string | null;
-  latestPr: { number: number; url: string; state: "open" | "closed"; merged: boolean } | null;
+  pullRequests: Array<{
+    id: string;
+    number: number;
+    title: string;
+    headRef: string;
+    url: string;
+    state: "open" | "closed";
+    draft: boolean;
+    merged: boolean;
+  }>;
 }
 
 export interface TicketListResponse {

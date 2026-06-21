@@ -1,5 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../test/utils.js";
 import type { BmStatus, TicketFilterOptions, TicketListItem, TicketListQuery, TicketListResponse } from "../api/types.js";
@@ -32,11 +32,33 @@ const mockTicket: TicketListItem = {
     createdAt: "2026-06-09T10:01:00.000Z",
   },
   latestWorkerName: "worker-1",
-  latestPr: { number: 42, url: "https://github.com/your-org/bear-metal/pull/42", state: "open", merged: false },
+  pullRequests: [
+    {
+      id: "your-org/bear-metal#42",
+      number: 42,
+      title: "Tickets list page",
+      headRef: "feature/proj-1",
+      url: "https://github.com/your-org/bear-metal/pull/42",
+      state: "open",
+      draft: false,
+      merged: false,
+    },
+    {
+      id: "your-org/console#43",
+      number: 43,
+      title: "Tickets list page console",
+      headRef: "feature/proj-1",
+      url: "https://github.com/your-org/console/pull/43",
+      state: "open",
+      draft: false,
+      merged: false,
+    },
+  ],
+  assigneeName: null,
 };
 
 function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketListItem {
-  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestWorkerName: null, latestPr: null };
+  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestWorkerName: null, pullRequests: [] };
 }
 
 const multipleTickets: TicketListItem[] = [
@@ -46,10 +68,11 @@ const multipleTickets: TicketListItem[] = [
   makeTicket("ticket_waiting", "ABC-4", "waiting_for_human"),
   makeTicket("ticket_waiting2", "ABC-5", "waiting_for_human"),
   makeTicket("ticket_validating", "ABC-6", "validating"),
+  makeTicket("ticket_failed", "ABC-7", "failed"),
 ];
 
 const filterOptions: TicketFilterOptions = {
-  bmStatuses: ["completed", "in_progress", "waiting_for_human"],
+  bmStatuses: ["completed", "in_progress", "waiting_for_human", "failed"],
   statusCounts: {},
   stopReasons: ["completed", "timeout"],
   labels: ["bear-metal", "module:bff"],
@@ -58,9 +81,13 @@ const filterOptions: TicketFilterOptions = {
 
 let mockTickets: TicketListItem[] = [mockTicket];
 const lastQuery: { value: TicketListQuery | undefined } = { value: undefined };
+let fetchNextPage = vi.fn();
+let hasNextPage = false;
+let isFetchingNextPage = false;
+let triggerIntersection: (() => void) | null = null;
 
-function makeResponse(tickets: TicketListItem[]): TicketListResponse {
-  return { tickets, total: tickets.length, page: 1, pageSize: 50 };
+function makeResponse(tickets: TicketListItem[], total = tickets.length, page = 1): TicketListResponse {
+  return { tickets, total, page, pageSize: 20 };
 }
 
 vi.mock("../api/queries.js", () => ({
@@ -71,9 +98,14 @@ vi.mock("../api/queries.js", () => ({
         const tickets = q.bmStatuses
           ? mockTickets.filter((t) => q.bmStatuses!.includes(t.bmStatus))
           : mockTickets;
-        return makeResponse(tickets);
+        return {
+          pages: [makeResponse(tickets)],
+        };
       },
       error: null,
+      fetchNextPage,
+      hasNextPage,
+      isFetchingNextPage,
       isFetching: false,
       isLoading: false,
       refetch: vi.fn(),
@@ -97,9 +129,26 @@ describe("TicketsListPage", () => {
   beforeEach(() => {
     mockTickets = [mockTicket];
     lastQuery.value = undefined;
+    fetchNextPage = vi.fn();
+    hasNextPage = false;
+    isFetchingNextPage = false;
+    triggerIntersection = null;
+    vi.stubGlobal("IntersectionObserver", vi.fn((callback: IntersectionObserverCallback) => {
+      triggerIntersection = () => callback([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+      return {
+        observe: vi.fn(),
+        unobserve: vi.fn(),
+        disconnect: vi.fn(),
+        takeRecords: vi.fn(),
+      };
+    }));
   });
 
-  it("renders ticket status, latest run, attempts, worker, and PR link", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders ticket status, latest run, attempts, and PR links", () => {
     renderWithProviders(<TicketsListPage />, "/tickets");
 
     expect(screen.getByRole("heading", { name: "Tickets" })).toBeVisible();
@@ -108,10 +157,13 @@ describe("TicketsListPage", () => {
     expect(within(list).getByText("completed")).toBeVisible();
     expect(within(list).getByText("succeeded")).toBeVisible();
     expect(within(list).getByText("1/5")).toBeVisible();
-    expect(within(list).getByText("worker-1")).toBeVisible();
     expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute(
       "href",
       "https://github.com/your-org/bear-metal/pull/42",
+    );
+    expect(within(list).getByRole("link", { name: "#43" })).toHaveAttribute(
+      "href",
+      "https://github.com/your-org/console/pull/43",
     );
   });
 
@@ -141,6 +193,10 @@ describe("TicketsListPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /Validating/ }));
     expect(within(list).getByRole("link", { name: "ABC-6" })).toBeVisible();
     expect(within(list).queryByRole("link", { name: "ABC-1" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Failed/ }));
+    expect(within(list).getByRole("link", { name: "ABC-7" })).toBeVisible();
+    expect(within(list).queryByRole("link", { name: "ABC-6" })).toBeNull();
   });
 
   it("shows empty state when filter has no matches", () => {
@@ -158,7 +214,8 @@ describe("TicketsListPage", () => {
     fireEvent.submit(screen.getByRole("search"));
 
     expect(lastQuery.value?.q).toBe("flaky");
-    expect(lastQuery.value?.page).toBe(1);
+    expect(lastQuery.value?.page).toBeUndefined();
+    expect(lastQuery.value?.pageSize).toBe(20);
   });
 
   it("populates dropdowns from filter options and pushes selections into the query", () => {
@@ -180,5 +237,15 @@ describe("TicketsListPage", () => {
     const stopSelect = screen.getByLabelText("Filter by failure reason") as HTMLSelectElement;
     fireEvent.change(stopSelect, { target: { value: "timeout" } });
     expect(lastQuery.value?.stopReasons).toEqual(["timeout"]);
+  });
+
+  it("loads the next ticket page from the bottom sentinel", () => {
+    hasNextPage = true;
+    renderWithProviders(<TicketsListPage />, "/tickets");
+
+    expect(screen.getByTestId("tickets-scroll-sentinel")).toBeInTheDocument();
+    triggerIntersection?.();
+
+    expect(fetchNextPage).toHaveBeenCalledOnce();
   });
 });

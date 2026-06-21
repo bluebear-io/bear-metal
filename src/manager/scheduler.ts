@@ -36,6 +36,8 @@ export interface LinearSource {
   /** Post a comment on the ticket and then relinquish delegation. */
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
   getUserEmail(userId: string): Promise<string | null>;
+  /** Returns a map of ticket ID → assignee display name; null for unassigned tickets. */
+  getTicketAssignees(ticketIds: string[]): Promise<Map<string, string | null>>;
   /** Returns open GitHub PR refs attached to the ticket, parsed from Linear attachments. */
   getPullRequestRefs(ticketId: string): Promise<PullRequestRef[]>;
 }
@@ -676,6 +678,7 @@ async function enforceIterationLimit(
           ctx.ticket.id,
           `Reached the maximum iteration limit of ${maxIterations}. No further automated work will be attempted. Please review the history and re-delegate if you'd like to try again.`,
         );
+        await db.setTicketStatus(ctx.ticket.id, "failed");
         await db.setSlotStatus(ctx.ticket.id, "released");
       } else {
         eligible.push(item);
@@ -797,4 +800,3 @@ async function completeStaleTicket(db: DbClient, ticket: Ticket, summary: string
     createdAt: new Date().toISOString(),
   });
 }
-
