@@ -153,6 +153,17 @@ export interface CurrentRunSummary extends LatestRunSummary {
   runtimeMs: number | null;
 }
 
+export interface TicketListPullRequest {
+  id: string;
+  number: number;
+  title: string;
+  headRef: string;
+  url: string;
+  state: string;
+  draft: boolean;
+  merged: boolean;
+}
+
 export interface TicketListItem {
   id: string;
   ticketId: string | null;
@@ -171,7 +182,7 @@ export interface TicketListItem {
   updatedAt: Date;
   latestRun: LatestRunSummary | null;
   latestWorkerName: string | null;
-  latestPr: { number: number; url: string; state: string; merged: boolean } | null;
+  pullRequests: TicketListPullRequest[];
 }
 
 export interface ListTicketsOptions {
@@ -648,7 +659,7 @@ function rowToTicketListItem(row: TaskRow): TicketListItem {
     updatedAt: parseTimestampRequired(row.updated_at, "updated_at"),
     latestRun: null,
     latestWorkerName: null,
-    latestPr: null,
+    pullRequests: [],
   };
 }
 
@@ -1698,14 +1709,43 @@ export class SqlDbClient implements DbClient {
     const prPlaceholders = ticketIds.map(() => "?").join(", ");
 
     const prRows = ticketIds.length > 0
-      ? await this.query<{ id: string; ticket_id: string; number: number; url: string; state: string; merged: number | boolean; updated_at: string }>(
-          this.sql(`SELECT id, ticket_id, number, url, state, merged, updated_at FROM pull_requests WHERE ticket_id IN (${prPlaceholders}) ORDER BY updated_at DESC`),
+      ? await this.query<{
+          id: string;
+          ticket_id: string;
+          number: number;
+          title: string;
+          head_ref: string;
+          url: string;
+          state: string;
+          draft: number | boolean;
+          merged: number | boolean;
+          updated_at: string;
+        }>(
+          this.sql(
+            `SELECT id, ticket_id, number, title, head_ref, url, state, draft, merged, updated_at
+             FROM pull_requests
+             WHERE ticket_id IN (${prPlaceholders})
+             ORDER BY updated_at DESC`,
+          ),
           ticketIds,
         )
       : [];
 
-    const latestPrByTicket = new Map<string, typeof prRows[number]>();
-    for (const pr of prRows) if (pr.ticket_id && !latestPrByTicket.has(pr.ticket_id)) latestPrByTicket.set(pr.ticket_id, pr);
+    const prsByTicket = new Map<string, TicketListPullRequest[]>();
+    for (const pr of prRows) {
+      const ticketPrs = prsByTicket.get(pr.ticket_id) ?? [];
+      ticketPrs.push({
+        id: pr.id,
+        number: pr.number,
+        title: pr.title,
+        headRef: pr.head_ref,
+        url: pr.url,
+        state: pr.state,
+        draft: intBool(pr.draft),
+        merged: intBool(pr.merged),
+      });
+      prsByTicket.set(pr.ticket_id, ticketPrs);
+    }
 
     const workerIds = Array.from(new Set(pageRows.map((r) => r.worker_id).filter((id): id is string => id !== null)));
     let workerNameById = new Map<string, string>();
@@ -1717,10 +1757,7 @@ export class SqlDbClient implements DbClient {
       const item = rowToTicketListItem(row);
       item.latestRun = row.run_status !== null ? toLatestRunSummary(row) : null;
       item.latestWorkerName = row.worker_id ? workerNameById.get(row.worker_id) ?? row.worker_id : null;
-      const latestPr = row.ticket_id ? latestPrByTicket.get(row.ticket_id) : null;
-      item.latestPr = latestPr
-        ? { number: latestPr.number, url: latestPr.url, state: latestPr.state, merged: intBool(latestPr.merged) }
-        : null;
+      item.pullRequests = row.ticket_id ? prsByTicket.get(row.ticket_id) ?? [] : [];
       return item;
     });
 

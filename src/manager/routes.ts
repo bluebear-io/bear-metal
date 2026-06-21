@@ -76,7 +76,7 @@ function serializeTicket(item: TicketListItem, assigneeName: string | null | und
     completedAt: item.ticketCompletedAt?.toISOString() ?? null,
     latestRun: item.latestRun,
     latestWorkerName: item.latestWorkerName,
-    latestPr: item.latestPr,
+    pullRequests: item.pullRequests,
     assigneeName: assigneeName ?? null,
   };
 }

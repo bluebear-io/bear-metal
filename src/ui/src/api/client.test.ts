@@ -40,7 +40,16 @@ const ticket: TicketListItem = {
     createdAt: "2026-06-09T10:01:00.000Z",
   },
   latestWorkerName: "runner-1",
-  latestPr: { number: 14, url: "https://github.com/acme/repo/pull/14", state: "open", merged: false },
+  pullRequests: [{
+    id: "acme/repo#14",
+    number: 14,
+    title: "Add API client",
+    headRef: "feature/proj-1",
+    url: "https://github.com/acme/repo/pull/14",
+    state: "open",
+    draft: false,
+    merged: false,
+  }],
   assigneeName: "alice",
 };
 

@@ -117,4 +117,62 @@ describe("SqlDbClient listTickets", () => {
       await db.close();
     }
   });
+
+  it("returns every pull request for each listed ticket", async () => {
+    const db = await makeDb();
+    try {
+      await addTicket(db, "lin_1", "ABC-1");
+      await addRun(db, "lin_1", "ABC-1", "worker-1", "completed");
+      await db.upsertPullRequest("acme/api#101", "lin_1", {
+        number: 101,
+        title: "Backend",
+        headRef: "feature/abc-1-api",
+        state: "open",
+        draft: false,
+        merged: false,
+        url: "https://github.com/acme/api/pull/101",
+        lastRunId: null,
+        reviewThreadsJson: "[]",
+      });
+      await db.upsertPullRequest("acme/ui#102", "lin_1", {
+        number: 102,
+        title: "Frontend",
+        headRef: "feature/abc-1-ui",
+        state: "closed",
+        draft: false,
+        merged: true,
+        url: "https://github.com/acme/ui/pull/102",
+        lastRunId: null,
+        reviewThreadsJson: "[]",
+      });
+
+      const result = await db.listTickets({ page: 1, pageSize: 1 });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]?.pullRequests).toEqual([
+        {
+          id: "acme/ui#102",
+          number: 102,
+          title: "Frontend",
+          headRef: "feature/abc-1-ui",
+          url: "https://github.com/acme/ui/pull/102",
+          state: "closed",
+          draft: false,
+          merged: true,
+        },
+        {
+          id: "acme/api#101",
+          number: 101,
+          title: "Backend",
+          headRef: "feature/abc-1-api",
+          url: "https://github.com/acme/api/pull/101",
+          state: "open",
+          draft: false,
+          merged: false,
+        },
+      ]);
+    } finally {
+      await db.close();
+    }
+  });
 });

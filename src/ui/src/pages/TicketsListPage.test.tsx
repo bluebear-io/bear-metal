@@ -32,12 +32,33 @@ const mockTicket: TicketListItem = {
     createdAt: "2026-06-09T10:01:00.000Z",
   },
   latestWorkerName: "worker-1",
-  latestPr: { number: 42, url: "https://github.com/your-org/bear-metal/pull/42", state: "open", merged: false },
+  pullRequests: [
+    {
+      id: "your-org/bear-metal#42",
+      number: 42,
+      title: "Tickets list page",
+      headRef: "feature/proj-1",
+      url: "https://github.com/your-org/bear-metal/pull/42",
+      state: "open",
+      draft: false,
+      merged: false,
+    },
+    {
+      id: "your-org/console#43",
+      number: 43,
+      title: "Tickets list page console",
+      headRef: "feature/proj-1",
+      url: "https://github.com/your-org/console/pull/43",
+      state: "open",
+      draft: false,
+      merged: false,
+    },
+  ],
   assigneeName: null,
 };
 
 function makeTicket(id: string, identifier: string, bmStatus: BmStatus): TicketListItem {
-  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestWorkerName: null, latestPr: null };
+  return { ...mockTicket, id, identifier, bmStatus, latestRun: null, latestWorkerName: null, pullRequests: [] };
 }
 
 const multipleTickets: TicketListItem[] = [
@@ -65,7 +86,7 @@ let isFetchingNextPage = false;
 let triggerIntersection: (() => void) | null = null;
 
 function makeResponse(tickets: TicketListItem[], total = tickets.length, page = 1): TicketListResponse {
-  return { tickets, total, page, pageSize: 50 };
+  return { tickets, total, page, pageSize: 20 };
 }
 
 vi.mock("../api/queries.js", () => ({
@@ -126,7 +147,7 @@ describe("TicketsListPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders ticket status, latest run, attempts, and PR link", () => {
+  it("renders ticket status, latest run, attempts, and PR links", () => {
     renderWithProviders(<TicketsListPage />, "/tickets");
 
     expect(screen.getByRole("heading", { name: "Tickets" })).toBeVisible();
@@ -138,6 +159,10 @@ describe("TicketsListPage", () => {
     expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute(
       "href",
       "https://github.com/your-org/bear-metal/pull/42",
+    );
+    expect(within(list).getByRole("link", { name: "#43" })).toHaveAttribute(
+      "href",
+      "https://github.com/your-org/console/pull/43",
     );
   });
 
@@ -185,7 +210,7 @@ describe("TicketsListPage", () => {
 
     expect(lastQuery.value?.q).toBe("flaky");
     expect(lastQuery.value?.page).toBeUndefined();
-    expect(lastQuery.value?.pageSize).toBe(50);
+    expect(lastQuery.value?.pageSize).toBe(20);
   });
 
   it("populates dropdowns from filter options and pushes selections into the query", () => {

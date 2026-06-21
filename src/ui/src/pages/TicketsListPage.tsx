@@ -24,20 +24,25 @@ const TicketLink = ({ ticket }: { ticket: TicketListItem }) => (
 );
 
 const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
-  if (ticket.latestPr === null) {
+  if (ticket.pullRequests.length === 0) {
     return <Dash />;
   }
 
   return (
-    <a
-      href={ticket.latestPr.url}
-      className="font-medium text-primary transition hover:underline"
-      target="_blank"
-      rel="noreferrer"
-      onClick={(e) => e.stopPropagation()}
-    >
-      #{ticket.latestPr.number}
-    </a>
+    <div className="flex flex-wrap gap-x-2 gap-y-1">
+      {ticket.pullRequests.map((pr) => (
+        <a
+          key={pr.id}
+          href={pr.url}
+          className="font-medium text-primary transition hover:underline"
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          #{pr.number}
+        </a>
+      ))}
+    </div>
   );
 };
 

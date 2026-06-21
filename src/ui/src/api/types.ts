@@ -43,7 +43,16 @@ export interface TicketListItem extends Ticket {
   latestRun: LatestRunSummary | null;
   /** Worker name for the most recent attempt; surfaced for the filter bar + list display. */
   latestWorkerName: string | null;
-  latestPr: { number: number; url: string; state: "open" | "closed"; merged: boolean } | null;
+  pullRequests: Array<{
+    id: string;
+    number: number;
+    title: string;
+    headRef: string;
+    url: string;
+    state: "open" | "closed";
+    draft: boolean;
+    merged: boolean;
+  }>;
 }
 
 export interface TicketListResponse {
