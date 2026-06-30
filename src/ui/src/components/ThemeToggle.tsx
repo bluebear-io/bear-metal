@@ -1,6 +1,8 @@
 import { BookOpen, Github, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { formatAppVersion } from "../lib/version.js";
+
 declare const __APP_VERSION__: string;
 
 type Theme = "system" | "light" | "dark";
@@ -65,7 +67,7 @@ export function ThemeToggle() {
       {open && (
         <div className="absolute right-0 top-full mt-2 w-64 rounded-md border border-border-default bg-bg-card shadow-lg">
           <div className="px-3 py-2.5 text-xs text-text-secondary">
-            Bear Metal <span className="text-text-muted">v{__APP_VERSION__}</span>
+            Bear Metal <span className="text-text-muted">{formatAppVersion(__APP_VERSION__)}</span>
           </div>
 
           <a
