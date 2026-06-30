@@ -17,7 +17,7 @@ export BACKEND_PORT="${BACKEND_PORT:-3100}"
 # The UI is a separate npm package; install its deps on first run.
 if [ ! -d "$ROOT/src/ui/node_modules" ]; then
   echo "[dev] installing UI dependencies..."
-  npm --prefix "$ROOT/src/ui" install
+  npm --prefix "$ROOT/src/ui" ci
 fi
 
 # Kill the whole process group (both children) on exit / Ctrl-C.
