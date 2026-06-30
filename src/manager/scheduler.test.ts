@@ -854,11 +854,41 @@ describe("Scheduler.tick stale waiting_for_human reconciliation", () => {
     expect(linear.handBackCalls).toEqual([]);
   });
 
-  it("does not re-admit a non-terminal released waiting_for_human ticket as a new task", async () => {
+  it("re-admits and dispatches a waiting_for_human ticket when re-delegated to bear-metal", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", []);
+    const reDelegated = makeTicket("a");
+    const linear = new FakeLinear([reDelegated], { a: reDelegated });
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), db, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(1);
+    expect(await db.countTracked()).toBe(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "in_progress", notify: 0 });
+  });
+
+  it("does not re-admit a waiting_for_human ticket that is not re-delegated", async () => {
+    const db = await makeDb();
+    await seedStaleWaitingForHuman(db, "A", []);
+    const ticket = makeTicket("a");
+    const linear = new FakeLinear([], { a: ticket });
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), db, handler, concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(await db.countTracked()).toBe(0);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+
+  it("re-admits a delegated waiting_for_human ticket even when an open PR exists", async () => {
     const db = await makeDb();
     await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
-    // Linear still reports the ticket as delegated to the agent — admitNewTickets would happily
-    // pick it up if the new exclusion list missed it.
     const stillDelegated = makeTicket("a");
     const linear = new FakeLinear([stillDelegated], { a: stillDelegated });
     const github = new FakeGitHub({ status: status(openPr(7)) });
@@ -868,8 +898,8 @@ describe("Scheduler.tick stale waiting_for_human reconciliation", () => {
     await scheduler.tick();
     await scheduler.stop();
 
-    expect(handler.handled).toHaveLength(0);
-    expect(await db.countTracked()).toBe(0);
-    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+    expect(handler.handled).toHaveLength(1);
+    expect(await db.countTracked()).toBe(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "in_progress", notify: 0 });
   });
 });

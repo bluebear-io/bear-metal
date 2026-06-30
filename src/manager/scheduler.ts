@@ -588,11 +588,16 @@ async function admitNewTickets(
     db.listTracked(),
     db.listWaitingForHumanTicketIds(),
   ]);
-  // A waiting_for_human ticket whose slot was released (e.g. stale post-reconcile case) is
-  // invisible to listTracked() but must still be excluded from admission so we don't silently
-  // re-admit it as a brand-new task.
-  const excludedIds = new Set<string | null>([...tracked.map((slot) => slot.ticketId), ...waitingIds]);
+  // Exclude waiting_for_human tickets that are NOT currently delegated to bear-metal. A ticket
+  // that appears in both waitingIds and candidates was explicitly re-delegated by the human
+  // (e.g. after providing clarification), so it should be re-admitted.
+  const candidateIds = new Set(candidates.map((t) => t.id));
+  const excludedIds = new Set<string | null>([
+    ...tracked.map((slot) => slot.ticketId),
+    ...waitingIds.filter((id) => !candidateIds.has(id)),
+  ]);
   const admitted = selectAdmissions(candidates, (id) => excludedIds.has(id), free);
+  const waitingIdSet = new Set(waitingIds);
   const contexts: DispatchItem[] = [];
   for (const ticket of admitted) {
     const prs = await linear.getPullRequestRefs(ticket.id).catch((err) => {
@@ -612,6 +617,10 @@ async function admitNewTickets(
       linearStatusType: ticket.status.type,
       labels: ticket.labels,
     });
+    if (waitingIdSet.has(ticket.id)) {
+      await db.setTicketStatus(ticket.id, "in_progress");
+      logger.info({ ticket: ticket.identifier }, "re-admitted waiting_for_human ticket after re-delegation");
+    }
     contexts.push({ context, trigger: "new" });
   }
   return contexts;
