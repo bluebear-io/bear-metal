@@ -59,7 +59,8 @@ export class AppTokenProvider implements TokenProvider {
   }
 
   async getToken(): Promise<string> {
-    if (this.cached && this.now() < this.cached.expiresAt - this.refreshWindowMs) {
+    const now = this.now();
+    if (this.cached && now < this.cached.expiresAt - this.refreshWindowMs) {
       return this.cached.token;
     }
     if (!this.inflight) {
@@ -67,11 +68,21 @@ export class AppTokenProvider implements TokenProvider {
         this.inflight = undefined;
       });
     }
-    return this.inflight;
+    try {
+      return await this.inflight;
+    } catch (error) {
+      // A proactive refresh (inside the window) that fails should not take down Linear calls while
+      // the current token is still usable — only surface the error once the token has actually expired.
+      if (this.cached && now < this.cached.expiresAt) {
+        return this.cached.token;
+      }
+      throw error;
+    }
   }
 
   invalidate(): void {
     this.cached = undefined;
+    this.inflight = undefined;
   }
 
   private async mint(): Promise<string> {

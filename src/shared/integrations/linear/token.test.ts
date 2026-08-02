@@ -106,4 +106,31 @@ describe("AppTokenProvider", () => {
 
     await expect(provider.getToken()).rejects.toThrow(/missing access_token or expires_in/);
   });
+
+  it("falls back to the still-valid cached token when a proactive remint fails", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse("tok-1"))
+      .mockResolvedValueOnce(new Response("boom", { status: 500, statusText: "Server Error" }));
+    let now = 0;
+    const provider = makeProvider(fetchFn as unknown as typeof fetch, () => now);
+
+    expect(await provider.getToken()).toBe("tok-1"); // expiresAt = 30d
+    now = 30 * DAY - 12 * HOUR; // inside refresh window but token still valid
+    expect(await provider.getToken()).toBe("tok-1"); // remint 500s → keep using the valid token
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws when a remint fails and the cached token has actually expired", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse("tok-1"))
+      .mockResolvedValueOnce(new Response("boom", { status: 500, statusText: "Server Error" }));
+    let now = 0;
+    const provider = makeProvider(fetchFn as unknown as typeof fetch, () => now);
+
+    await provider.getToken();
+    now = 30 * DAY + HOUR; // past expiry
+    await expect(provider.getToken()).rejects.toThrow(/500/);
+  });
 });

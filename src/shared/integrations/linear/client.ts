@@ -194,6 +194,9 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
         throw error;
       }
       this.tokenProvider.invalidate();
+      // A revoked token may be replaced by one for a different actor (e.g. after a scope change),
+      // so drop the cached agent id and let it re-resolve against the fresh token.
+      this.cachedAgentId = undefined;
       return fn(await this.getClient());
     }
   }
