@@ -36,6 +36,7 @@ const linear = new LinearIntegration({
     clientId: config.linearClientId,
     clientSecret: config.linearClientSecret,
     scopes: config.linearOAuthScopes,
+    logger: createLogger({ level: config.logLevel, name: "linear-token", pretty: config.logPretty }),
   }),
 });
 const github = new GitHubIntegration({

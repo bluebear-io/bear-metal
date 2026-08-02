@@ -6,6 +6,8 @@
  * client id + secret, which we exchange for a fresh app-actor token here and re-mint before expiry.
  */
 
+import type { Logger } from "../../logger.js";
+
 const LINEAR_TOKEN_ENDPOINT = "https://api.linear.app/oauth/token";
 
 /** Re-mint once the cached token is within this window of its expiry. */
@@ -28,6 +30,7 @@ export interface AppTokenProviderOptions {
   fetchFn?: typeof fetch;
   now?: () => number;
   refreshWindowMs?: number;
+  logger?: Logger;
 }
 
 interface CachedToken {
@@ -43,6 +46,7 @@ export class AppTokenProvider implements TokenProvider {
   private readonly fetchFn: typeof fetch;
   private readonly now: () => number;
   private readonly refreshWindowMs: number;
+  private readonly logger: Logger | undefined;
 
   private cached: CachedToken | undefined;
   /** Dedupes concurrent mints (the scheduler fires many Linear calls per tick). */
@@ -56,6 +60,7 @@ export class AppTokenProvider implements TokenProvider {
     this.fetchFn = options.fetchFn ?? fetch;
     this.now = options.now ?? Date.now;
     this.refreshWindowMs = options.refreshWindowMs ?? DEFAULT_REFRESH_WINDOW_MS;
+    this.logger = options.logger;
   }
 
   async getToken(): Promise<string> {
@@ -74,6 +79,10 @@ export class AppTokenProvider implements TokenProvider {
       // A proactive refresh (inside the window) that fails should not take down Linear calls while
       // the current token is still usable — only surface the error once the token has actually expired.
       if (this.cached && now < this.cached.expiresAt) {
+        this.logger?.warn(
+          { err: error, expiresAt: new Date(this.cached.expiresAt).toISOString() },
+          "Linear token proactive refresh failed; falling back to the cached token until it expires",
+        );
         return this.cached.token;
       }
       throw error;

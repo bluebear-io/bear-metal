@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { Logger } from "../../logger.js";
 import { AppTokenProvider } from "./token.js";
 
 const HOUR = 60 * 60 * 1000;
@@ -119,6 +120,29 @@ describe("AppTokenProvider", () => {
     now = 30 * DAY - 12 * HOUR; // inside refresh window but token still valid
     expect(await provider.getToken()).toBe("tok-1"); // remint 500s → keep using the valid token
     expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns when it falls back to the cached token after a failed remint", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse("tok-1"))
+      .mockResolvedValueOnce(new Response("boom", { status: 500, statusText: "Server Error" }));
+    let now = 0;
+    const warn = vi.fn();
+    const provider = new AppTokenProvider({
+      clientId: "cid",
+      clientSecret: "secret",
+      scopes: "read,write",
+      tokenEndpoint: "https://token.test/oauth/token",
+      fetchFn: fetchFn as unknown as typeof fetch,
+      now: () => now,
+      logger: { warn } as unknown as Logger,
+    });
+
+    await provider.getToken();
+    now = 30 * DAY - 12 * HOUR;
+    expect(await provider.getToken()).toBe("tok-1");
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("throws when a remint fails and the cached token has actually expired", async () => {
