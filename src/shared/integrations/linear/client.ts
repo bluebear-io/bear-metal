@@ -1,10 +1,11 @@
-import { type Comment, type Issue, LinearClient } from "@linear/sdk";
+import { AuthenticationLinearError, type Comment, type Issue, LinearClient } from "@linear/sdk";
 
 import type { CommentCapable, Integration } from "../base.js";
+import type { TokenProvider } from "./token.js";
 import type { LinearTicketContext, Ticket, TicketComment } from "./types.js";
 
 export interface LinearIntegrationOptions {
-  token: string;
+  tokenProvider: TokenProvider;
 }
 
 /** Workflow-state types that mean a ticket needs no further work; never admitted. */
@@ -18,17 +19,18 @@ const EXCLUDED_STATE_NAMES = ["Merged"];
 
 export class LinearIntegration implements Integration, CommentCapable<string> {
   readonly name = "linear";
-  private readonly client: LinearClient;
+  private readonly tokenProvider: TokenProvider;
+  private client: LinearClient | undefined;
+  private clientToken: string | undefined;
   private cachedAgentId: string | undefined;
 
   constructor(options: LinearIntegrationOptions) {
-    this.client = new LinearClient({ apiKey: options.token });
+    this.tokenProvider = options.tokenProvider;
   }
 
   async getAgentId(): Promise<string> {
     if (!this.cachedAgentId) {
-      const viewer = await this.client.viewer;
-      this.cachedAgentId = viewer.id;
+      this.cachedAgentId = await this.withClient(async (client) => (await client.viewer).id);
     }
     return this.cachedAgentId;
   }
@@ -41,76 +43,85 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
    * everything still open, in any non-done state (Triage/Backlog/Todo/In Progress/In Review).
    */
   async findDelegatedTickets(agentId: string): Promise<Ticket[]> {
-    const user = await this.client.user(agentId);
-    const page = await user.delegatedIssues({
-      filter: { state: { type: { nin: TERMINAL_STATE_TYPES }, name: { nin: EXCLUDED_STATE_NAMES } } },
+    return this.withClient(async (client) => {
+      const user = await client.user(agentId);
+      const page = await user.delegatedIssues({
+        filter: { state: { type: { nin: TERMINAL_STATE_TYPES }, name: { nin: EXCLUDED_STATE_NAMES } } },
+      });
+      return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
     });
-    return Promise.all(page.nodes.map((issue) => this.toTicket(issue)));
   }
 
   async findAllDelegatedTickets(agentId: string): Promise<Ticket[]> {
-    const user = await this.client.user(agentId);
-    const issues: Issue[] = [];
-    let after: string | undefined;
-    do {
-      const page = await user.delegatedIssues({ first: 100, after });
-      issues.push(...page.nodes);
-      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
-    } while (after !== undefined);
-    return Promise.all(issues.map((issue) => this.toTicket(issue)));
+    return this.withClient(async (client) => {
+      const user = await client.user(agentId);
+      const issues: Issue[] = [];
+      let after: string | undefined;
+      do {
+        const page = await user.delegatedIssues({ first: 100, after });
+        issues.push(...page.nodes);
+        after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
+      } while (after !== undefined);
+      return Promise.all(issues.map((issue) => this.toTicket(issue)));
+    });
   }
 
   async getTicket(id: string): Promise<Ticket> {
-    const issue = await this.client.issue(id);
-    return this.toTicket(issue);
+    return this.withClient(async (client) => this.toTicket(await client.issue(id)));
   }
 
   async getUserEmail(userId: string): Promise<string | null> {
-    const user = await this.client.user(userId);
-    return user.email ?? null;
+    return this.withClient(async (client) => {
+      const user = await client.user(userId);
+      return user.email ?? null;
+    });
   }
 
   async getTicketAssignees(ticketIds: string[]): Promise<Map<string, string | null>> {
     if (ticketIds.length === 0) return new Map();
 
-    const issuesConn = await this.client.issues({
-      filter: { id: { in: ticketIds } },
-      first: ticketIds.length,
-    });
+    return this.withClient(async (client) => {
+      const issuesConn = await client.issues({
+        filter: { id: { in: ticketIds } },
+        first: ticketIds.length,
+      });
 
-    const ticketAssignee = new Map<string, string>(); // ticket_id → assignee user id
-    const uniqueAssigneeIds = new Set<string>();
-    for (const issue of issuesConn.nodes) {
-      if (issue.assigneeId) {
-        ticketAssignee.set(issue.id, issue.assigneeId);
-        uniqueAssigneeIds.add(issue.assigneeId);
+      const ticketAssignee = new Map<string, string>(); // ticket_id → assignee user id
+      const uniqueAssigneeIds = new Set<string>();
+      for (const issue of issuesConn.nodes) {
+        if (issue.assigneeId) {
+          ticketAssignee.set(issue.id, issue.assigneeId);
+          uniqueAssigneeIds.add(issue.assigneeId);
+        }
       }
-    }
 
-    const userNames = new Map<string, string>(); // user_id → display name
-    await Promise.all(
-      [...uniqueAssigneeIds].map(async (userId) => {
-        const user = await this.client.user(userId);
-        userNames.set(userId, user.email ?? user.displayName ?? user.name ?? userId);
-      }),
-    );
+      const userNames = new Map<string, string>(); // user_id → display name
+      await Promise.all(
+        [...uniqueAssigneeIds].map(async (userId) => {
+          const user = await client.user(userId);
+          userNames.set(userId, user.email ?? user.displayName ?? user.name ?? userId);
+        }),
+      );
 
-    const result = new Map<string, string | null>();
-    for (const ticketId of ticketIds) {
-      const assigneeId = ticketAssignee.get(ticketId);
-      result.set(ticketId, assigneeId ? (userNames.get(assigneeId) ?? null) : null);
-    }
-    return result;
+      const result = new Map<string, string | null>();
+      for (const ticketId of ticketIds) {
+        const assigneeId = ticketAssignee.get(ticketId);
+        result.set(ticketId, assigneeId ? (userNames.get(assigneeId) ?? null) : null);
+      }
+      return result;
+    });
   }
 
   async getTicketContext(id: string): Promise<LinearTicketContext> {
-    const issue = await this.client.issue(id);
-    const [ticket, comments] = await Promise.all([this.toTicket(issue), this.getComments(issue)]);
-    return { issue: ticket, comments };
+    return this.withClient(async (client) => {
+      const issue = await client.issue(id);
+      const [ticket, comments] = await Promise.all([this.toTicket(issue), this.getComments(issue)]);
+      return { issue: ticket, comments };
+    });
   }
 
   async leaveComment(ticketId: string, body: string): Promise<void> {
-    await this.client.createComment({ issueId: ticketId, body });
+    await this.withClient((client) => client.createComment({ issueId: ticketId, body }));
   }
 
   async moveTicketToInProgress(ticketId: string): Promise<void> {
@@ -122,51 +133,78 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   }
 
   private async moveTicketToState(ticketId: string, stateName: string): Promise<void> {
-    const issue = await this.client.issue(ticketId);
-    const team = await issue.team;
-    if (!team) {
-      throw new Error(`Linear issue ${issue.identifier} has no team`);
-    }
+    await this.withClient(async (client) => {
+      const issue = await client.issue(ticketId);
+      const team = await issue.team;
+      if (!team) {
+        throw new Error(`Linear issue ${issue.identifier} has no team`);
+      }
 
-    const states = await this.client.workflowStates({
-      filter: {
-        name: { eq: stateName },
-        team: { id: { eq: team.id } },
-      },
-      first: 10,
+      const states = await client.workflowStates({
+        filter: {
+          name: { eq: stateName },
+          team: { id: { eq: team.id } },
+        },
+        first: 10,
+      });
+      const state = states.nodes.find((candidate) => candidate.name === stateName && candidate.teamId === team.id);
+      if (!state) {
+        throw new Error(`Linear team ${team.name} has no ${stateName} workflow state`);
+      }
+
+      await issue.update({ stateId: state.id });
     });
-    const state = states.nodes.find((candidate) => candidate.name === stateName && candidate.teamId === team.id);
-    if (!state) {
-      throw new Error(`Linear team ${team.name} has no ${stateName} workflow state`);
-    }
-
-    await issue.update({ stateId: state.id });
   }
 
   async commentAndHandBack(ticketId: string, body: string): Promise<void> {
-    await this.client.createComment({ issueId: ticketId, body });
+    await this.leaveComment(ticketId, body);
     await this.handBack(ticketId);
   }
 
   async handBack(ticketId: string): Promise<void> {
-    const issue = await this.client.issue(ticketId);
-    await issue.update({ delegateId: null });
+    await this.withClient(async (client) => {
+      const issue = await client.issue(ticketId);
+      await issue.update({ delegateId: null });
+    });
   }
 
   async getPullRequestRefs(ticketId: string): Promise<{ owner: string; repo: string; number: number }[]> {
-    const issue = await this.client.issue(ticketId);
-    const attachments = await issue.attachments();
-    const refs: { owner: string; repo: string; number: number }[] = [];
-    for (const attachment of attachments.nodes) {
-      if (attachment.sourceType !== "github") continue;
-      const match = attachment.url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
-      if (!match) continue;
-      const meta = attachment.metadata as Record<string, unknown> | null;
-      const state = (meta?.state ?? meta?.status) as string | undefined;
-      if (state === "closed" || state === "merged") continue;
-      refs.push({ owner: match[1]!, repo: match[2]!, number: parseInt(match[3]!, 10) });
+    return this.withClient(async (client) => {
+      const issue = await client.issue(ticketId);
+      const attachments = await issue.attachments();
+      const refs: { owner: string; repo: string; number: number }[] = [];
+      for (const attachment of attachments.nodes) {
+        if (attachment.sourceType !== "github") continue;
+        const match = attachment.url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/);
+        if (!match) continue;
+        const meta = attachment.metadata as Record<string, unknown> | null;
+        const state = (meta?.state ?? meta?.status) as string | undefined;
+        if (state === "closed" || state === "merged") continue;
+        refs.push({ owner: match[1]!, repo: match[2]!, number: parseInt(match[3]!, 10) });
+      }
+      return refs;
+    });
+  }
+
+  private async withClient<T>(fn: (client: LinearClient) => Promise<T>): Promise<T> {
+    try {
+      return await fn(await this.getClient());
+    } catch (error) {
+      if (!(error instanceof AuthenticationLinearError)) {
+        throw error;
+      }
+      this.tokenProvider.invalidate();
+      return fn(await this.getClient());
     }
-    return refs;
+  }
+
+  private async getClient(): Promise<LinearClient> {
+    const token = await this.tokenProvider.getToken();
+    if (!this.client || token !== this.clientToken) {
+      this.client = new LinearClient({ accessToken: token });
+      this.clientToken = token;
+    }
+    return this.client;
   }
 
   private async getComments(issue: Issue): Promise<TicketComment[]> {

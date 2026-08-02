@@ -2,6 +2,7 @@ import "dotenv/config";
 
 import { SqlDbClient } from "../db/client.js";
 import {
+  AppTokenProvider,
   createLogger,
   GitHubIntegration,
   LinearIntegration,
@@ -30,7 +31,13 @@ logger.info(
   "config loaded",
 );
 
-const linear = new LinearIntegration({ token: config.linearApiToken });
+const linear = new LinearIntegration({
+  tokenProvider: new AppTokenProvider({
+    clientId: config.linearClientId,
+    clientSecret: config.linearClientSecret,
+    scopes: config.linearOAuthScopes,
+  }),
+});
 const github = new GitHubIntegration({
   appId: config.githubAppId,
   privateKey: config.githubAppPrivateKey,

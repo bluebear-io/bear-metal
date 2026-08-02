@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 
 const REQUIRED = {
-  LINEAR_API_TOKEN: "lin_token",
+  LINEAR_CLIENT_ID: "lin_client_id",
+  LINEAR_CLIENT_SECRET: "lin_client_secret",
   GITHUB_APP_ID: "12345",
   GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\\nabc\\n-----END RSA PRIVATE KEY-----",
   GITHUB_APP_INSTALLATION_ID: "67890",
@@ -16,7 +17,9 @@ let snapshot: NodeJS.ProcessEnv;
 beforeEach(() => {
   snapshot = { ...process.env };
   for (const key of [
-    "LINEAR_API_TOKEN",
+    "LINEAR_CLIENT_ID",
+    "LINEAR_CLIENT_SECRET",
+    "LINEAR_OAUTH_SCOPES",
     "GITHUB_APP_ID",
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_APP_INSTALLATION_ID",
@@ -47,7 +50,9 @@ describe("loadConfig", () => {
   it("loads required values and applies defaults", () => {
     Object.assign(process.env, REQUIRED);
     const config = loadConfig();
-    expect(config.linearApiToken).toBe("lin_token");
+    expect(config.linearClientId).toBe("lin_client_id");
+    expect(config.linearClientSecret).toBe("lin_client_secret");
+    expect(config.linearOAuthScopes).toBe("read,write");
     expect(config.githubAppId).toBe(12_345);
     expect(config.githubAppInstallationId).toBe(67_890);
     expect(config.databaseUrl).toBe("sqlite:./data/bear-metal.sqlite");
@@ -82,8 +87,13 @@ describe("loadConfig", () => {
 
   it("throws when a required variable is missing", () => {
     Object.assign(process.env, REQUIRED);
-    delete process.env.LINEAR_API_TOKEN;
-    expect(() => loadConfig()).toThrow(/LINEAR_API_TOKEN/);
+    delete process.env.LINEAR_CLIENT_SECRET;
+    expect(() => loadConfig()).toThrow(/LINEAR_CLIENT_SECRET/);
+  });
+
+  it("honors LINEAR_OAUTH_SCOPES override", () => {
+    Object.assign(process.env, REQUIRED, { LINEAR_OAUTH_SCOPES: "read" });
+    expect(loadConfig().linearOAuthScopes).toBe("read");
   });
 
   it("throws on a non-positive-integer numeric variable", () => {

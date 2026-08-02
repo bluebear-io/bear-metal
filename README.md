@@ -51,7 +51,9 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 | Var | Required | Default | Purpose |
 |-----|----------|---------|---------|
-| `LINEAR_API_TOKEN` | yes | — | Linear API token (bot user) |
+| `LINEAR_CLIENT_ID` | yes | — | Linear OAuth app client id; exchanged for an app-actor token via the `client_credentials` grant |
+| `LINEAR_CLIENT_SECRET` | yes | — | Linear OAuth app client secret (long-lived; the ~30-day app-actor token it mints is auto-refreshed) |
+| `LINEAR_OAUTH_SCOPES` | no | `read,write` | Scopes for the app-actor token. Must stay stable — Linear revokes all app tokens when the scope set changes |
 | `GITHUB_APP_ID` | yes | — | GitHub App ID (numeric) |
 | `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
 | `GITHUB_APP_INSTALLATION_ID` | yes | — | Installation ID (numeric) |
@@ -225,11 +227,11 @@ After creating the app:
 
 ### Linear
 
-Bear-metal polls as the Linear user whose token you provide. Tickets delegated to that user are picked up automatically.
+Bear-metal authenticates as a Linear **app-actor** (the agent), minting its own token from the OAuth app's client credentials. Tickets delegated to the agent are picked up automatically.
 
-Go to **Linear → Settings → API → Personal API keys → Create key** → `LINEAR_API_TOKEN`
+In the Linear OAuth application settings: enable **client credentials**, then copy **Client ID** → `LINEAR_CLIENT_ID` and **Client secret** → `LINEAR_CLIENT_SECRET`. Bear-metal exchanges these for a ~30-day app-actor token and auto-refreshes it, so no manual token rotation is needed. `LINEAR_OAUTH_SCOPES` defaults to `read,write`; keep it stable, since requesting a different scope set revokes all existing app tokens.
 
-The bot user must be a full Linear workspace member (not a guest) so it can be assigned tickets.
+The agent must be a full Linear workspace member (not a guest) so it can be delegated tickets.
 
 > **Delegation model:** bear-metal picks up tickets that are *delegated* to the bot user, not just assigned. In Linear, open a ticket → click the assignee → choose **Delegate** and select the bot account. The original assignee stays on the ticket; bear-metal works it on their behalf and hands it back when done.
 

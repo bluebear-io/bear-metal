@@ -12,6 +12,11 @@ export {
   LinearIntegration,
   type LinearIntegrationOptions,
 } from "./integrations/linear/client.js";
+export {
+  AppTokenProvider,
+  type AppTokenProviderOptions,
+  type TokenProvider,
+} from "./integrations/linear/token.js";
 export type {
   LinearTicketContext,
   Ticket,
