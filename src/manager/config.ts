@@ -23,7 +23,10 @@ export interface Config {
   workerEnvironmentBuilderPath: string | null;
   /** Custom system prompt content injected into the agent prompt. Mutually exclusive with systemPromptPath. */
   systemPrompt: string | null;
-  linearApiToken: string;
+  linearClientId: string;
+  linearClientSecret: string;
+  /** Comma-separated OAuth scopes for the Linear app-actor token. */
+  linearOAuthScopes: string;
   githubAppId: number;
   githubAppPrivateKey: string;
   githubAppInstallationId: number;
@@ -95,7 +98,9 @@ export function loadConfig(): Readonly<Config> {
     ...loadWorkerEnvironmentBuilderConfig(),
     ...loadSystemPromptConfig(),
     ...loadLlmConfig(),
-    linearApiToken: requiredEnv("LINEAR_API_TOKEN"),
+    linearClientId: requiredEnv("LINEAR_CLIENT_ID"),
+    linearClientSecret: requiredEnv("LINEAR_CLIENT_SECRET"),
+    linearOAuthScopes: process.env.LINEAR_OAUTH_SCOPES?.trim() || "read,write",
     githubAppId: requiredPositiveIntEnv("GITHUB_APP_ID"),
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
     githubAppPrivateKey: requiredEnv("GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n"),
