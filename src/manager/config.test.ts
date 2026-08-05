@@ -52,7 +52,7 @@ describe("loadConfig", () => {
     const config = loadConfig();
     expect(config.linearClientId).toBe("lin_client_id");
     expect(config.linearClientSecret).toBe("lin_client_secret");
-    expect(config.linearOAuthScopes).toBe("read,write");
+    expect(config.linearOAuthScopes).toBe("read,write,app:assignable,app:mentionable");
     expect(config.githubAppId).toBe(12_345);
     expect(config.githubAppInstallationId).toBe(67_890);
     expect(config.databaseUrl).toBe("sqlite:./data/bear-metal.sqlite");

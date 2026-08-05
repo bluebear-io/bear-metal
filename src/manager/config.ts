@@ -100,7 +100,8 @@ export function loadConfig(): Readonly<Config> {
     ...loadLlmConfig(),
     linearClientId: requiredEnv("LINEAR_CLIENT_ID"),
     linearClientSecret: requiredEnv("LINEAR_CLIENT_SECRET"),
-    linearOAuthScopes: process.env.LINEAR_OAUTH_SCOPES?.trim() || "read,write",
+    linearOAuthScopes:
+      process.env.LINEAR_OAUTH_SCOPES?.trim() || "read,write,app:assignable,app:mentionable",
     githubAppId: requiredPositiveIntEnv("GITHUB_APP_ID"),
     // Stored in env with literal "\n" sequences; restore real newlines for the PEM.
     githubAppPrivateKey: requiredEnv("GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n"),
