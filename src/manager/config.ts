@@ -8,11 +8,15 @@ export function detectDialect(databaseUrl: string): DatabaseDialect {
   throw new Error(`Unsupported DATABASE_URL scheme: ${databaseUrl}`);
 }
 
-export type LlmProvider = "anthropic" | "openai" | "google";
+export type LlmProvider = "anthropic" | "openai" | "google" | "amazon-bedrock";
 
 export interface Config {
   llmProvider: LlmProvider;
-  llmApiKey: string;
+  /**
+   * Null for `amazon-bedrock` when authenticating via ambient AWS credentials
+   * (AWS profile/keys, ECS task role, IRSA) rather than a bearer token — see loadLlmConfig.
+   */
+  llmApiKey: string | null;
   /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
   workspaceBuilderCommand: string | null;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
@@ -159,27 +163,66 @@ function loadSystemPromptConfig(): { systemPrompt: string | null } {
   return { systemPrompt: inline };
 }
 
+type KeyBasedLlmProvider = Exclude<LlmProvider, "amazon-bedrock">;
+
+const KEY_BASED_PROVIDERS: { provider: KeyBasedLlmProvider; envName: string }[] = [
+  { provider: "anthropic", envName: "ANTHROPIC_API_KEY" },
+  { provider: "openai", envName: "OPENAI_API_KEY" },
+  { provider: "google", envName: "GOOGLE_API_KEY" },
+];
+
 /**
- * Exactly one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY must be set.
- * The first set key in that order is the provider bear-metal will use.
+ * Selects the LLM provider bear-metal will use. Two families of providers are supported:
+ *
+ * 1. Key-based providers (anthropic, openai, google) — exactly one of ANTHROPIC_API_KEY,
+ *    OPENAI_API_KEY, GOOGLE_API_KEY must be set; setting more than one is a misconfiguration.
+ * 2. Amazon Bedrock — has no single API key. It authenticates via ambient AWS credentials
+ *    (AWS_PROFILE, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, an ECS task role, or IRSA) which
+ *    the pi coding agent resolves itself, so there is nothing here for bear-metal to require
+ *    or validate beyond selecting the provider. Select Bedrock explicitly with
+ *    LLM_PROVIDER=amazon-bedrock (the only reliable signal in production, where an ECS task
+ *    role leaves no bear-metal-visible env var to auto-detect), or implicitly by setting
+ *    AWS_BEARER_TOKEN_BEDROCK, which doubles as both the Bedrock bearer token and a selection
+ *    signal for local development.
  */
-function loadLlmConfig(): { llmProvider: LlmProvider; llmApiKey: string } {
-  const candidates: { provider: LlmProvider; envName: string }[] = [
-    { provider: "anthropic", envName: "ANTHROPIC_API_KEY" },
-    { provider: "openai", envName: "OPENAI_API_KEY" },
-    { provider: "google", envName: "GOOGLE_API_KEY" },
-  ];
-  const found = candidates.filter(({ envName }) => !!process.env[envName]?.trim());
-  if (found.length === 0) {
-    throw new Error("At least one LLM API key must be set: ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY");
-  }
+function loadLlmConfig(): { llmProvider: LlmProvider; llmApiKey: string | null } {
+  const found = KEY_BASED_PROVIDERS.filter(({ envName }) => !!process.env[envName]?.trim());
   if (found.length > 1) {
     throw new Error(
       `Exactly one LLM API key must be set, but found: ${found.map((f) => f.envName).join(", ")}`,
     );
   }
-  const { provider, envName } = found[0]!;
-  return { llmProvider: provider, llmApiKey: process.env[envName]!.trim() };
+
+  const explicitProvider = process.env.LLM_PROVIDER?.trim();
+  if (explicitProvider) {
+    if (explicitProvider === "amazon-bedrock") {
+      return { llmProvider: "amazon-bedrock", llmApiKey: null };
+    }
+    const match = KEY_BASED_PROVIDERS.find((c) => c.provider === explicitProvider);
+    if (!match) {
+      const known = [...KEY_BASED_PROVIDERS.map((c) => c.provider), "amazon-bedrock"].join(", ");
+      throw new Error(`Unknown LLM_PROVIDER "${explicitProvider}". Expected one of: ${known}`);
+    }
+    const key = process.env[match.envName]?.trim();
+    if (!key) {
+      throw new Error(`LLM_PROVIDER is set to "${explicitProvider}" but ${match.envName} is not set`);
+    }
+    return { llmProvider: match.provider, llmApiKey: key };
+  }
+
+  if (found.length === 1) {
+    const { provider, envName } = found[0]!;
+    return { llmProvider: provider, llmApiKey: process.env[envName]!.trim() };
+  }
+
+  if (process.env.AWS_BEARER_TOKEN_BEDROCK?.trim()) {
+    return { llmProvider: "amazon-bedrock", llmApiKey: null };
+  }
+
+  throw new Error(
+    "At least one LLM provider must be configured: set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY, " +
+      "or select Amazon Bedrock with LLM_PROVIDER=amazon-bedrock (plus AWS credentials) or AWS_BEARER_TOKEN_BEDROCK",
+  );
 }
 
 /**

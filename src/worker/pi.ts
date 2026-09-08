@@ -38,6 +38,7 @@ const DEFAULT_MODEL_IDS: Record<string, string> = {
   anthropic: "claude-opus-4-7",
   openai: "gpt-5.4",
   google: "gemini-3.1-pro-preview",
+  "amazon-bedrock": "us.anthropic.claude-sonnet-4-20250514-v1:0",
 };
 
 export async function runPiWorker(input: {
@@ -59,7 +60,8 @@ export async function runPiWorker(input: {
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
   llmProvider: string;
-  llmApiKey: string;
+  /** Null for amazon-bedrock authenticating via ambient AWS credentials (no single API key to pass through). */
+  llmApiKey: string | null;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
   const workspaceRoot = input.context.cloneScript.agentWorkdir;
@@ -287,7 +289,14 @@ export async function runPiWorker(input: {
   });
 
   const authStorage = AuthStorage.create();
-  authStorage.setRuntimeApiKey(input.llmProvider, input.llmApiKey);
+  if (input.llmApiKey) {
+    // amazon-bedrock authenticates via ambient AWS credentials (profile/keys/ECS task
+    // role/IRSA), which pi resolves itself — there's no key to hand it here. Every other
+    // provider requires an explicit key.
+    authStorage.setRuntimeApiKey(input.llmProvider, input.llmApiKey);
+  } else if (input.llmProvider !== "amazon-bedrock") {
+    throw new Error(`Missing API key for LLM provider "${input.llmProvider}"`);
+  }
   const modelRegistry = ModelRegistry.create(authStorage);
   const defaultModelId = DEFAULT_MODEL_IDS[input.llmProvider];
   if (!defaultModelId) {
