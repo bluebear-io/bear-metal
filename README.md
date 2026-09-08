@@ -262,7 +262,7 @@ LLM_PROVIDER=amazon-bedrock
 AWS_REGION=us-east-1
 ```
 
-Default model: `us.anthropic.claude-sonnet-4-20250514-v1:0`, overridable with `LLM_MODEL`. Set `AWS_BEDROCK_FORCE_CACHE=1` for application inference-profile ARNs.
+Default model: `us.anthropic.claude-opus-4-6-v1`, overridable with `LLM_MODEL`. Set `AWS_BEDROCK_FORCE_CACHE=1` for application inference-profile ARNs.
 
 > The runtime IAM identity (e.g. the ECS task role) needs `bedrock:InvokeModel` / `InvokeModelWithResponseStream` (or the `Converse` equivalents) on the model/inference-profile ARNs used — grant this via your IaC.
 

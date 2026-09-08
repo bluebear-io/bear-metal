@@ -747,12 +747,12 @@ describe("runPiWorker", () => {
       expect(piMock.setRuntimeApiKey).not.toHaveBeenCalled();
       expect(piMock.modelRegistryFind).toHaveBeenCalledWith(
         "amazon-bedrock",
-        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "us.anthropic.claude-opus-4-6-v1",
       );
     });
 
     it("honors an LLM_MODEL override", async () => {
-      process.env.LLM_MODEL = "us.anthropic.claude-opus-4-1-20250805-v1:0";
+      process.env.LLM_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0";
       const { runPiWorker } = await import("./pi.js");
 
       await runPiWorker({
@@ -768,7 +768,7 @@ describe("runPiWorker", () => {
 
       expect(piMock.modelRegistryFind).toHaveBeenCalledWith(
         "amazon-bedrock",
-        "us.anthropic.claude-opus-4-1-20250805-v1:0",
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
       );
     });
 

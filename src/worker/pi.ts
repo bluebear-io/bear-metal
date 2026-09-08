@@ -38,7 +38,7 @@ const DEFAULT_MODEL_IDS: Record<string, string> = {
   anthropic: "claude-opus-4-7",
   openai: "gpt-5.4",
   google: "gemini-3.1-pro-preview",
-  "amazon-bedrock": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+  "amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
 };
 
 export async function runPiWorker(input: {
