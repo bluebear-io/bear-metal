@@ -744,8 +744,6 @@ describe("runPiWorker", () => {
         llmApiKey: null,
       });
 
-      // No API key is passed through to pi — amazon-bedrock authenticates via ambient
-      // AWS credentials (profile/keys/ECS task role/IRSA) that pi resolves itself.
       expect(piMock.setRuntimeApiKey).not.toHaveBeenCalled();
       expect(piMock.modelRegistryFind).toHaveBeenCalledWith(
         "amazon-bedrock",

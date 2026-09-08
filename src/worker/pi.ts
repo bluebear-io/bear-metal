@@ -60,7 +60,7 @@ export async function runPiWorker(input: {
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
   llmProvider: string;
-  /** Null for amazon-bedrock authenticating via ambient AWS credentials (no single API key to pass through). */
+  /** Null for amazon-bedrock, which uses ambient AWS credentials instead of a key. */
   llmApiKey: string | null;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
@@ -290,9 +290,6 @@ export async function runPiWorker(input: {
 
   const authStorage = AuthStorage.create();
   if (input.llmApiKey) {
-    // amazon-bedrock authenticates via ambient AWS credentials (profile/keys/ECS task
-    // role/IRSA), which pi resolves itself — there's no key to hand it here. Every other
-    // provider requires an explicit key.
     authStorage.setRuntimeApiKey(input.llmProvider, input.llmApiKey);
   } else if (input.llmProvider !== "amazon-bedrock") {
     throw new Error(`Missing API key for LLM provider "${input.llmProvider}"`);

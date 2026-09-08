@@ -64,11 +64,11 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 | `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key |
 | `OPENAI_API_KEY` | yes** | — | OpenAI API key |
 | `GOOGLE_API_KEY` | yes** | — | Google API key |
-| `LLM_PROVIDER` | no | inferred | Explicitly select the LLM provider. Required to select `amazon-bedrock` in production (an ECS task role leaves no other detectable signal); optional otherwise — see [Amazon Bedrock](#amazon-bedrock) |
-| `AWS_BEARER_TOKEN_BEDROCK` | no | — | Bedrock bearer token. Also auto-selects `amazon-bedrock` when no key-based provider key and no `LLM_PROVIDER` are set |
-| `AWS_REGION` | no | `us-east-1` | AWS region for Bedrock Converse calls |
-| `AWS_BEDROCK_FORCE_CACHE` | no | `false` | Force prompt-cache points for Bedrock application inference profiles whose ARN doesn't expose the model name |
-| `LLM_MODEL` | no | provider default | Override the model ID (e.g. `claude-sonnet-4-6`, `gpt-4o`, `us.anthropic.claude-opus-4-1-20250805-v1:0`) |
+| `LLM_PROVIDER` | no | inferred | Explicitly select the LLM provider; required to select `amazon-bedrock` — see [Amazon Bedrock](#amazon-bedrock) |
+| `AWS_BEARER_TOKEN_BEDROCK` | no | — | Bedrock bearer token; also auto-selects `amazon-bedrock` |
+| `AWS_REGION` | no | `us-east-1` | AWS region for Bedrock calls |
+| `AWS_BEDROCK_FORCE_CACHE` | no | `false` | Force prompt-cache points for Bedrock inference-profile ARNs |
+| `LLM_MODEL` | no | provider default | Override the model ID (e.g. `claude-sonnet-4-6`, `gpt-4o`) |
 | `SYSTEM_PROMPT_PATH` | no | — | Path to a custom system prompt file |
 | `SYSTEM_PROMPT` | no | — | Inline custom system prompt (mutually exclusive with `SYSTEM_PROMPT_PATH`) |
 | `DATABASE_URL` | no | `sqlite:./bear-metal.sqlite` | Task queue DB (`sqlite:<path>` or `postgres://…`) |
@@ -88,7 +88,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 *Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
 
-**Exactly one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` must be set to use those providers — the first set key in the order listed above determines the provider and its default model. Alternatively, use [Amazon Bedrock](#amazon-bedrock), which needs no API key.
+**Exactly one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` must be set to use those providers — the first set key in the order listed above determines the provider and its default model. [Amazon Bedrock](#amazon-bedrock) needs no API key.
 
 ***Both worker environment builder vars are optional. Set at most one; setting both fails startup.
 
@@ -253,29 +253,18 @@ Get an API key from [Google AI Studio](https://aistudio.google.com) → **Get AP
 
 ### Amazon Bedrock
 
-Amazon Bedrock has no single API key — it authenticates with ambient AWS credentials, which the embedded coding agent ([`@earendil-works/pi-coding-agent`](https://github.com/badlogic/pi-mono)) resolves itself via the standard AWS SDK credential chain:
+No API key — authenticates via ambient AWS credentials (AWS profile, IAM keys, `AWS_BEARER_TOKEN_BEDROCK`, an ECS task role, or IRSA), resolved by the embedded coding agent's AWS SDK.
 
-- An AWS profile (`AWS_PROFILE`)
-- Static IAM keys (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`)
-- A Bedrock bearer token (`AWS_BEARER_TOKEN_BEDROCK`)
-- An **ECS task role** (ambient container credentials — no env vars to set at all)
-- IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE`), on EKS
-
-Because there's no key, selection is explicit: set `LLM_PROVIDER=amazon-bedrock`. This is required in production deployments that rely on an ECS task role, since the task role alone leaves no bear-metal-visible signal to auto-detect. For local development, setting `AWS_BEARER_TOKEN_BEDROCK` alone is enough — bear-metal auto-selects Bedrock when no key-based provider key and no `LLM_PROVIDER` are set.
+Select it explicitly with `LLM_PROVIDER=amazon-bedrock` (required behind an ECS task role, which leaves no other detectable signal). `AWS_BEARER_TOKEN_BEDROCK` alone also auto-selects it.
 
 ```bash
-# Production (ECS task role — IAM grants Bedrock access, no credentials in env):
 LLM_PROVIDER=amazon-bedrock
-AWS_REGION=us-east-1
-
-# Local dev (bearer token):
-AWS_BEARER_TOKEN_BEDROCK=...
 AWS_REGION=us-east-1
 ```
 
-The default model is `us.anthropic.claude-sonnet-4-20250514-v1:0`; override with `LLM_MODEL`. Set `AWS_BEDROCK_FORCE_CACHE=1` when using an application inference profile ARN (which doesn't expose the underlying model name) to enable prompt-cache points.
+Default model: `us.anthropic.claude-sonnet-4-20250514-v1:0`, overridable with `LLM_MODEL`. Set `AWS_BEDROCK_FORCE_CACHE=1` for application inference-profile ARNs.
 
-> **IAM:** the IAM identity bear-metal runs as (e.g. the ECS task role) needs `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` (or the `Converse`/`ConverseStream` equivalents) on the model or inference-profile ARNs you intend to use. This is infrastructure-as-code, not something bear-metal configures — see your IaC/Terraform/CDK setup.
+> The runtime IAM identity (e.g. the ECS task role) needs `bedrock:InvokeModel` / `InvokeModelWithResponseStream` (or the `Converse` equivalents) on the model/inference-profile ARNs used — grant this via your IaC.
 
 ### Slack
 
