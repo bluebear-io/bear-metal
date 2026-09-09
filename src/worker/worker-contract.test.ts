@@ -121,4 +121,50 @@ describe("worker contract", () => {
     expect(prompt).not.toMatch(/respond_to_comment_writer/);
     expect(prompt).not.toMatch(/agree_with_github_message/);
   });
+
+  it("includes attachment paths without embedding attachment contents", () => {
+    const context = makeContext("new", "ABC-3");
+    context.evidenceAttachments = [
+      { title: "failure.log", path: "/workspace/.linear-artifacts/001-failure.log", size: 2_000_000 },
+    ];
+
+    const prompt = buildWorkerPrompt(context);
+
+    expect(prompt).toContain("/workspace/.linear-artifacts/001-failure.log");
+    expect(prompt).toContain('"size": 2000000');
+    expect(prompt).not.toContain("a".repeat(1_000));
+  });
 });
+
+function makeContext(state: "new", ticketId: string): WorkerInputContext {
+  return {
+    state,
+    ticketId,
+    prs: [],
+    ticket: {
+      issue: {
+        id: "issue-id",
+        identifier: ticketId,
+        title: "Large evidence task",
+        description: "Inspect the attached evidence.",
+        url: `https://linear.app/workspace/issue/${ticketId}`,
+        branchName: `fix/${ticketId}/evidence`,
+        status: { name: "Todo", type: "unstarted" },
+        priority: 2,
+        labels: [],
+        teamKey: "ABC",
+        assignee: null,
+        delegate: { id: "agent" },
+      },
+      comments: [],
+    },
+    pullRequests: [],
+    cloneScript: {
+      agentWorkdir: "/workspace",
+      workspaceDir: "/workspace",
+      stdout: "",
+      stderr: "",
+      netrcDir: "/tmp/netrc",
+    },
+  };
+}

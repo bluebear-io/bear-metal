@@ -282,6 +282,8 @@ function makeIntegrations() {
     },
     linear: {
       getTicketContext: vi.fn(),
+      getTicketAttachments: vi.fn().mockResolvedValue([]),
+      getAccessToken: vi.fn().mockResolvedValue("test-token"),
       moveTicketToInProgress: vi.fn(),
       moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),

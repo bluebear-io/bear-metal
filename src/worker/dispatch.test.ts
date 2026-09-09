@@ -46,6 +46,8 @@ describe("dispatch", () => {
         github: makeGithub(),
         linear: {
           getTicketContext: vi.fn(async () => makeTicketContext()),
+          getTicketAttachments: vi.fn(async () => []),
+          getAccessToken: vi.fn(async () => "test-token"),
           moveTicketToInProgress,
           moveTicketToInReview: vi.fn(),
           commentAndHandBack: vi.fn(),
@@ -141,6 +143,8 @@ function makeIntegrations() {
     github: makeGithub(),
     linear: {
       getTicketContext: vi.fn(async () => makeTicketContext()),
+      getTicketAttachments: vi.fn(async () => []),
+      getAccessToken: vi.fn(async () => "test-token"),
       moveTicketToInProgress: vi.fn(async () => {}),
       moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),

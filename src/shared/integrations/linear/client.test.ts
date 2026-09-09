@@ -6,6 +6,7 @@ import type { TokenProvider } from "./token.js";
 const h = vi.hoisted(() => ({
   builtWith: [] as string[],
   userFn: vi.fn(),
+  issueFn: vi.fn(),
   AuthErr: class AuthenticationLinearError extends Error {},
 }));
 
@@ -18,6 +19,9 @@ vi.mock("@linear/sdk", () => {
     }
     user(id: string) {
       return h.userFn(this.accessToken, id);
+    }
+    issue(id: string) {
+      return h.issueFn(this.accessToken, id);
     }
   }
   return { LinearClient, AuthenticationLinearError: h.AuthErr };
@@ -34,6 +38,32 @@ function fakeProvider(overrides: Partial<TokenProvider> = {}): TokenProvider {
 beforeEach(() => {
   h.builtWith.length = 0;
   h.userFn.mockReset();
+  h.issueFn.mockReset();
+});
+
+describe("LinearIntegration attachments", () => {
+  it("paginates uploaded Linear assets and excludes external integration links", async () => {
+    const attachments = vi.fn()
+      .mockResolvedValueOnce({
+        nodes: [
+          { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
+          { id: "pr", title: "Pull request", url: "https://github.com/acme/repo/pull/1" },
+        ],
+        pageInfo: { hasNextPage: true, endCursor: "next" },
+      })
+      .mockResolvedValueOnce({
+        nodes: [{ id: "a2", title: "report.json", url: "https://uploads.linear.app/a2" }],
+        pageInfo: { hasNextPage: false },
+      });
+    h.issueFn.mockResolvedValue({ attachments });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicketAttachments("ABC-1")).resolves.toEqual([
+      { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
+      { id: "a2", title: "report.json", url: "https://uploads.linear.app/a2" },
+    ]);
+    expect(attachments).toHaveBeenNthCalledWith(2, { first: 100, after: "next" });
+  });
 });
 
 describe("LinearIntegration token handling", () => {

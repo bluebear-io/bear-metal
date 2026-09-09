@@ -1,6 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
+import { downloadTicketAttachments } from "./attachments.js";
 import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
@@ -90,6 +91,16 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return r;
   });
 
+  const [ticketAttachments, linearAccessToken] = await Promise.all([
+    linear.getTicketAttachments(ticketId),
+    linear.getAccessToken(),
+  ]);
+  const evidenceAttachments = await downloadTicketAttachments(
+    ticketAttachments,
+    `${cloneScript.agentWorkdir}/.git/bear-metal-artifacts`,
+    linearAccessToken,
+  );
+
   const pullRequests = commentStore
     ? await Promise.all(
         rawPullRequests.map(async (ctx, idx) => {
@@ -113,6 +124,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     ticket,
     pullRequests,
     cloneScript,
+    evidenceAttachments,
   };
 
   await linear.moveTicketToInProgress(ticketId);

@@ -65,3 +65,9 @@ export interface LinearTicketContext {
   issue: Ticket;
   comments: TicketComment[];
 }
+
+export interface TicketAttachment {
+  id: string;
+  title: string;
+  url: string;
+}
