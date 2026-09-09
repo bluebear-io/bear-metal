@@ -63,6 +63,31 @@ describe("dispatch", () => {
     expect(dispatchMock.calls.indexOf("in-progress")).toBeLessThan(dispatchMock.calls.indexOf("pi"));
   });
 
+  it("reads the download token after attachment discovery completes", async () => {
+    const { dispatch } = await import("./dispatch.js");
+    dispatchMock.calls.length = 0;
+    const integrations = makeIntegrations();
+    let finishAttachmentDiscovery!: (attachments: []) => void;
+    integrations.linear.getTicketAttachments.mockImplementation(
+      () => new Promise<[]>((resolve) => { finishAttachmentDiscovery = resolve; }),
+    );
+
+    const result = dispatch({
+      state: "new",
+      ticketId: "ABC-1",
+      prs: [],
+      integrations,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
+    });
+
+    await vi.waitFor(() => expect(integrations.linear.getTicketAttachments).toHaveBeenCalled());
+    expect(integrations.linear.getAccessToken).not.toHaveBeenCalled();
+    finishAttachmentDiscovery([]);
+    await result;
+    expect(integrations.linear.getAccessToken).toHaveBeenCalledOnce();
+  });
+
   describe("cleanup", () => {
     let tempRoot: string;
 

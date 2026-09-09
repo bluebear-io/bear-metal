@@ -133,7 +133,9 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
         const page = await issue.attachments({ first: 100, after });
         attachments.push(
           ...page.nodes
-            .filter((attachment) => new URL(attachment.url).hostname === "uploads.linear.app")
+            .filter(
+              (attachment) => URL.canParse(attachment.url) && new URL(attachment.url).hostname === "uploads.linear.app",
+            )
             .map((attachment) => ({ id: attachment.id, title: attachment.title, url: attachment.url })),
         );
         after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;

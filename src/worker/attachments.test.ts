@@ -36,6 +36,9 @@ describe("downloadTicketAttachments", () => {
     ]);
     expect((await readFile(downloaded[0]!.path)).byteLength).toBe(2_000_000);
     expect(JSON.stringify(downloaded)).not.toContain("aaaa");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "https://uploads.linear.app/a1", {
+      headers: { Authorization: "Bearer test-token" },
+    });
   });
 
   it("fails when a downloaded size differs from Linear's response", async () => {
@@ -49,5 +52,18 @@ describe("downloadTicketAttachments", () => {
         "test-token",
       ),
     ).rejects.toThrow(/size mismatch/);
+  });
+
+  it("fails visibly when Linear rejects the attachment token", async () => {
+    directory = await mkdtemp(join(tmpdir(), "bear-metal-evidence-"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+
+    await expect(
+      downloadTicketAttachments(
+        [{ id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" }],
+        directory,
+        "expired-token",
+      ),
+    ).rejects.toThrow("Failed to download Linear attachment failure.log: HTTP 401");
   });
 });

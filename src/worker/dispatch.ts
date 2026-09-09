@@ -91,10 +91,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return r;
   });
 
-  const [ticketAttachments, linearAccessToken] = await Promise.all([
-    linear.getTicketAttachments(ticketId),
-    linear.getAccessToken(),
-  ]);
+  const ticketAttachments = await linear.getTicketAttachments(ticketId);
+  const linearAccessToken = await linear.getAccessToken();
   const evidenceAttachments = await downloadTicketAttachments(
     ticketAttachments,
     `${cloneScript.agentWorkdir}/.git/bear-metal-artifacts`,

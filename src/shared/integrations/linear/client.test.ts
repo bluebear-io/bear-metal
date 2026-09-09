@@ -64,6 +64,23 @@ describe("LinearIntegration attachments", () => {
     ]);
     expect(attachments).toHaveBeenNthCalledWith(2, { first: 100, after: "next" });
   });
+
+  it("excludes malformed attachment URLs without dropping valid uploads", async () => {
+    h.issueFn.mockResolvedValue({
+      attachments: vi.fn().mockResolvedValue({
+        nodes: [
+          { id: "bad", title: "Malformed", url: "not a URL" },
+          { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
+        ],
+        pageInfo: { hasNextPage: false },
+      }),
+    });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicketAttachments("ABC-1")).resolves.toEqual([
+      { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
+    ]);
+  });
 });
 
 describe("LinearIntegration token handling", () => {
