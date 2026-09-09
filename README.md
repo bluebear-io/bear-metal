@@ -161,7 +161,7 @@ Bear-metal creates `AGENT_WORKDIR`, runs the builder, then runs the agent inside
 
 The **workspace builder** above runs **per ticket** and prepares the repository under `AGENT_WORKDIR`. The **worker environment builder** is different: it runs **once at process startup**, inside the already-running Bear Metal container/process, **before** the scheduler and task worker start. Use it to install language toolchains, package managers, OS libraries, or CLIs that your workspace builder or the coding agent needs.
 
-Bear Metal does not ship with Go, Rust, Python, pnpm, etc. baked in — it stays language-agnostic. If your tickets target a Go repo, install Go here; if they target a Rust repo, install Cargo here; and so on. This is a configuration hook, not a custom-image requirement.
+The published image includes git, curl, and AWS CLI v2 on PATH for agent shell. It does not ship with Go, Rust, Python, pnpm, etc. — it stays language-agnostic. If your tickets target a Go repo, install Go here; if they target a Rust repo, install Cargo here; and so on. This is a configuration hook, not a custom-image requirement.
 
 Both env vars are optional and mutually exclusive:
 
