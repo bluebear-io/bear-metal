@@ -44,7 +44,7 @@ export interface DispatchInput {
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
   llmProvider: string;
-  llmApiKey: string;
+  llmApiKey: string | null;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {

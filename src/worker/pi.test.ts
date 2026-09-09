@@ -15,6 +15,8 @@ const piMock = vi.hoisted(() => ({
     }
     await tool.execute("tool-call-id", { text: "Need a product decision." });
   }),
+  setRuntimeApiKey: vi.fn(),
+  modelRegistryFind: vi.fn().mockReturnValue({}),
 }));
 
 const gitMock = vi.hoisted(() => ({
@@ -44,11 +46,11 @@ vi.mock("../shared/index.js", async (importOriginal) => {
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   AuthStorage: {
     create: () => ({
-      setRuntimeApiKey: vi.fn(),
+      setRuntimeApiKey: piMock.setRuntimeApiKey,
     }),
   },
   ModelRegistry: {
-    create: () => ({ find: vi.fn().mockReturnValue({}) }),
+    create: () => ({ find: piMock.modelRegistryFind }),
   },
   SessionManager: {
     inMemory: () => ({}),
@@ -78,6 +80,9 @@ describe("runPiWorker", () => {
   // rm's its netrcDir, can't delete ours mid-write.
   beforeEach(async () => {
     netrcDir = await mkdtemp(join(tmpdir(), "bear-metal-pi-test-"));
+    piMock.setRuntimeApiKey.mockClear();
+    piMock.modelRegistryFind.mockClear();
+    delete process.env.LLM_MODEL;
   });
 
   it("replies to and resolves an agreed GitHub review thread", async () => {
@@ -722,6 +727,67 @@ describe("runPiWorker", () => {
     expect(commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("Need a product decision."));
     expect(result).toEqual({ status: "pending", prs: [] });
     expect(piMock.sessionDispose).toHaveBeenCalled();
+  });
+
+  describe("amazon-bedrock provider", () => {
+    it("runs without an API key, resolving the default Bedrock model", async () => {
+      const { runPiWorker } = await import("./pi.js");
+
+      await runPiWorker({
+        context: makeContext(),
+        github: makeGithub(),
+        linear: makeLinear(),
+        gitEnv: {},
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+      });
+
+      expect(piMock.setRuntimeApiKey).not.toHaveBeenCalled();
+      expect(piMock.modelRegistryFind).toHaveBeenCalledWith(
+        "amazon-bedrock",
+        "us.anthropic.claude-opus-4-6-v1",
+      );
+    });
+
+    it("honors an LLM_MODEL override", async () => {
+      process.env.LLM_MODEL = "us.anthropic.claude-sonnet-4-20250514-v1:0";
+      const { runPiWorker } = await import("./pi.js");
+
+      await runPiWorker({
+        context: makeContext(),
+        github: makeGithub(),
+        linear: makeLinear(),
+        gitEnv: {},
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+      });
+
+      expect(piMock.modelRegistryFind).toHaveBeenCalledWith(
+        "amazon-bedrock",
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      );
+    });
+
+    it("throws for a non-bedrock provider with no API key", async () => {
+      const { runPiWorker } = await import("./pi.js");
+
+      await expect(
+        runPiWorker({
+          context: makeContext(),
+          github: makeGithub(),
+          linear: makeLinear(),
+          gitEnv: {},
+          maxWorkerTimeMs: 7_200_000,
+          maxWorkerTokens: 20_000_000,
+          llmProvider: "anthropic",
+          llmApiKey: null,
+        }),
+      ).rejects.toThrow(/Missing API key for LLM provider "anthropic"/);
+    });
   });
 });
 

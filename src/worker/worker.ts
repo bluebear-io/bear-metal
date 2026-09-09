@@ -20,7 +20,7 @@ export interface WorkerProcessDeps extends WorkerIntegrations {
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
   llmProvider: string;
-  llmApiKey: string;
+  llmApiKey: string | null;
 }
 
 export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContext) => Promise<WorkerResponse> {

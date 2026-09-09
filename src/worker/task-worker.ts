@@ -30,7 +30,7 @@ export interface TaskWorkerDeps {
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
   llmProvider: string;
-  llmApiKey: string;
+  llmApiKey: string | null;
 }
 
 export class TaskWorker {
@@ -52,7 +52,7 @@ export class TaskWorker {
   private readonly maxWorkerTimeMs: number;
   private readonly maxWorkerTokens: number;
   private readonly llmProvider: string;
-  private readonly llmApiKey: string;
+  private readonly llmApiKey: string | null;
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: TaskWorkerDeps) {

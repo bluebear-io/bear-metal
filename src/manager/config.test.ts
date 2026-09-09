@@ -37,6 +37,9 @@ beforeEach(() => {
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "GOOGLE_API_KEY",
+    "LLM_PROVIDER",
+    "LLM_MODEL",
+    "AWS_BEARER_TOKEN_BEDROCK",
   ]) {
     delete process.env[key];
   }
@@ -155,5 +158,76 @@ describe("loadConfig", () => {
       WORKER_ENVIRONMENT_BUILDER_PATH: "/scripts/install-toolchains.sh",
     });
     expect(() => loadConfig()).toThrow(/WORKER_ENVIRONMENT_BUILDER_COMMAND and WORKER_ENVIRONMENT_BUILDER_PATH/);
+  });
+
+  describe("LLM provider selection", () => {
+    it("selects anthropic by default when only ANTHROPIC_API_KEY is set", () => {
+      Object.assign(process.env, REQUIRED);
+      const config = loadConfig();
+      expect(config.llmProvider).toBe("anthropic");
+      expect(config.llmApiKey).toBe("sk-ant-test");
+    });
+
+    it("throws when more than one key-based API key is set", () => {
+      Object.assign(process.env, REQUIRED, { OPENAI_API_KEY: "sk-openai-test" });
+      expect(() => loadConfig()).toThrow(/Exactly one LLM API key must be set/);
+    });
+
+    it("throws when no LLM provider is configured at all", () => {
+      const env = { ...REQUIRED };
+      delete (env as Record<string, string>).ANTHROPIC_API_KEY;
+      Object.assign(process.env, env);
+      expect(() => loadConfig()).toThrow(/At least one LLM provider must be configured/);
+    });
+
+    it("selects amazon-bedrock via LLM_PROVIDER with no API key required", () => {
+      const env = { ...REQUIRED };
+      delete (env as Record<string, string>).ANTHROPIC_API_KEY;
+      Object.assign(process.env, env, { LLM_PROVIDER: "amazon-bedrock" });
+      const config = loadConfig();
+      expect(config.llmProvider).toBe("amazon-bedrock");
+      expect(config.llmApiKey).toBeNull();
+    });
+
+    it("selects amazon-bedrock via LLM_PROVIDER even when a key-based key is also set", () => {
+      Object.assign(process.env, REQUIRED, { LLM_PROVIDER: "amazon-bedrock" });
+      const config = loadConfig();
+      expect(config.llmProvider).toBe("amazon-bedrock");
+      expect(config.llmApiKey).toBeNull();
+    });
+
+    it("selects amazon-bedrock via AWS_BEARER_TOKEN_BEDROCK when no key-based key is set", () => {
+      const env = { ...REQUIRED };
+      delete (env as Record<string, string>).ANTHROPIC_API_KEY;
+      Object.assign(process.env, env, { AWS_BEARER_TOKEN_BEDROCK: "bedrock-bearer-token" });
+      const config = loadConfig();
+      expect(config.llmProvider).toBe("amazon-bedrock");
+      expect(config.llmApiKey).toBeNull();
+    });
+
+    it("prefers the key-based provider over AWS_BEARER_TOKEN_BEDROCK when LLM_PROVIDER is unset", () => {
+      Object.assign(process.env, REQUIRED, { AWS_BEARER_TOKEN_BEDROCK: "bedrock-bearer-token" });
+      const config = loadConfig();
+      expect(config.llmProvider).toBe("anthropic");
+    });
+
+    it("honors LLM_PROVIDER selecting a key-based provider explicitly", () => {
+      const env = { ...REQUIRED, OPENAI_API_KEY: "sk-openai-test" };
+      delete (env as Record<string, string>).ANTHROPIC_API_KEY;
+      Object.assign(process.env, env, { LLM_PROVIDER: "openai" });
+      const config = loadConfig();
+      expect(config.llmProvider).toBe("openai");
+      expect(config.llmApiKey).toBe("sk-openai-test");
+    });
+
+    it("throws when LLM_PROVIDER selects a key-based provider whose key is missing", () => {
+      Object.assign(process.env, REQUIRED, { LLM_PROVIDER: "openai" });
+      expect(() => loadConfig()).toThrow(/LLM_PROVIDER is set to "openai" but OPENAI_API_KEY is not set/);
+    });
+
+    it("throws on an unknown LLM_PROVIDER value", () => {
+      Object.assign(process.env, REQUIRED, { LLM_PROVIDER: "not-a-real-provider" });
+      expect(() => loadConfig()).toThrow(/Unknown LLM_PROVIDER "not-a-real-provider"/);
+    });
   });
 });
