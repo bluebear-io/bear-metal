@@ -81,6 +81,8 @@ export interface WorkerSlack {
 
 export interface WorkerLinear {
   getTicketContext(ticketId: string): Promise<LinearTicketContext>;
+  getTicketAttachments(ticketId: string): Promise<import("../shared/integrations/linear/types.js").TicketAttachment[]>;
+  getAccessToken(): Promise<string>;
   moveTicketToInProgress(ticketId: string): Promise<void>;
   moveTicketToInReview(ticketId: string): Promise<void>;
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
@@ -114,4 +116,5 @@ export type WorkerInputContext = {
   ticket: LinearTicketContext;
   pullRequests: PullRequestContext[];
   cloneScript: CloneScriptResult;
+  evidenceAttachments?: import("./attachments.js").DownloadedTicketAttachment[];
 };

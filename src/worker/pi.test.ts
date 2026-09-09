@@ -783,6 +783,8 @@ function makeGithub() {
 function makeLinear() {
   return {
     getTicketContext: vi.fn(),
+    getTicketAttachments: vi.fn().mockResolvedValue([]),
+    getAccessToken: vi.fn().mockResolvedValue("test-token"),
     moveTicketToInProgress: vi.fn(),
     moveTicketToInReview: vi.fn(),
     commentAndHandBack: vi.fn(),

@@ -2,7 +2,7 @@ import { AuthenticationLinearError, type Comment, type Issue, LinearClient } fro
 
 import type { CommentCapable, Integration } from "../base.js";
 import type { TokenProvider } from "./token.js";
-import type { LinearTicketContext, Ticket, TicketComment } from "./types.js";
+import type { LinearTicketContext, Ticket, TicketAttachment, TicketComment } from "./types.js";
 
 export interface LinearIntegrationOptions {
   tokenProvider: TokenProvider;
@@ -33,6 +33,10 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       this.cachedAgentId = await this.withClient(async (client) => (await client.viewer).id);
     }
     return this.cachedAgentId;
+  }
+
+  async getAccessToken(): Promise<string> {
+    return this.tokenProvider.getToken();
   }
 
   /**
@@ -117,6 +121,26 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       const issue = await client.issue(id);
       const [ticket, comments] = await Promise.all([this.toTicket(issue), this.getComments(issue)]);
       return { issue: ticket, comments };
+    });
+  }
+
+  async getTicketAttachments(id: string): Promise<TicketAttachment[]> {
+    return this.withClient(async (client) => {
+      const issue = await client.issue(id);
+      const attachments: TicketAttachment[] = [];
+      let after: string | undefined;
+      do {
+        const page = await issue.attachments({ first: 100, after });
+        attachments.push(
+          ...page.nodes
+            .filter(
+              (attachment) => URL.canParse(attachment.url) && new URL(attachment.url).hostname === "uploads.linear.app",
+            )
+            .map((attachment) => ({ id: attachment.id, title: attachment.title, url: attachment.url })),
+        );
+        after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
+      } while (after !== undefined);
+      return attachments;
     });
   }
 
