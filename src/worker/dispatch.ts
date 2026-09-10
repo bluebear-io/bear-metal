@@ -2,7 +2,11 @@ import { mkdir, rm } from "node:fs/promises";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
-import { runPiWorker } from "./pi.js";
+import {
+  DEFAULT_ANTHROPIC_MODEL_ID,
+  DEFAULT_BEDROCK_MODEL_ID,
+  runPiWorker,
+} from "./pi.js";
 import type {
   DispatchResult,
   DispatchState,
@@ -45,6 +49,32 @@ export interface DispatchInput {
   maxWorkerTokens: number;
   llmProvider: string;
   llmApiKey: string | null;
+  anthropicApiKey?: string | null;
+}
+
+function selectTicketLlm(
+  labels: string[],
+  anthropicApiKey: string | null,
+): {
+  llmProvider: "anthropic" | "amazon-bedrock";
+  llmApiKey: string | null;
+  llmModel?: string;
+} {
+  if (labels.some((label) => label.toLowerCase() === "research")) {
+    return {
+      llmProvider: "amazon-bedrock",
+      llmApiKey: null,
+      llmModel: DEFAULT_BEDROCK_MODEL_ID,
+    };
+  }
+  if (!anthropicApiKey) {
+    throw new Error("ANTHROPIC_API_KEY is required for tickets without the research label");
+  }
+  return {
+    llmProvider: "anthropic",
+    llmApiKey: anthropicApiKey,
+    llmModel: DEFAULT_ANTHROPIC_MODEL_ID,
+  };
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -77,6 +107,15 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       return identity;
     }),
   ]);
+
+  const llm = selectTicketLlm(
+    ticket.issue.labels,
+    input.anthropicApiKey ?? (input.llmProvider === "anthropic" ? input.llmApiKey : null),
+  );
+  logger.info(
+    { ticketId, provider: llm.llmProvider, labels: ticket.issue.labels },
+    "selected ticket LLM provider",
+  );
 
   input.onWorkspaceBuilding?.();
   const cloneScript = await runWorkspaceBuilder({
@@ -140,9 +179,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     GIT_COMMITTER_EMAIL: botEmail,
   };
 
-  logger.debug({ ticketId, workspaceDir }, "starting pi worker session");
   try {
-    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, systemPrompt: input.systemPrompt, onAgentStarted: input.onAgentStarted, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens, llmProvider: input.llmProvider, llmApiKey: input.llmApiKey, prs });
+    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, systemPrompt: input.systemPrompt, onAgentStarted: input.onAgentStarted, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens, ...llm, prs });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {

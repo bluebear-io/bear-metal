@@ -34,11 +34,14 @@ const logger = createLogger({
 // still record the untruncated length in `outputSize` so the UI can flag truncated payloads.
 const MAX_TOOL_CALL_RESULT_CHARS = 8_000;
 
+export const DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-opus-4-6-v1";
+export const DEFAULT_ANTHROPIC_MODEL_ID = "claude-opus-4-7";
+
 const DEFAULT_MODEL_IDS: Record<string, string> = {
-  anthropic: "claude-opus-4-7",
+  anthropic: DEFAULT_ANTHROPIC_MODEL_ID,
   openai: "gpt-5.4",
   google: "gemini-3.1-pro-preview",
-  "amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
+  "amazon-bedrock": DEFAULT_BEDROCK_MODEL_ID,
 };
 
 export async function runPiWorker(input: {
@@ -62,6 +65,7 @@ export async function runPiWorker(input: {
   llmProvider: string;
   /** Null for amazon-bedrock, which uses ambient AWS credentials instead of a key. */
   llmApiKey: string | null;
+  llmModel?: string;
 }): Promise<DispatchResult> {
   let decision: DispatchResult | undefined;
   const workspaceRoot = input.context.cloneScript.agentWorkdir;
@@ -299,7 +303,7 @@ export async function runPiWorker(input: {
   if (!defaultModelId) {
     throw new Error(`Unknown LLM provider: ${input.llmProvider}`);
   }
-  const modelId = process.env.LLM_MODEL?.trim() || defaultModelId;
+  const modelId = input.llmModel ?? (process.env.LLM_MODEL?.trim() || defaultModelId);
   const model = modelRegistry.find(input.llmProvider, modelId);
   if (!model) {
     throw new Error(`No model found for provider "${input.llmProvider}" / model "${modelId}"`);

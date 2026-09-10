@@ -187,6 +187,7 @@ describe("loadConfig", () => {
       const config = loadConfig();
       expect(config.llmProvider).toBe("amazon-bedrock");
       expect(config.llmApiKey).toBeNull();
+      expect(config.anthropicApiKey).toBeNull();
     });
 
     it("selects amazon-bedrock via LLM_PROVIDER even when a key-based key is also set", () => {
@@ -194,6 +195,7 @@ describe("loadConfig", () => {
       const config = loadConfig();
       expect(config.llmProvider).toBe("amazon-bedrock");
       expect(config.llmApiKey).toBeNull();
+      expect(config.anthropicApiKey).toBe("sk-ant-test");
     });
 
     it("selects amazon-bedrock via AWS_BEARER_TOKEN_BEDROCK when no key-based key is set", () => {
@@ -203,6 +205,7 @@ describe("loadConfig", () => {
       const config = loadConfig();
       expect(config.llmProvider).toBe("amazon-bedrock");
       expect(config.llmApiKey).toBeNull();
+      expect(config.anthropicApiKey).toBeNull();
     });
 
     it("prefers the key-based provider over AWS_BEARER_TOKEN_BEDROCK when LLM_PROVIDER is unset", () => {

@@ -6,6 +6,7 @@ import type { DispatchResult, WorkerInputContext } from "./types.js";
 
 const dispatchMock = vi.hoisted(() => ({
   calls: [] as string[],
+  piInputs: [] as Array<{ llmProvider: string; llmApiKey: string | null; llmModel?: string }>,
   workspaceDir: "/tmp/dispatch-workspace",
 }));
 
@@ -24,13 +25,121 @@ vi.mock("./clone.js", () => ({
 }));
 
 vi.mock("./pi.js", () => ({
-  runPiWorker: async (_input: { context: WorkerInputContext }): Promise<DispatchResult> => {
+  DEFAULT_ANTHROPIC_MODEL_ID: "claude-opus-4-7",
+  DEFAULT_BEDROCK_MODEL_ID: "us.anthropic.claude-opus-4-6-v1",
+  runPiWorker: async (input: {
+    context: WorkerInputContext;
+    llmProvider: string;
+    llmApiKey: string | null;
+    llmModel?: string;
+  }): Promise<DispatchResult> => {
     dispatchMock.calls.push("pi");
+    dispatchMock.piInputs.push({
+      llmProvider: input.llmProvider,
+      llmApiKey: input.llmApiKey,
+      ...(input.llmModel ? { llmModel: input.llmModel } : {}),
+    });
     return { status: "pending", prs: [] };
   },
 }));
 
 describe("dispatch", () => {
+  beforeEach(() => {
+    dispatchMock.calls.length = 0;
+    dispatchMock.piInputs.length = 0;
+  });
+
+  it("routes research-labeled tickets to Bedrock case-insensitively", async () => {
+    const { dispatch } = await import("./dispatch.js");
+    const integrations = makeIntegrations();
+    integrations.linear.getTicketContext.mockResolvedValue(
+      makeTicketContext({ labels: ["Research"] }),
+    );
+
+    await dispatch({
+      state: "new",
+      ticketId: "ABC-1",
+      prs: [],
+      integrations,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
+      llmProvider: "amazon-bedrock",
+      llmApiKey: null,
+      anthropicApiKey: "anthropic-key",
+    });
+
+    expect(dispatchMock.piInputs).toEqual([
+      {
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+        llmModel: "us.anthropic.claude-opus-4-6-v1",
+      },
+    ]);
+  });
+
+  it("routes the ticket after a research ticket to Anthropic without leaking the override", async () => {
+    const { dispatch } = await import("./dispatch.js");
+    const researchIntegrations = makeIntegrations();
+    researchIntegrations.linear.getTicketContext.mockResolvedValue(
+      makeTicketContext({ labels: ["research"] }),
+    );
+
+    await dispatch({
+      state: "new",
+      ticketId: "ABC-1",
+      prs: [],
+      integrations: researchIntegrations,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
+      llmProvider: "amazon-bedrock",
+      llmApiKey: null,
+      anthropicApiKey: "anthropic-key",
+    });
+
+    await dispatch({
+      state: "new",
+      ticketId: "ABC-2",
+      prs: [],
+      integrations: makeIntegrations(),
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
+      llmProvider: "amazon-bedrock",
+      llmApiKey: null,
+      anthropicApiKey: "anthropic-key",
+    });
+
+    expect(dispatchMock.piInputs).toEqual([
+      {
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+        llmModel: "us.anthropic.claude-opus-4-6-v1",
+      },
+      {
+        llmProvider: "anthropic",
+        llmApiKey: "anthropic-key",
+        llmModel: "claude-opus-4-7",
+      },
+    ]);
+  });
+
+  it("rejects an unlabeled ticket when the Anthropic credential is unavailable", async () => {
+    const { dispatch } = await import("./dispatch.js");
+
+    await expect(dispatch({
+      state: "new",
+      ticketId: "ABC-1",
+      prs: [],
+      integrations: makeIntegrations(),
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
+      llmProvider: "amazon-bedrock",
+      llmApiKey: null,
+      anthropicApiKey: null,
+    })).rejects.toThrow(/ANTHROPIC_API_KEY is required/);
+
+    expect(dispatchMock.piInputs).toEqual([]);
+  });
+
   it("moves the Linear ticket to In Progress before starting Pi", async () => {
     const { dispatch } = await import("./dispatch.js");
     dispatchMock.calls.length = 0;
@@ -143,7 +252,7 @@ describe("dispatch", () => {
   });
 });
 
-function makeTicketContext() {
+function makeTicketContext(issueOverrides: Partial<WorkerInputContext["ticket"]["issue"]> = {}) {
   return {
     issue: {
       id: "issue-id",
@@ -158,6 +267,7 @@ function makeTicketContext() {
       assignee: { id: "creator" },
       delegate: { id: "agent" },
       priority: 0,
+      ...issueOverrides,
     },
     comments: [],
   };
