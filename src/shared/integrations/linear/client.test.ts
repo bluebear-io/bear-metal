@@ -40,6 +40,28 @@ function fakeProvider(overrides: Partial<TokenProvider> = {}): TokenProvider {
   };
 }
 
+function validRawIssue(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "issue-1",
+    identifier: "DEN-1",
+    title: "Ticket",
+    description: "Description",
+    url: "https://linear.app/issue/DEN-1",
+    branchName: "fix/den-1/ticket",
+    state: { name: "In Progress", type: "started" },
+    labels: { nodes: [{ name: "Bug" }] },
+    team: { key: "DEN" },
+    priority: 2,
+    assignee: { id: "user-1" },
+    delegate: { id: "agent-1" },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-02T00:00:00.000Z",
+    completedAt: null,
+    canceledAt: null,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   h.builtWith.length = 0;
   h.userFn.mockReset();
@@ -51,24 +73,7 @@ describe("LinearIntegration getTicket", () => {
   it("retrieves the complete ticket in exactly one Linear request", async () => {
     h.rawRequestFn.mockResolvedValue({
       data: {
-        issue: {
-          id: "issue-1",
-          identifier: "DEN-1",
-          title: "Ticket",
-          description: "Description",
-          url: "https://linear.app/issue/DEN-1",
-          branchName: "fix/den-1/ticket",
-          state: { name: "In Progress", type: "started" },
-          labels: { nodes: [{ name: "Bug" }] },
-          team: { key: "DEN" },
-          priority: 2,
-          assignee: { id: "user-1" },
-          delegate: { id: "agent-1" },
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-02T00:00:00.000Z",
-          completedAt: null,
-          canceledAt: null,
-        },
+        issue: validRawIssue(),
       },
     });
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
@@ -96,6 +101,46 @@ describe("LinearIntegration getTicket", () => {
     expect(h.rawRequestFn).toHaveBeenCalledWith("tok", expect.stringContaining("labels { nodes { name } }"), {
       id: "DEN-1",
     });
+  });
+
+  it("throws when Linear returns no data", async () => {
+    h.rawRequestFn.mockResolvedValue({ data: undefined });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicket("DEN-1")).rejects.toThrow("Linear returned no data for issue DEN-1");
+  });
+
+  it("throws when the issue has no workflow state", async () => {
+    h.rawRequestFn.mockResolvedValue({ data: { issue: validRawIssue({ state: null }) } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicket("DEN-1")).rejects.toThrow("Linear issue DEN-1 has no workflow state");
+  });
+
+  it("throws when the issue has no team", async () => {
+    h.rawRequestFn.mockResolvedValue({ data: { issue: validRawIssue({ team: null }) } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicket("DEN-1")).rejects.toThrow("Linear issue DEN-1 has no team");
+  });
+
+  it("invalidates the token and retries once when the raw request is unauthenticated", async () => {
+    const provider = fakeProvider();
+    h.rawRequestFn
+      .mockRejectedValueOnce(new h.AuthErr("not authenticated"))
+      .mockResolvedValueOnce({ data: { issue: validRawIssue() } });
+    const linear = new LinearIntegration({ tokenProvider: provider });
+
+    await expect(linear.getTicket("DEN-1")).resolves.toMatchObject({ id: "issue-1" });
+    expect(provider.invalidate).toHaveBeenCalledTimes(1);
+    expect(h.rawRequestFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves the no-priority fallback used by other ticket reads", async () => {
+    h.rawRequestFn.mockResolvedValue({ data: { issue: validRawIssue({ priority: null }) } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicket("DEN-1")).resolves.toMatchObject({ priority: 0 });
   });
 });
 
