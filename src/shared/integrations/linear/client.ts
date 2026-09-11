@@ -8,6 +8,50 @@ export interface LinearIntegrationOptions {
   tokenProvider: TokenProvider;
 }
 
+interface GetTicketResponse {
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+    description: string | null;
+    url: string;
+    branchName: string;
+    priority: number;
+    assignee: { id: string } | null;
+    delegate: { id: string } | null;
+    createdAt: string;
+    updatedAt: string;
+    completedAt: string | null;
+    canceledAt: string | null;
+    state: { name: string; type: string } | null;
+    labels: { nodes: Array<{ name: string }> };
+    team: { key: string } | null;
+  };
+}
+
+const GET_TICKET_QUERY = `
+  query GetTicket($id: String!) {
+    issue(id: $id) {
+      id
+      identifier
+      title
+      description
+      url
+      branchName
+      priority
+      assignee { id }
+      delegate { id }
+      createdAt
+      updatedAt
+      completedAt
+      canceledAt
+      state { name type }
+      labels { nodes { name } }
+      team { key }
+    }
+  }
+`;
+
 /** Workflow-state types that mean a ticket needs no further work; never admitted. */
 const TERMINAL_STATE_TYPES = ["completed", "canceled"];
 
@@ -71,7 +115,37 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   }
 
   async getTicket(id: string): Promise<Ticket> {
-    return this.withClient(async (client) => this.toTicket(await client.issue(id)));
+    return this.withClient(async (client) => {
+      const { data } = await client.client.rawRequest<GetTicketResponse, { id: string }>(GET_TICKET_QUERY, { id });
+      if (!data) {
+        throw new Error(`Linear returned no data for issue ${id}`);
+      }
+      const issue = data.issue;
+      if (!issue.state) {
+        throw new Error(`Linear issue ${issue.identifier} has no workflow state`);
+      }
+      if (!issue.team) {
+        throw new Error(`Linear issue ${issue.identifier} has no team`);
+      }
+      return {
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        description: issue.description,
+        url: issue.url,
+        branchName: issue.branchName,
+        status: issue.state,
+        priority: issue.priority,
+        labels: issue.labels.nodes.map((label) => label.name),
+        teamKey: issue.team.key,
+        assignee: issue.assignee,
+        delegate: issue.delegate,
+        createdAt: issue.createdAt,
+        updatedAt: issue.updatedAt,
+        completedAt: issue.completedAt,
+        canceledAt: issue.canceledAt,
+      };
+    });
   }
 
   async getUserEmail(userId: string): Promise<string | null> {

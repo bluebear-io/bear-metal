@@ -7,14 +7,19 @@ const h = vi.hoisted(() => ({
   builtWith: [] as string[],
   userFn: vi.fn(),
   issueFn: vi.fn(),
+  rawRequestFn: vi.fn(),
   AuthErr: class AuthenticationLinearError extends Error {},
 }));
 
 vi.mock("@linear/sdk", () => {
   class LinearClient {
     private readonly accessToken: string;
+    readonly client: { rawRequest: (query: string, variables: Record<string, unknown>) => unknown };
     constructor(opts: { accessToken: string }) {
       this.accessToken = opts.accessToken;
+      this.client = {
+        rawRequest: (query, variables) => h.rawRequestFn(this.accessToken, query, variables),
+      };
       h.builtWith.push(opts.accessToken);
     }
     user(id: string) {
@@ -39,6 +44,59 @@ beforeEach(() => {
   h.builtWith.length = 0;
   h.userFn.mockReset();
   h.issueFn.mockReset();
+  h.rawRequestFn.mockReset();
+});
+
+describe("LinearIntegration getTicket", () => {
+  it("retrieves the complete ticket in exactly one Linear request", async () => {
+    h.rawRequestFn.mockResolvedValue({
+      data: {
+        issue: {
+          id: "issue-1",
+          identifier: "DEN-1",
+          title: "Ticket",
+          description: "Description",
+          url: "https://linear.app/issue/DEN-1",
+          branchName: "fix/den-1/ticket",
+          state: { name: "In Progress", type: "started" },
+          labels: { nodes: [{ name: "Bug" }] },
+          team: { key: "DEN" },
+          priority: 2,
+          assignee: { id: "user-1" },
+          delegate: { id: "agent-1" },
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          completedAt: null,
+          canceledAt: null,
+        },
+      },
+    });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicket("DEN-1")).resolves.toEqual({
+      id: "issue-1",
+      identifier: "DEN-1",
+      title: "Ticket",
+      description: "Description",
+      url: "https://linear.app/issue/DEN-1",
+      branchName: "fix/den-1/ticket",
+      status: { name: "In Progress", type: "started" },
+      priority: 2,
+      labels: ["Bug"],
+      teamKey: "DEN",
+      assignee: { id: "user-1" },
+      delegate: { id: "agent-1" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+      completedAt: null,
+      canceledAt: null,
+    });
+    expect(h.issueFn).not.toHaveBeenCalled();
+    expect(h.rawRequestFn).toHaveBeenCalledTimes(1);
+    expect(h.rawRequestFn).toHaveBeenCalledWith("tok", expect.stringContaining("labels { nodes { name } }"), {
+      id: "DEN-1",
+    });
+  });
 });
 
 describe("LinearIntegration attachments", () => {
