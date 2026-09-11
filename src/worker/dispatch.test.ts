@@ -77,6 +77,34 @@ describe("dispatch", () => {
     ]);
   });
 
+  it("overrides an Anthropic process provider for a research ticket", async () => {
+    const { dispatch } = await import("./dispatch.js");
+    const integrations = makeIntegrations();
+    integrations.linear.getTicketContext.mockResolvedValue(
+      makeTicketContext({ labels: ["research"] }),
+    );
+
+    await dispatch({
+      state: "new",
+      ticketId: "ABC-1",
+      prs: [],
+      integrations,
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
+      llmProvider: "anthropic",
+      llmApiKey: "anthropic-key",
+      anthropicApiKey: "anthropic-key",
+    });
+
+    expect(dispatchMock.piInputs).toEqual([
+      {
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+        llmModel: "us.anthropic.claude-opus-4-6-v1",
+      },
+    ]);
+  });
+
   it("routes the ticket after a research ticket to Anthropic without leaking the override", async () => {
     const { dispatch } = await import("./dispatch.js");
     const researchIntegrations = makeIntegrations();
@@ -124,20 +152,29 @@ describe("dispatch", () => {
 
   it("rejects an unlabeled ticket when the Anthropic credential is unavailable", async () => {
     const { dispatch } = await import("./dispatch.js");
+    const tempRoot = await mkdtemp(join(tmpdir(), "dispatch-no-credentials-"));
+    const workspaceDir = join(tempRoot, "ABC-1");
+    dispatchMock.workspaceDir = workspaceDir;
 
-    await expect(dispatch({
-      state: "new",
-      ticketId: "ABC-1",
-      prs: [],
-      integrations: makeIntegrations(),
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
-      llmProvider: "amazon-bedrock",
-      llmApiKey: null,
-      anthropicApiKey: null,
-    })).rejects.toThrow(/ANTHROPIC_API_KEY is required/);
+    try {
+      await expect(dispatch({
+        state: "new",
+        ticketId: "ABC-1",
+        prs: [],
+        integrations: makeIntegrations(),
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+        anthropicApiKey: null,
+      })).rejects.toThrow(/ANTHROPIC_API_KEY is required/);
 
-    expect(dispatchMock.piInputs).toEqual([]);
+      expect(dispatchMock.piInputs).toEqual([]);
+      await expect(stat(workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      dispatchMock.workspaceDir = "/tmp/dispatch-workspace";
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("moves the Linear ticket to In Progress before starting Pi", async () => {

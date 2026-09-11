@@ -180,14 +180,11 @@ describe("loadConfig", () => {
       expect(() => loadConfig()).toThrow(/At least one LLM provider must be configured/);
     });
 
-    it("selects amazon-bedrock via LLM_PROVIDER with no API key required", () => {
+    it("rejects a Bedrock process configuration without the Anthropic key required for non-research tickets", () => {
       const env = { ...REQUIRED };
       delete (env as Record<string, string>).ANTHROPIC_API_KEY;
       Object.assign(process.env, env, { LLM_PROVIDER: "amazon-bedrock" });
-      const config = loadConfig();
-      expect(config.llmProvider).toBe("amazon-bedrock");
-      expect(config.llmApiKey).toBeNull();
-      expect(config.anthropicApiKey).toBeNull();
+      expect(() => loadConfig()).toThrow(/Missing required environment variable: ANTHROPIC_API_KEY/);
     });
 
     it("selects amazon-bedrock via LLM_PROVIDER even when a key-based key is also set", () => {
@@ -198,14 +195,11 @@ describe("loadConfig", () => {
       expect(config.anthropicApiKey).toBe("sk-ant-test");
     });
 
-    it("selects amazon-bedrock via AWS_BEARER_TOKEN_BEDROCK when no key-based key is set", () => {
+    it("rejects a Bedrock bearer-token configuration without the Anthropic key", () => {
       const env = { ...REQUIRED };
       delete (env as Record<string, string>).ANTHROPIC_API_KEY;
       Object.assign(process.env, env, { AWS_BEARER_TOKEN_BEDROCK: "bedrock-bearer-token" });
-      const config = loadConfig();
-      expect(config.llmProvider).toBe("amazon-bedrock");
-      expect(config.llmApiKey).toBeNull();
-      expect(config.anthropicApiKey).toBeNull();
+      expect(() => loadConfig()).toThrow(/Missing required environment variable: ANTHROPIC_API_KEY/);
     });
 
     it("prefers the key-based provider over AWS_BEARER_TOKEN_BEDROCK when LLM_PROVIDER is unset", () => {
@@ -214,13 +208,11 @@ describe("loadConfig", () => {
       expect(config.llmProvider).toBe("anthropic");
     });
 
-    it("honors LLM_PROVIDER selecting a key-based provider explicitly", () => {
+    it("rejects an OpenAI-only process configuration because ticket routing requires Anthropic", () => {
       const env = { ...REQUIRED, OPENAI_API_KEY: "sk-openai-test" };
       delete (env as Record<string, string>).ANTHROPIC_API_KEY;
       Object.assign(process.env, env, { LLM_PROVIDER: "openai" });
-      const config = loadConfig();
-      expect(config.llmProvider).toBe("openai");
-      expect(config.llmApiKey).toBe("sk-openai-test");
+      expect(() => loadConfig()).toThrow(/Missing required environment variable: ANTHROPIC_API_KEY/);
     });
 
     it("throws when LLM_PROVIDER selects a key-based provider whose key is missing", () => {

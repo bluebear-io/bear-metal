@@ -35,7 +35,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 1. Create a GitHub App and note your credentials — [GitHub App guide](#github-app)
 2. Create a Linear API token — [Linear guide](#linear)
-3. Get an API key from at least one LLM provider — [Anthropic](#anthropic) · [OpenAI](#openai) · [Google](#google)
+3. Get an [Anthropic API key](#anthropic) for non-research tickets
 4. Define how bear-metal should clone your repository — [Workspace builder](#workspace-builder)
 5. *(optional)* Set up a persistent database — point `DATABASE_URL` at a PostgreSQL instance or a mounted SQLite file. Without this, bear-metal defaults to a local SQLite file that will be lost if the container restarts.
 6. *(optional)* Create a Slack app for PR notifications — [Slack guide](#slack)
@@ -62,8 +62,8 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 | `WORKER_ENVIRONMENT_BUILDER_COMMAND` | no*** | — | Inline bash run once at startup to prepare the worker environment |
 | `WORKER_ENVIRONMENT_BUILDER_PATH` | no*** | — | Path to a worker environment builder script |
 | `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key; required when Bear Metal dispatches tickets without the `research` label |
-| `OPENAI_API_KEY` | yes** | — | OpenAI API key |
-| `GOOGLE_API_KEY` | yes** | — | Google API key |
+| `OPENAI_API_KEY` | no | — | Not selected by per-ticket routing; leave unset |
+| `GOOGLE_API_KEY` | no | — | Not selected by per-ticket routing; leave unset |
 | `LLM_PROVIDER` | no | inferred | Process-level provider selection; ticket dispatch overrides this according to [per-ticket provider routing](#per-ticket-provider-routing) |
 | `AWS_BEARER_TOKEN_BEDROCK` | no | — | Bedrock bearer token; also auto-selects `amazon-bedrock` |
 | `AWS_REGION` | no | `us-east-1` | AWS region for Bedrock calls |
@@ -88,7 +88,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 *Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
 
-**Exactly one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` must be set to use those providers — the first set key in the order listed above determines the provider and its default model. [Amazon Bedrock](#amazon-bedrock) needs no API key.
+**`ANTHROPIC_API_KEY` is required because the single service must handle non-research tickets. Research tickets use [Amazon Bedrock](#amazon-bedrock) through ambient AWS credentials. OpenAI and Google remain available in the embedded agent library but are not selected by Bear Metal's per-ticket routing policy.
 
 ***Both worker environment builder vars are optional. Set at most one; setting both fails startup.
 
@@ -245,11 +245,11 @@ Get an API key from the [Anthropic Console](https://console.anthropic.com) → *
 
 ### OpenAI
 
-Get an API key from the [OpenAI Platform](https://platform.openai.com) → **API keys** → **Create new secret key** → `OPENAI_API_KEY`
+The embedded agent library supports OpenAI, but Bear Metal's per-ticket policy does not select it. Do not configure `OPENAI_API_KEY` for the single-service research/Anthropic deployment.
 
 ### Google
 
-Get an API key from [Google AI Studio](https://aistudio.google.com) → **Get API key** → `GOOGLE_API_KEY`
+The embedded agent library supports Google, but Bear Metal's per-ticket policy does not select it. Do not configure `GOOGLE_API_KEY` for the single-service research/Anthropic deployment.
 
 ### Amazon Bedrock
 

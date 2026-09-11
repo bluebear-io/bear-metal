@@ -31,7 +31,7 @@ export interface TaskWorkerDeps {
   maxWorkerTokens: number;
   llmProvider: string;
   llmApiKey: string | null;
-  anthropicApiKey?: string | null;
+  anthropicApiKey: string;
 }
 
 export class TaskWorker {
@@ -54,7 +54,7 @@ export class TaskWorker {
   private readonly maxWorkerTokens: number;
   private readonly llmProvider: string;
   private readonly llmApiKey: string | null;
-  private readonly anthropicApiKey: string | null;
+  private readonly anthropicApiKey: string;
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: TaskWorkerDeps) {
@@ -76,7 +76,7 @@ export class TaskWorker {
     this.maxWorkerTokens = deps.maxWorkerTokens;
     this.llmProvider = deps.llmProvider;
     this.llmApiKey = deps.llmApiKey;
-    this.anthropicApiKey = deps.anthropicApiKey ?? null;
+    this.anthropicApiKey = deps.anthropicApiKey;
     this.queue = new PQueue({ concurrency: deps.concurrency });
   }
 

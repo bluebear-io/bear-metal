@@ -84,8 +84,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const { github, linear, commentStore } = integrations;
   const workspaceDir = workspaceForTicket(ticketId);
 
-  await mkdir(workspaceDir, { recursive: true });
-
   logger.debug({ ticketId, state, prCount: prs.length, workspaceDir }, "dispatch starting");
 
   const [githubToken, ticket, rawPullRequests, botIdentity] = await Promise.all([
@@ -117,6 +115,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     "selected ticket LLM provider",
   );
 
+  await mkdir(workspaceDir, { recursive: true });
   input.onWorkspaceBuilding?.();
   const cloneScript = await runWorkspaceBuilder({
     workspaceDir,
