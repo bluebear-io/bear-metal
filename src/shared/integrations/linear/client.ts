@@ -26,7 +26,7 @@ interface GetTicketResponse {
     state: { name: string; type: string } | null;
     labels: { nodes: Array<{ name: string }> };
     team: { key: string } | null;
-  };
+  } | null;
 }
 
 const GET_TICKET_QUERY = `
@@ -119,6 +119,9 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       const { data } = await client.client.rawRequest<GetTicketResponse, { id: string }>(GET_TICKET_QUERY, { id });
       if (!data) {
         throw new Error(`Linear returned no data for issue ${id}`);
+      }
+      if (!data.issue) {
+        throw new Error(`Linear issue ${id} not found`);
       }
       const issue = data.issue;
       if (!issue.state) {

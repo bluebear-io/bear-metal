@@ -110,6 +110,13 @@ describe("LinearIntegration getTicket", () => {
     await expect(linear.getTicket("DEN-1")).rejects.toThrow("Linear returned no data for issue DEN-1");
   });
 
+  it("throws a descriptive error when the issue is not found", async () => {
+    h.rawRequestFn.mockResolvedValue({ data: { issue: null } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicket("DEN-1")).rejects.toThrow("Linear issue DEN-1 not found");
+  });
+
   it("throws when the issue has no workflow state", async () => {
     h.rawRequestFn.mockResolvedValue({ data: { issue: validRawIssue({ state: null }) } });
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
