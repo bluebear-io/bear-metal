@@ -35,7 +35,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 1. Create a GitHub App and note your credentials — [GitHub App guide](#github-app)
 2. Create a Linear API token — [Linear guide](#linear)
-3. Get an API key from at least one LLM provider — [Anthropic](#anthropic) · [OpenAI](#openai) · [Google](#google)
+3. Get an [Anthropic API key](#anthropic) for non-research tickets
 4. Define how bear-metal should clone your repository — [Workspace builder](#workspace-builder)
 5. *(optional)* Set up a persistent database — point `DATABASE_URL` at a PostgreSQL instance or a mounted SQLite file. Without this, bear-metal defaults to a local SQLite file that will be lost if the container restarts.
 6. *(optional)* Create a Slack app for PR notifications — [Slack guide](#slack)
@@ -61,14 +61,14 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 | `WORKSPACE_BUILDER_PATH` | yes* | — | Path to workspace builder script |
 | `WORKER_ENVIRONMENT_BUILDER_COMMAND` | no*** | — | Inline bash run once at startup to prepare the worker environment |
 | `WORKER_ENVIRONMENT_BUILDER_PATH` | no*** | — | Path to a worker environment builder script |
-| `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key |
-| `OPENAI_API_KEY` | yes** | — | OpenAI API key |
-| `GOOGLE_API_KEY` | yes** | — | Google API key |
-| `LLM_PROVIDER` | no | inferred | Explicitly select the LLM provider; required to select `amazon-bedrock` — see [Amazon Bedrock](#amazon-bedrock) |
+| `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key; required when Bear Metal dispatches tickets without the `research` label |
+| `OPENAI_API_KEY` | no | — | Not selected by per-ticket routing; leave unset |
+| `GOOGLE_API_KEY` | no | — | Not selected by per-ticket routing; leave unset |
+| `LLM_PROVIDER` | no | inferred | Process-level provider selection; ticket dispatch overrides this according to [per-ticket provider routing](#per-ticket-provider-routing) |
 | `AWS_BEARER_TOKEN_BEDROCK` | no | — | Bedrock bearer token; also auto-selects `amazon-bedrock` |
 | `AWS_REGION` | no | `us-east-1` | AWS region for Bedrock calls |
 | `AWS_BEDROCK_FORCE_CACHE` | no | `false` | Force prompt-cache points for Bedrock inference-profile ARNs |
-| `LLM_MODEL` | no | provider default | Override the model ID (e.g. `claude-sonnet-4-6`, `gpt-4o`) |
+| `LLM_MODEL` | no | provider default | Process-level model override; ticket dispatch pins the provider-specific defaults described below |
 | `SYSTEM_PROMPT_PATH` | no | — | Path to a custom system prompt file |
 | `SYSTEM_PROMPT` | no | — | Inline custom system prompt (mutually exclusive with `SYSTEM_PROMPT_PATH`) |
 | `DATABASE_URL` | no | `sqlite:./bear-metal.sqlite` | Task queue DB (`sqlite:<path>` or `postgres://…`) |
@@ -88,7 +88,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 *Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
 
-**Exactly one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` must be set to use those providers — the first set key in the order listed above determines the provider and its default model. [Amazon Bedrock](#amazon-bedrock) needs no API key.
+**`ANTHROPIC_API_KEY` is required because the single service must handle non-research tickets. Research tickets use [Amazon Bedrock](#amazon-bedrock) through ambient AWS credentials. OpenAI and Google remain available in the embedded agent library but are not selected by Bear Metal's per-ticket routing policy.
 
 ***Both worker environment builder vars are optional. Set at most one; setting both fails startup.
 
@@ -245,11 +245,11 @@ Get an API key from the [Anthropic Console](https://console.anthropic.com) → *
 
 ### OpenAI
 
-Get an API key from the [OpenAI Platform](https://platform.openai.com) → **API keys** → **Create new secret key** → `OPENAI_API_KEY`
+The embedded agent library supports OpenAI, but Bear Metal's per-ticket policy does not select it. Do not configure `OPENAI_API_KEY` for the single-service research/Anthropic deployment.
 
 ### Google
 
-Get an API key from [Google AI Studio](https://aistudio.google.com) → **Get API key** → `GOOGLE_API_KEY`
+The embedded agent library supports Google, but Bear Metal's per-ticket policy does not select it. Do not configure `GOOGLE_API_KEY` for the single-service research/Anthropic deployment.
 
 ### Amazon Bedrock
 
@@ -262,9 +262,28 @@ LLM_PROVIDER=amazon-bedrock
 AWS_REGION=us-east-1
 ```
 
-Default model: `us.anthropic.claude-opus-4-6-v1`, overridable with `LLM_MODEL`. Set `AWS_BEDROCK_FORCE_CACHE=1` for application inference-profile ARNs.
+Default model: `us.anthropic.claude-opus-4-6-v1`. Research-ticket dispatch pins this model so a process-level `LLM_MODEL` for another provider cannot leak into the run. Set `AWS_BEDROCK_FORCE_CACHE=1` for application inference-profile ARNs.
 
 > The runtime IAM identity (e.g. the ECS task role) needs `bedrock:InvokeModel` / `InvokeModelWithResponseStream` (or the `Converse` equivalents) on the model/inference-profile ARNs used — grant this via your IaC.
+
+### Per-ticket provider routing
+
+Bear Metal reads the fresh Linear issue labels before every agent run:
+
+- A label named `research`, matched case-insensitively, selects `amazon-bedrock`.
+- Every other ticket selects `anthropic`, even when `LLM_PROVIDER=amazon-bedrock`.
+- Each branch pins its provider-compatible default model, ignoring process-level `LLM_MODEL`.
+- The selection is local to that dispatch. The next ticket reads its own labels and selects again.
+
+The selected provider is written to the `selected ticket LLM provider` log entry. Completed run usage also records the provider and model for the dashboard.
+
+Run the routing regression tests locally:
+
+```bash
+npm test -- --run src/worker/dispatch.test.ts
+```
+
+For a deployed smoke test, delegate one unlabeled ticket and one `research`-labeled ticket. Confirm the provider log and dashboard run record report `anthropic` and `amazon-bedrock`, respectively. In CloudTrail Lake, filter the research run's time window for `eventSource = bedrock-runtime.amazonaws.com`, `eventName = ConverseStream`, and the Bear Metal ECS task-role session.
 
 ### Slack
 

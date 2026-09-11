@@ -772,6 +772,28 @@ describe("runPiWorker", () => {
       );
     });
 
+    it("prefers a dispatch model over the process-level LLM_MODEL", async () => {
+      process.env.LLM_MODEL = "claude-opus-4-7";
+      const { runPiWorker } = await import("./pi.js");
+
+      await runPiWorker({
+        context: makeContext(),
+        github: makeGithub(),
+        linear: makeLinear(),
+        gitEnv: {},
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+        llmModel: "us.anthropic.claude-opus-4-6-v1",
+      });
+
+      expect(piMock.modelRegistryFind).toHaveBeenCalledWith(
+        "amazon-bedrock",
+        "us.anthropic.claude-opus-4-6-v1",
+      );
+    });
+
     it("throws for a non-bedrock provider with no API key", async () => {
       const { runPiWorker } = await import("./pi.js");
 

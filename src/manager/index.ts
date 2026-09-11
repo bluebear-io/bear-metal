@@ -117,6 +117,7 @@ if (config.apiOnly) {
     maxWorkerTokens: config.maxWorkerTokens,
     llmProvider: config.llmProvider,
     llmApiKey: config.llmApiKey,
+    anthropicApiKey: config.anthropicApiKey,
   });
 
   if (config.testTicketId) {

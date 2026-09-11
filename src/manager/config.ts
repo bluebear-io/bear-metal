@@ -14,6 +14,8 @@ export interface Config {
   llmProvider: LlmProvider;
   /** Null for `amazon-bedrock`, which uses ambient AWS credentials instead of a key. */
   llmApiKey: string | null;
+  /** Used for non-research tickets even when the service-level provider is Bedrock. */
+  anthropicApiKey: string;
   /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
   workspaceBuilderCommand: string | null;
   /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
@@ -99,6 +101,7 @@ export function loadConfig(): Readonly<Config> {
     ...loadWorkerEnvironmentBuilderConfig(),
     ...loadSystemPromptConfig(),
     ...loadLlmConfig(),
+    anthropicApiKey: requiredEnv("ANTHROPIC_API_KEY"),
     linearClientId: requiredEnv("LINEAR_CLIENT_ID"),
     linearClientSecret: requiredEnv("LINEAR_CLIENT_SECRET"),
     linearOAuthScopes:
