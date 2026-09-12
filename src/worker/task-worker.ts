@@ -221,7 +221,7 @@ export class TaskWorker {
             workerId: this.workerId,
             source: "worker",
             type: "agent_started",
-            summary: `coding agent started — ${issue.identifier}: ${issue.title}${prCount > 0 ? ` (${prCount} PR${prCount > 1 ? "s" : ""})` : ""}`,
+            summary: `coding agent started — ${issue.identifier}: ${issue.title} [${payload.llmProvider}/${payload.llmModel}]${prCount > 0 ? ` (${prCount} PR${prCount > 1 ? "s" : ""})` : ""}`,
             payloadJson: JSON.stringify(payload),
             createdAt: new Date().toISOString(),
           });

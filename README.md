@@ -275,15 +275,23 @@ Bear Metal reads the fresh Linear issue labels before every agent run:
 - Each branch pins its provider-compatible default model, ignoring process-level `LLM_MODEL`.
 - The selection is local to that dispatch. The next ticket reads its own labels and selects again.
 
-The selected provider is written to the `selected ticket LLM provider` log entry. Completed run usage also records the provider and model for the dashboard.
+The selected provider is written to the `selected ticket LLM provider` log entry and into the agent prompt as `llm.provider` / `llm.model`. Completed run usage also records the provider and model for the dashboard.
+
+Do not treat worker-shell env probes as routing evidence. `ANTHROPIC_API_KEY` stays in the process for unlabeled tickets; Bedrock uses the ECS task role and does not set `CLAUDE_CODE_USE_BEDROCK`. Research-run bash sessions omit `ANTHROPIC_API_KEY` so a `env | grep` probe is not a false Anthropic positive.
+
+Image publishes: merging to `main` builds but does not push `ghcr.io/bluebear-io/bear-metal:latest`. Only a GitHub Release or `workflow_dispatch` updates `:latest`. ECS only runs that image after a new task starts; the worker environment builder can delay the worker loop after the container is healthy.
 
 Run the routing regression tests locally:
 
 ```bash
-npm test -- --run src/worker/dispatch.test.ts
+npm test -- --run src/worker/dispatch.test.ts src/worker/workspace-guard.test.ts
 ```
 
-For a deployed smoke test, delegate one unlabeled ticket and one `research`-labeled ticket. Confirm the provider log and dashboard run record report `anthropic` and `amazon-bedrock`, respectively. In CloudTrail Lake, filter the research run's time window for `eventSource = bedrock-runtime.amazonaws.com`, `eventName = ConverseStream`, and the Bear Metal ECS task-role session.
+For a deployed smoke test, confirm the running task image digest is the `#140` / `v0.8.0` (or later) publish, then delegate one unlabeled ticket and one `research`-labeled ticket. Confirm:
+
+1. CloudWatch `selected ticket LLM provider` logs (`labels` includes `Research`, `provider` is `amazon-bedrock` or `anthropic`).
+2. Dashboard run record `provider` / `modelName` (not an agent `env` comment).
+3. CloudTrail Lake in the research window: `eventSource = bedrock-runtime.amazonaws.com`, `eventName = ConverseStream`, Bear Metal ECS task-role session.
 
 ### Slack
 

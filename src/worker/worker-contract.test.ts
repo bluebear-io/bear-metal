@@ -114,12 +114,16 @@ describe("worker contract", () => {
       },
     };
 
-    const prompt = buildWorkerPrompt(context);
+    const prompt = buildWorkerPrompt(context, {
+      llm: { provider: "amazon-bedrock", model: "us.anthropic.claude-opus-4-6-v1" },
+    });
     expect(prompt).toMatch(/Steps for this new task/);
     expect(prompt).toMatch(/respond_to_ticket_reporter/);
     expect(prompt).toMatch(/push_for_review/);
     expect(prompt).not.toMatch(/respond_to_comment_writer/);
     expect(prompt).not.toMatch(/agree_with_github_message/);
+    expect(prompt).toContain('"provider": "amazon-bedrock"');
+    expect(prompt).toContain('"model": "us.anthropic.claude-opus-4-6-v1"');
   });
 
   it("includes attachment paths without embedding attachment contents", () => {

@@ -14,7 +14,24 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
-export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: NodeJS.ProcessEnv): ToolDefinition[] {
+/** Omit the process Anthropic key from Bedrock-run bash so research shells cannot call api.anthropic.com. */
+export function mergeAgentBashEnv(
+  base: NodeJS.ProcessEnv | undefined,
+  extras: NodeJS.ProcessEnv,
+  llmProvider: string,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, ...extras };
+  if (llmProvider === "amazon-bedrock") {
+    delete env.ANTHROPIC_API_KEY;
+  }
+  return env;
+}
+
+export function createWorkspaceGuardedTools(
+  workspaceRoot: string,
+  gitEnv?: NodeJS.ProcessEnv,
+  llmProvider = "anthropic",
+): ToolDefinition[] {
   const root = normalizeWorkspaceRoot(workspaceRoot);
   const localBash = createLocalBashOperations();
   const bashOperations: BashOperations = {
@@ -22,13 +39,12 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
       validateWorkspaceBashCommand(command, root);
       return localBash.exec(command, root, {
         ...options,
-        env: {
-          ...options.env,
+        env: mergeAgentBashEnv(options.env, {
           HOME: root,
           PWD: root,
           // git credentials and SSH→HTTPS rewrite — override HOME last so .netrc is found
           ...gitEnv,
-        },
+        }, llmProvider),
       });
     },
   };
@@ -47,12 +63,11 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
       spawnHook: (context) => ({
         ...context,
         cwd: root,
-        env: {
-          ...context.env,
+        env: mergeAgentBashEnv(context.env, {
           HOME: root,
           PWD: root,
           ...gitEnv,
-        },
+        }, llmProvider),
       }),
     }),
     createEditToolDefinition(root, {
