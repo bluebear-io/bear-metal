@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { assertRepoRootInWorkspace, validateWorkspaceBashCommand } from "./workspace-guard.js";
+import {
+  assertRepoRootInWorkspace,
+  mergeAgentBashEnv,
+  validateWorkspaceBashCommand,
+} from "./workspace-guard.js";
 
 describe("workspace guard", () => {
   it("rejects repo roots outside the cloned workspace", () => {
@@ -41,5 +45,27 @@ describe("workspace guard", () => {
     // similar-looking strings that are not the gh CLI remain allowed
     expect(() => validateWorkspaceBashCommand("echo 'gh is cool'", root)).not.toThrow();
     expect(() => validateWorkspaceBashCommand("touch /tmp/workspace/myrepo/ghfile", root)).not.toThrow();
+  });
+});
+
+describe("mergeAgentBashEnv", () => {
+  it("strips ANTHROPIC_API_KEY for Bedrock runs", () => {
+    expect(
+      mergeAgentBashEnv(
+        { ANTHROPIC_API_KEY: "sk-ant-secret", AWS_REGION: "us-east-1" },
+        { HOME: "/tmp/ws" },
+        "amazon-bedrock",
+      ),
+    ).toEqual({ AWS_REGION: "us-east-1", HOME: "/tmp/ws" });
+  });
+
+  it("keeps ANTHROPIC_API_KEY for Anthropic runs", () => {
+    expect(
+      mergeAgentBashEnv(
+        { ANTHROPIC_API_KEY: "sk-ant-secret" },
+        { HOME: "/tmp/ws" },
+        "anthropic",
+      ),
+    ).toEqual({ ANTHROPIC_API_KEY: "sk-ant-secret", HOME: "/tmp/ws" });
   });
 });

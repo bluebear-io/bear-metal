@@ -4,7 +4,12 @@ import type { WorkerInputContext } from "./types.js";
 
 export function buildWorkerPrompt(
   context: WorkerInputContext,
-  opts?: { repoRoot?: string; agentsMd?: string; customSystemPrompt?: string },
+  opts?: {
+    repoRoot?: string;
+    agentsMd?: string;
+    customSystemPrompt?: string;
+    llm?: { provider: string; model: string };
+  },
 ): string {
   const isNew = context.state === "new";
   const repoRoot = opts?.repoRoot ?? context.cloneScript.workspaceDir;
@@ -73,13 +78,17 @@ export function buildWorkerPrompt(
     ...customSystemPromptSection,
     ...agentsSection,
     "## Task Context",
-    JSON.stringify(toPiContext(context), null, 2),
+    JSON.stringify(toPiContext(context, opts?.llm), null, 2),
   ].join("\n");
 }
 
-function toPiContext(context: WorkerInputContext) {
+function toPiContext(
+  context: WorkerInputContext,
+  llm?: { provider: string; model: string },
+) {
   return {
     ...context,
+    ...(llm ? { llm } : {}),
     pullRequests: context.pullRequests.map(toPiPullRequestContext),
   };
 }

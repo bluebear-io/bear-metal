@@ -58,6 +58,8 @@ export async function runPiWorker(input: {
     pullRequests: WorkerInputContext["pullRequests"];
     prs: PullRequestRef[];
     prompt: string;
+    llmProvider: string;
+    llmModel: string;
   }) => void;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
   maxWorkerTimeMs: number;
@@ -310,9 +312,14 @@ export async function runPiWorker(input: {
   }
 
   const agentsMd = await readAgentsMd(workspaceRoot);
-  const prompt = buildWorkerPrompt(input.context, { repoRoot: workspaceRoot, agentsMd, customSystemPrompt: input.systemPrompt ?? undefined });
+  const prompt = buildWorkerPrompt(input.context, {
+    repoRoot: workspaceRoot,
+    agentsMd,
+    customSystemPrompt: input.systemPrompt ?? undefined,
+    llm: { provider: input.llmProvider, model: modelId },
+  });
   const workspaceDir = input.context.cloneScript.workspaceDir;
-  const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
+  const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv, input.llmProvider);
 
   input.onAgentStarted?.({
     state: input.context.state,
@@ -320,6 +327,8 @@ export async function runPiWorker(input: {
     pullRequests: input.context.pullRequests,
     prs: input.prs ?? [],
     prompt,
+    llmProvider: input.llmProvider,
+    llmModel: modelId,
   });
 
   const isNew = input.context.state === "new";
@@ -430,7 +439,7 @@ export async function runPiWorker(input: {
           modelName: model.name,
           provider: model.provider,
         };
-        logger.debug({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
+        logger.info({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
       }
     } catch (statsError) {
       logger.warn({ statsError }, "failed to capture pi session usage");

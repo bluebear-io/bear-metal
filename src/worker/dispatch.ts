@@ -44,6 +44,8 @@ export interface DispatchInput {
     pullRequests: WorkerInputContext["pullRequests"];
     prs: PullRequestRef[];
     prompt: string;
+    llmProvider: string;
+    llmModel: string;
   }) => void;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
