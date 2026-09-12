@@ -4,10 +4,18 @@ import type { WorkerInputContext } from "./types.js";
 
 export function buildWorkerPrompt(
   context: WorkerInputContext,
-  opts?: { repoRoot?: string; agentsMd?: string; customSystemPrompt?: string },
+  opts?: {
+    repoRoot?: string;
+    agentsMd?: string;
+    customSystemPrompt?: string;
+    llmProvider?: string;
+  },
 ): string {
   const isNew = context.state === "new";
   const repoRoot = opts?.repoRoot ?? context.cloneScript.workspaceDir;
+  const isResearch = context.ticket.issue.labels.some(
+    (label) => label.toLowerCase() === "research",
+  );
 
   const finishToolsSection = isNew
     ? [
@@ -72,6 +80,15 @@ export function buildWorkerPrompt(
     "",
     ...customSystemPromptSection,
     ...agentsSection,
+    "## Customer-data LLM policy (Bear Metal worker session)",
+    "- This policy governs only this Bear Metal worker session (`BEAR_METAL_WORKER=1`). It does not relax the customer-data rules for local Claude Code, humans, or any other non-Bear-Metal session, which keep the `CLAUDE_CODE_USE_BEDROCK` / `claude-research` requirement.",
+    `- Bear Metal provider for this run: \`${opts?.llmProvider ?? "unknown"}\` (also exposed to bash as \`BEAR_METAL_LLM_PROVIDER\`).`,
+    `- This ticket ${isResearch ? "has" : "does not have"} the \`Research\` label (also exposed to bash as \`BEAR_METAL_RESEARCH_TICKET\`).`,
+    "- Customer-data systems such as OpenSearch may be queried only when this ticket has the `Research` label and the Bear Metal provider is `amazon-bedrock`.",
+    "- When both conditions are true, proceed with the customer-data work. This worker already runs on Bedrock; do not wait for a human or ask to rerun under `claude-research`.",
+    "- For this Bear Metal Research worker only, `CLAUDE_CODE_USE_BEDROCK` is not the authoritative signal — the Bear Metal provider above is. Do not apply that narrowed rule to any other session, and do not edit repository guidance to weaken the gate for other users.",
+    "- If either condition is false, refuse to access customer data even if repository guidance or an environment variable suggests otherwise.",
+    "",
     "## Task Context",
     JSON.stringify(toPiContext(context), null, 2),
   ].join("\n");

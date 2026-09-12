@@ -17,6 +17,9 @@ const piMock = vi.hoisted(() => ({
   }),
   setRuntimeApiKey: vi.fn(),
   modelRegistryFind: vi.fn().mockReturnValue({}),
+  bashToolOptions: null as null | {
+    spawnHook: (context: { env: NodeJS.ProcessEnv }) => { env: NodeJS.ProcessEnv };
+  },
 }));
 
 const gitMock = vi.hoisted(() => ({
@@ -58,7 +61,15 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   defineTool: (definition: unknown) => definition,
   createLocalBashOperations: () => ({ exec: vi.fn() }),
   createReadToolDefinition: () => makeTool("read"),
-  createBashToolDefinition: () => makeTool("bash"),
+  createBashToolDefinition: (
+    _root: string,
+    options: {
+      spawnHook: (context: { env: NodeJS.ProcessEnv }) => { env: NodeJS.ProcessEnv };
+    },
+  ) => {
+    piMock.bashToolOptions = options;
+    return makeTool("bash");
+  },
   createEditToolDefinition: () => makeTool("edit"),
   createWriteToolDefinition: () => makeTool("write"),
   createGrepToolDefinition: () => makeTool("grep"),
@@ -82,6 +93,7 @@ describe("runPiWorker", () => {
     netrcDir = await mkdtemp(join(tmpdir(), "bear-metal-pi-test-"));
     piMock.setRuntimeApiKey.mockClear();
     piMock.modelRegistryFind.mockClear();
+    piMock.bashToolOptions = null;
     delete process.env.LLM_MODEL;
   });
 
@@ -749,6 +761,38 @@ describe("runPiWorker", () => {
         "amazon-bedrock",
         "us.anthropic.claude-opus-4-6-v1",
       );
+      const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
+      expect(bashContext?.env).toMatchObject({
+        BEAR_METAL_WORKER: "1",
+        BEAR_METAL_LLM_PROVIDER: "amazon-bedrock",
+        BEAR_METAL_RESEARCH_TICKET: "false",
+      });
+      expect(bashContext?.env).not.toHaveProperty("LLM_PROVIDER");
+      expect(bashContext?.env).not.toHaveProperty("CLAUDE_CODE_USE_BEDROCK");
+    });
+
+    it("reports the research ticket marker for a Research-labeled Bedrock run", async () => {
+      const { runPiWorker } = await import("./pi.js");
+      const context = makeContext();
+      context.ticket.issue.labels = ["bear-metal", "Research"];
+
+      await runPiWorker({
+        context,
+        github: makeGithub(),
+        linear: makeLinear(),
+        gitEnv: {},
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+      });
+
+      const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
+      expect(bashContext?.env).toMatchObject({
+        BEAR_METAL_WORKER: "1",
+        BEAR_METAL_LLM_PROVIDER: "amazon-bedrock",
+        BEAR_METAL_RESEARCH_TICKET: "true",
+      });
     });
 
     it("honors an LLM_MODEL override", async () => {
@@ -809,6 +853,28 @@ describe("runPiWorker", () => {
           llmApiKey: null,
         }),
       ).rejects.toThrow(/Missing API key for LLM provider "anthropic"/);
+    });
+
+    it("exposes Anthropic as the actual provider for non-research agent tools", async () => {
+      const { runPiWorker } = await import("./pi.js");
+
+      await runPiWorker({
+        context: makeContext(),
+        github: makeGithub(),
+        linear: makeLinear(),
+        gitEnv: {},
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
+        llmProvider: "anthropic",
+        llmApiKey: "test-key",
+      });
+
+      const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
+      expect(bashContext?.env).toMatchObject({
+        BEAR_METAL_WORKER: "1",
+        BEAR_METAL_LLM_PROVIDER: "anthropic",
+      });
+      expect(bashContext?.env).not.toHaveProperty("LLM_PROVIDER");
     });
   });
 });
