@@ -317,13 +317,18 @@ export async function runPiWorker(input: {
     llmProvider: input.llmProvider,
   });
   const workspaceDir = input.context.cloneScript.workspaceDir;
-  // Expose the provider selected for this dispatch, not the service-level default. Research
-  // tickets can override an Anthropic-configured process to Bedrock, and repository skills use
-  // these harness-owned values to enforce customer-data policy.
+  // Namespaced to BEAR_METAL_* so only Bear-Metal-aware policy reads them: a generic
+  // LLM_PROVIDER would also loosen gates in non-Bear-Metal sessions such as local Claude Code.
+  // The provider is the one selected for this dispatch, not the service-level default, because
+  // research tickets override an Anthropic-configured process to Bedrock.
+  const isResearchTicket = input.context.ticket.issue.labels.some(
+    (label) => label.toLowerCase() === "research",
+  );
   const agentEnv: NodeJS.ProcessEnv = {
     ...input.gitEnv,
-    LLM_PROVIDER: input.llmProvider,
+    BEAR_METAL_WORKER: "1",
     BEAR_METAL_LLM_PROVIDER: input.llmProvider,
+    BEAR_METAL_RESEARCH_TICKET: isResearchTicket ? "true" : "false",
   };
   const guardedTools = createWorkspaceGuardedTools(workspaceRoot, agentEnv);
 

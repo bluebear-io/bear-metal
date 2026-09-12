@@ -122,17 +122,33 @@ describe("worker contract", () => {
     expect(prompt).not.toMatch(/agree_with_github_message/);
   });
 
-  it("allows customer-data work for a Research ticket on the harness Bedrock provider", () => {
+  it("allows customer-data work for a Research ticket on the Bear Metal Bedrock provider", () => {
     const context = makeContext("new", "ABC-RESEARCH");
     context.ticket.issue.labels = ["bear-metal", "Research"];
 
     const prompt = buildWorkerPrompt(context, { llmProvider: "amazon-bedrock" });
 
-    expect(prompt).toContain("Harness-reported provider for this run: `amazon-bedrock`");
+    expect(prompt).toContain("Bear Metal provider for this run: `amazon-bedrock`");
     expect(prompt).toContain("This ticket has the `Research` label");
-    expect(prompt).toContain("This is already a Bedrock session");
+    expect(prompt).toContain("This worker already runs on Bedrock");
     expect(prompt).toContain("do not wait for a human or ask to rerun under `claude-research`");
-    expect(prompt).toContain("`CLAUDE_CODE_USE_BEDROCK` identifies the legacy Claude Code launcher");
+  });
+
+  it("keeps the CLAUDE_CODE_USE_BEDROCK gate authoritative outside Bear Metal workers", () => {
+    const context = makeContext("new", "ABC-RESEARCH");
+    context.ticket.issue.labels = ["bear-metal", "Research"];
+
+    const prompt = buildWorkerPrompt(context, { llmProvider: "amazon-bedrock" });
+
+    expect(prompt).toContain("Customer-data LLM policy (Bear Metal worker session)");
+    expect(prompt).toContain("This policy governs only this Bear Metal worker session");
+    expect(prompt).toContain(
+      "keep the `CLAUDE_CODE_USE_BEDROCK` / `claude-research` requirement",
+    );
+    expect(prompt).toContain(
+      "For this Bear Metal Research worker only, `CLAUDE_CODE_USE_BEDROCK` is not the authoritative signal",
+    );
+    expect(prompt).toContain("do not edit repository guidance to weaken the gate for other users");
   });
 
   it("refuses customer-data work on the Anthropic path even with a Research label", () => {
@@ -141,7 +157,17 @@ describe("worker contract", () => {
 
     const prompt = buildWorkerPrompt(context, { llmProvider: "anthropic" });
 
-    expect(prompt).toContain("Harness-reported provider for this run: `anthropic`");
+    expect(prompt).toContain("Bear Metal provider for this run: `anthropic`");
+    expect(prompt).toContain("If either condition is false, refuse to access customer data");
+  });
+
+  it("refuses customer-data work for an unlabeled Bedrock ticket", () => {
+    const context = makeContext("new", "ABC-UNLABELED");
+    context.ticket.issue.labels = ["bear-metal"];
+
+    const prompt = buildWorkerPrompt(context, { llmProvider: "amazon-bedrock" });
+
+    expect(prompt).toContain("This ticket does not have the `Research` label");
     expect(prompt).toContain("If either condition is false, refuse to access customer data");
   });
 

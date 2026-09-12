@@ -763,8 +763,35 @@ describe("runPiWorker", () => {
       );
       const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
       expect(bashContext?.env).toMatchObject({
-        LLM_PROVIDER: "amazon-bedrock",
+        BEAR_METAL_WORKER: "1",
         BEAR_METAL_LLM_PROVIDER: "amazon-bedrock",
+        BEAR_METAL_RESEARCH_TICKET: "false",
+      });
+      expect(bashContext?.env).not.toHaveProperty("LLM_PROVIDER");
+      expect(bashContext?.env).not.toHaveProperty("CLAUDE_CODE_USE_BEDROCK");
+    });
+
+    it("reports the research ticket marker for a Research-labeled Bedrock run", async () => {
+      const { runPiWorker } = await import("./pi.js");
+      const context = makeContext();
+      context.ticket.issue.labels = ["bear-metal", "Research"];
+
+      await runPiWorker({
+        context,
+        github: makeGithub(),
+        linear: makeLinear(),
+        gitEnv: {},
+        maxWorkerTimeMs: 7_200_000,
+        maxWorkerTokens: 20_000_000,
+        llmProvider: "amazon-bedrock",
+        llmApiKey: null,
+      });
+
+      const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
+      expect(bashContext?.env).toMatchObject({
+        BEAR_METAL_WORKER: "1",
+        BEAR_METAL_LLM_PROVIDER: "amazon-bedrock",
+        BEAR_METAL_RESEARCH_TICKET: "true",
       });
     });
 
@@ -844,9 +871,10 @@ describe("runPiWorker", () => {
 
       const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
       expect(bashContext?.env).toMatchObject({
-        LLM_PROVIDER: "anthropic",
+        BEAR_METAL_WORKER: "1",
         BEAR_METAL_LLM_PROVIDER: "anthropic",
       });
+      expect(bashContext?.env).not.toHaveProperty("LLM_PROVIDER");
     });
   });
 });
