@@ -310,9 +310,22 @@ export async function runPiWorker(input: {
   }
 
   const agentsMd = await readAgentsMd(workspaceRoot);
-  const prompt = buildWorkerPrompt(input.context, { repoRoot: workspaceRoot, agentsMd, customSystemPrompt: input.systemPrompt ?? undefined });
+  const prompt = buildWorkerPrompt(input.context, {
+    repoRoot: workspaceRoot,
+    agentsMd,
+    customSystemPrompt: input.systemPrompt ?? undefined,
+    llmProvider: input.llmProvider,
+  });
   const workspaceDir = input.context.cloneScript.workspaceDir;
-  const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
+  // Expose the provider selected for this dispatch, not the service-level default. Research
+  // tickets can override an Anthropic-configured process to Bedrock, and repository skills use
+  // these harness-owned values to enforce customer-data policy.
+  const agentEnv: NodeJS.ProcessEnv = {
+    ...input.gitEnv,
+    LLM_PROVIDER: input.llmProvider,
+    BEAR_METAL_LLM_PROVIDER: input.llmProvider,
+  };
+  const guardedTools = createWorkspaceGuardedTools(workspaceRoot, agentEnv);
 
   input.onAgentStarted?.({
     state: input.context.state,

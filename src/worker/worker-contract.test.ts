@@ -122,6 +122,29 @@ describe("worker contract", () => {
     expect(prompt).not.toMatch(/agree_with_github_message/);
   });
 
+  it("allows customer-data work for a Research ticket on the harness Bedrock provider", () => {
+    const context = makeContext("new", "ABC-RESEARCH");
+    context.ticket.issue.labels = ["bear-metal", "Research"];
+
+    const prompt = buildWorkerPrompt(context, { llmProvider: "amazon-bedrock" });
+
+    expect(prompt).toContain("Harness-reported provider for this run: `amazon-bedrock`");
+    expect(prompt).toContain("This ticket has the `Research` label");
+    expect(prompt).toContain("This is already a Bedrock session");
+    expect(prompt).toContain("do not wait for a human or ask to rerun under `claude-research`");
+    expect(prompt).toContain("`CLAUDE_CODE_USE_BEDROCK` identifies the legacy Claude Code launcher");
+  });
+
+  it("refuses customer-data work on the Anthropic path even with a Research label", () => {
+    const context = makeContext("new", "ABC-ANTHROPIC");
+    context.ticket.issue.labels = ["Research"];
+
+    const prompt = buildWorkerPrompt(context, { llmProvider: "anthropic" });
+
+    expect(prompt).toContain("Harness-reported provider for this run: `anthropic`");
+    expect(prompt).toContain("If either condition is false, refuse to access customer data");
+  });
+
   it("includes attachment paths without embedding attachment contents", () => {
     const context = makeContext("new", "ABC-3");
     context.evidenceAttachments = [
