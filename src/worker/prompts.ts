@@ -2,6 +2,19 @@ import type { PullRequestContext, ReviewThread } from "../shared/index.js";
 import type { IssueComment } from "../shared/integrations/github/types.js";
 import type { WorkerInputContext } from "./types.js";
 
+/** Harness-neutral env/contract marker for a Research ticket already running on Bedrock. */
+export const CUSTOMER_DATA_BEDROCK_SESSION_ENV = "CUSTOMER_DATA_BEDROCK_SESSION";
+
+export function isCustomerDataBedrockSession(
+  labels: string[],
+  llmProvider: string,
+): boolean {
+  return (
+    llmProvider === "amazon-bedrock" &&
+    labels.some((label) => label.toLowerCase() === "research")
+  );
+}
+
 export function buildWorkerPrompt(
   context: WorkerInputContext,
   opts?: {
@@ -15,6 +28,10 @@ export function buildWorkerPrompt(
   const repoRoot = opts?.repoRoot ?? context.cloneScript.workspaceDir;
   const isResearch = context.ticket.issue.labels.some(
     (label) => label.toLowerCase() === "research",
+  );
+  const customerDataBedrockSession = isCustomerDataBedrockSession(
+    context.ticket.issue.labels,
+    opts?.llmProvider ?? "",
   );
 
   const finishToolsSection = isNew
@@ -80,14 +97,13 @@ export function buildWorkerPrompt(
     "",
     ...customSystemPromptSection,
     ...agentsSection,
-    "## Customer-data LLM policy (Bear Metal worker session)",
-    "- This policy governs only this Bear Metal worker session (`BEAR_METAL_WORKER=1`). It does not relax the customer-data rules for local Claude Code, humans, or any other non-Bear-Metal session, which keep the `CLAUDE_CODE_USE_BEDROCK` / `claude-research` requirement.",
-    `- Bear Metal provider for this run: \`${opts?.llmProvider ?? "unknown"}\` (also exposed to bash as \`BEAR_METAL_LLM_PROVIDER\`).`,
-    `- This ticket ${isResearch ? "has" : "does not have"} the \`Research\` label (also exposed to bash as \`BEAR_METAL_RESEARCH_TICKET\`).`,
-    "- Customer-data systems such as OpenSearch may be queried only when this ticket has the `Research` label and the Bear Metal provider is `amazon-bedrock`.",
-    "- When both conditions are true, proceed with the customer-data work. This worker already runs on Bedrock; do not wait for a human or ask to rerun under `claude-research`.",
-    "- For this Bear Metal Research worker only, `CLAUDE_CODE_USE_BEDROCK` is not the authoritative signal — the Bear Metal provider above is. Do not apply that narrowed rule to any other session, and do not edit repository guidance to weaken the gate for other users.",
-    "- If either condition is false, refuse to access customer data even if repository guidance or an environment variable suggests otherwise.",
+    "## Customer-data LLM policy",
+    `- Provider for this run: \`${opts?.llmProvider ?? "unknown"}\`.`,
+    `- This ticket ${isResearch ? "has" : "does not have"} the \`Research\` label.`,
+    customerDataBedrockSession
+      ? `- Bash environment includes \`${CUSTOMER_DATA_BEDROCK_SESSION_ENV}=1\`. That is the harness-neutral marker that this session is already on Bedrock for a Research ticket. Proceed with OpenSearch / customer-data work. Do not wait for a human, do not ask to rerun under \`claude-research\`, and do not require \`CLAUDE_CODE_USE_BEDROCK\` for this session.`
+      : `- Bash environment does **not** include \`${CUSTOMER_DATA_BEDROCK_SESSION_ENV}=1\`. Refuse to access customer data (including OpenSearch). Sessions without that marker keep the existing \`CLAUDE_CODE_USE_BEDROCK\` / \`claude-research\` requirement.`,
+    "- Do not edit repository guidance to weaken the customer-data gate for sessions that lack `CUSTOMER_DATA_BEDROCK_SESSION=1`.",
     "",
     "## Task Context",
     JSON.stringify(toPiContext(context), null, 2),

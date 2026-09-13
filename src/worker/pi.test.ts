@@ -762,16 +762,15 @@ describe("runPiWorker", () => {
         "us.anthropic.claude-opus-4-6-v1",
       );
       const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
-      expect(bashContext?.env).toMatchObject({
-        BEAR_METAL_WORKER: "1",
-        BEAR_METAL_LLM_PROVIDER: "amazon-bedrock",
-        BEAR_METAL_RESEARCH_TICKET: "false",
-      });
+      expect(bashContext?.env).not.toHaveProperty("CUSTOMER_DATA_BEDROCK_SESSION");
+      expect(bashContext?.env).not.toHaveProperty("BEAR_METAL_WORKER");
+      expect(bashContext?.env).not.toHaveProperty("BEAR_METAL_LLM_PROVIDER");
+      expect(bashContext?.env).not.toHaveProperty("BEAR_METAL_RESEARCH_TICKET");
       expect(bashContext?.env).not.toHaveProperty("LLM_PROVIDER");
       expect(bashContext?.env).not.toHaveProperty("CLAUDE_CODE_USE_BEDROCK");
     });
 
-    it("reports the research ticket marker for a Research-labeled Bedrock run", async () => {
+    it("sets CUSTOMER_DATA_BEDROCK_SESSION for a Research-labeled Bedrock run", async () => {
       const { runPiWorker } = await import("./pi.js");
       const context = makeContext();
       context.ticket.issue.labels = ["bear-metal", "Research"];
@@ -789,10 +788,11 @@ describe("runPiWorker", () => {
 
       const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
       expect(bashContext?.env).toMatchObject({
-        BEAR_METAL_WORKER: "1",
-        BEAR_METAL_LLM_PROVIDER: "amazon-bedrock",
-        BEAR_METAL_RESEARCH_TICKET: "true",
+        CUSTOMER_DATA_BEDROCK_SESSION: "1",
       });
+      expect(bashContext?.env).not.toHaveProperty("BEAR_METAL_WORKER");
+      expect(bashContext?.env).not.toHaveProperty("BEAR_METAL_LLM_PROVIDER");
+      expect(bashContext?.env).not.toHaveProperty("BEAR_METAL_RESEARCH_TICKET");
     });
 
     it("honors an LLM_MODEL override", async () => {
@@ -855,11 +855,13 @@ describe("runPiWorker", () => {
       ).rejects.toThrow(/Missing API key for LLM provider "anthropic"/);
     });
 
-    it("exposes Anthropic as the actual provider for non-research agent tools", async () => {
+    it("does not set CUSTOMER_DATA_BEDROCK_SESSION on the Anthropic path", async () => {
       const { runPiWorker } = await import("./pi.js");
+      const context = makeContext();
+      context.ticket.issue.labels = ["Research"];
 
       await runPiWorker({
-        context: makeContext(),
+        context,
         github: makeGithub(),
         linear: makeLinear(),
         gitEnv: {},
@@ -870,10 +872,8 @@ describe("runPiWorker", () => {
       });
 
       const bashContext = piMock.bashToolOptions?.spawnHook({ env: {} });
-      expect(bashContext?.env).toMatchObject({
-        BEAR_METAL_WORKER: "1",
-        BEAR_METAL_LLM_PROVIDER: "anthropic",
-      });
+      expect(bashContext?.env).not.toHaveProperty("CUSTOMER_DATA_BEDROCK_SESSION");
+      expect(bashContext?.env).not.toHaveProperty("BEAR_METAL_WORKER");
       expect(bashContext?.env).not.toHaveProperty("LLM_PROVIDER");
     });
   });

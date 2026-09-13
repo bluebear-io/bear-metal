@@ -19,7 +19,7 @@ import type {
   WorkerInputContext,
   WorkerLinear,
 } from "./types.js";
-import { buildWorkerPrompt } from "./prompts.js";
+import { buildWorkerPrompt, CUSTOMER_DATA_BEDROCK_SESSION_ENV, isCustomerDataBedrockSession } from "./prompts.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 
 const logger = createLogger({
@@ -317,19 +317,13 @@ export async function runPiWorker(input: {
     llmProvider: input.llmProvider,
   });
   const workspaceDir = input.context.cloneScript.workspaceDir;
-  // Namespaced to BEAR_METAL_* so only Bear-Metal-aware policy reads them: a generic
-  // LLM_PROVIDER would also loosen gates in non-Bear-Metal sessions such as local Claude Code.
-  // The provider is the one selected for this dispatch, not the service-level default, because
-  // research tickets override an Anthropic-configured process to Bedrock.
-  const isResearchTicket = input.context.ticket.issue.labels.some(
-    (label) => label.toLowerCase() === "research",
-  );
-  const agentEnv: NodeJS.ProcessEnv = {
-    ...input.gitEnv,
-    BEAR_METAL_WORKER: "1",
-    BEAR_METAL_LLM_PROVIDER: input.llmProvider,
-    BEAR_METAL_RESEARCH_TICKET: isResearchTicket ? "true" : "false",
-  };
+  // Harness-neutral marker for repository skills: set only when this dispatch is a
+  // Research ticket already running on amazon-bedrock. Anthropic and unlabeled
+  // tickets must not advertise a customer-data Bedrock session.
+  const agentEnv: NodeJS.ProcessEnv = { ...input.gitEnv };
+  if (isCustomerDataBedrockSession(input.context.ticket.issue.labels, input.llmProvider)) {
+    agentEnv[CUSTOMER_DATA_BEDROCK_SESSION_ENV] = "1";
+  }
   const guardedTools = createWorkspaceGuardedTools(workspaceRoot, agentEnv);
 
   input.onAgentStarted?.({

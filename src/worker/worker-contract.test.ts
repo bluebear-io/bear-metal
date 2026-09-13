@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseGitHubRemote } from "../shared/index.js";
-import { buildWorkerPrompt } from "./prompts.js";
+import { buildWorkerPrompt, isCustomerDataBedrockSession } from "./prompts.js";
 import { validateDispatchInputs } from "./dispatch.js";
 import type { WorkerInputContext } from "./types.js";
 
@@ -122,43 +122,46 @@ describe("worker contract", () => {
     expect(prompt).not.toMatch(/agree_with_github_message/);
   });
 
-  it("allows customer-data work for a Research ticket on the Bear Metal Bedrock provider", () => {
+  it("allows customer-data work when Research is already on amazon-bedrock", () => {
     const context = makeContext("new", "ABC-RESEARCH");
     context.ticket.issue.labels = ["bear-metal", "Research"];
 
+    expect(isCustomerDataBedrockSession(["bear-metal", "Research"], "amazon-bedrock")).toBe(true);
     const prompt = buildWorkerPrompt(context, { llmProvider: "amazon-bedrock" });
 
-    expect(prompt).toContain("Bear Metal provider for this run: `amazon-bedrock`");
+    expect(prompt).toContain("Provider for this run: `amazon-bedrock`");
     expect(prompt).toContain("This ticket has the `Research` label");
-    expect(prompt).toContain("This worker already runs on Bedrock");
-    expect(prompt).toContain("do not wait for a human or ask to rerun under `claude-research`");
+    expect(prompt).toContain("`CUSTOMER_DATA_BEDROCK_SESSION=1`");
+    expect(prompt).toContain("already on Bedrock for a Research ticket");
+    expect(prompt).toContain("do not ask to rerun under `claude-research`");
+    expect(prompt).toContain("do not require `CLAUDE_CODE_USE_BEDROCK` for this session");
   });
 
-  it("keeps the CLAUDE_CODE_USE_BEDROCK gate authoritative outside Bear Metal workers", () => {
-    const context = makeContext("new", "ABC-RESEARCH");
-    context.ticket.issue.labels = ["bear-metal", "Research"];
+  it("keeps the CLAUDE_CODE_USE_BEDROCK gate for sessions without CUSTOMER_DATA_BEDROCK_SESSION", () => {
+    const unlabeled = makeContext("new", "ABC-UNLABELED");
+    unlabeled.ticket.issue.labels = ["bear-metal"];
+    const prompt = buildWorkerPrompt(unlabeled, { llmProvider: "amazon-bedrock" });
 
-    const prompt = buildWorkerPrompt(context, { llmProvider: "amazon-bedrock" });
-
-    expect(prompt).toContain("Customer-data LLM policy (Bear Metal worker session)");
-    expect(prompt).toContain("This policy governs only this Bear Metal worker session");
+    expect(isCustomerDataBedrockSession(["bear-metal"], "amazon-bedrock")).toBe(false);
+    expect(prompt).toContain("does **not** include `CUSTOMER_DATA_BEDROCK_SESSION=1`");
     expect(prompt).toContain(
-      "keep the `CLAUDE_CODE_USE_BEDROCK` / `claude-research` requirement",
+      "keep the existing `CLAUDE_CODE_USE_BEDROCK` / `claude-research` requirement",
     );
     expect(prompt).toContain(
-      "For this Bear Metal Research worker only, `CLAUDE_CODE_USE_BEDROCK` is not the authoritative signal",
+      "Do not edit repository guidance to weaken the customer-data gate for sessions that lack `CUSTOMER_DATA_BEDROCK_SESSION=1`",
     );
-    expect(prompt).toContain("do not edit repository guidance to weaken the gate for other users");
   });
 
   it("refuses customer-data work on the Anthropic path even with a Research label", () => {
     const context = makeContext("new", "ABC-ANTHROPIC");
     context.ticket.issue.labels = ["Research"];
 
+    expect(isCustomerDataBedrockSession(["Research"], "anthropic")).toBe(false);
     const prompt = buildWorkerPrompt(context, { llmProvider: "anthropic" });
 
-    expect(prompt).toContain("Bear Metal provider for this run: `anthropic`");
-    expect(prompt).toContain("If either condition is false, refuse to access customer data");
+    expect(prompt).toContain("Provider for this run: `anthropic`");
+    expect(prompt).toContain("does **not** include `CUSTOMER_DATA_BEDROCK_SESSION=1`");
+    expect(prompt).toContain("Refuse to access customer data");
   });
 
   it("refuses customer-data work for an unlabeled Bedrock ticket", () => {
@@ -168,7 +171,7 @@ describe("worker contract", () => {
     const prompt = buildWorkerPrompt(context, { llmProvider: "amazon-bedrock" });
 
     expect(prompt).toContain("This ticket does not have the `Research` label");
-    expect(prompt).toContain("If either condition is false, refuse to access customer data");
+    expect(prompt).toContain("does **not** include `CUSTOMER_DATA_BEDROCK_SESSION=1`");
   });
 
   it("includes attachment paths without embedding attachment contents", () => {
