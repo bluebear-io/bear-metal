@@ -279,12 +279,18 @@ describe("LinearIntegration ticket context", () => {
     h.rawRequestFn
       .mockRejectedValueOnce(new h.AuthErr("not authenticated"))
       .mockResolvedValueOnce({ data: { issue: validRawContextIssue({
-        comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        comments: { nodes: [
+          { id: "comment-retry", body: "Retry", createdAt: "2026-01-07T00:00:00.000Z", updatedAt: "2026-01-08T00:00:00.000Z", url: "https://linear.app/comment/retry", user: null },
+        ], pageInfo: { hasNextPage: false, endCursor: null } },
         attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
       }) } });
     const linear = new LinearIntegration({ tokenProvider: provider });
 
-    await expect(linear.getTicketContext("DEN-1")).resolves.toMatchObject({ issue: { id: "issue-1" } });
+    await expect(linear.getTicketContext("DEN-1")).resolves.toMatchObject({
+      issue: { id: "issue-1" },
+      comments: [{ id: "comment-retry" }],
+      attachments: [],
+    });
     expect(provider.invalidate).toHaveBeenCalledTimes(1);
     expect(h.rawRequestFn).toHaveBeenCalledTimes(2);
   });
