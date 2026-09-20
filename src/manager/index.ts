@@ -18,8 +18,22 @@ import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 
-const [runtimeConfig, customizationConfig] = await Promise.all([loadConfig(), loadBearMetalConfig()]);
+const runtimeConfig = loadConfig();
 const logger = createLogger({ level: runtimeConfig.logLevel, name: "manager", pretty: runtimeConfig.logPretty });
+let fatalExitStarted = false;
+
+function fatalExit(err: unknown, origin: "uncaughtException" | "unhandledRejection"): void {
+  if (fatalExitStarted) return;
+  fatalExitStarted = true;
+  logger.fatal({ err, origin }, "fatal process error");
+  logger.flush(() => process.exit(1));
+}
+
+process.on("uncaughtException", (err) => fatalExit(err, "uncaughtException"));
+process.on("unhandledRejection", (reason) => fatalExit(reason, "unhandledRejection"));
+
+async function main(): Promise<void> {
+const customizationConfig = await loadBearMetalConfig();
 const maxIterations = customizationConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
 
 logger.info(
@@ -159,3 +173,6 @@ function shutdown(signal: string): void {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+void main();

@@ -1,8 +1,8 @@
-import { AuthenticationLinearError, type Comment, type Issue, LinearClient } from "@linear/sdk";
+import { AuthenticationLinearError, type Issue, LinearClient } from "@linear/sdk";
 
 import type { CommentCapable, Integration } from "../base.js";
 import type { TokenProvider } from "./token.js";
-import type { LinearTicketContext, Ticket, TicketAttachment, TicketComment } from "./types.js";
+import type { LinearTicketContext, Ticket, TicketAttachment } from "./types.js";
 
 export interface LinearIntegrationOptions {
   tokenProvider: TokenProvider;
@@ -29,6 +29,66 @@ interface GetTicketResponse {
   } | null;
 }
 
+interface RawPage<T> {
+  nodes: T[];
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
+interface RawComment {
+  id: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  url: string;
+  user: { id: string; name: string; email: string } | null;
+}
+
+interface RawAttachment {
+  id: string;
+  title: string;
+  url: string;
+}
+
+interface RawRelation {
+  id: string;
+  type: string;
+  relatedIssue: { identifier: string } | null;
+}
+
+interface GetTicketContextResponse {
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+    description: string | null;
+    url: string;
+    branchName: string;
+    priority: number | null;
+    assignee: { id: string; name: string; email: string | null } | null;
+    delegate: { id: string } | null;
+    project: { id: string; name: string } | null;
+    createdAt: string;
+    updatedAt: string;
+    completedAt: string | null;
+    canceledAt: string | null;
+    state: { name: string; type: string } | null;
+    labels: { nodes: Array<{ name: string }> };
+    team: { key: string } | null;
+    relations: { nodes: RawRelation[] };
+    inverseRelations: { nodes: RawRelation[] };
+    comments: RawPage<RawComment>;
+    attachments: RawPage<RawAttachment>;
+  } | null;
+}
+
+interface GetCommentsResponse {
+  issue: { comments: RawPage<RawComment> } | null;
+}
+
+interface GetAttachmentsResponse {
+  issue: { attachments: RawPage<RawAttachment> } | null;
+}
+
 const GET_TICKET_QUERY = `
   query GetTicket($id: String!) {
     issue(id: $id) {
@@ -48,6 +108,66 @@ const GET_TICKET_QUERY = `
       state { name type }
       labels { nodes { name } }
       team { key }
+    }
+  }
+`;
+
+const GET_TICKET_CONTEXT_QUERY = `
+  query GetTicketContext($id: String!) {
+    issue(id: $id) {
+      id
+      identifier
+      title
+      description
+      url
+      branchName
+      priority
+      assignee { id name email }
+      delegate { id }
+      project { id name }
+      createdAt
+      updatedAt
+      completedAt
+      canceledAt
+      state { name type }
+      labels { nodes { name } }
+      team { key }
+      relations(first: 100) {
+        nodes { id type relatedIssue { identifier } }
+      }
+      inverseRelations(first: 100) {
+        nodes { id type relatedIssue { identifier } }
+      }
+      comments(first: 100) {
+        nodes { id body createdAt updatedAt url user { id name email } }
+        pageInfo { hasNextPage endCursor }
+      }
+      attachments(first: 100) {
+        nodes { id title url }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
+const GET_TICKET_COMMENTS_QUERY = `
+  query GetTicketComments($id: String!, $after: String) {
+    issue(id: $id) {
+      comments(first: 100, after: $after) {
+        nodes { id body createdAt updatedAt url user { id name email } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
+const GET_TICKET_ATTACHMENTS_QUERY = `
+  query GetTicketAttachments($id: String!, $after: String) {
+    issue(id: $id) {
+      attachments(first: 100, after: $after) {
+        nodes { id title url }
+        pageInfo { hasNextPage endCursor }
+      }
     }
   }
 `;
@@ -195,23 +315,39 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
 
   async getTicketContext(id: string): Promise<LinearTicketContext> {
     return this.withClient(async (client) => {
-      const issue = await client.issue(id);
-      const [ticket, comments, attachments] = await Promise.all([
-        this.toTicket(issue),
-        this.getComments(issue),
-        this.getContextAttachments(issue),
-      ]);
-      return { issue: ticket, comments, attachments };
+      const { data } = await client.client.rawRequest<GetTicketContextResponse, { id: string }>(GET_TICKET_CONTEXT_QUERY, { id });
+      const issue = this.requireRawIssue(data, id);
+      const comments = [...issue.comments.nodes];
+      let commentsPage = issue.comments;
+      while (commentsPage.pageInfo.hasNextPage) {
+        const after = this.requireNextCursor(commentsPage.pageInfo.endCursor, id, "comments");
+        const response = await client.client.rawRequest<GetCommentsResponse, { id: string; after: string }>(GET_TICKET_COMMENTS_QUERY, { id, after });
+        commentsPage = this.requireRawIssue(response.data, id).comments;
+        comments.push(...commentsPage.nodes);
+      }
+      const attachments = [...issue.attachments.nodes];
+      let attachmentsPage = issue.attachments;
+      while (attachmentsPage.pageInfo.hasNextPage) {
+        const after = this.requireNextCursor(attachmentsPage.pageInfo.endCursor, id, "attachments");
+        const response = await client.client.rawRequest<GetAttachmentsResponse, { id: string; after: string }>(GET_TICKET_ATTACHMENTS_QUERY, { id, after });
+        attachmentsPage = this.requireRawIssue(response.data, id).attachments;
+        attachments.push(...attachmentsPage.nodes);
+      }
+      return {
+        issue: this.toContextTicket(issue),
+        comments,
+        attachments,
+      };
     });
   }
 
   async getTicketAttachments(id: string): Promise<TicketAttachment[]> {
     return this.withClient(async (client) => {
-      const issue = await client.issue(id);
       const attachments: TicketAttachment[] = [];
       let after: string | undefined;
       do {
-        const page = await issue.attachments({ first: 100, after });
+        const { data } = await client.client.rawRequest<GetAttachmentsResponse, { id: string; after?: string }>(GET_TICKET_ATTACHMENTS_QUERY, { id, after });
+        const page = this.requireRawIssue(data, id).attachments;
         attachments.push(
           ...page.nodes
             .filter(
@@ -219,7 +355,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
             )
             .map((attachment) => ({ id: attachment.id, title: attachment.title, url: attachment.url })),
         );
-        after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
+        after = page.pageInfo.hasNextPage ? this.requireNextCursor(page.pageInfo.endCursor, id, "attachments") : undefined;
       } while (after !== undefined);
       return attachments;
     });
@@ -315,28 +451,6 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     return this.client;
   }
 
-  private async getComments(issue: Issue): Promise<TicketComment[]> {
-    const comments: TicketComment[] = [];
-    let after: string | undefined;
-    do {
-      const page = await issue.comments({ first: 100, after });
-      comments.push(...(await Promise.all(page.nodes.map((comment) => this.toComment(comment)))));
-      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
-    } while (after !== undefined);
-    return comments;
-  }
-
-  private async getContextAttachments(issue: Issue): Promise<TicketAttachment[]> {
-    const attachments: TicketAttachment[] = [];
-    let after: string | undefined;
-    do {
-      const page = await issue.attachments({ first: 100, after });
-      attachments.push(...page.nodes.map((attachment) => ({ id: attachment.id, title: attachment.title, url: attachment.url })));
-      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
-    } while (after !== undefined);
-    return attachments;
-  }
-
   private async toTicket(issue: Issue): Promise<Ticket> {
     const [state, labels, team, assignee, project, relationsPage, inverseRelationsPage] = await Promise.all([
       issue.state,
@@ -379,16 +493,43 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     };
   }
 
-  private async toComment(comment: Comment): Promise<TicketComment> {
-    const user = comment.user ? await comment.user : null;
+  private toContextTicket(issue: NonNullable<GetTicketContextResponse["issue"]>): Ticket {
+    if (!issue.state) throw new Error(`Linear issue ${issue.identifier} has no workflow state`);
+    if (!issue.team) throw new Error(`Linear issue ${issue.identifier} has no team`);
+    const relations = [...issue.relations.nodes, ...issue.inverseRelations.nodes].map((relation) => {
+      if (!relation.relatedIssue) throw new Error(`Linear relation ${relation.id} has no related issue`);
+      return { type: relation.type, taskIdentifier: relation.relatedIssue.identifier };
+    });
     return {
-      id: comment.id,
-      body: comment.body,
-      createdAt: comment.createdAt.toISOString(),
-      updatedAt: comment.updatedAt.toISOString(),
-      url: comment.url,
-      quotedText: comment.quotedText ?? null,
-      user: user ? { id: user.id, name: user.name, email: user.email } : null,
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description,
+      url: issue.url,
+      branchName: issue.branchName,
+      status: issue.state,
+      priority: issue.priority ?? 0,
+      labels: issue.labels.nodes.map((label) => label.name),
+      teamKey: issue.team.key,
+      assignee: issue.assignee,
+      project: issue.project,
+      relations,
+      delegate: issue.delegate,
+      createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
+      completedAt: issue.completedAt,
+      canceledAt: issue.canceledAt,
     };
+  }
+
+  private requireRawIssue<T extends { issue: unknown }>(data: T | undefined, id: string): NonNullable<T["issue"]> {
+    if (!data) throw new Error(`Linear returned no data for issue ${id}`);
+    if (!data.issue) throw new Error(`Linear issue ${id} not found`);
+    return data.issue as NonNullable<T["issue"]>;
+  }
+
+  private requireNextCursor(cursor: string | null, id: string, connection: string): string {
+    if (!cursor) throw new Error(`Linear issue ${id} ${connection} page has no end cursor`);
+    return cursor;
   }
 }

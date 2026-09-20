@@ -4,11 +4,11 @@ import type { BearMetalConfig } from "./types.js";
 
 describe("task customization", () => {
   it("builds an immutable provider-neutral task", () => {
-    const task = buildTask({ state: "new", iteration: 1, attachments: [], prs: [], pullRequests: [], ticket: { issue: { id: "id", identifier: "DEN-1", title: "Title", description: null, url: "https://linear.app/DEN-1", branchName: "branch", status: { name: "Todo", type: "unstarted" }, priority: 2, labels: ["a"], teamKey: "DEN", assignee: null, delegate: null }, comments: [{ id: "comment", body: "body", url: "url", createdAt: "created", updatedAt: "updated", quotedText: "provider-only", user: { id: "user", name: "User", email: "user@example.com" } }] } });
+    const task = buildTask({ state: "new", iteration: 1, attachments: [], prs: [], pullRequests: [], ticket: { issue: { id: "id", identifier: "DEN-1", title: "Title", description: null, url: "https://linear.app/DEN-1", branchName: "branch", status: { name: "Todo", type: "unstarted" }, priority: 2, labels: ["a"], teamKey: "DEN", assignee: null, delegate: null }, comments: [{ id: "comment", body: "body", url: "url", createdAt: "created", updatedAt: "updated", user: { id: "user", name: "User", email: "user@example.com" } }] } });
     expect(task).toMatchObject({ identifier: "DEN-1", priority: "high", status: { category: "unstarted" }, run: { kind: "new", iteration: 1 } });
     expect(Object.isFrozen(task)).toBe(true); expect(Object.isFrozen(task.labels)).toBe(true);
     expect(task.comments[0]).toEqual({ id: "comment", body: "body", url: "url", createdAt: "created", updatedAt: "updated", author: { id: "user", name: "User", email: "user@example.com" } });
-    expect(task.comments[0]).not.toHaveProperty("user"); expect(task.comments[0]).not.toHaveProperty("quotedText");
+    expect(task.comments[0]).not.toHaveProperty("user");
   });
   it("normalizes triage and rejects unknown tracker status categories", () => {
     const input = { state: "new" as const, iteration: 1, attachments: [], prs: [], pullRequests: [], ticket: { issue: { id: "id", identifier: "DEN-1", title: "Title", description: null, url: "url", branchName: "branch", status: { name: "Triage", type: "triage" }, priority: 0, labels: [], teamKey: "DEN", assignee: null, delegate: null }, comments: [] } };

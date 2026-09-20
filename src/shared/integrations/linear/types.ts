@@ -59,7 +59,6 @@ export interface TicketComment {
   createdAt: string;
   updatedAt: string;
   url: string;
-  quotedText: string | null;
   user: TicketCommentUser | null;
 }
 
