@@ -167,7 +167,7 @@ export class Scheduler {
     );
 
     const toDispatch = [...refreshed, ...admitted];
-    const eligible = await enforceIterationLimit(toDispatch, db, linear, logger, this.deps.maxIterations);
+    const eligible = await enforceIterationLimit(toDispatch, db, linear, logger, this.deps.maxIterations, this.deps.slack);
     await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
     const trackedAfter = await db.listTracked();
@@ -231,6 +231,14 @@ interface TicketDecision {
   humanTookOverPrs?: PullRequestRef[];
   /** Linear already moved the ticket to a terminal state (Done/Canceled) — treat as completed, skip handBack. */
   terminated?: boolean;
+  /**
+   * At least one PR head SHA still has a check run in `queued` / `in_progress`. Only meaningful
+   * when `dispatch === false` and `phase === "active"` — the scheduler uses it to keep the ticket
+   * in `validating` and defer the Slack DM until CI settles, avoiding the double-notification
+   * pattern of "PR opened" (while CI is still running) immediately followed by "PR updated" (after
+   * the agent fixes the eventual CI failure).
+   */
+  checksInProgress?: boolean;
 }
 
 /**
@@ -315,6 +323,7 @@ async function evaluateTicket(
   }
 
   const testsFailed = statuses.some((s) => s.testsFailed);
+  const checksInProgress = statuses.some((s) => s.checksInProgress);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
   const hasActionableIssueComments = statuses.some((s) => s.hasActionableIssueComments);
   const hasMergeConflicts = statuses.some((s) => s.hasMergeConflicts);
@@ -357,7 +366,7 @@ async function evaluateTicket(
     : hasMergeConflicts
       ? "merge_conflict"
       : "delegated_back";
-  return { remove: false, merged: false, context: { ticket, prs: knownPrs }, dispatch: needsWork, phase: "active", trigger };
+  return { remove: false, merged: false, context: { ticket, prs: knownPrs }, dispatch: needsWork, phase: "active", trigger, checksInProgress };
 }
 
 async function refreshTrackedTickets(
@@ -489,6 +498,13 @@ async function refreshTrackedTickets(
           }
         }
       } else if (decision.phase === "active") {
+        if (decision.checksInProgress) {
+          logger.debug(
+            { ticket: ticket.identifier },
+            "CI still in progress on PR head; deferring waiting_for_human transition and Slack DM",
+          );
+          continue;
+        }
         const preTransition = await db.readTicketStatus(ticket.id);
         logger.debug(
           { ticket: ticket.identifier, dbStatus: preTransition?.status, dbNotify: preTransition?.notify },
@@ -667,6 +683,7 @@ async function enforceIterationLimit(
   linear: LinearSource,
   logger: Logger,
   maxIterations: number,
+  slack?: SlackIntegration,
 ): Promise<DispatchItem[]> {
   const eligible: DispatchItem[] = [];
   for (const item of items) {
@@ -684,6 +701,36 @@ async function enforceIterationLimit(
         );
         await db.setTicketStatus(ctx.ticket.id, "failed");
         await db.setSlotStatus(ctx.ticket.id, "released");
+        if (slack) {
+          try {
+            const recipientEmail = ctx.ticket.assignee
+              ? (await linear.getUserEmail(ctx.ticket.assignee.id)) ?? undefined
+              : undefined;
+            await slack.notifyMaxIterationsReached({
+              ticketId: ctx.ticket.identifier,
+              ticketUrl: ctx.ticket.url,
+              title: ctx.ticket.title,
+              maxIterations,
+              recipientEmail,
+            });
+            void db.recordEvent({
+              id: randomUUID(),
+              ticketId: ctx.ticket.id,
+              runId: null,
+              workerId: null,
+              source: "manager",
+              type: "user_notified",
+              summary: `user notified via Slack — max iterations (${maxIterations}) reached on ${ctx.ticket.identifier}`,
+              payloadJson: recipientEmail ? JSON.stringify({ recipientEmail }) : null,
+              createdAt: new Date().toISOString(),
+            });
+          } catch (err) {
+            logger.warn(
+              { err, ticketId: ctx.ticket.id },
+              "failed to send max-iterations Slack notification",
+            );
+          }
+        }
       } else {
         eligible.push(item);
       }

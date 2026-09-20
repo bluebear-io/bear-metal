@@ -15,6 +15,7 @@ import {
 import { SqlDbClient, type DbClient, type DispatchTaskInput } from "../db/client.js";
 import { Scheduler, type GitHubSource, type LinearSource, type TicketHandler } from "./scheduler.js";
 import { makeTicket } from "./test-helpers.js";
+import type { SlackIntegration } from "../shared/index.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 const dbs: DbClient[] = [];
@@ -46,10 +47,12 @@ function status(
   humanTookOver = false,
   hasMergeConflicts = false,
   hasActionableIssueComments = false,
+  checksInProgress = false,
 ): PullRequestStatus {
   return {
     pr,
     testsFailed,
+    checksInProgress,
     hasActionableUnresolvedComments,
     hasActionableIssueComments,
     hasMergeConflicts,
@@ -185,6 +188,7 @@ function buildScheduler(deps: {
   taskStaleAfterMs?: number;
   taskMaxReclaims?: number;
   maxIterations?: number;
+  slack?: SlackIntegration;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -197,7 +201,28 @@ function buildScheduler(deps: {
     taskStaleAfterMs: deps.taskStaleAfterMs ?? 60_000,
     taskMaxReclaims: deps.taskMaxReclaims ?? 3,
     maxIterations: deps.maxIterations ?? 50,
+    slack: deps.slack,
   });
+}
+
+type MaxIterationsSpy = Parameters<SlackIntegration["notifyMaxIterationsReached"]>[0];
+
+class FakeSlack {
+  needsInputCalls: Array<Parameters<SlackIntegration["notifyNeedsInput"]>[0]> = [];
+  pullRequestCalls: Array<Parameters<SlackIntegration["notifyPullRequest"]>[0]> = [];
+  maxIterationsCalls: Array<MaxIterationsSpy> = [];
+  async notifyPullRequest(n: Parameters<SlackIntegration["notifyPullRequest"]>[0]): Promise<void> {
+    this.pullRequestCalls.push(n);
+  }
+  async notifyNeedsInput(n: Parameters<SlackIntegration["notifyNeedsInput"]>[0]): Promise<void> {
+    this.needsInputCalls.push(n);
+  }
+  async notifyMaxIterationsReached(n: MaxIterationsSpy): Promise<void> {
+    this.maxIterationsCalls.push(n);
+  }
+  asIntegration(): SlackIntegration {
+    return this as unknown as SlackIntegration;
+  }
 }
 
 describe("Scheduler.tick stale-task recovery", () => {
@@ -800,5 +825,93 @@ describe("Scheduler.tick waiting_for_human admission", () => {
     expect(handler.handled).toHaveLength(1);
     expect(await db.countTracked()).toBe(1);
     expect(await db.readTicketStatus("a")).toEqual({ status: "in_progress", notify: 0 });
+  });
+});
+
+describe("Scheduler.tick CI-in-progress deferral", () => {
+  async function seedValidatingSlot(db: DbClient, ticketId: string, pr: PullRequestRef): Promise<void> {
+    await seedCompletedTask(db, { state: "new", ticketId, prs: [] }, { status: "done", prs: [pr] });
+    // Simulate the worker having transitioned the ticket to `validating` with a pending notify.
+    await db.setTicketStatus(ticketId.toLowerCase(), "validating", true);
+  }
+
+  it("keeps the ticket in validating and skips the Slack DM while CI is still in progress", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    // testsFailed=false, checksInProgress=true — the PR has a check_run still queued/in_progress.
+    const github = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, true),
+    });
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github, db, handler, concurrency: 1, slack: slack.asIntegration() });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+    expect(await db.countTracked()).toBe(1);
+  });
+
+  it("fires the Slack DM exactly once on the next tick after CI settles green", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, true),
+    });
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    const scheduler1 = buildScheduler({ linear, github, db, handler, concurrency: 1, slack: slack.asIntegration() });
+    await scheduler1.tick();
+    await scheduler1.stop();
+
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+
+    const githubSettled = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, false),
+    });
+    const scheduler2 = buildScheduler({ linear, github: githubSettled, db, handler, concurrency: 1, slack: slack.asIntegration() });
+    await scheduler2.tick();
+    await scheduler2.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("opened");
+    expect(slack.pullRequestCalls[0]?.ticketId).toBe("A");
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+});
+
+describe("Scheduler.tick max-iteration notification", () => {
+  it("sends a Slack notification when a ticket hits the iteration cap", async () => {
+    const db = await makeDb();
+    for (let i = 0; i < 5; i++) {
+      await seedCompletedTask(
+        db,
+        { state: "new", ticketId: "A", prs: [] },
+        { status: "done", prs: [prRef(7)] },
+      );
+    }
+    const linear = new FakeLinear([], { A: makeTicket("a", { title: "Ticket A" }) });
+    const github = new FakeGitHub({ status: status(openPr(7), true, false) });
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({
+      linear, github, db, handler, concurrency: 1, maxIterations: 5, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(linear.commentAndHandBackCalls).toHaveLength(1);
+    expect(slack.maxIterationsCalls).toHaveLength(1);
+    expect(slack.maxIterationsCalls[0]?.ticketId).toBe("A");
+    expect(slack.maxIterationsCalls[0]?.maxIterations).toBe(5);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "failed", notify: 0 });
   });
 });

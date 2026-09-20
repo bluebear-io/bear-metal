@@ -55,6 +55,13 @@ export interface PullRequestStatus {
   pr: PullRequest;
   /** Any failed check run or commit status on the head commit. */
   testsFailed: boolean;
+  /**
+   * Any check run on the head commit is still `queued` / `in_progress`. Used by the scheduler to
+   * defer the `validating` → `waiting_for_human` transition (and its Slack DM) until CI has
+   * settled — otherwise the user is notified twice: once when the PR is opened while CI is still
+   * running, and again minutes later after the agent fixes the eventual CI failure.
+   */
+  checksInProgress: boolean;
   /** Any unresolved review thread whose latest comment is not from bear-metal. */
   hasActionableUnresolvedComments: boolean;
   /** Any non-minimized PR-level issue comment from a non-infrastructure author. */

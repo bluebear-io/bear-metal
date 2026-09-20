@@ -99,9 +99,11 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       this.getPullRequestCommits(ref),
       this.getBotIdentity(),
     ]);
+    const checksInProgress = await this.hasChecksInProgress(ref, context.headSha);
     return {
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
+      checksInProgress,
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
         isActionableReviewThread(thread, bearMetalIdentity),
       ),
@@ -112,6 +114,27 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       humanTookOver: isHumanTakeover(commits, bearMetalIdentity),
       context,
     };
+  }
+
+  /**
+   * True if any check run on `sha` is still `queued` / `in_progress`. Paginated because a PR head
+   * can accumulate more than 100 check runs across many workflows and we must not falsely report
+   * CI as settled when a later page still has running runs.
+   */
+  private async hasChecksInProgress(ref: PullRequestRef, sha: string): Promise<boolean> {
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.checks.listForRef({
+        owner: ref.owner,
+        repo: ref.repo,
+        ref: sha,
+        per_page: 100,
+        page,
+      });
+      if (data.check_runs.some((run) => run.status !== "completed")) return true;
+      if (data.check_runs.length < 100) return false;
+      page += 1;
+    }
   }
 
   /**

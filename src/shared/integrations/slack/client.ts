@@ -45,6 +45,18 @@ export interface NeedsInputNotification {
   recipientEmail?: string;
 }
 
+export interface MaxIterationsReachedNotification {
+  /** Linear ticket identifier (e.g. "PROJ-4"). */
+  ticketId: string;
+  ticketUrl: string;
+  /** Linear ticket title. */
+  title: string;
+  /** The configured iteration cap that was hit. */
+  maxIterations: number;
+  /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
+  recipientEmail?: string;
+}
+
 const DEFAULT_API_BASE_URL = "https://slack.com/api";
 
 /**
@@ -84,6 +96,14 @@ export class SlackIntegration implements Integration {
 
   async notifyNeedsInput(notification: NeedsInputNotification): Promise<void> {
     const text = formatNeedsInputText(notification);
+    const channel = notification.recipientEmail
+      ? await this.resolveUserChannel(notification.recipientEmail)
+      : this.channel;
+    await this.postMessage(channel, text);
+  }
+
+  async notifyMaxIterationsReached(notification: MaxIterationsReachedNotification): Promise<void> {
+    const text = formatMaxIterationsReachedText(notification);
     const channel = notification.recipientEmail
       ? await this.resolveUserChannel(notification.recipientEmail)
       : this.channel;
@@ -188,4 +208,16 @@ export function formatNeedsInputText(notification: NeedsInputNotification): stri
   const safeTitle = escapeSlackMrkdwn(title);
   const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
   return `:raising_hand: Needs your input on ticket ${ticketLabel} — ${safeTitle}`;
+}
+
+export function formatMaxIterationsReachedText(notification: MaxIterationsReachedNotification): string {
+  const { ticketId, ticketUrl, title, maxIterations } = notification;
+  if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
+  if (!Number.isFinite(maxIterations) || maxIterations <= 0) {
+    throw new Error(`Invalid maxIterations: ${maxIterations}`);
+  }
+  const safeTicketId = escapeSlackMrkdwn(ticketId);
+  const safeTitle = escapeSlackMrkdwn(title);
+  const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
+  return `:no_entry: Gave up on ticket ${ticketLabel} after ${maxIterations} iterations — ${safeTitle}. Handed back for human review.`;
 }
