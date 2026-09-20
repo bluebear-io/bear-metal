@@ -196,8 +196,12 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   async getTicketContext(id: string): Promise<LinearTicketContext> {
     return this.withClient(async (client) => {
       const issue = await client.issue(id);
-      const [ticket, comments] = await Promise.all([this.toTicket(issue), this.getComments(issue)]);
-      return { issue: ticket, comments };
+      const [ticket, comments, attachments] = await Promise.all([
+        this.toTicket(issue),
+        this.getComments(issue),
+        this.getContextAttachments(issue),
+      ]);
+      return { issue: ticket, comments, attachments };
     });
   }
 
@@ -322,8 +326,27 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     return comments;
   }
 
+  private async getContextAttachments(issue: Issue): Promise<TicketAttachment[]> {
+    const attachments: TicketAttachment[] = [];
+    let after: string | undefined;
+    do {
+      const page = await issue.attachments({ first: 100, after });
+      attachments.push(...page.nodes.map((attachment) => ({ id: attachment.id, title: attachment.title, url: attachment.url })));
+      after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor ?? undefined : undefined;
+    } while (after !== undefined);
+    return attachments;
+  }
+
   private async toTicket(issue: Issue): Promise<Ticket> {
-    const [state, labels, team] = await Promise.all([issue.state, issue.labels(), issue.team]);
+    const [state, labels, team, assignee, project, relationsPage, inverseRelationsPage] = await Promise.all([
+      issue.state,
+      issue.labels(),
+      issue.team,
+      issue.assignee,
+      issue.project,
+      issue.relations({ first: 100 }),
+      issue.inverseRelations({ first: 100 }),
+    ]);
     if (!state) {
       throw new Error(`Linear issue ${issue.identifier} has no workflow state`);
     }
@@ -341,7 +364,13 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       priority: issue.priority ?? 0,
       labels: labels.nodes.map((node) => node.name),
       teamKey: team.key,
-      assignee: issue.assigneeId ? { id: issue.assigneeId } : null,
+      assignee: assignee ? { id: assignee.id, name: assignee.name, email: assignee.email ?? null } : null,
+      project: project ? { id: project.id, name: project.name } : null,
+      relations: await Promise.all([...relationsPage.nodes, ...inverseRelationsPage.nodes].map(async (relation) => {
+        const related = await relation.relatedIssue;
+        if (!related) throw new Error(`Linear relation ${relation.id} has no related issue`);
+        return { type: relation.type, taskIdentifier: related.identifier };
+      })),
       delegate: issue.delegateId ? { id: issue.delegateId } : null,
       createdAt: issue.createdAt.toISOString(),
       updatedAt: issue.updatedAt.toISOString(),

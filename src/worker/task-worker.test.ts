@@ -4,8 +4,10 @@ import { createLogger } from "../shared/index.js";
 import type { DbClient, DispatchTaskInput, TaskRecord } from "../db/client.js";
 import { TaskWorker } from "./task-worker.js";
 import type { DispatchInput, DispatchResult } from "./dispatch.js";
+import type { BearMetalConfig } from "../customization/types.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
+const config = { llmProviders: {}, customizeTask: vi.fn() } as unknown as BearMetalConfig;
 
 describe("TaskWorker", () => {
   it("acquires a task with its worker id and writes the dispatch result", async () => {
@@ -26,8 +28,7 @@ describe("TaskWorker", () => {
       heartbeatIntervalMs: 30_000,
       maxReclaims: 3,
       agentId: undefined,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", anthropicApiKey: "test-key",
+      config,
     });
 
     await worker.tick();
@@ -67,8 +68,7 @@ describe("TaskWorker", () => {
       heartbeatIntervalMs: 30_000,
       maxReclaims: 3,
       agentId: undefined,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", anthropicApiKey: "test-key",
+      config,
     });
 
     await worker.tick();
@@ -101,8 +101,7 @@ describe("TaskWorker", () => {
       runDispatch,
       heartbeatIntervalMs: 30_000,
       agentId: undefined,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", anthropicApiKey: "test-key",
+      config,
     });
 
     await worker.tick();
@@ -139,8 +138,7 @@ describe("TaskWorker", () => {
       heartbeatIntervalMs: 10,
       maxReclaims: 3,
       agentId: undefined,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", anthropicApiKey: "test-key",
+      config,
     });
 
     await worker.tick();
