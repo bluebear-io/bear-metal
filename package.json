@@ -10,10 +10,10 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "start": "node dist/manager/index.js",
-    "dev": "tsx src/manager/index.ts",
+    "start": "node --no-warnings dist/manager/index.js",
+    "dev": "node --no-warnings --import tsx src/manager/index.ts",
     "dev:all": "bash scripts/dev.sh",
-    "test": "vitest run"
+    "test": "node --no-warnings ./node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.74.0",

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -12,11 +12,17 @@ afterEach(async () => {
 });
 
 describe("manager startup", () => {
+  it("suppresses Node warnings in the production container entrypoint", async () => {
+    const dockerfile = await readFile(new URL("../../Dockerfile", import.meta.url), "utf8");
+    expect(dockerfile).toContain('CMD ["node", "--no-warnings", "dist/manager/index.js"]');
+  });
+
   it("reports startup failures as structured JSON without a plaintext Node stack", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-startup-test-"));
     tempDirs.push(dir);
     const configPath = join(dir, "config.mjs");
-    await writeFile(configPath, `export default {
+    await writeFile(configPath, `process.emitWarning("startup warning must be suppressed");
+    export default {
       linear: { clientId: "client", getClientSecret: () => "secret" },
       github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
       database: { getUrl: () => "postgres://user:pass@127.0.0.1:1/db?connect_timeout=1" },
@@ -24,7 +30,7 @@ describe("manager startup", () => {
       customizeTask: () => ({ llm: { provider: "amazon-bedrock", model: "model" }, buildWorkspace: async () => {} }),
     };`);
 
-    const child = spawn(process.execPath, ["--import", "tsx", "src/manager/index.ts"], {
+    const child = spawn(process.execPath, ["--no-warnings", "--import", "tsx", "src/manager/index.ts"], {
       cwd: process.cwd(),
       env: {
         ...process.env,

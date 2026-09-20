@@ -50,7 +50,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   logger.debug({ ticketId, state, prCount: prs.length, workspaceDir }, "dispatch starting");
 
-  const [githubToken, ticket, rawPullRequests, botIdentity, ticketAttachments] = await Promise.all([
+  const [githubToken, ticket, rawPullRequests, botIdentity] = await Promise.all([
     github.getInstallationToken(),
     linear.getTicketContext(ticketId).then((t) => {
       logger.debug({ ticketId }, "linear ticket fetched");
@@ -68,15 +68,17 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       logger.debug({ login: identity.login }, "bot identity fetched");
       return identity;
     }),
-    linear.getTicketAttachments(ticketId),
   ]);
 
   const pullRequests = commentStore
     ? await Promise.all(rawPullRequests.map(async (ctx, idx) => {
+      if (ctx.issueComments.length === 0) return ctx;
       const completedIds = await commentStore.getCompleted(prs[idx]!);
+      if (completedIds.size === 0) return ctx;
       return { ...ctx, issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)), completedIssueComments: ctx.issueComments.filter((c) => completedIds.has(c.id)) };
     }))
     : rawPullRequests;
+  const ticketAttachments = ticket.attachments ?? [];
   const task = buildTask({ state, iteration: input.iteration, ticket, attachments: ticketAttachments, prs, pullRequests });
   const { customization, llm } = await customizeAndResolve(input.config, task);
   logger.info({ ticketId, provider: llm.provider, model: llm.model }, "selected task LLM");
@@ -96,7 +98,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   try {
   const linearAccessToken = await linear.getAccessToken();
   const evidenceAttachments = await downloadTicketAttachments(
-    ticketAttachments,
+    ticketAttachments.filter((attachment) => URL.canParse(attachment.url) && new URL(attachment.url).hostname === "uploads.linear.app"),
     `${cloneScript.agentWorkdir}/.git/bear-metal-artifacts`,
     linearAccessToken,
   );

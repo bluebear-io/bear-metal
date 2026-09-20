@@ -25,4 +25,4 @@ COPY --from=builder /app/src/db/schema.sql dist/db/schema.sql
 # Built UI served by the backend at /
 COPY --from=ui-builder /app/ui/dist ui-dist
 COPY scripts scripts
-CMD ["node", "dist/manager/index.js"]
+CMD ["node", "--no-warnings", "dist/manager/index.js"]

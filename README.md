@@ -119,7 +119,7 @@ Bear Metal itself reads only these deployment and process settings:
 | `TASK_HEARTBEAT_INTERVAL_MS` | no | `30000` | Worker heartbeat cadence |
 | `TASK_STALE_AFTER_MS` | no | `300000` | Reclaim threshold for a task without a heartbeat |
 | `TASK_MAX_RECLAIMS` | no | `3` | Maximum recoveries before abandoning a task row |
-| `BEAR_METAL_WORKSPACE_DIR` | no | system temporary directory | Parent directory for task workspaces |
+| `BEAR_METAL_WORKSPACE_DIR` | no | `~/.bear-metal/workspace` | Parent directory for task workspaces |
 | `BACKEND_PORT` | no | `3100` | API and dashboard server port |
 | `API_ONLY` | no | `false` | Disable serving the built UI |
 | `LOG_LEVEL` | no | `info` | Pino log level |
