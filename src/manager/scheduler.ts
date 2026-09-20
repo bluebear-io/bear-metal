@@ -503,6 +503,9 @@ async function refreshTrackedTickets(
         await db.setSlotStatus(slot.ticketId!, decision.phase);
       }
       if (decision.dispatch) {
+        // Re-dispatch invalidates any prior CI-deferral timer: the worker will push new
+        // commits that start a fresh CI run, so the watchdog must not count worker time.
+        ciDeferralStartedAt.delete(ticket.id);
         if (slot.latestTask.resultStatus === null) {
           logger.debug({ ticket: ticket.identifier }, "ticket already has active SQL task; skipping dispatch");
         } else {

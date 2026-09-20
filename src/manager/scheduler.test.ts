@@ -190,6 +190,7 @@ function buildScheduler(deps: {
   taskMaxReclaims?: number;
   maxIterations?: number;
   slack?: SlackIntegration;
+  ciDeferralMaxMs?: number;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -203,6 +204,7 @@ function buildScheduler(deps: {
     taskMaxReclaims: deps.taskMaxReclaims ?? 3,
     maxIterations: deps.maxIterations ?? 50,
     slack: deps.slack,
+    ciDeferralMaxMs: deps.ciDeferralMaxMs,
   });
 }
 
@@ -855,6 +857,57 @@ describe("Scheduler.tick CI-in-progress deferral", () => {
     expect(slack.pullRequestCalls).toEqual([]);
     expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
     expect(await db.countTracked()).toBe(1);
+  });
+
+  it("clears the deferral timer on re-dispatch so the watchdog does not count worker execution time", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    // Mutable holder so we can flip the PR status across ticks against a single Scheduler instance.
+    let currentStatus: PullRequestStatus = status(openPr(7), false, false, false, false, false, true);
+    class MutableGitHub extends FakeGitHub {
+      async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
+        this.statusCalls.push(ref.number);
+        return currentStatus;
+      }
+    }
+    const github = new MutableGitHub();
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    // Tiny watchdog: any stale timer surviving into the next deferral would fire the DM.
+    const scheduler = buildScheduler({
+      linear, github, db, handler, concurrency: 1, slack: slack.asIntegration(), ciDeferralMaxMs: 10,
+    });
+
+    // Tick 1: CI in progress → deferred, timer T0 recorded.
+    await scheduler.tick();
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+
+    // Simulate wall-clock elapsing past the watchdog window.
+    await new Promise((r) => setTimeout(r, 25));
+
+    // Tick 2: CI failed → scheduler re-dispatches the ticket. The deferral timer must be cleared here.
+    currentStatus = status(openPr(7), true, false, false, false, false, false);
+    await scheduler.tick();
+    expect(handler.handled).toHaveLength(1);
+    // Complete the re-dispatched worker run so the slot is done again with the same PR.
+    const inFlight = await db.listTracked();
+    const runId = inFlight[0]?.latestTask.id;
+    expect(runId).toBeDefined();
+    const acquired = await db.acquireNext("test-worker");
+    expect(acquired?.id).toBe(runId);
+    await db.complete(runId!, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", true);
+
+    // Tick 3: CI back in progress on the fresh commit. If the timer had not been cleared on
+    // tick 2, ageMs would exceed ciDeferralMaxMs and the watchdog would fire the Slack DM.
+    currentStatus = status(openPr(7), false, false, false, false, false, true);
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
   });
 
   it("fires the Slack DM exactly once on the next tick after CI settles green", async () => {
