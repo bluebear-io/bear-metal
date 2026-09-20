@@ -1,12 +1,10 @@
 import { mkdir, rm } from "node:fs/promises";
+import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig } from "../customization/types.js";
+import { buildTask, customizeAndResolve } from "../customization/task.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
-import {
-  DEFAULT_ANTHROPIC_MODEL_ID,
-  DEFAULT_BEDROCK_MODEL_ID,
-  runPiWorker,
-} from "./pi.js";
+import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
   DispatchState,
@@ -29,12 +27,8 @@ export interface DispatchInput {
   ticketId: string;
   prs: PullRequestRef[];
   integrations: WorkerIntegrations;
-  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
-  workspaceBuilderCommand?: string;
-  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
-  workspaceBuilderPath?: string;
-  /** Custom system prompt content injected into the agent prompt. */
-  systemPrompt?: string | null;
+  config: BearMetalConfig;
+  iteration: number;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
   onWorkspaceBuilding?: () => void;
   onWorkspaceBuilt?: (agentWorkdir: string) => void;
@@ -45,36 +39,6 @@ export interface DispatchInput {
     prs: PullRequestRef[];
     prompt: string;
   }) => void;
-  maxWorkerTimeMs: number;
-  maxWorkerTokens: number;
-  llmProvider: string;
-  llmApiKey: string | null;
-  anthropicApiKey?: string | null;
-}
-
-function selectTicketLlm(
-  labels: string[],
-  anthropicApiKey: string | null,
-): {
-  llmProvider: "anthropic" | "amazon-bedrock";
-  llmApiKey: string | null;
-  llmModel?: string;
-} {
-  if (labels.some((label) => label.toLowerCase() === "research")) {
-    return {
-      llmProvider: "amazon-bedrock",
-      llmApiKey: null,
-      llmModel: DEFAULT_BEDROCK_MODEL_ID,
-    };
-  }
-  if (!anthropicApiKey) {
-    throw new Error("ANTHROPIC_API_KEY is required for tickets without the research label");
-  }
-  return {
-    llmProvider: "anthropic",
-    llmApiKey: anthropicApiKey,
-    llmModel: DEFAULT_ANTHROPIC_MODEL_ID,
-  };
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -106,52 +70,38 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     }),
   ]);
 
-  const llm = selectTicketLlm(
-    ticket.issue.labels,
-    input.anthropicApiKey ?? (input.llmProvider === "anthropic" ? input.llmApiKey : null),
-  );
-  logger.info(
-    { ticketId, provider: llm.llmProvider, labels: ticket.issue.labels },
-    "selected ticket LLM provider",
-  );
+  const pullRequests = commentStore
+    ? await Promise.all(rawPullRequests.map(async (ctx, idx) => {
+      if (ctx.issueComments.length === 0) return ctx;
+      const completedIds = await commentStore.getCompleted(prs[idx]!);
+      if (completedIds.size === 0) return ctx;
+      return { ...ctx, issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)), completedIssueComments: ctx.issueComments.filter((c) => completedIds.has(c.id)) };
+    }))
+    : rawPullRequests;
+  const ticketAttachments = ticket.attachments ?? [];
+  const task = buildTask({ state, iteration: input.iteration, ticket, attachments: ticketAttachments, prs, pullRequests });
+  const { customization, llm } = await customizeAndResolve(input.config, task);
+  logger.info({ ticketId, provider: llm.provider, model: llm.model }, "selected task LLM");
 
   await mkdir(workspaceDir, { recursive: true });
   input.onWorkspaceBuilding?.();
   const cloneScript = await runWorkspaceBuilder({
     workspaceDir,
     githubToken,
-    ticket: ticket.issue,
-    builderCommand: input.workspaceBuilderCommand,
-    builderPath: input.workspaceBuilderPath,
+    buildWorkspace: customization.buildWorkspace,
   }).then((r) => {
     logger.debug({ workspaceDir, agentWorkdir: r.agentWorkdir }, "workspace builder completed");
     input.onWorkspaceBuilt?.(r.agentWorkdir);
     return r;
   });
 
-  const ticketAttachments = await linear.getTicketAttachments(ticketId);
+  try {
   const linearAccessToken = await linear.getAccessToken();
   const evidenceAttachments = await downloadTicketAttachments(
-    ticketAttachments,
+    ticketAttachments.filter((attachment) => URL.canParse(attachment.url) && new URL(attachment.url).hostname === "uploads.linear.app"),
     `${cloneScript.agentWorkdir}/.git/bear-metal-artifacts`,
     linearAccessToken,
   );
-
-  const pullRequests = commentStore
-    ? await Promise.all(
-        rawPullRequests.map(async (ctx, idx) => {
-          const pr = prs[idx]!;
-          if (ctx.issueComments.length === 0) return ctx;
-          const completedIds = await commentStore.getCompleted(pr);
-          if (completedIds.size === 0) return ctx;
-          return {
-            ...ctx,
-            issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)),
-            completedIssueComments: ctx.issueComments.filter((c) => completedIds.has(c.id)),
-          };
-        }),
-      )
-    : rawPullRequests;
 
   const context: WorkerInputContext = {
     state,
@@ -178,17 +128,27 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     GIT_COMMITTER_EMAIL: botEmail,
   };
 
-  try {
-    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, systemPrompt: input.systemPrompt, onAgentStarted: input.onAgentStarted, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens, ...llm, prs });
+    const result = await runPiWorker({
+      context, github, linear, commentStore, gitEnv,
+      systemPrompt: customization.additionalSystemPrompt,
+      onAgentStarted: input.onAgentStarted,
+      onToolCallProgress: input.onToolCallProgress,
+      maxWorkerTimeMs: customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS,
+      maxWorkerTokens: customization.limits?.maxTokens ?? DEFAULT_MAX_TOKENS,
+      llmProvider: llm.provider,
+      llmApiKey: llm.apiKey,
+      llmModel: llm.model,
+      prs,
+    });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
     await rm(cloneScript.netrcDir, { recursive: true, force: true });
     try {
-      await rm(cloneScript.agentWorkdir, { recursive: true, force: true });
-      logger.info({ ticketId, agentWorkdir: cloneScript.agentWorkdir }, "removed agent workdir");
+      await rm(cloneScript.workspaceDir, { recursive: true, force: true });
+      logger.info({ ticketId, workspaceDir: cloneScript.workspaceDir }, "removed task workspace");
     } catch (error) {
-      logger.error({ ticketId, agentWorkdir: cloneScript.agentWorkdir, error }, "failed to remove agent workdir");
+      logger.error({ ticketId, workspaceDir: cloneScript.workspaceDir, error }, "failed to remove task workspace");
     }
   }
 }

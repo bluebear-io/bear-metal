@@ -81,7 +81,6 @@ export interface WorkerSlack {
 
 export interface WorkerLinear {
   getTicketContext(ticketId: string): Promise<LinearTicketContext>;
-  getTicketAttachments(ticketId: string): Promise<import("../shared/integrations/linear/types.js").TicketAttachment[]>;
   getAccessToken(): Promise<string>;
   moveTicketToInProgress(ticketId: string): Promise<void>;
   moveTicketToInReview(ticketId: string): Promise<void>;

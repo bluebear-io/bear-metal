@@ -1,6 +1,8 @@
 import "dotenv/config";
 
 import { SqlDbClient } from "../db/client.js";
+import { loadBearMetalConfig, resolveSecret } from "../customization/load.js";
+import { DEFAULT_DATABASE_URL, DEFAULT_MAX_ITERATIONS } from "../customization/types.js";
 import {
   AppTokenProvider,
   createLogger,
@@ -15,72 +17,79 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { Scheduler } from "./scheduler.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
-import { runWorkerEnvironmentBuilder } from "./worker-env-builder.js";
 
-const config = loadConfig();
-const logger = createLogger({ level: config.logLevel, name: "manager", pretty: config.logPretty });
+const runtimeConfig = loadConfig();
+const logger = createLogger({ level: runtimeConfig.logLevel, name: "manager", pretty: runtimeConfig.logPretty });
+let fatalExitStarted = false;
+
+function fatalExit(err: unknown, origin: "uncaughtException" | "unhandledRejection"): void {
+  if (fatalExitStarted) return;
+  fatalExitStarted = true;
+  logger.fatal({ err, origin }, "fatal process error");
+  logger.flush(() => process.exit(1));
+}
+
+process.on("uncaughtException", (err) => fatalExit(err, "uncaughtException"));
+process.on("unhandledRejection", (reason) => fatalExit(reason, "unhandledRejection"));
+
+async function main(): Promise<void> {
+const customizationConfig = await loadBearMetalConfig();
+const maxIterations = customizationConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
 
 logger.info(
   {
-    githubAppId: config.githubAppId,
-    githubInstallationId: config.githubAppInstallationId,
-    concurrency: config.workerConcurrency,
-    pollIntervalMs: config.pollIntervalMs,
-    apiOnly: config.apiOnly,
+    githubAppId: customizationConfig.github.appId,
+    githubInstallationId: customizationConfig.github.installationId,
+    concurrency: runtimeConfig.workerConcurrency,
+    pollIntervalMs: runtimeConfig.pollIntervalMs,
+    apiOnly: runtimeConfig.apiOnly,
   },
   "config loaded",
 );
 
 const linear = new LinearIntegration({
   tokenProvider: new AppTokenProvider({
-    clientId: config.linearClientId,
-    clientSecret: config.linearClientSecret,
-    scopes: config.linearOAuthScopes,
-    logger: createLogger({ level: config.logLevel, name: "linear-token", pretty: config.logPretty }),
+    clientId: customizationConfig.linear.clientId,
+    clientSecret: await resolveSecret(customizationConfig.linear.getClientSecret, "config.linear.getClientSecret result"),
+    scopes: customizationConfig.linear.oauthScopes ?? "read,write,app:assignable,app:mentionable",
+    logger: createLogger({ level: runtimeConfig.logLevel, name: "linear-token", pretty: runtimeConfig.logPretty }),
   }),
 });
 const github = new GitHubIntegration({
-  appId: config.githubAppId,
-  privateKey: config.githubAppPrivateKey,
-  installationId: config.githubAppInstallationId,
+  appId: customizationConfig.github.appId,
+  privateKey: await resolveSecret(customizationConfig.github.getPrivateKey, "config.github.getPrivateKey result"),
+  installationId: customizationConfig.github.installationId,
 });
 const slack =
-  config.slackBotToken && config.slackNotificationChannel
+  customizationConfig.slack
     ? new SlackIntegration({
-      token: config.slackBotToken,
-      channel: config.slackNotificationChannel,
-      logger: createLogger({ level: config.logLevel, name: "slack", pretty: config.logPretty }),
+      token: await resolveSecret(customizationConfig.slack.getBotToken, "config.slack.getBotToken result"),
+      channel: customizationConfig.slack.notificationChannel,
+      logger: createLogger({ level: runtimeConfig.logLevel, name: "slack", pretty: runtimeConfig.logPretty }),
     })
     : undefined;
 if (!slack) {
   logger.warn(
-    "SLACK_BOT_TOKEN/SLACK_NOTIFICATION_CHANNEL not set; PR open/update Slack notifications disabled",
+    "Slack is not configured; PR open/update notifications disabled",
   );
 }
 
-const db = new SqlDbClient(config.databaseUrl, config.maxIterations);
+const databaseUrl = customizationConfig.database
+  ? await resolveSecret(customizationConfig.database.getUrl, "config.database.getUrl result")
+  : DEFAULT_DATABASE_URL;
+const db = new SqlDbClient(databaseUrl, maxIterations);
 await db.initSchema();
 
-// Start the HTTP server (full API + UI) before runWorkerEnvironmentBuilder so
-// the container healthcheck and dashboard are available while the builder runs
-// (which can take up to 30 minutes). The worker/scheduler loops only start
-// after the builder completes. Skipped only in single-ticket test mode.
-const server = createApp(db, config.maxIterations, linear).listen(config.backendPort, () => {
-  logger.info({ port: config.backendPort }, "dashboard server listening");
+const server = createApp(db, maxIterations, linear).listen(runtimeConfig.backendPort, () => {
+  logger.info({ port: runtimeConfig.backendPort }, "dashboard server listening");
 });
 
 let scheduler: Scheduler | null = null;
 let taskWorker: TaskWorker | null = null;
 
-if (config.apiOnly) {
+if (runtimeConfig.apiOnly) {
   logger.info("API-only mode: scheduler and worker disabled");
 } else {
-  await runWorkerEnvironmentBuilder({
-    command: config.workerEnvironmentBuilderCommand,
-    path: config.workerEnvironmentBuilderPath,
-    logger,
-  });
-
   const agentId = await linear.getAgentId().catch((err) => {
     logger.warn({ err }, "failed to resolve Linear agent id; task delegation checks disabled");
     return undefined;
@@ -94,44 +103,37 @@ if (config.apiOnly) {
     github,
     db,
     handler,
-    concurrency: config.workerConcurrency,
-    pollIntervalMs: config.pollIntervalMs,
-    taskStaleAfterMs: config.taskStaleAfterMs,
-    taskMaxReclaims: config.taskMaxReclaims,
-    maxIterations: config.maxIterations,
+    concurrency: runtimeConfig.workerConcurrency,
+    pollIntervalMs: runtimeConfig.pollIntervalMs,
+    taskStaleAfterMs: runtimeConfig.taskStaleAfterMs,
+    taskMaxReclaims: runtimeConfig.taskMaxReclaims,
+    maxIterations,
     slack,
   });
   taskWorker = new TaskWorker({
     logger,
     db,
     integrations: { github, linear, slack, commentStore: db },
-    concurrency: config.workerConcurrency,
-    pollIntervalMs: config.pollIntervalMs,
-    heartbeatIntervalMs: config.taskHeartbeatIntervalMs,
-    maxReclaims: config.taskMaxReclaims,
+    concurrency: runtimeConfig.workerConcurrency,
+    pollIntervalMs: runtimeConfig.pollIntervalMs,
+    heartbeatIntervalMs: runtimeConfig.taskHeartbeatIntervalMs,
+    maxReclaims: runtimeConfig.taskMaxReclaims,
     agentId,
-    workspaceBuilderCommand: config.workspaceBuilderCommand ?? undefined,
-    workspaceBuilderPath: config.workspaceBuilderPath ?? undefined,
-    systemPrompt: config.systemPrompt,
-    maxWorkerTimeMs: config.maxWorkerTimeMs,
-    maxWorkerTokens: config.maxWorkerTokens,
-    llmProvider: config.llmProvider,
-    llmApiKey: config.llmApiKey,
-    anthropicApiKey: config.anthropicApiKey,
+    config: customizationConfig,
   });
 
-  if (config.testTicketId) {
-    logger.info({ ticketId: config.testTicketId }, "test mode: running single-ticket pipeline");
+  if (runtimeConfig.testTicketId) {
+    logger.info({ ticketId: runtimeConfig.testTicketId }, "test mode: running single-ticket pipeline");
     let exitCode = 0;
     try {
-      const ticket = await linear.getTicket(config.testTicketId);
+      const ticket = await linear.getTicket(runtimeConfig.testTicketId);
       const ctx: TicketContext = { ticket, prs: [] };
       await handler.handle(ctx, "new");
       await taskWorker.tick();
       await taskWorker.stop();
-      logger.info({ ticketId: config.testTicketId }, "test mode: pipeline complete");
+      logger.info({ ticketId: runtimeConfig.testTicketId }, "test mode: pipeline complete");
     } catch (err) {
-      logger.error({ err, ticketId: config.testTicketId }, "test mode: pipeline failed");
+      logger.error({ err, ticketId: runtimeConfig.testTicketId }, "test mode: pipeline failed");
       exitCode = 1;
     } finally {
       // Always close the db so the DB connection is released and the SQLite WAL is checkpointed,
@@ -141,7 +143,7 @@ if (config.apiOnly) {
     process.exit(exitCode);
   }
 
-  logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+  logger.info({ port: runtimeConfig.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 
   scheduler.start();
   taskWorker.start();
@@ -171,3 +173,6 @@ function shutdown(signal: string): void {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+void main();
