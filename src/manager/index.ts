@@ -141,7 +141,7 @@ if (config.apiOnly) {
     process.exit(exitCode);
   }
 
-  logger.info({ port: config.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
+  logger.info({ port: config.backendPort, pid: process.pid }, "make me a pizza");
 
   scheduler.start();
   taskWorker.start();
