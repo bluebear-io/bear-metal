@@ -81,13 +81,28 @@ export interface SchedulerDeps {
   taskMaxReclaims: number;
   slack?: SlackIntegration;
   maxIterations: number;
+  /**
+   * Upper bound on how long a ticket may stay in `validating` waiting for CI to settle before
+   * the scheduler proceeds with the `waiting_for_human` transition anyway. Prevents a stuck /
+   * hung / abandoned check run from silently blocking the Slack DM forever. Defaults to 30 min.
+   */
+  ciDeferralMaxMs?: number;
 }
+
+const DEFAULT_CI_DEFERRAL_MAX_MS = 30 * 60 * 1000;
 
 export class Scheduler {
   private readonly deps: SchedulerDeps;
   private readonly queue: PQueue;
   /** Tickets with a handler invocation in flight — guards against double-dispatch. */
   private readonly inFlight = new Set<string>();
+  /**
+   * Per-ticket wall-clock timestamp of the first tick that deferred the `waiting_for_human`
+   * transition because CI was still in progress. Used by `refreshTrackedTickets` to bound the
+   * deferral window — once `ciDeferralMaxMs` has elapsed the transition proceeds anyway with a
+   * warn log, so a hung check run cannot silently swallow the Slack DM.
+   */
+  private readonly ciDeferralStartedAt = new Map<string, number>();
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: SchedulerDeps) {
@@ -157,7 +172,16 @@ export class Scheduler {
     const inFlight = tracked.filter((s) => s.latestTask.resultStatus === null).length;
     logger.debug({ tracked: tracked.length, inFlight }, "poll tick started");
 
-    const refreshed = await refreshTrackedTickets(db, linear, github, agentId, logger, this.deps.slack);
+    const refreshed = await refreshTrackedTickets(
+      db,
+      linear,
+      github,
+      agentId,
+      logger,
+      this.ciDeferralStartedAt,
+      this.deps.ciDeferralMaxMs ?? DEFAULT_CI_DEFERRAL_MAX_MS,
+      this.deps.slack,
+    );
     const admitted = await admitNewTickets(
       db,
       linear,
@@ -375,6 +399,8 @@ async function refreshTrackedTickets(
   github: GitHubSource,
   agentId: string,
   logger: Logger,
+  ciDeferralStartedAt: Map<string, number>,
+  ciDeferralMaxMs: number,
   slack?: SlackIntegration,
 ): Promise<DispatchItem[]> {
   const toDispatch: DispatchItem[] = [];
@@ -469,6 +495,7 @@ async function refreshTrackedTickets(
           void db.setTicketStatus(ticket.id, "waiting_for_human");
         }
         await db.setSlotStatus(slot.ticketId!, "released");
+        ciDeferralStartedAt.delete(ticket.id);
         continue;
       }
 
@@ -499,11 +526,26 @@ async function refreshTrackedTickets(
         }
       } else if (decision.phase === "active") {
         if (decision.checksInProgress) {
-          logger.debug(
-            { ticket: ticket.identifier },
-            "CI still in progress on PR head; deferring waiting_for_human transition and Slack DM",
+          const now = Date.now();
+          const startedAt = ciDeferralStartedAt.get(ticket.id) ?? now;
+          if (!ciDeferralStartedAt.has(ticket.id)) {
+            ciDeferralStartedAt.set(ticket.id, now);
+          }
+          const ageMs = now - startedAt;
+          if (ageMs < ciDeferralMaxMs) {
+            logger.warn(
+              { ticket: ticket.identifier, ageMs, maxMs: ciDeferralMaxMs },
+              "CI still in progress on PR head; deferring waiting_for_human transition and Slack DM",
+            );
+            continue;
+          }
+          logger.warn(
+            { ticket: ticket.identifier, ageMs, maxMs: ciDeferralMaxMs },
+            "CI deferral timeout exceeded; proceeding with waiting_for_human transition despite in-progress checks",
           );
-          continue;
+          ciDeferralStartedAt.delete(ticket.id);
+        } else {
+          ciDeferralStartedAt.delete(ticket.id);
         }
         const preTransition = await db.readTicketStatus(ticket.id);
         logger.debug(

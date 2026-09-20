@@ -62,6 +62,7 @@ function status(
       headSha: "deadbeef",
       failedCheckRuns: [],
       failedStatuses: [],
+      checksInProgress,
       unresolvedReviewThreads: [],
       reviewThreads: [],
       issueComments: [],

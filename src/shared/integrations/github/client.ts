@@ -5,7 +5,6 @@ import type { JsonValue } from "../../json.js";
 import type { CommentCapable, Integration } from "../base.js";
 import type {
   CheckRun,
-  FailedCheckRun,
   FailedStatus,
   IssueComment,
   PRState,
@@ -99,11 +98,10 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       this.getPullRequestCommits(ref),
       this.getBotIdentity(),
     ]);
-    const checksInProgress = await this.hasChecksInProgress(ref, context.headSha);
     return {
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
-      checksInProgress,
+      checksInProgress: context.checksInProgress,
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
         isActionableReviewThread(thread, bearMetalIdentity),
       ),
@@ -114,27 +112,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       humanTookOver: isHumanTakeover(commits, bearMetalIdentity),
       context,
     };
-  }
-
-  /**
-   * True if any check run on `sha` is still `queued` / `in_progress`. Paginated because a PR head
-   * can accumulate more than 100 check runs across many workflows and we must not falsely report
-   * CI as settled when a later page still has running runs.
-   */
-  private async hasChecksInProgress(ref: PullRequestRef, sha: string): Promise<boolean> {
-    let page = 1;
-    while (true) {
-      const { data } = await this.octokit.checks.listForRef({
-        owner: ref.owner,
-        repo: ref.repo,
-        ref: sha,
-        per_page: 100,
-        page,
-      });
-      if (data.check_runs.some((run) => run.status !== "completed")) return true;
-      if (data.check_runs.length < 100) return false;
-      page += 1;
-    }
   }
 
   /**
@@ -175,18 +152,26 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
     const headSha = pullRequest.head.sha;
 
-    const [failedCheckRuns, failedStatuses, reviewThreads, issueComments] = await Promise.all([
-      this.getFailedCheckRuns(ref, headSha),
+    const [checkRuns, failedStatuses, reviewThreads, issueComments] = await Promise.all([
+      this.listCheckRunsForRefRaw(ref.owner, ref.repo, headSha),
       this.getFailedStatuses(ref, headSha),
       this.getReviewThreads(ref),
       this.getActionableIssueComments(ref),
     ]);
+
+    const failedCheckRuns = await Promise.all(
+      checkRuns.filter(isFailedCheckRun).map(async (checkRun) => ({
+        checkRun: checkRun as JsonValue,
+        annotations: await this.getCheckRunAnnotations(ref, checkRun.id),
+      })),
+    );
 
     return {
       pullRequest: pullRequest as JsonValue,
       headSha,
       failedCheckRuns,
       failedStatuses,
+      checksInProgress: computeChecksInProgress(checkRuns),
       unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
       reviewThreads,
       issueComments,
@@ -194,6 +179,28 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       // pullRequest.mergeable is typed `boolean | null | undefined`; normalize to boolean|null.
       mergeable: pullRequest.mergeable ?? null,
     };
+  }
+
+  /**
+   * Paginated fetch of every check run on `sha`. Returns the raw Octokit rows because callers need
+   * both failure classification (`isFailedCheckRun`) and in-progress detection
+   * (`computeChecksInProgress`) and we must not fire two separate `checks.listForRef` requests.
+   */
+  private async listCheckRunsForRefRaw(owner: string, repo: string, sha: string): Promise<OctokitCheckRun[]> {
+    const runs: OctokitCheckRun[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.checks.listForRef({
+        owner,
+        repo,
+        ref: sha,
+        per_page: 100,
+        page,
+      });
+      runs.push(...data.check_runs);
+      if (data.check_runs.length < 100) return runs;
+      page += 1;
+    }
   }
 
   async leaveComment(ref: PullRequestRef, body: string): Promise<void> {
@@ -354,22 +361,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       }));
   }
 
-  private async getFailedCheckRuns(ref: PullRequestRef, sha: string): Promise<FailedCheckRun[]> {
-    const { data } = await this.octokit.checks.listForRef({
-      owner: ref.owner,
-      repo: ref.repo,
-      ref: sha,
-      per_page: 100,
-    });
-    const failed = data.check_runs.filter(isFailedCheckRun);
-    return Promise.all(
-      failed.map(async (checkRun) => ({
-        checkRun: checkRun as JsonValue,
-        annotations: await this.getCheckRunAnnotations(ref, checkRun.id),
-      })),
-    );
-  }
-
   private async getCheckRunAnnotations(ref: PullRequestRef, checkRunId: number): Promise<JsonValue[]> {
     const { data } = await this.octokit.checks.listAnnotations({
       owner: ref.owner,
@@ -490,6 +481,14 @@ function toCheckRun(run: OctokitCheckRun): CheckRun {
     startedAt: run.started_at ?? null,
     completedAt: run.completed_at ?? null,
   };
+}
+
+/**
+ * Pure helper: true if any check run in the list has `status !== "completed"` (i.e. `queued` or
+ * `in_progress`). Exported for unit tests that don't want to mock Octokit pagination.
+ */
+export function computeChecksInProgress(runs: Array<{ status: string }>): boolean {
+  return runs.some((run) => run.status !== "completed");
 }
 
 function isFailedCheckRun(checkRun: OctokitCheckRun): boolean {

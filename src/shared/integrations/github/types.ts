@@ -148,6 +148,12 @@ export interface PullRequestContext {
   headSha: string;
   failedCheckRuns: FailedCheckRun[];
   failedStatuses: FailedStatus[];
+  /**
+   * Any check run on the head commit is still `queued` / `in_progress`. Derived from the same
+   * `checks.listForRef` fetch used for `failedCheckRuns` so the two signals share a single API
+   * round-trip per PR poll.
+   */
+  checksInProgress: boolean;
   /** Subset of `reviewThreads` where isResolved=false — kept for back-compat with worker callers. */
   unresolvedReviewThreads: ReviewThread[];
   /** Every review thread on the PR, resolved or not, so the dashboard can render the full conversation. */
