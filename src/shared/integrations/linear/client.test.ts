@@ -288,6 +288,31 @@ describe("LinearIntegration ticket context", () => {
     expect(provider.invalidate).toHaveBeenCalledTimes(1);
     expect(h.rawRequestFn).toHaveBeenCalledTimes(2);
   });
+
+  it("restarts context pagination after an authentication error on a later page", async () => {
+    const provider = fakeProvider();
+    h.rawRequestFn
+      .mockResolvedValueOnce({ data: { issue: validRawContextIssue({
+        attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      }) } })
+      .mockRejectedValueOnce(new h.AuthErr("not authenticated"))
+      .mockResolvedValueOnce({ data: { issue: validRawContextIssue({
+        comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      }) } });
+    const linear = new LinearIntegration({ tokenProvider: provider });
+
+    await expect(linear.getTicketContext("DEN-1")).resolves.toMatchObject({ issue: { id: "issue-1" } });
+    expect(provider.invalidate).toHaveBeenCalledTimes(1);
+    expect(h.rawRequestFn).toHaveBeenCalledTimes(3);
+    expect(h.rawRequestFn).toHaveBeenNthCalledWith(2, "tok", expect.stringContaining("comments(first: 100, after: $after)"), {
+      id: "DEN-1",
+      after: "comments-next",
+    });
+    expect(h.rawRequestFn).toHaveBeenNthCalledWith(3, "tok", expect.stringContaining("query GetTicketContext"), {
+      id: "DEN-1",
+    });
+  });
 });
 
 describe("LinearIntegration token handling", () => {
