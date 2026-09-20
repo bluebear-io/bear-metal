@@ -416,6 +416,7 @@ async function refreshTrackedTickets(
       if (slot.latestTask.resultStatus === "pending" && ticket.delegate?.id !== agentId) {
         logger.info({ ticket: ticket.identifier }, "worker handed ticket back; removed from tracking");
         await db.setSlotStatus(slot.ticketId!, "released");
+        ciDeferralStartedAt.delete(ticket.id);
         if (slack) {
           try {
             const recipientEmail = ticket.assignee
