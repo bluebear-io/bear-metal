@@ -866,7 +866,7 @@ describe("Scheduler.tick CI-in-progress deferral", () => {
     // Mutable holder so we can flip the PR status across ticks against a single Scheduler instance.
     let currentStatus: PullRequestStatus = status(openPr(7), false, false, false, false, false, true);
     class MutableGitHub extends FakeGitHub {
-      async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
+      override async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
         this.statusCalls.push(ref.number);
         return currentStatus;
       }
