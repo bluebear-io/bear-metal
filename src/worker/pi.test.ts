@@ -2,9 +2,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SLACK_READ_OPERATIONS } from "../agent-tools/slack-read.js";
 import type { WorkerInputContext } from "./types.js";
 
-type TestTool = { name: string; execute: (id: string, params: unknown) => Promise<unknown> };
+type TestTool = { name: string; parameters?: unknown; execute: (id: string, params: unknown) => Promise<unknown> };
 
 const piMock = vi.hoisted(() => ({
   sessionDispose: vi.fn(),
@@ -457,6 +458,55 @@ describe("runPiWorker", () => {
     expect(registeredNames).not.toContain("agree_with_github_message");
     expect(registeredNames).not.toContain("disagree_with_github_message");
     expect(registeredNames).not.toContain("respond_to_comment_writer");
+  });
+
+  it("registers agent gateway tools, delegates calls with run identity, and marks results as untrusted", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const execute = vi.fn(async () => ({
+      source: { provider: "github" as const, resource: "/repos/acme/widgets" },
+      data: { name: "widgets" },
+      pagination: { pages: 1, hasMore: false },
+      bytes: { compressed: 18, decompressed: 18, returned: 18 },
+      truncated: false,
+    }));
+    let prompt = "";
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      expect(customTools.map((tool) => tool.name)).toContain("github_read");
+      expect(customTools.map((tool) => tool.name)).not.toContain("linear_read");
+      expect(customTools.map((tool) => tool.name)).not.toContain("github_dispatch");
+      const slackRead = customTools.find((tool) => tool.name === "slack_read");
+      expect(slackRead?.parameters).toMatchObject({
+        properties: {
+          operation: {
+            type: "string",
+            enum: [...SLACK_READ_OPERATIONS],
+          },
+        },
+      });
+      const result = await executeTool(customTools, "github_read", { path: "/repos/acme/widgets" });
+      expect(result).toMatchObject({ content: [{ type: "text", text: expect.stringContaining('"name":"widgets"') }] });
+      await executeTool(customTools, "respond_to_ticket_reporter", { text: "Done." });
+    });
+
+    await runPiWorker({
+      context: makeContext(),
+      github: makeGithub(),
+      linear: makeLinear(),
+      agentToolGateway: { availableTools: () => ["github_read", "slack_read", "web_get"], execute },
+      runId: "run-123",
+      onAgentStarted: (payload) => { prompt = payload.prompt; },
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      { tool: "github_read", arguments: { path: "/repos/acme/widgets" } },
+      expect.objectContaining({
+        taskId: "ABC-1",
+        runId: "run-123",
+        workspaceRoot: "/tmp/workspace/agent",
+      }),
+    );
+    expect(prompt).toContain("untrusted data");
   });
 
   it("registers iteration tools in iteration mode, not respond_to_ticket_reporter", async () => {

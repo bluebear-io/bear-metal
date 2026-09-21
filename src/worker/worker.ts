@@ -2,6 +2,7 @@ import { createLogger, type Logger, type TicketContext, type WorkerResponse } fr
 import { dispatch } from "./dispatch.js";
 import type { WorkerIntegrations } from "./types.js";
 import type { BearMetalConfig } from "../customization/types.js";
+import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 
 // `process` (the exported function below) shadows the Node global in this module,
 // so reach the environment through globalThis.
@@ -15,6 +16,7 @@ const logger = createLogger({
 export interface WorkerProcessDeps extends WorkerIntegrations {
   logger?: Logger;
   config: BearMetalConfig;
+  agentToolGateway?: AgentToolGatewayLike;
 }
 
 export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContext) => Promise<WorkerResponse> {
@@ -30,8 +32,10 @@ export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContex
     const result = await dispatch({
       state,
       ticketId: ctx.ticket.identifier,
+      runId: ctx.ticket.identifier,
       prs,
       integrations: deps,
+      agentToolGateway: deps.agentToolGateway,
       config: deps.config,
       iteration: 1,
     });

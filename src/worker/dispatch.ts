@@ -1,6 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig } from "../customization/types.js";
 import { buildTask, customizeAndResolve } from "../customization/task.js";
+import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
@@ -25,8 +26,10 @@ const logger = createLogger({
 export interface DispatchInput {
   state: DispatchState;
   ticketId: string;
+  runId: string;
   prs: PullRequestRef[];
   integrations: WorkerIntegrations;
+  agentToolGateway?: AgentToolGatewayLike;
   config: BearMetalConfig;
   iteration: number;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
@@ -129,7 +132,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   };
 
     const result = await runPiWorker({
-      context, github, linear, commentStore, gitEnv,
+      context, github, linear, commentStore, gitEnv, agentToolGateway: input.agentToolGateway,
+      runId: input.runId,
       systemPrompt: customization.additionalSystemPrompt,
       onAgentStarted: input.onAgentStarted,
       onToolCallProgress: input.onToolCallProgress,

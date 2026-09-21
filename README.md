@@ -32,12 +32,13 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 ## How to deploy
 
-1. Create a GitHub App — [GitHub App guide](#github-app).
-2. Create a Linear OAuth app — [Linear guide](#linear).
-3. Write a trusted [configuration module](#configuration-module) that supplies those integrations, enabled LLM providers, and task customization.
-4. Make that module available to the process and set `BEAR_METAL_CONFIG_FILE` to its path.
-5. Optionally configure persistent PostgreSQL and Slack in the module.
-6. Deploy the [public image](https://ghcr.io/bluebear-io/bear-metal) (`ghcr.io/bluebear-io/bear-metal:latest`) or run from source with `npm start`. Use a derived image or package-based configuration when the module needs third-party dependencies.
+1. [Create GitHub Apps](#github-app).
+2. [Create Linear OAuth apps](#linear).
+3. Optionally [create Slack apps](#slack).
+4. Write a trusted [configuration module](#configuration-module) that supplies the required deterministic integrations, any optional agent integrations, enabled LLM providers, and task customization.
+5. Make that module available to the process and set `BEAR_METAL_CONFIG_FILE` to its path.
+6. Optionally configure persistent PostgreSQL in the module.
+7. Deploy the [public image](https://ghcr.io/bluebear-io/bear-metal) (`ghcr.io/bluebear-io/bear-metal:latest`) or run from source with `npm start`. Use a derived image or package-based configuration when the module needs third-party dependencies.
 
 ---
 
@@ -51,7 +52,7 @@ The module is trusted deployment code. Bear Metal does not transpile it, install
 
 The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, and `maxIterations` are optional.
 
-Secret getters are lazy and may read environment variables, files, workload APIs, or secret managers. Bear Metal owns the vendor clients and consumes each value only where the corresponding integration is used. Slack and database are optional; omitting Slack disables notifications, while omitting database uses `sqlite:./data/bear-metal.sqlite`. `maxIterations` defaults to 50.
+Secret getters are lazy and may read environment variables, files, workload APIs, or secret managers. Bear Metal owns the vendor clients and consumes each value only where the corresponding integration is used. `agentIntegrations` and each vendor inside it are optional and independent of the top-level deterministic integrations. Omitting an agent vendor means its tools are not shown to the coding agent. Omitting top-level `slack` disables notifications, while omitting database uses `sqlite:./data/bear-metal.sqlite`. `maxIterations` defaults to 50.
 
 Example standalone JavaScript configuration:
 
@@ -76,6 +77,23 @@ export default {
     appId: 12345,
     installationId: 67890,
     getPrivateKey: () => requiredEnv("GITHUB_APP_PRIVATE_KEY"),
+  },
+  agentIntegrations: {
+    github: {
+      appId: Number(requiredEnv("AGENT_GITHUB_APP_ID")),
+      installationId: Number(requiredEnv("AGENT_GITHUB_INSTALLATION_ID")),
+      getPrivateKey: () => requiredEnv("AGENT_GITHUB_APP_PRIVATE_KEY"),
+    },
+    linear: {
+      clientId: requiredEnv("AGENT_LINEAR_CLIENT_ID"),
+      oauthScopes: "read",
+      getClientSecret: () => requiredEnv("AGENT_LINEAR_CLIENT_SECRET"),
+    },
+    slack: {
+      getBotToken: () => requiredEnv("AGENT_SLACK_BOT_TOKEN"),
+    },
+    // HTTPS is the safe default. Opt in only when anonymous public HTTP is required.
+    web: { allowHttp: false },
   },
   llmProviders: {
     anthropic: { getApiKey: () => requiredEnv("ANTHROPIC_API_KEY") },
@@ -138,28 +156,52 @@ See [`.env.example`](.env.example) for the process-level variables.
 
 ### GitHub App
 
-Bear Metal authenticates as a GitHub App installation. Create one at **github.com → Settings → Developer settings → GitHub Apps → New GitHub App**:
+Create GitHub Apps from **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**. See [Registering a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 
-- **Repository permissions**: Contents (R/W), Pull requests (R/W), Metadata (R), Checks (R)
-- Leave webhooks disabled — Bear Metal polls instead.
+The first app is required. The Bear Metal harness uses it for trusted repository operations needed to submit code changes, including pushing branches, opening pull requests, and responding to reviews. Its credentials are never exposed to the coding agent. Configure it with the top-level `github` fields and grant access only to repositories Bear Metal should modify.
 
-After creating the app, record its numeric App ID and generate a private key. Install it on the organization or selected repositories; the installation URL contains the numeric installation ID. Put the IDs in `github.appId` and `github.installationId`, and return the PEM from `github.getPrivateKey` using your chosen secret source.
-
-1. Note the **App ID** on the app settings page and use it as `github.appId`.
-2. Under **Private keys**, choose **Generate a private key** and download the `.pem` file.
-3. Return the PEM text from `github.getPrivateKey`. If you store it in a single-line environment variable, convert its newlines before copying it:
+1. Create the app, select **Only on this account**, and leave webhooks disabled because Bear Metal polls.
+2. Under **Repository permissions**, grant **Metadata: Read**, **Contents: Read and write**, **Pull requests: Read and write**, and **Checks: Read**.
+3. On the app settings page, copy **App ID** into `github.appId`.
+4. Under **Private keys**, select **Generate a private key** and make `github.getPrivateKey` return the downloaded PEM through your secret source. If storing it as one line, preserve newlines:
 
    ```bash
    awk '{printf "%s\\n", $0}' your-key.pem
    ```
 
-   The configuration getter can read and restore that value, read the file directly, or call a secret manager.
-4. **Install** the app on your organization or selected repositories.
-5. Copy the numeric installation ID from the installation URL, such as `github.com/settings/installations/123456789`, into `github.installationId`.
+5. Open **Install App**, install it on the organization, and choose all or selected repositories.
+6. Copy the numeric installation ID from the installation URL, such as `github.com/settings/installations/123456789`, into `github.installationId`.
+
+The second app is optional. When configured as `agentIntegrations.github`, it gives the coding agent runtime GitHub tools while letting you fine-tune exactly which repositories and GitHub surfaces it can access. Omit it and the agent receives neither `github_read` nor `github_dispatch`; it can still work with the source already cloned into its workspace.
+
+1. Create and install a separate GitHub App using the same ID, key, and installation steps above.
+2. Grant **Metadata: Read** plus read permissions for every surface the agent should inspect, such as **Contents**, **Pull requests**, **Issues**, **Checks**, **Commit statuses**, and **Actions**.
+3. Grant **Actions: Read and write** only if the agent may dispatch workflows. GitHub groups dispatch with broader Actions-write permission; Bear Metal exposes only configured workflow dispatches.
+4. Configure its App ID, installation ID, and private-key getter under `agentIntegrations.github`.
+5. To expose `github_dispatch`, also configure its `repositories`, `workflows`, and `refs` policy. Without that policy, only `github_read` is exposed.
+
+Repository selection and app permissions jointly bound both agent GitHub tools. Bear Metal mints and refreshes the Agent GitHub App's installation token because GitHub installation tokens expire after one hour. `github_read` can only issue GET requests, while `github_dispatch` can only invoke configured workflow-dispatch targets.
 
 ### Linear
 
-Bear Metal authenticates as a Linear app actor using OAuth client credentials. In the Linear OAuth application settings, enable **client credentials**, **Assignable**, and preferably **Mentionable**. Put the client ID in `linear.clientId`, return the secret from `linear.getClientSecret`, and optionally set `linear.oauthScopes`. Bear Metal exchanges the credentials for an app-actor token valid for roughly 30 days and refreshes it automatically, so you do not rotate that token manually. The default scopes are `read,write,app:assignable,app:mentionable`; keep the set stable because changing it revokes existing app tokens.
+Create Linear apps under **Linear → Settings → API → OAuth applications**. See [Linear OAuth 2.0 authentication](https://linear.app/developers/oauth-2-0-authentication).
+
+The first app is required. The Bear Metal harness uses it to find delegated work, read ticket context, update ticket state, post comments, and hand completed work back. Its credentials are never exposed to the coding agent. Configure it with the top-level `linear` fields.
+
+1. Create a private OAuth application for the Bear Metal workspace.
+2. Enable **Client credentials tokens**, **Assignable**, and preferably **Mentionable**.
+3. Copy its client ID into `linear.clientId` and return its client secret from `linear.getClientSecret`.
+4. Configure `linear.oauthScopes` as `read,write,app:assignable,app:mentionable`.
+5. Generate the first client-credentials token by starting Bear Metal, then use the app details page to grant its app actor access to the teams it should manage.
+
+The second app is optional. When configured as `agentIntegrations.linear`, it exposes `linear_read` and lets you independently control which Linear data the coding agent can inspect. Omit it and the agent receives no Linear runtime tool; deterministic ticket orchestration continues normally.
+
+1. Create a separate private OAuth application and enable **Client credentials tokens**.
+2. Copy its client ID and secret into `agentIntegrations.linear`.
+3. Configure the stable scope `read`.
+4. Start Bear Metal once to generate the app actor, then grant that actor access only to teams the coding agent may read.
+
+Both profiles use independent token providers and caches. Bear Metal exchanges each profile's credentials for an app-actor token valid for roughly 30 days and re-mints it automatically, so operators do not rotate generated app tokens manually. Keep each profile's scope set stable because changing it revokes existing app tokens.
 
 The agent must be a full Linear workspace member, not a guest.
 
@@ -209,13 +251,24 @@ For a deployed smoke test, delegate one task for each branch of your `customizeT
 
 ### Slack
 
-Create a Slack app at **api.slack.com/apps → Create New App → From scratch**:
+Both Slack apps are optional and independent. Create them at [Slack App Management](https://api.slack.com/apps) using **Create New App → From scratch**.
+
+The first app is used only by the trusted harness for deterministic notifications. Omit the top-level `slack` configuration to disable notifications.
 
 1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write` and `chat:write.public`.
-2. Install the app to your workspace and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your chosen secret source.
+2. Select **Install to Workspace**, approve the installation, and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
 3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
 
-Omit `slack` entirely to disable notifications.
+The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
+
+1. Create a separate Slack app.
+2. Under **OAuth & Permissions → Bot Token Scopes**, add only the needed read scopes: `channels:read`, `channels:history`, `groups:read`, `groups:history`, `im:read`, `im:history`, `mpim:read`, `mpim:history`, `users:read`, `users:read.email`, and `files:read`.
+3. Select **Install to Workspace** or **Reinstall to Workspace**, approve it, and return the resulting `xoxb-…` token from `agentIntegrations.slack.getBotToken`.
+4. Invite the bot to every public or private conversation it should read. Scopes do not bypass conversation membership or workspace policy.
+
+Slack's global message search is not available to ordinary bot tokens. It requires a separate user-token and privacy decision; channel discovery and history work with the bot configuration above.
+
+Configure `agentIntegrations.web` to expose `web_get`; omit it to hide the tool. It is anonymous and sends no provider credentials, cookies, client certificates, or ambient proxy authentication. Provider and web responses are untrusted input to the coding agent.
 
 ---
 

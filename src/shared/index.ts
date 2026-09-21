@@ -1,4 +1,5 @@
 export { createLogger, type Logger, type LoggerOptions } from "./logger.js";
+export { redactCredentials } from "./redaction.js";
 export type { JsonValue } from "./json.js";
 export {
   push,
@@ -27,6 +28,7 @@ export type {
 export {
   GitHubIntegration,
   type GitHubIntegrationOptions,
+  type GitHubInstallationTokenOptions,
   type BotIdentity,
 } from "./integrations/github/client.js";
 export type {
@@ -44,9 +46,11 @@ export type {
 } from "./integrations/github/types.js";
 export {
   SlackIntegration,
+  SlackReadClient,
   formatNotificationText,
   formatNeedsInputText,
   type SlackIntegrationOptions,
+  type SlackReadClientOptions,
   type PullRequestNotification,
   type PullRequestNotificationKind,
   type NeedsInputNotification,

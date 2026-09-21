@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import PQueue from "p-queue";
 import type { BearMetalConfig } from "../customization/types.js";
+import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 
 import type { Logger } from "../shared/index.js";
 import type { DbClient, TaskRecord } from "../db/client.js";
@@ -14,6 +15,7 @@ export interface TaskWorkerDeps {
   logger: Logger;
   db: DbClient;
   integrations: WorkerIntegrations;
+  agentToolGateway?: AgentToolGatewayLike;
   concurrency: number;
   pollIntervalMs: number;
   workerId?: string;
@@ -30,6 +32,7 @@ export class TaskWorker {
   private readonly logger: Logger;
   private readonly db: DbClient;
   private readonly integrations: WorkerIntegrations;
+  private readonly agentToolGateway?: AgentToolGatewayLike;
   private readonly queue: PQueue;
   private readonly concurrency: number;
   private readonly pollIntervalMs: number;
@@ -46,6 +49,7 @@ export class TaskWorker {
     this.logger = deps.logger;
     this.db = deps.db;
     this.integrations = deps.integrations;
+    this.agentToolGateway = deps.agentToolGateway;
     this.concurrency = deps.concurrency;
     this.pollIntervalMs = deps.pollIntervalMs;
     this.config = deps.config;
@@ -150,7 +154,9 @@ export class TaskWorker {
     try {
       result = await this.runDispatch({
         ...task.input!,
+        runId: task.id,
         integrations: this.integrations,
+        agentToolGateway: this.agentToolGateway,
         config: this.config,
         iteration: task.iterationNumber,
         onToolCallProgress: (calls) => {
