@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
+import { redactCredentials as redactCredentialText } from "../shared/redaction.js";
 import { AgentToolError, type AgentToolProvider, type AgentToolResponse } from "./types.js";
 
 const DEFAULT_ALLOWED_CONTENT_TYPES = ["application/json", "text/"];
@@ -267,9 +268,9 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
 }
 
 function redactMessage(message: string): string {
-  return message
+  return redactCredentialText(message
     .replace(/(authorization\s*[:=]\s*)(?:bearer\s+)?\S+/gi, "$1[REDACTED]")
-    .replace(/(token|secret|signature|private.?key)(\s*[:=]\s*)\S+/gi, "$1$2[REDACTED]");
+    .replace(/(token|secret|signature|private.?key)(\s*[:=]\s*)\S+/gi, "$1$2[REDACTED]"));
 }
 
 function redactString(value: string): string {

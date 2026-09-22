@@ -89,6 +89,7 @@ describe("AgentToolTransport", () => {
       provider: "github",
       message: "Authorization: [REDACTED]",
     });
+    expect(normalizeAgentToolError(new Error("provider echoed github_pat_abc123 and xoxb-123-456"), "github").message).toBe("provider echoed [REDACTED] and [REDACTED]");
   });
 
   it("bounds pagination budgets", () => {

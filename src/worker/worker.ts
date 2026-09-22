@@ -32,7 +32,7 @@ export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContex
     const result = await dispatch({
       state,
       ticketId: ctx.ticket.identifier,
-      runId: ctx.ticket.identifier,
+      runId: randomUUID(),
       prs,
       integrations: deps,
       agentToolGateway: deps.agentToolGateway,
@@ -42,3 +42,4 @@ export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContex
     return { status: result.status };
   };
 }
+import { randomUUID } from "node:crypto";

@@ -272,7 +272,7 @@ async function formatResponse(
   };
   if (shouldStore) {
     const directory = join(workspaceRoot, ARTIFACT_DIRECTORY);
-    await mkdir(directory, { recursive: true });
+    await mkdir(directory, { recursive: true, mode: 0o700 });
     const digest = createHash("sha256").update(result.body).digest("hex").slice(0, 12);
     const path = join(directory, `web-${digest}-${randomUUID()}${extensionFor(contentType)}`);
     await writeFile(path, result.body, { flag: "wx", mode: 0o600 });

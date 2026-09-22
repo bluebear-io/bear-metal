@@ -37,11 +37,10 @@ describe("slack_read", () => {
     ["thread_replies", { channel: "C1", ts: "123.45" }, "conversations.replies"],
     ["user_lookup", { email: "person@example.com" }, "users.lookupByEmail"],
     ["user_list", {}, "users.list"],
-    ["message_search", { query: "deployment" }, "search.messages"],
     ["file_search", { channel: "C1" }, "files.list"],
   ])("maps %s to an allowlisted Slack API method", async (operation, parameters, method) => {
     const itemField = method === "users.list" ? "members" : method === "files.list" ? "files" : ["conversations.history", "conversations.replies"].includes(method) ? "messages" : undefined;
-    const call = vi.fn(async () => ({ ok: true, ...(method === "search.messages" ? { messages: { matches: [] } } : itemField ? { [itemField]: [] } : {}) }));
+    const call = vi.fn(async () => ({ ok: true, ...(itemField ? { [itemField]: [] } : {}) }));
     const handler = createSlackReadHandler({ client: { call, downloadFile: vi.fn() } });
 
     const result = await handler({ operation, parameters }, context());
@@ -58,6 +57,7 @@ describe("slack_read", () => {
     });
 
     await expect(handler({ operation: "chat_post", parameters: {} }, context())).rejects.toMatchObject({ code: "invalid_operation" });
+    await expect(handler({ operation: "message_search", parameters: { query: "deployment" } }, context())).rejects.toMatchObject({ code: "invalid_operation" });
     await expect(handler({ operation: "conversation_info", parameters: { channel: "C1", surprise: true } }, context())).rejects.toMatchObject({ code: "invalid_arguments" });
     await expect(handler({ operation: "conversation_history", parameters: { channel: "C1", oldest: 1, latest: 102 } }, context())).rejects.toMatchObject({ code: "history_range_limit" });
     expect(call).not.toHaveBeenCalled();

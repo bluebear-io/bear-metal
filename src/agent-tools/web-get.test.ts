@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -108,6 +108,7 @@ describe("createWebGetHandler", () => {
     expect(result.data).toBeUndefined();
     expect(result.artifact).toMatchObject({ contentType: "text/plain", byteCount: 5 });
     expect(await readFile(result.artifact!.path, "utf8")).toBe("hello");
+    expect((await stat(join(workspaceRoot, ".bear-metal", "agent-tool-artifacts"))).mode & 0o777).toBe(0o700);
   });
 });
 

@@ -11,7 +11,6 @@ export const SLACK_READ_OPERATIONS = [
   "thread_replies",
   "user_lookup",
   "user_list",
-  "message_search",
   "file_search",
   "file_download",
 ] as const;
@@ -60,7 +59,6 @@ const OPERATIONS: Record<Exclude<SlackReadOperation, "file_download">, Operation
   thread_replies: { method: "conversations.replies", required: ["channel", "ts"], allowed: ["channel", "ts", "oldest", "latest", "inclusive"], itemField: "messages" },
   user_lookup: { method: "users.lookupByEmail", required: [], allowed: ["email", "user"] },
   user_list: { method: "users.list", required: [], allowed: ["include_locale", "team_id"], itemField: "members" },
-  message_search: { method: "search.messages", required: ["query"], allowed: ["query", "sort", "sort_dir", "highlight"], itemField: "messages.matches", pagination: "page" },
   file_search: { method: "files.list", required: [], allowed: ["channel", "user", "ts_from", "ts_to", "types", "show_files_hidden_by_limit"], itemField: "files", pagination: "page" },
 };
 
