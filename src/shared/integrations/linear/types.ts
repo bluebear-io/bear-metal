@@ -28,7 +28,9 @@ export interface Ticket {
   /** Linear team key, e.g. "ABC". Used by workspace builders to route per-team. */
   teamKey: string;
   /** Human owner of the ticket (stays the creator even when an agent is delegated to it). */
-  assignee: { id: string } | null;
+  assignee: { id: string; name?: string | null; email?: string | null } | null;
+  project?: { id: string; name: string } | null;
+  relations?: Array<{ type: string; taskIdentifier: string }>;
   /**
    * Agent the ticket is delegated to, or null. The manager works tickets delegated to it and
    * parks those that are not — Linear assigns agent work via delegation, not assignment.
@@ -57,13 +59,13 @@ export interface TicketComment {
   createdAt: string;
   updatedAt: string;
   url: string;
-  quotedText: string | null;
   user: TicketCommentUser | null;
 }
 
 export interface LinearTicketContext {
   issue: Ticket;
   comments: TicketComment[];
+  attachments?: TicketAttachment[];
 }
 
 export interface TicketAttachment {

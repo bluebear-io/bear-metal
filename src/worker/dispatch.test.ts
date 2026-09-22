@@ -1,339 +1,142 @@
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DispatchResult, WorkerInputContext } from "./types.js";
+import type { BearMetalConfig } from "../customization/types.js";
+import type { WorkerInputContext } from "./types.js";
 
-const dispatchMock = vi.hoisted(() => ({
-  calls: [] as string[],
-  piInputs: [] as Array<{ llmProvider: string; llmApiKey: string | null; llmModel?: string }>,
-  workspaceDir: "/tmp/dispatch-workspace",
-}));
-
-vi.mock("./clone.js", () => ({
-  workspaceForTicket: () => dispatchMock.workspaceDir,
-  runWorkspaceBuilder: async () => {
-    dispatchMock.calls.push("clone");
-    return {
-      agentWorkdir: join(dispatchMock.workspaceDir, "agent"),
-      workspaceDir: dispatchMock.workspaceDir,
-      stdout: "",
-      stderr: "",
-      netrcDir: "/tmp/netrc",
-    };
-  },
-}));
-
+const state = vi.hoisted(() => ({ calls: [] as string[], piInputs: [] as any[], tasks: [] as any[], downloadedAttachments: [] as any[], throwPi: false }));
 vi.mock("./pi.js", () => ({
-  DEFAULT_ANTHROPIC_MODEL_ID: "claude-opus-4-7",
-  DEFAULT_BEDROCK_MODEL_ID: "us.anthropic.claude-opus-4-6-v1",
-  runPiWorker: async (input: {
-    context: WorkerInputContext;
-    llmProvider: string;
-    llmApiKey: string | null;
-    llmModel?: string;
-  }): Promise<DispatchResult> => {
-    dispatchMock.calls.push("pi");
-    dispatchMock.piInputs.push({
-      llmProvider: input.llmProvider,
-      llmApiKey: input.llmApiKey,
-      ...(input.llmModel ? { llmModel: input.llmModel } : {}),
-    });
+  runPiWorker: async (input: any) => {
+    state.calls.push("pi"); state.piInputs.push(input);
+    if (state.throwPi) throw new Error("pi failed");
     return { status: "pending", prs: [] };
   },
 }));
+vi.mock("./attachments.js", () => ({
+  downloadTicketAttachments: async (attachments: any[]) => {
+    state.downloadedAttachments.push(attachments);
+    return [];
+  },
+}));
 
-describe("dispatch", () => {
-  beforeEach(() => {
-    dispatchMock.calls.length = 0;
-    dispatchMock.piInputs.length = 0;
+describe("dispatch customization boundary", () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "bear-metal-dispatch-test-"));
+    process.env.BEAR_METAL_WORKSPACE_DIR = root;
+    state.calls.length = 0; state.piInputs.length = 0; state.tasks.length = 0; state.downloadedAttachments.length = 0; state.throwPi = false;
+  });
+  afterEach(async () => { delete process.env.BEAR_METAL_WORKSPACE_DIR; await rm(root, { recursive: true, force: true }); });
+
+  it("customizes before building and passes exact provider, model, prompt, and limits to Pi", async () => {
+    const config = makeConfig();
+    const result = await dispatch(config);
+    expect(result.status).toBe("pending");
+    expect(state.calls).toEqual(["customize", "build", "in-progress", "pi"]);
+    expect(state.piInputs[0]).toMatchObject({ llmProvider: "openai", llmModel: "gpt-test", llmApiKey: "openai-key", systemPrompt: "Extra", maxWorkerTimeMs: 123, maxWorkerTokens: 456 });
   });
 
-  it("routes research-labeled tickets to Bedrock case-insensitively", async () => {
-    const { dispatch } = await import("./dispatch.js");
-    const integrations = makeIntegrations();
-    integrations.linear.getTicketContext.mockResolvedValue(
-      makeTicketContext({ labels: ["Research"] }),
-    );
-
-    await dispatch({
-      state: "new",
-      ticketId: "ABC-1",
-      prs: [],
-      integrations,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
-      llmProvider: "amazon-bedrock",
-      llmApiKey: null,
-      anthropicApiKey: "anthropic-key",
-    });
-
-    expect(dispatchMock.piInputs).toEqual([
-      {
-        llmProvider: "amazon-bedrock",
-        llmApiKey: null,
-        llmModel: "us.anthropic.claude-opus-4-6-v1",
-      },
-    ]);
+  it("resolves only the selected provider", async () => {
+    const config = makeConfig();
+    const anthropic = config.llmProviders.anthropic as { getApiKey: ReturnType<typeof vi.fn> };
+    const openai = config.llmProviders.openai as { getApiKey: ReturnType<typeof vi.fn> };
+    await dispatch(config);
+    expect(openai.getApiKey).toHaveBeenCalledOnce(); expect(anthropic.getApiKey).not.toHaveBeenCalled();
   });
 
-  it("overrides an Anthropic process provider for a research ticket", async () => {
-    const { dispatch } = await import("./dispatch.js");
-    const integrations = makeIntegrations();
-    integrations.linear.getTicketContext.mockResolvedValue(
-      makeTicketContext({ labels: ["research"] }),
-    );
-
-    await dispatch({
-      state: "new",
-      ticketId: "ABC-1",
-      prs: [],
-      integrations,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
-      llmProvider: "anthropic",
-      llmApiKey: "anthropic-key",
-      anthropicApiKey: "anthropic-key",
-    });
-
-    expect(dispatchMock.piInputs).toEqual([
-      {
-        llmProvider: "amazon-bedrock",
-        llmApiKey: null,
-        llmModel: "us.anthropic.claude-opus-4-6-v1",
-      },
-    ]);
+  it("fails before workspace construction when the selected provider is absent", async () => {
+    const config = makeConfig(); config.llmProviders = {};
+    await expect(dispatch(config)).rejects.toThrow("unconfigured LLM provider");
+    expect(state.calls).toEqual(["customize"]);
   });
 
-  it("routes the ticket after a research ticket to Anthropic without leaking the override", async () => {
-    const { dispatch } = await import("./dispatch.js");
-    const researchIntegrations = makeIntegrations();
-    researchIntegrations.linear.getTicketContext.mockResolvedValue(
-      makeTicketContext({ labels: ["research"] }),
-    );
-
-    await dispatch({
-      state: "new",
-      ticketId: "ABC-1",
-      prs: [],
-      integrations: researchIntegrations,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
-      llmProvider: "amazon-bedrock",
-      llmApiKey: null,
-      anthropicApiKey: "anthropic-key",
-    });
-
-    await dispatch({
-      state: "new",
-      ticketId: "ABC-2",
-      prs: [],
-      integrations: makeIntegrations(),
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000,
-      llmProvider: "amazon-bedrock",
-      llmApiKey: null,
-      anthropicApiKey: "anthropic-key",
-    });
-
-    expect(dispatchMock.piInputs).toEqual([
-      {
-        llmProvider: "amazon-bedrock",
-        llmApiKey: null,
-        llmModel: "us.anthropic.claude-opus-4-6-v1",
-      },
-      {
-        llmProvider: "anthropic",
-        llmApiKey: "anthropic-key",
-        llmModel: "claude-opus-4-7",
-      },
-    ]);
+  it("moves the ticket to In Progress before starting Pi", async () => {
+    await dispatch(makeConfig());
+    expect(state.calls.indexOf("in-progress")).toBeLessThan(state.calls.indexOf("pi"));
   });
 
-  it("rejects an unlabeled ticket when the Anthropic credential is unavailable", async () => {
-    const { dispatch } = await import("./dispatch.js");
-    const tempRoot = await mkdtemp(join(tmpdir(), "dispatch-no-credentials-"));
-    const workspaceDir = join(tempRoot, "ABC-1");
-    dispatchMock.workspaceDir = workspaceDir;
-
-    try {
-      await expect(dispatch({
-        state: "new",
-        ticketId: "ABC-1",
-        prs: [],
-        integrations: makeIntegrations(),
-        maxWorkerTimeMs: 7_200_000,
-        maxWorkerTokens: 20_000_000,
-        llmProvider: "amazon-bedrock",
-        llmApiKey: null,
-        anthropicApiKey: null,
-      })).rejects.toThrow(/ANTHROPIC_API_KEY is required/);
-
-      expect(dispatchMock.piInputs).toEqual([]);
-      await expect(stat(workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      dispatchMock.workspaceDir = "/tmp/dispatch-workspace";
-      await rm(tempRoot, { recursive: true, force: true });
-    }
+  it("removes the entire owned task workspace on success and Pi failure", async () => {
+    await dispatch(makeConfig());
+    await expect(stat(join(root, "ABC-1"))).rejects.toMatchObject({ code: "ENOENT" });
+    state.throwPi = true;
+    await expect(dispatch(makeConfig())).rejects.toThrow("pi failed");
+    await expect(stat(join(root, "ABC-1"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("moves the Linear ticket to In Progress before starting Pi", async () => {
-    const { dispatch } = await import("./dispatch.js");
-    dispatchMock.calls.length = 0;
-    const moveTicketToInProgress = vi.fn(async () => {
-      dispatchMock.calls.push("in-progress");
-    });
+  it("uses context attachments once, exposes all to customization, and downloads only Linear uploads", async () => {
+    const ticket = makeTicketContext();
+    ticket.attachments = [
+      { id: "upload", title: "Evidence", url: "https://uploads.linear.app/evidence" },
+      { id: "link", title: "Design", url: "https://example.com/design" },
+    ];
+    const integrations = makeIntegrations({ ticket });
 
-    const result = await dispatch({
-      state: "new",
-      ticketId: "ABC-1",
-      prs: [],
-      integrations: {
-        github: makeGithub(),
-        linear: {
-          getTicketContext: vi.fn(async () => makeTicketContext()),
-          getTicketAttachments: vi.fn(async () => []),
-          getAccessToken: vi.fn(async () => "test-token"),
-          moveTicketToInProgress,
-          moveTicketToInReview: vi.fn(),
-          commentAndHandBack: vi.fn(),
-          getUserEmail: vi.fn().mockResolvedValue(null),
-        },
-      },
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
-    });
+    await dispatch(makeConfig(), { integrations });
 
-    expect(result).toEqual({ status: "pending", prs: [] });
-    expect(moveTicketToInProgress).toHaveBeenCalledWith("ABC-1");
-    expect(dispatchMock.calls.indexOf("in-progress")).toBeLessThan(dispatchMock.calls.indexOf("pi"));
+    expect(integrations.linear.getTicketContext).toHaveBeenCalledOnce();
+    expect(integrations.linear.getTicketAttachments).not.toHaveBeenCalled();
+    expect(state.tasks[0].attachments).toEqual(ticket.attachments);
+    expect(state.downloadedAttachments).toEqual([[ticket.attachments[0]]]);
   });
 
-  it("reads the download token after attachment discovery completes", async () => {
-    const { dispatch } = await import("./dispatch.js");
-    dispatchMock.calls.length = 0;
-    const integrations = makeIntegrations();
-    let finishAttachmentDiscovery!: (attachments: []) => void;
-    integrations.linear.getTicketAttachments.mockImplementation(
-      () => new Promise<[]>((resolve) => { finishAttachmentDiscovery = resolve; }),
-    );
+  it("skips completed-comment storage when a pull request has no issue comments", async () => {
+    const pullRequest = makePullRequestContext([]);
+    const commentStore = { getCompleted: vi.fn(), markCompleted: vi.fn() };
+    await dispatch(makeConfig(), { state: "iteration", prs: [{ owner: "acme", repo: "repo", number: 1 }], integrations: makeIntegrations({ pullRequest, commentStore }) });
 
-    const result = dispatch({
-      state: "new",
-      ticketId: "ABC-1",
-      prs: [],
-      integrations,
-      maxWorkerTimeMs: 7_200_000,
-      maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
-    });
-
-    await vi.waitFor(() => expect(integrations.linear.getTicketAttachments).toHaveBeenCalled());
-    expect(integrations.linear.getAccessToken).not.toHaveBeenCalled();
-    finishAttachmentDiscovery([]);
-    await result;
-    expect(integrations.linear.getAccessToken).toHaveBeenCalledOnce();
+    expect(commentStore.getCompleted).not.toHaveBeenCalled();
+    expect(state.piInputs[0].context.pullRequests[0]).toBe(pullRequest);
   });
 
-  describe("cleanup", () => {
-    let tempRoot: string;
+  it("preserves the pull request context when no issue comments are completed", async () => {
+    const pullRequest = makePullRequestContext([{ id: "comment-1", body: "Review", author: "reviewer", authorId: null, databaseId: 1, isMinimized: false, createdAt: "created", updatedAt: "updated" }]);
+    const commentStore = { getCompleted: vi.fn(async () => new Set<string>()), markCompleted: vi.fn() };
+    await dispatch(makeConfig(), { state: "iteration", prs: [{ owner: "acme", repo: "repo", number: 1 }], integrations: makeIntegrations({ pullRequest, commentStore }) });
 
-    beforeEach(async () => {
-      tempRoot = await mkdtemp(join(tmpdir(), "dispatch-cleanup-"));
-      dispatchMock.workspaceDir = tempRoot;
-      // Simulate a checked-out tree from a previous workspace builder run.
-      await mkdir(join(tempRoot, "agent", "src"), { recursive: true });
-      await writeFile(join(tempRoot, "agent", "marker.txt"), "present", "utf8");
-    });
-
-    afterEach(async () => {
-      await rm(tempRoot, { recursive: true, force: true });
-      dispatchMock.workspaceDir = "/tmp/dispatch-workspace";
-    });
-
-    it("removes the agent workdir after Pi finishes", async () => {
-      const { dispatch } = await import("./dispatch.js");
-      dispatchMock.calls.length = 0;
-
-      await dispatch({
-        state: "new",
-        ticketId: "ABC-1",
-        prs: [],
-        integrations: makeIntegrations(),
-        maxWorkerTimeMs: 7_200_000,
-        maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
-      });
-
-      await expect(stat(join(tempRoot, "agent"))).rejects.toMatchObject({ code: "ENOENT" });
-    });
-
-    it("removes the agent workdir even when Pi throws", async () => {
-      const pi = await import("./pi.js");
-      const spy = vi.spyOn(pi, "runPiWorker").mockRejectedValueOnce(new Error("boom"));
-      const { dispatch } = await import("./dispatch.js");
-      dispatchMock.calls.length = 0;
-
-      await expect(
-        dispatch({
-          state: "new",
-          ticketId: "ABC-1",
-          prs: [],
-          integrations: makeIntegrations(),
-          maxWorkerTimeMs: 7_200_000,
-          maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key",
-        }),
-      ).rejects.toThrow("boom");
-
-      await expect(stat(join(tempRoot, "agent"))).rejects.toMatchObject({ code: "ENOENT" });
-      spy.mockRestore();
-    });
+    expect(commentStore.getCompleted).toHaveBeenCalledOnce();
+    expect(state.piInputs[0].context.pullRequests[0]).toBe(pullRequest);
   });
 });
 
-function makeTicketContext(issueOverrides: Partial<WorkerInputContext["ticket"]["issue"]> = {}) {
+async function dispatch(config: BearMetalConfig, options: { state?: "new" | "iteration"; prs?: Array<{ owner: string; repo: string; number: number }>; integrations?: ReturnType<typeof makeIntegrations> } = {}) {
+  const { dispatch } = await import("./dispatch.js");
+  return dispatch({ state: options.state ?? "new", iteration: 1, ticketId: "ABC-1", runId: "run-1", prs: options.prs ?? [], integrations: options.integrations ?? makeIntegrations(), agentToolGateway: { availableTools: () => [], execute: vi.fn() }, config });
+}
+
+function makeConfig(): BearMetalConfig {
   return {
-    issue: {
-      id: "issue-id",
-      identifier: "ABC-1",
-      title: "Build thing",
-      description: null,
-      url: "https://linear.app/your-workspace/issue/ABC-1/build-thing",
-      branchName: "feature/abc-1-build-thing",
-      status: { name: "Todo", type: "unstarted" },
-      labels: ["bear-metal"],
-      teamKey: "ABC",
-      assignee: { id: "creator" },
-      delegate: { id: "agent" },
-      priority: 0,
-      ...issueOverrides,
+    linear: { clientId: "id", getClientSecret: () => "secret" },
+    github: { appId: 1, installationId: 2, getPrivateKey: () => "private" },
+    agentIntegrations: {
+      github: { appId: 3, installationId: 4, getPrivateKey: () => "agent-private" },
+      linear: { clientId: "agent-id", getClientSecret: () => "agent-secret" },
+      slack: { getBotToken: () => "agent-slack" },
     },
-    comments: [],
+    llmProviders: { anthropic: { getApiKey: vi.fn(() => "anthropic-key") }, openai: { getApiKey: vi.fn(() => "openai-key") } },
+    customizeTask: async (task) => {
+      expect(task.identifier).toBe("ABC-1"); expect(Object.isFrozen(task)).toBe(true); state.tasks.push(task); state.calls.push("customize");
+      return { llm: { provider: "openai", model: "gpt-test" }, additionalSystemPrompt: "Extra", limits: { maxDurationMs: 123, maxTokens: 456 }, buildWorkspace: async ({ workspacePath }) => { state.calls.push("build"); await writeFile(join(workspacePath, "README.md"), "ready"); } };
+    },
   };
 }
 
-function makeIntegrations() {
+function makeIntegrations(options: { ticket?: WorkerInputContext["ticket"]; pullRequest?: any; commentStore?: any } = {}) {
   return {
-    github: makeGithub(),
+    github: {
+      getInstallationToken: vi.fn(async () => "github-token"), getBotIdentity: vi.fn(async () => ({ login: "bear-metal", id: "bot", numericId: 1, userNumericId: 1 })), getPullRequestContext: vi.fn(async () => options.pullRequest), resolveReviewThread: vi.fn(), replyToReviewThread: vi.fn(), leaveComment: vi.fn(), getDefaultBranch: vi.fn(), createPullRequest: vi.fn(),
+    },
     linear: {
-      getTicketContext: vi.fn(async () => makeTicketContext()),
-      getTicketAttachments: vi.fn(async () => []),
-      getAccessToken: vi.fn(async () => "test-token"),
-      moveTicketToInProgress: vi.fn(async () => {}),
-      moveTicketToInReview: vi.fn(),
-      commentAndHandBack: vi.fn(),
-      getUserEmail: vi.fn().mockResolvedValue(null),
+      getTicketContext: vi.fn(async () => options.ticket ?? makeTicketContext()), getTicketAttachments: vi.fn(async () => []), getAccessToken: vi.fn(async () => "linear-token"), moveTicketToInProgress: vi.fn(async () => { state.calls.push("in-progress"); }), moveTicketToInReview: vi.fn(), commentAndHandBack: vi.fn(), getUserEmail: vi.fn(async () => null),
     },
+    commentStore: options.commentStore,
   };
 }
 
-function makeGithub() {
-  return {
-    getInstallationToken: vi.fn().mockResolvedValue("test-token"),
-    getBotIdentity: vi.fn().mockResolvedValue({ login: "bear-metal-app[bot]", id: "bot-id", numericId: 12345 }),
-    getPullRequestContext: vi.fn(),
-    resolveReviewThread: vi.fn(),
-    replyToReviewThread: vi.fn(),
-    leaveComment: vi.fn().mockResolvedValue(undefined),
-    getDefaultBranch: vi.fn(),
-    createPullRequest: vi.fn(),
-  };
+function makeTicketContext(): WorkerInputContext["ticket"] {
+  return { issue: { id: "id", identifier: "ABC-1", title: "Task", description: null, url: "https://linear.app/ABC-1", branchName: "branch", status: { name: "Todo", type: "unstarted" }, priority: 0, labels: [], teamKey: "ABC", assignee: null, delegate: null }, comments: [] };
+}
+
+function makePullRequestContext(issueComments: any[]) {
+  return { pullRequest: { number: 1 }, headSha: "sha", failedCheckRuns: [], failedStatuses: [], unresolvedReviewThreads: [], reviewThreads: [], issueComments, completedIssueComments: [], mergeable: true };
 }

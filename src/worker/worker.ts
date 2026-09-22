@@ -1,6 +1,8 @@
 import { createLogger, type Logger, type TicketContext, type WorkerResponse } from "../shared/index.js";
 import { dispatch } from "./dispatch.js";
 import type { WorkerIntegrations } from "./types.js";
+import type { BearMetalConfig } from "../customization/types.js";
+import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 
 // `process` (the exported function below) shadows the Node global in this module,
 // so reach the environment through globalThis.
@@ -13,14 +15,8 @@ const logger = createLogger({
 
 export interface WorkerProcessDeps extends WorkerIntegrations {
   logger?: Logger;
-  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
-  workspaceBuilderCommand?: string;
-  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
-  workspaceBuilderPath?: string;
-  maxWorkerTimeMs: number;
-  maxWorkerTokens: number;
-  llmProvider: string;
-  llmApiKey: string | null;
+  config: BearMetalConfig;
+  agentToolGateway?: AgentToolGatewayLike;
 }
 
 export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContext) => Promise<WorkerResponse> {
@@ -36,15 +32,14 @@ export function createWorkerProcess(deps: WorkerProcessDeps): (ctx: TicketContex
     const result = await dispatch({
       state,
       ticketId: ctx.ticket.identifier,
+      runId: randomUUID(),
       prs,
       integrations: deps,
-      workspaceBuilderCommand: deps.workspaceBuilderCommand,
-      workspaceBuilderPath: deps.workspaceBuilderPath,
-      maxWorkerTimeMs: deps.maxWorkerTimeMs,
-      maxWorkerTokens: deps.maxWorkerTokens,
-      llmProvider: deps.llmProvider,
-      llmApiKey: deps.llmApiKey,
+      agentToolGateway: deps.agentToolGateway,
+      config: deps.config,
+      iteration: 1,
     });
     return { status: result.status };
   };
 }
+import { randomUUID } from "node:crypto";

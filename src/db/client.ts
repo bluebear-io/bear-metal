@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
-import { detectDialect, type DatabaseDialect } from "../manager/config.js";
+
+export type DatabaseDialect = "sqlite" | "postgres";
+export function detectDialect(databaseUrl: string): DatabaseDialect {
+  if (databaseUrl.startsWith("sqlite:")) return "sqlite";
+  if (databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://")) return "postgres";
+  throw new Error(`Unsupported database URL scheme: ${databaseUrl}`);
+}
 function modelFamily(provider: string | null, modelName: string | null): "claude" | "gpt" | "gemini" | "other" {
   const p = (provider ?? "").toLowerCase();
   const m = (modelName ?? "").toLowerCase();
@@ -514,7 +520,7 @@ class MonotonicIsoClock {
 
 function sqlitePath(databaseUrl: string): string {
   const path = databaseUrl.slice("sqlite:".length);
-  if (!path) throw new Error("SQLite DATABASE_URL must include a file path");
+  if (!path) throw new Error("SQLite database URL must include a file path");
   return path;
 }
 

@@ -1,9 +1,42 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../../logger.js";
-import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration } from "./client.js";
+import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackReadClient } from "./client.js";
 
 const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
+
+describe("SlackReadClient", () => {
+  it("authenticates read requests with the agent bot token", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, channels: [] }), { status: 200 }));
+    const client = new SlackReadClient({ token: "agent-token", fetchImpl });
+    await expect(client.call("conversations.list", { limit: 10 })).resolves.toMatchObject({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://slack.com/api/conversations.list?limit=10",
+      { headers: { Authorization: "Bearer agent-token" } },
+    );
+  });
+
+  it("does not include provider response bodies in HTTP errors", async () => {
+    const fetchImpl = vi.fn(async () => new Response("authorization: Bearer leaked-token", { status: 500, statusText: "Failure" }));
+    const client = new SlackReadClient({ token: "agent-token", fetchImpl });
+    await expect(client.call("conversations.list")).rejects.toThrow("Slack API request failed: 500 Failure");
+    await expect(client.call("conversations.list")).rejects.not.toThrow("leaked-token");
+  });
+
+  it("follows only bounded Slack HTTPS file redirects and strips auth across origins", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://downloads.slack.com/file" } }))
+      .mockResolvedValueOnce(new Response("file", { status: 200 }));
+    const client = new SlackReadClient({ token: "agent-token", fetchImpl });
+
+    await expect(client.downloadFile("https://files.slack.com/file", { maxRedirects: 1 })).resolves.toMatchObject({ status: 200 });
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, new URL("https://files.slack.com/file"), expect.objectContaining({ headers: { Authorization: "Bearer agent-token" }, redirect: "manual" }));
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, new URL("https://downloads.slack.com/file"), expect.objectContaining({ headers: {}, redirect: "manual" }));
+
+    fetchImpl.mockReset().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://evil.example/file" } }));
+    await expect(client.downloadFile("https://files.slack.com/file")).rejects.toThrow(/untrusted host/);
+  });
+});
 
 describe("formatNotificationText", () => {
   it("formats an 'opened' message", () => {

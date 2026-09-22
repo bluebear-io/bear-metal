@@ -62,6 +62,31 @@ function validRawIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function validRawContextIssue(overrides: Record<string, unknown> = {}) {
+  return {
+    ...validRawIssue(),
+    assignee: { id: "user-1", name: "User", email: "user@example.com" },
+    project: { id: "project-1", name: "Project" },
+    relations: {
+      nodes: [{ id: "relation-1", type: "blocks", relatedIssue: { identifier: "DEN-2" } }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+    inverseRelations: {
+      nodes: [{ id: "relation-2", type: "blockedBy", relatedIssue: { identifier: "DEN-3" } }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+    comments: {
+      nodes: [{ id: "comment-1", body: "First", createdAt: "2026-01-03T00:00:00.000Z", updatedAt: "2026-01-04T00:00:00.000Z", url: "https://linear.app/comment/1", user: { id: "user-1", name: "User", email: "user@example.com" } }],
+      pageInfo: { hasNextPage: true, endCursor: "comments-next" },
+    },
+    attachments: {
+      nodes: [{ id: "attachment-1", title: "First", url: "https://uploads.linear.app/first" }],
+      pageInfo: { hasNextPage: true, endCursor: "attachments-next" },
+    },
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   h.builtWith.length = 0;
   h.userFn.mockReset();
@@ -153,43 +178,146 @@ describe("LinearIntegration getTicket", () => {
 
 describe("LinearIntegration attachments", () => {
   it("paginates uploaded Linear assets and excludes external integration links", async () => {
-    const attachments = vi.fn()
-      .mockResolvedValueOnce({
-        nodes: [
-          { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
-          { id: "pr", title: "Pull request", url: "https://github.com/acme/repo/pull/1" },
-        ],
-        pageInfo: { hasNextPage: true, endCursor: "next" },
-      })
-      .mockResolvedValueOnce({
-        nodes: [{ id: "a2", title: "report.json", url: "https://uploads.linear.app/a2" }],
-        pageInfo: { hasNextPage: false },
-      });
-    h.issueFn.mockResolvedValue({ attachments });
+    h.rawRequestFn
+      .mockResolvedValueOnce({ data: { issue: { attachments: { nodes: [
+        { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
+        { id: "pr", title: "Pull request", url: "https://github.com/acme/repo/pull/1" },
+      ], pageInfo: { hasNextPage: true, endCursor: "next" } } } } })
+      .mockResolvedValueOnce({ data: { issue: { attachments: { nodes: [
+        { id: "a2", title: "report.json", url: "https://uploads.linear.app/a2" },
+      ], pageInfo: { hasNextPage: false, endCursor: null } } } } });
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
 
     await expect(linear.getTicketAttachments("ABC-1")).resolves.toEqual([
       { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
       { id: "a2", title: "report.json", url: "https://uploads.linear.app/a2" },
     ]);
-    expect(attachments).toHaveBeenNthCalledWith(2, { first: 100, after: "next" });
+    expect(h.issueFn).not.toHaveBeenCalled();
+    expect(h.rawRequestFn).toHaveBeenNthCalledWith(2, "tok", expect.stringContaining("attachments(first: 100, after: $after)"), { id: "ABC-1", after: "next" });
   });
 
   it("excludes malformed attachment URLs without dropping valid uploads", async () => {
-    h.issueFn.mockResolvedValue({
-      attachments: vi.fn().mockResolvedValue({
-        nodes: [
+    h.rawRequestFn.mockResolvedValue({ data: { issue: { attachments: {
+      nodes: [
           { id: "bad", title: "Malformed", url: "not a URL" },
           { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
         ],
-        pageInfo: { hasNextPage: false },
-      }),
-    });
+      pageInfo: { hasNextPage: false, endCursor: null },
+    } } } });
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
 
     await expect(linear.getTicketAttachments("ABC-1")).resolves.toEqual([
       { id: "a1", title: "failure.log", url: "https://uploads.linear.app/a1" },
     ]);
+  });
+});
+
+describe("LinearIntegration ticket context", () => {
+  it("uses app-actor-safe raw queries and paginates comments and attachments", async () => {
+    h.rawRequestFn
+      .mockResolvedValueOnce({ data: { issue: validRawContextIssue() } })
+      .mockResolvedValueOnce({ data: { issue: { comments: { nodes: [
+        { id: "comment-2", body: "Second", createdAt: "2026-01-05T00:00:00.000Z", updatedAt: "2026-01-06T00:00:00.000Z", url: "https://linear.app/comment/2", user: null },
+      ], pageInfo: { hasNextPage: false, endCursor: null } } } } })
+      .mockResolvedValueOnce({ data: { issue: { attachments: { nodes: [
+        { id: "attachment-2", title: "Second", url: "https://example.com/second" },
+      ], pageInfo: { hasNextPage: false, endCursor: null } } } } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicketContext("DEN-1")).resolves.toEqual({
+      issue: expect.objectContaining({
+        id: "issue-1",
+        project: { id: "project-1", name: "Project" },
+        assignee: { id: "user-1", name: "User", email: "user@example.com" },
+        relations: [
+          { type: "blocks", taskIdentifier: "DEN-2" },
+          { type: "blockedBy", taskIdentifier: "DEN-3" },
+        ],
+      }),
+      comments: [
+        { id: "comment-1", body: "First", createdAt: "2026-01-03T00:00:00.000Z", updatedAt: "2026-01-04T00:00:00.000Z", url: "https://linear.app/comment/1", user: { id: "user-1", name: "User", email: "user@example.com" } },
+        { id: "comment-2", body: "Second", createdAt: "2026-01-05T00:00:00.000Z", updatedAt: "2026-01-06T00:00:00.000Z", url: "https://linear.app/comment/2", user: null },
+      ],
+      attachments: [
+        { id: "attachment-1", title: "First", url: "https://uploads.linear.app/first" },
+        { id: "attachment-2", title: "Second", url: "https://example.com/second" },
+      ],
+    });
+    expect(h.issueFn).not.toHaveBeenCalled();
+    expect(h.rawRequestFn).toHaveBeenCalledTimes(3);
+    expect(h.rawRequestFn).toHaveBeenNthCalledWith(2, "tok", expect.stringContaining("comments(first: 100, after: $after)"), { id: "DEN-1", after: "comments-next" });
+    expect(h.rawRequestFn).toHaveBeenNthCalledWith(3, "tok", expect.stringContaining("attachments(first: 100, after: $after)"), { id: "DEN-1", after: "attachments-next" });
+  });
+
+  it("fails fast when a relation has no related issue", async () => {
+    h.rawRequestFn.mockResolvedValue({ data: { issue: validRawContextIssue({
+      relations: { nodes: [{ id: "relation-broken", type: "blocks", relatedIssue: null }], pageInfo: { hasNextPage: false, endCursor: null } },
+      comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    }) } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicketContext("DEN-1")).rejects.toThrow("Linear relation relation-broken has no related issue");
+  });
+
+  it.each([
+    ["workflow state", { state: null }, "Linear issue DEN-1 has no workflow state"],
+    ["team", { team: null }, "Linear issue DEN-1 has no team"],
+  ])("fails fast when the issue has no %s", async (_field, override, message) => {
+    h.rawRequestFn.mockResolvedValue({ data: { issue: validRawContextIssue({
+      ...override,
+      comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    }) } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+
+    await expect(linear.getTicketContext("DEN-1")).rejects.toThrow(message);
+  });
+
+  it("invalidates the token and retries the raw context query after an authentication error", async () => {
+    const provider = fakeProvider();
+    h.rawRequestFn
+      .mockRejectedValueOnce(new h.AuthErr("not authenticated"))
+      .mockResolvedValueOnce({ data: { issue: validRawContextIssue({
+        comments: { nodes: [
+          { id: "comment-retry", body: "Retry", createdAt: "2026-01-07T00:00:00.000Z", updatedAt: "2026-01-08T00:00:00.000Z", url: "https://linear.app/comment/retry", user: null },
+        ], pageInfo: { hasNextPage: false, endCursor: null } },
+        attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      }) } });
+    const linear = new LinearIntegration({ tokenProvider: provider });
+
+    await expect(linear.getTicketContext("DEN-1")).resolves.toMatchObject({
+      issue: { id: "issue-1" },
+      comments: [{ id: "comment-retry" }],
+      attachments: [],
+    });
+    expect(provider.invalidate).toHaveBeenCalledTimes(1);
+    expect(h.rawRequestFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("restarts context pagination after an authentication error on a later page", async () => {
+    const provider = fakeProvider();
+    h.rawRequestFn
+      .mockResolvedValueOnce({ data: { issue: validRawContextIssue({
+        attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      }) } })
+      .mockRejectedValueOnce(new h.AuthErr("not authenticated"))
+      .mockResolvedValueOnce({ data: { issue: validRawContextIssue({
+        comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        attachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      }) } });
+    const linear = new LinearIntegration({ tokenProvider: provider });
+
+    await expect(linear.getTicketContext("DEN-1")).resolves.toMatchObject({ issue: { id: "issue-1" } });
+    expect(provider.invalidate).toHaveBeenCalledTimes(1);
+    expect(h.rawRequestFn).toHaveBeenCalledTimes(3);
+    expect(h.rawRequestFn).toHaveBeenNthCalledWith(2, "tok", expect.stringContaining("comments(first: 100, after: $after)"), {
+      id: "DEN-1",
+      after: "comments-next",
+    });
+    expect(h.rawRequestFn).toHaveBeenNthCalledWith(3, "tok", expect.stringContaining("query GetTicketContext"), {
+      id: "DEN-1",
+    });
   });
 });
 

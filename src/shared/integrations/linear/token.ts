@@ -7,6 +7,7 @@
  */
 
 import type { Logger } from "../../logger.js";
+import { redactCredentials } from "../../redaction.js";
 
 const LINEAR_TOKEN_ENDPOINT = "https://api.linear.app/oauth/token";
 
@@ -111,7 +112,7 @@ export class AppTokenProvider implements TokenProvider {
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       throw new Error(
-        `Linear client_credentials token request failed: ${response.status} ${response.statusText} ${detail}`.trim(),
+        redactCredentials(`Linear client_credentials token request failed: ${response.status} ${response.statusText} ${detail}`.trim()),
       );
     }
 

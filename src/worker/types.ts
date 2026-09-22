@@ -6,6 +6,7 @@ import type {
   ReviewThread,
   BotIdentity,
 } from "../shared/index.js";
+import type { AgentToolAuditRecord } from "../agent-tools/types.js";
 
 export type DispatchState = "new" | "iteration";
 
@@ -38,6 +39,7 @@ export interface DispatchToolCall {
   thoughtText: string | null;
   /** ms-since-epoch when this step was recorded from the transcript. */
   createdAt: number;
+  agentToolAudit?: AgentToolAuditRecord;
 }
 
 export type DispatchResult = {
@@ -81,7 +83,6 @@ export interface WorkerSlack {
 
 export interface WorkerLinear {
   getTicketContext(ticketId: string): Promise<LinearTicketContext>;
-  getTicketAttachments(ticketId: string): Promise<import("../shared/integrations/linear/types.js").TicketAttachment[]>;
   getAccessToken(): Promise<string>;
   moveTicketToInProgress(ticketId: string): Promise<void>;
   moveTicketToInReview(ticketId: string): Promise<void>;
