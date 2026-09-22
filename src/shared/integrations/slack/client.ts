@@ -253,7 +253,8 @@ export function formatNotificationText(notification: PullRequestNotification): s
       throw new Error(`Invalid validationWaitMinutes: ${validationWaitMinutes}`);
     }
     const subject = prs.length === 1 ? `PR ${prLinks[0]!}` : `PRs ${prLinks.join(", ")}`;
-    return `:hourglass_flowing_sand: ${subject} has been open for over ${validationWaitMinutes} minutes and validation is taking longer than expected. In the meantime, feel free to take a look.`;
+    const minuteLabel = validationWaitMinutes === 1 ? "minute" : "minutes";
+    return `:hourglass_flowing_sand: ${subject} for ticket ${ticketLabel} — ${safeTitle} has been waiting for CI validation for over ${validationWaitMinutes} ${minuteLabel}. CI is still running; feel free to take a look in the meantime.`;
   }
   if (prs.length === 1) {
     const prLink = prLinks[0]!;
