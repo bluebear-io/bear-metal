@@ -918,6 +918,7 @@ function makePullRequestContext() {
     headSha: "abc123def456",
     failedCheckRuns: [],
     failedStatuses: [],
+    checksInProgress: false,
     unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
     reviewThreads,
     issueComments: [

@@ -14,7 +14,7 @@ export interface SlackIntegrationOptions {
   fetchImpl?: typeof fetch;
 }
 
-export type PullRequestNotificationKind = "opened" | "updated";
+export type PullRequestNotificationKind = "opened" | "updated" | "validation_delayed";
 
 export interface PullRequestNotificationItem {
   pr: PullRequestRef;
@@ -31,6 +31,8 @@ export interface PullRequestNotification {
   /** Originating Linear ticket identifier (e.g. "PROJ-4"). */
   ticketId: string;
   ticketUrl: string;
+  /** Required for validation-delayed notifications. */
+  validationWaitMinutes?: number;
   /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
   recipientEmail?: string;
 }
@@ -41,6 +43,18 @@ export interface NeedsInputNotification {
   ticketUrl: string;
   /** Linear ticket title. */
   title: string;
+  /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
+  recipientEmail?: string;
+}
+
+export interface MaxIterationsReachedNotification {
+  /** Linear ticket identifier (e.g. "PROJ-4"). */
+  ticketId: string;
+  ticketUrl: string;
+  /** Linear ticket title. */
+  title: string;
+  /** The configured iteration cap that was hit. */
+  maxIterations: number;
   /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
   recipientEmail?: string;
 }
@@ -148,6 +162,14 @@ export class SlackIntegration implements Integration {
     await this.postMessage(channel, text);
   }
 
+  async notifyMaxIterationsReached(notification: MaxIterationsReachedNotification): Promise<void> {
+    const text = formatMaxIterationsReachedText(notification);
+    const channel = notification.recipientEmail
+      ? await this.resolveUserChannel(notification.recipientEmail)
+      : this.channel;
+    await this.postMessage(channel, text);
+  }
+
   private async resolveUserChannel(email: string): Promise<string> {
     try {
       const response = await this.fetchImpl(
@@ -214,7 +236,7 @@ function escapeSlackMrkdwn(text: string): string {
 }
 
 export function formatNotificationText(notification: PullRequestNotification): string {
-  const { kind, prs, title, ticketId, ticketUrl } = notification;
+  const { kind, prs, title, ticketId, ticketUrl, validationWaitMinutes } = notification;
   if (prs.length === 0) throw new Error("PullRequestNotification requires at least one PR");
   if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
   for (const item of prs) {
@@ -226,6 +248,14 @@ export function formatNotificationText(notification: PullRequestNotification): s
   const prLinks = prs.map(({ pr, url }) =>
     `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`,
   );
+  if (kind === "validation_delayed") {
+    if (!Number.isInteger(validationWaitMinutes) || validationWaitMinutes! <= 0) {
+      throw new Error(`Invalid validationWaitMinutes: ${validationWaitMinutes}`);
+    }
+    const subject = prs.length === 1 ? `PR ${prLinks[0]!}` : `PRs ${prLinks.join(", ")}`;
+    const minuteLabel = validationWaitMinutes === 1 ? "minute" : "minutes";
+    return `:hourglass_flowing_sand: ${subject} for ticket ${ticketLabel} — ${safeTitle} has been waiting for CI validation for over ${validationWaitMinutes} ${minuteLabel}. CI is still running; feel free to take a look in the meantime.`;
+  }
   if (prs.length === 1) {
     const prLink = prLinks[0]!;
     if (kind === "opened") {
@@ -246,4 +276,16 @@ export function formatNeedsInputText(notification: NeedsInputNotification): stri
   const safeTitle = escapeSlackMrkdwn(title);
   const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
   return `:raising_hand: Needs your input on ticket ${ticketLabel} — ${safeTitle}`;
+}
+
+export function formatMaxIterationsReachedText(notification: MaxIterationsReachedNotification): string {
+  const { ticketId, ticketUrl, title, maxIterations } = notification;
+  if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
+  if (!Number.isFinite(maxIterations) || maxIterations <= 0) {
+    throw new Error(`Invalid maxIterations: ${maxIterations}`);
+  }
+  const safeTicketId = escapeSlackMrkdwn(ticketId);
+  const safeTitle = escapeSlackMrkdwn(title);
+  const ticketLabel = `<${ticketUrl}|${safeTicketId}>`;
+  return `:no_entry: Gave up on ticket ${ticketLabel} after ${maxIterations} iterations — ${safeTitle}. Handed back for human review.`;
 }

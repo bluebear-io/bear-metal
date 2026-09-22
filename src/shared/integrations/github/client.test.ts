@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { GitHubIntegration, isActionableReviewThread, isHumanTakeover, type BotIdentity } from "./client.js";
+import { computeChecksInProgress, GitHubIntegration, isActionableReviewThread, isHumanTakeover, type BotIdentity } from "./client.js";
 import type { PullRequestCommit, ReviewThread } from "./types.js";
 
 describe("GitHub installation tokens", () => {
@@ -128,6 +128,39 @@ describe("isHumanTakeover", () => {
         [commit("a", botLogin), commit("b", "alice"), commit("c", botLogin)],
         botLogin,
       ),
+    ).toBe(true);
+  });
+});
+
+describe("computeChecksInProgress", () => {
+  it("returns false for an empty list", () => {
+    expect(computeChecksInProgress([])).toBe(false);
+  });
+
+  it("returns false when every check run is completed", () => {
+    expect(
+      computeChecksInProgress([
+        { status: "completed" },
+        { status: "completed" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("returns true when any check run is queued", () => {
+    expect(
+      computeChecksInProgress([
+        { status: "completed" },
+        { status: "queued" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("returns true when any check run is in_progress", () => {
+    expect(
+      computeChecksInProgress([
+        { status: "completed" },
+        { status: "in_progress" },
+      ]),
     ).toBe(true);
   });
 });

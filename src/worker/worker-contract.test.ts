@@ -54,6 +54,7 @@ describe("worker contract", () => {
           headSha: "deadbeef",
           failedCheckRuns: [],
           failedStatuses: [],
+          checksInProgress: false,
           unresolvedReviewThreads: [],
           reviewThreads: [],
           issueComments: [],

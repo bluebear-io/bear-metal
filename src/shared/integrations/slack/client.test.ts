@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../../logger.js";
-import { formatNeedsInputText, formatNotificationText, SlackIntegration, SlackReadClient } from "./client.js";
+import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackReadClient } from "./client.js";
 
 const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
 
@@ -142,6 +142,32 @@ describe("formatNotificationText", () => {
       "Updated PR <https://github.com/acme/repo/pull/7|acme/repo#7> for ticket <https://linear.app/x/ABC-9|ABC-9> — Fix flakes",
     );
   });
+
+  it("formats a validation-delayed message with the PR link and elapsed threshold", () => {
+    const text = formatNotificationText({
+      kind: "validation_delayed",
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 7 }, url: "https://github.com/acme/repo/pull/7" }],
+      title: "Fix flakes",
+      ticketId: "ABC-9",
+      ticketUrl: "https://linear.app/x/ABC-9",
+      validationWaitMinutes: 60,
+    });
+    expect(text).toBe(
+      ":hourglass_flowing_sand: PR <https://github.com/acme/repo/pull/7|acme/repo#7> for ticket <https://linear.app/x/ABC-9|ABC-9> — Fix flakes has been waiting for CI validation for over 60 minutes. CI is still running; feel free to take a look in the meantime.",
+    );
+  });
+
+  it("uses singular minute in a validation-delayed message", () => {
+    const text = formatNotificationText({
+      kind: "validation_delayed",
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 7 }, url: "https://github.com/acme/repo/pull/7" }],
+      title: "Fix flakes",
+      ticketId: "ABC-9",
+      ticketUrl: "https://linear.app/x/ABC-9",
+      validationWaitMinutes: 1,
+    });
+    expect(text).toContain("for over 1 minute. CI is still running");
+  });
 });
 
 describe("formatNeedsInputText", () => {
@@ -163,6 +189,31 @@ describe("formatNeedsInputText", () => {
       title: "some ticket",
     });
     expect(text).toContain("ABC-&lt;99&gt;");
+  });
+});
+
+describe("formatMaxIterationsReachedText", () => {
+  it("formats a max-iterations message with no_entry icon and ticket link", () => {
+    const text = formatMaxIterationsReachedText({
+      ticketId: "PROJ-9",
+      ticketUrl: "https://linear.app/x/PROJ-9",
+      title: "stuck ticket",
+      maxIterations: 42,
+    });
+    expect(text).toBe(
+      ":no_entry: Gave up on ticket <https://linear.app/x/PROJ-9|PROJ-9> after 42 iterations \u2014 stuck ticket. Handed back for human review.",
+    );
+  });
+
+  it("throws on invalid maxIterations", () => {
+    expect(() =>
+      formatMaxIterationsReachedText({
+        ticketId: "P-1",
+        ticketUrl: "https://linear.app/x/P-1",
+        title: "x",
+        maxIterations: 0,
+      }),
+    ).toThrow();
   });
 });
 
@@ -378,6 +429,37 @@ describe("SlackIntegration", () => {
     expect(body.channel).toBe("C12345");
     expect(body.text).toContain(":raising_hand:");
     expect(body.text).toContain("PROJ-5");
+  });
+
+  it("notifyMaxIterationsReached DMs the assignee when recipientEmail resolves", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, user: { id: "UMAX" } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyMaxIterationsReached({
+      ticketId: "PROJ-9",
+      ticketUrl: "https://linear.app/x/PROJ-9",
+      title: "stuck ticket",
+      maxIterations: 42,
+      recipientEmail: "user@example.com",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("UMAX");
+    expect(body.text).toContain(":no_entry:");
+    expect(body.text).toContain("42 iterations");
   });
 
   it("notifyNeedsInput DMs the assignee when recipientEmail resolves", async () => {

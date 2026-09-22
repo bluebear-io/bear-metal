@@ -69,6 +69,7 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
   }
   if (config.database !== undefined) callable(object(config.database, "config.database").getUrl, "config.database.getUrl");
   if (config.maxIterations !== undefined) positiveInteger(config.maxIterations, "config.maxIterations");
+  if (config.ciDeferralMaxMs !== undefined) positiveInteger(config.ciDeferralMaxMs, "config.ciDeferralMaxMs");
   const registry = object(config.llmProviders, "config.llmProviders");
   for (const [provider, definition] of Object.entries(registry)) {
     if (!KEY_BASED_PROVIDERS.has(provider)) throw new Error(`config.llmProviders.${provider}: unsupported provider`);
