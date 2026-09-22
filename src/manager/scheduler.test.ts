@@ -938,6 +938,35 @@ describe("Scheduler.tick CI-in-progress deferral", () => {
     expect(slack.pullRequestCalls[0]?.ticketId).toBe("A");
     expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
   });
+
+  it("sends a validation-delayed notification when the CI deferral threshold expires", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, true),
+    });
+    const slack = new FakeSlack();
+    const scheduler = buildScheduler({
+      linear,
+      github,
+      db,
+      handler: new RecordingHandler(db),
+      concurrency: 1,
+      slack: slack.asIntegration(),
+      ciDeferralMaxMs: 10,
+    });
+
+    await scheduler.tick();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("validation_delayed");
+    expect(slack.pullRequestCalls[0]?.validationWaitMinutes).toBe(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
 });
 
 describe("Scheduler.tick max-iteration notification", () => {

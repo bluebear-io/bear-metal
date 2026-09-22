@@ -1,6 +1,7 @@
 export const DEFAULT_MAX_DURATION_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_MAX_TOKENS = 20_000_000;
 export const DEFAULT_MAX_ITERATIONS = 50;
+export const DEFAULT_CI_DEFERRAL_MAX_MS = 60 * 60 * 1000;
 export const DEFAULT_DATABASE_URL = "sqlite:./data/bear-metal.sqlite";
 export const WORKSPACE_BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -52,6 +53,8 @@ export interface BearMetalConfig {
     getUrl: SecretGetter;
   };
   maxIterations?: number;
+  /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
+  ciDeferralMaxMs?: number;
   llmProviders: Partial<{
     anthropic: { getApiKey: SecretGetter };
     openai: { getApiKey: SecretGetter };

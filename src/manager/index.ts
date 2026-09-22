@@ -4,7 +4,7 @@ import { SqlDbClient } from "../db/client.js";
 import { AgentToolGateway } from "../agent-tools/gateway.js";
 import { createAgentToolHandlers } from "../agent-tools/handlers.js";
 import { loadBearMetalConfig, resolveSecret } from "../customization/load.js";
-import { DEFAULT_DATABASE_URL, DEFAULT_MAX_ITERATIONS } from "../customization/types.js";
+import { DEFAULT_CI_DEFERRAL_MAX_MS, DEFAULT_DATABASE_URL, DEFAULT_MAX_ITERATIONS } from "../customization/types.js";
 import {
   AppTokenProvider,
   createLogger,
@@ -38,6 +38,7 @@ process.on("unhandledRejection", (reason) => fatalExit(reason, "unhandledRejecti
 async function main(): Promise<void> {
 const customizationConfig = await loadBearMetalConfig();
 const maxIterations = customizationConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+const ciDeferralMaxMs = customizationConfig.ciDeferralMaxMs ?? DEFAULT_CI_DEFERRAL_MAX_MS;
 
 logger.info(
   {
@@ -141,6 +142,7 @@ if (runtimeConfig.apiOnly) {
     pollIntervalMs: runtimeConfig.pollIntervalMs,
     taskStaleAfterMs: runtimeConfig.taskStaleAfterMs,
     taskMaxReclaims: runtimeConfig.taskMaxReclaims,
+    ciDeferralMaxMs,
     maxIterations,
     slack,
   });

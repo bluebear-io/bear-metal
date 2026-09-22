@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import PQueue from "p-queue";
+import { DEFAULT_CI_DEFERRAL_MAX_MS } from "../customization/types.js";
 
 import type {
   Logger,
@@ -84,12 +85,10 @@ export interface SchedulerDeps {
   /**
    * Upper bound on how long a ticket may stay in `validating` waiting for CI to settle before
    * the scheduler proceeds with the `waiting_for_human` transition anyway. Prevents a stuck /
-   * hung / abandoned check run from silently blocking the Slack DM forever. Defaults to 30 min.
+   * hung / abandoned check run from silently blocking the Slack DM forever. Defaults to 60 min.
    */
   ciDeferralMaxMs?: number;
 }
-
-const DEFAULT_CI_DEFERRAL_MAX_MS = 30 * 60 * 1000;
 
 export class Scheduler {
   private readonly deps: SchedulerDeps;
@@ -529,6 +528,7 @@ async function refreshTrackedTickets(
           }
         }
       } else if (decision.phase === "active") {
+        let validationTimedOut = false;
         if (decision.checksInProgress) {
           const now = Date.now();
           const startedAt = ciDeferralStartedAt.get(ticket.id) ?? now;
@@ -547,6 +547,7 @@ async function refreshTrackedTickets(
             { ticket: ticket.identifier, ageMs, maxMs: ciDeferralMaxMs },
             "CI deferral timeout exceeded; proceeding with waiting_for_human transition despite in-progress checks",
           );
+          validationTimedOut = true;
           ciDeferralStartedAt.delete(ticket.id);
         } else {
           ciDeferralStartedAt.delete(ticket.id);
@@ -577,11 +578,13 @@ async function refreshTrackedTickets(
                   prRef,
                   prDbId,
                   url: prStatus.pr.url,
-                  kind: (prNotifiedAt == null ? "opened" : "updated") as "opened" | "updated",
+                  kind: validationTimedOut
+                    ? "validation_delayed" as const
+                    : (prNotifiedAt == null ? "opened" as const : "updated" as const),
                 };
               }),
             );
-            const groups: Array<"opened" | "updated"> = ["opened", "updated"];
+            const groups: Array<"opened" | "updated" | "validation_delayed"> = ["opened", "updated", "validation_delayed"];
             for (const kind of groups) {
               const items = perPr.filter((p) => p.kind === kind);
               if (items.length === 0) continue;
@@ -591,6 +594,9 @@ async function refreshTrackedTickets(
                 title: ticket.title,
                 ticketId: ticket.identifier,
                 ticketUrl: ticket.url,
+                validationWaitMinutes: kind === "validation_delayed"
+                  ? Math.max(1, Math.ceil(ciDeferralMaxMs / 60_000))
+                  : undefined,
                 recipientEmail: recipientEmail ?? undefined,
               });
               for (const p of items) {

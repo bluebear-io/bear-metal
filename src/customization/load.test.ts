@@ -62,6 +62,10 @@ describe("configuration validation", () => {
     github.dispatch = { repositories: [], workflows: ["release.yml"], refs: ["main"] };
     expect(() => validateBearMetalConfig(config)).toThrow("config.agentIntegrations.github.dispatch.repositories");
   });
+  it("validates the optional CI deferral timeout", () => {
+    expect(validateBearMetalConfig({ ...valid(), ciDeferralMaxMs: 7_200_000 }).ciDeferralMaxMs).toBe(7_200_000);
+    expect(() => validateBearMetalConfig({ ...valid(), ciDeferralMaxMs: 0 })).toThrow("config.ciDeferralMaxMs");
+  });
 
   it("validates the optional anonymous web transport configuration", () => {
     const config = valid();

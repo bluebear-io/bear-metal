@@ -14,7 +14,7 @@ export interface SlackIntegrationOptions {
   fetchImpl?: typeof fetch;
 }
 
-export type PullRequestNotificationKind = "opened" | "updated";
+export type PullRequestNotificationKind = "opened" | "updated" | "validation_delayed";
 
 export interface PullRequestNotificationItem {
   pr: PullRequestRef;
@@ -31,6 +31,8 @@ export interface PullRequestNotification {
   /** Originating Linear ticket identifier (e.g. "PROJ-4"). */
   ticketId: string;
   ticketUrl: string;
+  /** Required for validation-delayed notifications. */
+  validationWaitMinutes?: number;
   /** Assignee email for DM routing. When set, tries to DM the user first; falls back to channel on lookup failure. */
   recipientEmail?: string;
 }
@@ -234,7 +236,7 @@ function escapeSlackMrkdwn(text: string): string {
 }
 
 export function formatNotificationText(notification: PullRequestNotification): string {
-  const { kind, prs, title, ticketId, ticketUrl } = notification;
+  const { kind, prs, title, ticketId, ticketUrl, validationWaitMinutes } = notification;
   if (prs.length === 0) throw new Error("PullRequestNotification requires at least one PR");
   if (!ticketUrl.startsWith("https://")) throw new Error(`Invalid ticket URL: ${ticketUrl}`);
   for (const item of prs) {
@@ -246,6 +248,13 @@ export function formatNotificationText(notification: PullRequestNotification): s
   const prLinks = prs.map(({ pr, url }) =>
     `<${url}|${escapeSlackMrkdwn(pr.owner)}/${escapeSlackMrkdwn(pr.repo)}#${pr.number}>`,
   );
+  if (kind === "validation_delayed") {
+    if (!Number.isInteger(validationWaitMinutes) || validationWaitMinutes! <= 0) {
+      throw new Error(`Invalid validationWaitMinutes: ${validationWaitMinutes}`);
+    }
+    const subject = prs.length === 1 ? `PR ${prLinks[0]!}` : `PRs ${prLinks.join(", ")}`;
+    return `:hourglass_flowing_sand: ${subject} has been open for over ${validationWaitMinutes} minutes and validation is taking longer than expected. In the meantime, feel free to take a look.`;
+  }
   if (prs.length === 1) {
     const prLink = prLinks[0]!;
     if (kind === "opened") {

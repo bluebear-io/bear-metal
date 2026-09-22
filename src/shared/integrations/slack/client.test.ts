@@ -142,6 +142,20 @@ describe("formatNotificationText", () => {
       "Updated PR <https://github.com/acme/repo/pull/7|acme/repo#7> for ticket <https://linear.app/x/ABC-9|ABC-9> — Fix flakes",
     );
   });
+
+  it("formats a validation-delayed message with the PR link and elapsed threshold", () => {
+    const text = formatNotificationText({
+      kind: "validation_delayed",
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 7 }, url: "https://github.com/acme/repo/pull/7" }],
+      title: "Fix flakes",
+      ticketId: "ABC-9",
+      ticketUrl: "https://linear.app/x/ABC-9",
+      validationWaitMinutes: 60,
+    });
+    expect(text).toBe(
+      ":hourglass_flowing_sand: PR <https://github.com/acme/repo/pull/7|acme/repo#7> has been open for over 60 minutes and validation is taking longer than expected. In the meantime, feel free to take a look.",
+    );
+  });
 });
 
 describe("formatNeedsInputText", () => {

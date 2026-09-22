@@ -50,9 +50,9 @@ The module is trusted deployment code. Bear Metal does not transpile it, install
 
 [**Canonical configuration, task, and customization types →**](src/customization/types.ts)
 
-The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, and `maxIterations` are optional.
+The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, `maxIterations`, and `ciDeferralMaxMs` are optional.
 
-Secret getters are lazy and may read environment variables, files, workload APIs, or secret managers. Bear Metal owns the vendor clients and consumes each value only where the corresponding integration is used. `agentIntegrations` and each vendor inside it are optional and independent of the top-level deterministic integrations. Omitting an agent vendor means its tools are not shown to the coding agent. Omitting top-level `slack` disables notifications, while omitting database uses `sqlite:./data/bear-metal.sqlite`. `maxIterations` defaults to 50.
+Secret getters are lazy and may read environment variables, files, workload APIs, or secret managers. Bear Metal owns the vendor clients and consumes each value only where the corresponding integration is used. `agentIntegrations` and each vendor inside it are optional and independent of the top-level deterministic integrations. Omitting an agent vendor means its tools are not shown to the coding agent. Omitting top-level `slack` disables notifications, while omitting database uses `sqlite:./data/bear-metal.sqlite`. `maxIterations` defaults to 50. `ciDeferralMaxMs` controls how long the manager waits for PR validation before sending a delayed-validation notification and defaults to 60 minutes.
 
 Example standalone JavaScript configuration:
 
@@ -68,6 +68,7 @@ const requiredEnv = (name) => {
 };
 
 export default {
+  ciDeferralMaxMs: 60 * 60 * 1000,
   linear: {
     clientId: requiredEnv("LINEAR_CLIENT_ID"),
     oauthScopes: "read,write,app:assignable,app:mentionable",
