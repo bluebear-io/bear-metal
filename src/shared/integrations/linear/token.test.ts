@@ -25,6 +25,14 @@ function makeProvider(fetchFn: typeof fetch, now: () => number) {
 }
 
 describe("AppTokenProvider", () => {
+  it("keeps token caches independent across provider instances", async () => {
+    const firstFetch = vi.fn(async () => new Response(JSON.stringify({ access_token: "first", expires_in: 3600 }), { status: 200 }));
+    const secondFetch = vi.fn(async () => new Response(JSON.stringify({ access_token: "second", expires_in: 3600 }), { status: 200 }));
+    const first = new AppTokenProvider({ clientId: "first", clientSecret: "secret", scopes: "read", fetchFn: firstFetch });
+    const second = new AppTokenProvider({ clientId: "second", clientSecret: "secret", scopes: "read", fetchFn: secondFetch });
+    await expect(Promise.all([first.getToken(), second.getToken()])).resolves.toEqual(["first", "second"]);
+    expect(firstFetch).toHaveBeenCalledOnce(); expect(secondFetch).toHaveBeenCalledOnce();
+  });
   it("mints a token on first call and posts client_credentials form fields", async () => {
     const fetchFn = vi.fn((_url: string | URL | Request, _init?: RequestInit) =>
       Promise.resolve(tokenResponse("tok-1")),

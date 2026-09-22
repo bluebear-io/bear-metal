@@ -23,6 +23,31 @@ export interface BearMetalConfig {
     notificationChannel: string;
     getBotToken: SecretGetter;
   };
+  agentIntegrations?: {
+    github?: {
+      appId: number;
+      installationId: number;
+      getPrivateKey: SecretGetter;
+      /** Omit to keep workflow dispatch disabled while provider reads remain available. */
+      dispatch?: {
+        repositories: string[];
+        workflows: string[];
+        refs: string[];
+      };
+    };
+    linear?: {
+      clientId: string;
+      oauthScopes?: string;
+      getClientSecret: SecretGetter;
+    };
+    slack?: {
+      getBotToken: SecretGetter;
+    };
+    web?: {
+      /** Allow anonymous HTTP in addition to the HTTPS default. */
+      allowHttp?: boolean;
+    };
+  };
   database?: {
     getUrl: SecretGetter;
   };

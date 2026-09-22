@@ -36,6 +36,37 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
     nonEmptyString(slack.notificationChannel, "config.slack.notificationChannel");
     callable(slack.getBotToken, "config.slack.getBotToken");
   }
+  if (config.agentIntegrations !== undefined) {
+    const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");
+    if (agentIntegrations.github !== undefined) {
+      const agentGithub = object(agentIntegrations.github, "config.agentIntegrations.github");
+      positiveInteger(agentGithub.appId, "config.agentIntegrations.github.appId");
+      positiveInteger(agentGithub.installationId, "config.agentIntegrations.github.installationId");
+      callable(agentGithub.getPrivateKey, "config.agentIntegrations.github.getPrivateKey");
+      if (agentGithub.dispatch !== undefined) {
+        const dispatch = object(agentGithub.dispatch, "config.agentIntegrations.github.dispatch");
+        nonEmptyStringArray(dispatch.repositories, "config.agentIntegrations.github.dispatch.repositories");
+        nonEmptyStringArray(dispatch.workflows, "config.agentIntegrations.github.dispatch.workflows");
+        nonEmptyStringArray(dispatch.refs, "config.agentIntegrations.github.dispatch.refs");
+      }
+    }
+    if (agentIntegrations.linear !== undefined) {
+      const agentLinear = object(agentIntegrations.linear, "config.agentIntegrations.linear");
+      nonEmptyString(agentLinear.clientId, "config.agentIntegrations.linear.clientId");
+      if (agentLinear.oauthScopes !== undefined) nonEmptyString(agentLinear.oauthScopes, "config.agentIntegrations.linear.oauthScopes");
+      callable(agentLinear.getClientSecret, "config.agentIntegrations.linear.getClientSecret");
+    }
+    if (agentIntegrations.slack !== undefined) {
+      const agentSlack = object(agentIntegrations.slack, "config.agentIntegrations.slack");
+      callable(agentSlack.getBotToken, "config.agentIntegrations.slack.getBotToken");
+    }
+    if (agentIntegrations.web !== undefined) {
+      const agentWeb = object(agentIntegrations.web, "config.agentIntegrations.web");
+      if (agentWeb.allowHttp !== undefined && typeof agentWeb.allowHttp !== "boolean") {
+        throw new Error("config.agentIntegrations.web.allowHttp must be a boolean");
+      }
+    }
+  }
   if (config.database !== undefined) callable(object(config.database, "config.database").getUrl, "config.database.getUrl");
   if (config.maxIterations !== undefined) positiveInteger(config.maxIterations, "config.maxIterations");
   const registry = object(config.llmProviders, "config.llmProviders");
@@ -85,4 +116,9 @@ function nonEmptyString(value: unknown, field: string): string {
 function positiveInteger(value: unknown, field: string): number {
   if (!Number.isInteger(value) || (value as number) <= 0) throw new Error(`${field} must be a positive integer`);
   return value as number;
+}
+function nonEmptyStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error(`${field} must be a non-empty array`);
+  for (const [index, entry] of value.entries()) nonEmptyString(entry, `${field}[${index}]`);
+  return value as string[];
 }

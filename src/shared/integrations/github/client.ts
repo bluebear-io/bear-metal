@@ -2,6 +2,7 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit, type RestEndpointMethodTypes } from "@octokit/rest";
 
 import type { JsonValue } from "../../json.js";
+import { redactCredentials } from "../../redaction.js";
 import type { CommentCapable, Integration } from "../base.js";
 import type {
   CheckRun,
@@ -35,11 +36,19 @@ export interface GitHubIntegrationOptions {
   appId: number;
   privateKey: string;
   installationId: number;
+  auth?: (options: GitHubInstallationTokenOptions & { type: "installation" }) => Promise<{ token: string }>;
+}
+
+export interface GitHubInstallationTokenOptions {
+  repositoryIds?: number[];
+  repositoryNames?: string[];
+  permissions?: Record<string, "read" | "write">;
 }
 
 export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
   private readonly octokit: Octokit;
+  private readonly installationAuth: (options: GitHubInstallationTokenOptions & { type: "installation" }) => Promise<{ token: string }>;
   private cachedBotIdentity: BotIdentity | null = null;
 
   constructor(options: GitHubIntegrationOptions) {
@@ -51,11 +60,17 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
         installationId: options.installationId,
       },
     });
+    this.installationAuth = options.auth ?? ((authOptions) => this.octokit.auth(authOptions) as Promise<{ token: string }>);
   }
 
-  async getInstallationToken(): Promise<string> {
-    const auth = (await this.octokit.auth({ type: "installation" })) as { token: string };
-    return auth.token;
+  async getInstallationToken(options: GitHubInstallationTokenOptions = {}): Promise<string> {
+    try {
+      const auth = await this.installationAuth({ type: "installation", ...options });
+      return auth.token;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`GitHub installation token request failed: ${redactCredentials(message)}`);
+    }
   }
 
   async getBotLogin(): Promise<string> {

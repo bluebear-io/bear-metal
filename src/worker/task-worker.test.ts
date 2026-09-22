@@ -8,6 +8,7 @@ import type { BearMetalConfig } from "../customization/types.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 const config = { llmProviders: {}, customizeTask: vi.fn() } as unknown as BearMetalConfig;
+const agentToolGateway = { availableTools: () => [], execute: vi.fn() };
 
 describe("TaskWorker", () => {
   it("acquires a task with its worker id and writes the dispatch result", async () => {
@@ -21,6 +22,7 @@ describe("TaskWorker", () => {
       logger,
       db: db as unknown as DbClient,
       integrations: makeIntegrations(),
+      agentToolGateway,
       concurrency: 1,
       pollIntervalMs: 60_000,
       workerId: "worker-1",
@@ -61,6 +63,7 @@ describe("TaskWorker", () => {
       logger,
       db: db as unknown as DbClient,
       integrations: makeIntegrations(),
+      agentToolGateway,
       concurrency: 1,
       pollIntervalMs: 60_000,
       workerId: "worker-1",
@@ -94,6 +97,7 @@ describe("TaskWorker", () => {
       logger,
       db: db as unknown as DbClient,
       integrations: makeIntegrations(),
+      agentToolGateway,
       concurrency: 1,
       pollIntervalMs: 60_000,
       workerId: "worker-1",
@@ -131,6 +135,7 @@ describe("TaskWorker", () => {
       logger,
       db: db as unknown as DbClient,
       integrations: makeIntegrations(),
+      agentToolGateway,
       concurrency: 1,
       pollIntervalMs: 60_000,
       workerId: "worker-1",

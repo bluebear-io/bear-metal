@@ -1,6 +1,8 @@
 import "dotenv/config";
 
 import { SqlDbClient } from "../db/client.js";
+import { AgentToolGateway } from "../agent-tools/gateway.js";
+import { createAgentToolHandlers } from "../agent-tools/handlers.js";
 import { loadBearMetalConfig, resolveSecret } from "../customization/load.js";
 import { DEFAULT_DATABASE_URL, DEFAULT_MAX_ITERATIONS } from "../customization/types.js";
 import {
@@ -9,6 +11,7 @@ import {
   GitHubIntegration,
   LinearIntegration,
   SlackIntegration,
+  SlackReadClient,
   type TicketContext,
 } from "../shared/index.js";
 import { TaskWorker } from "../worker/index.js";
@@ -60,6 +63,37 @@ const github = new GitHubIntegration({
   privateKey: await resolveSecret(customizationConfig.github.getPrivateKey, "config.github.getPrivateKey result"),
   installationId: customizationConfig.github.installationId,
 });
+const agentConfig = customizationConfig.agentIntegrations;
+const agentGithub = agentConfig?.github
+  ? new GitHubIntegration({
+    appId: agentConfig.github.appId,
+    privateKey: await resolveSecret(agentConfig.github.getPrivateKey, "config.agentIntegrations.github.getPrivateKey result"),
+    installationId: agentConfig.github.installationId,
+  })
+  : undefined;
+const agentLinearTokenProvider = agentConfig?.linear
+  ? new AppTokenProvider({
+    clientId: agentConfig.linear.clientId,
+    clientSecret: await resolveSecret(agentConfig.linear.getClientSecret, "config.agentIntegrations.linear.getClientSecret result"),
+    scopes: agentConfig.linear.oauthScopes ?? "read",
+    logger: createLogger({ level: runtimeConfig.logLevel, name: "agent-linear-token", pretty: runtimeConfig.logPretty }),
+  })
+  : undefined;
+const agentSlack = agentConfig?.slack
+  ? new SlackReadClient({
+    token: await resolveSecret(agentConfig.slack.getBotToken, "config.agentIntegrations.slack.getBotToken result"),
+  })
+  : undefined;
+const agentToolHandlers = createAgentToolHandlers({
+  github: agentGithub,
+  linear: agentLinearTokenProvider,
+  slack: agentSlack,
+  githubDispatchPolicy: agentConfig?.github?.dispatch,
+  web: agentConfig?.web,
+});
+const agentToolGateway = Object.keys(agentToolHandlers).length > 0
+  ? new AgentToolGateway({ handlers: agentToolHandlers, logger })
+  : undefined;
 const slack =
   customizationConfig.slack
     ? new SlackIntegration({
@@ -114,6 +148,7 @@ if (runtimeConfig.apiOnly) {
     logger,
     db,
     integrations: { github, linear, slack, commentStore: db },
+    agentToolGateway,
     concurrency: runtimeConfig.workerConcurrency,
     pollIntervalMs: runtimeConfig.pollIntervalMs,
     heartbeatIntervalMs: runtimeConfig.taskHeartbeatIntervalMs,

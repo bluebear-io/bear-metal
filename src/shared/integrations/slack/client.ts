@@ -47,6 +47,64 @@ export interface NeedsInputNotification {
 
 const DEFAULT_API_BASE_URL = "https://slack.com/api";
 
+export interface SlackReadClientOptions {
+  token: string;
+  apiBaseUrl?: string;
+  fetchImpl?: typeof fetch;
+}
+
+export class SlackReadClient {
+  private readonly token: string;
+  private readonly apiBaseUrl: string;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: SlackReadClientOptions) {
+    if (!options.token) throw new Error("SlackReadClient requires a bot token");
+    this.token = options.token;
+    this.apiBaseUrl = options.apiBaseUrl ?? DEFAULT_API_BASE_URL;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async call(
+    method: string,
+    params: Readonly<Record<string, string | number | boolean>> = {},
+    options: { signal?: AbortSignal } = {},
+  ): Promise<unknown> {
+    if (!/^[a-z]+\.[a-zA-Z]+$/.test(method)) throw new Error(`Invalid Slack API method: ${method}`);
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) query.set(key, String(value));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const response = await this.fetchImpl(`${this.apiBaseUrl}/${method}${suffix}`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+      signal: options.signal,
+    });
+    if (!response.ok) throw new Error(`Slack API request failed: ${response.status} ${response.statusText}`.trim());
+    return response.json();
+  }
+
+  async downloadFile(url: string, options: { signal?: AbortSignal; maxRedirects?: number } = {}): Promise<Response> {
+    let current = new URL(url);
+    const maxRedirects = options.maxRedirects ?? 3;
+    for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
+      const response = await this.fetchImpl(current, {
+        redirect: "manual",
+        signal: options.signal,
+        headers: current.origin === new URL(url).origin ? { Authorization: `Bearer ${this.token}` } : {},
+      });
+      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+      if (redirects === maxRedirects) throw new Error("Slack file download exceeded redirect limit");
+      const location = response.headers.get("location");
+      if (!location) throw new Error("Slack file download redirect omitted location");
+      const next = new URL(location, current);
+      if (next.protocol !== "https:" || next.username || next.password || !(next.hostname === "slack.com" || next.hostname.endsWith(".slack.com"))) {
+        throw new Error("Slack file download redirected to an untrusted host");
+      }
+      current = next;
+    }
+    throw new Error("Slack file download exceeded redirect limit");
+  }
+}
+
 /**
  * Posts notifications to Slack via chat.postMessage. The channel and bot token are
  * supplied by the operator via env vars (see manager/config.ts). Per-tenant channel

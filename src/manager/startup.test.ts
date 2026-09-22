@@ -25,6 +25,11 @@ describe("manager startup", () => {
     export default {
       linear: { clientId: "client", getClientSecret: () => "secret" },
       github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
+      agentIntegrations: {
+        github: { appId: 2, installationId: 2, getPrivateKey: () => "agent-key" },
+        linear: { clientId: "agent-client", getClientSecret: () => "agent-secret" },
+        slack: { getBotToken: () => "agent-token" },
+      },
       database: { getUrl: () => "postgres://user:pass@127.0.0.1:1/db?connect_timeout=1" },
       llmProviders: {},
       customizeTask: () => ({ llm: { provider: "amazon-bedrock", model: "model" }, buildWorkspace: async () => {} }),

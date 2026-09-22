@@ -1,6 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { isActionableReviewThread, isHumanTakeover, type BotIdentity } from "./client.js";
+import { describe, expect, it, vi } from "vitest";
+import { GitHubIntegration, isActionableReviewThread, isHumanTakeover, type BotIdentity } from "./client.js";
 import type { PullRequestCommit, ReviewThread } from "./types.js";
+
+describe("GitHub installation tokens", () => {
+  it("passes repository and permission narrowing to the installation auth request", async () => {
+    const auth = vi.fn(async () => ({ token: "narrow-token" }));
+    const github = new GitHubIntegration({ appId: 1, installationId: 2, privateKey: "key", auth });
+    await expect(github.getInstallationToken({ repositoryIds: [10], permissions: { contents: "read" } })).resolves.toBe("narrow-token");
+    expect(auth).toHaveBeenCalledWith({ type: "installation", repositoryIds: [10], permissions: { contents: "read" } });
+  });
+
+  it("redacts credentials from installation token errors", async () => {
+    const auth = vi.fn(async () => { throw new Error("Authorization: Bearer github_pat_leaked"); });
+    const github = new GitHubIntegration({ appId: 1, installationId: 2, privateKey: "key", auth });
+    await expect(github.getInstallationToken()).rejects.toThrow("Authorization: Bearer [REDACTED]");
+    await expect(github.getInstallationToken()).rejects.not.toThrow("github_pat_leaked");
+  });
+});
 
 function makeThread(comments: Array<{ author: string | null }>): ReviewThread {
   return {

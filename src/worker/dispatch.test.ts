@@ -101,13 +101,18 @@ describe("dispatch customization boundary", () => {
 
 async function dispatch(config: BearMetalConfig, options: { state?: "new" | "iteration"; prs?: Array<{ owner: string; repo: string; number: number }>; integrations?: ReturnType<typeof makeIntegrations> } = {}) {
   const { dispatch } = await import("./dispatch.js");
-  return dispatch({ state: options.state ?? "new", iteration: 1, ticketId: "ABC-1", prs: options.prs ?? [], integrations: options.integrations ?? makeIntegrations(), config });
+  return dispatch({ state: options.state ?? "new", iteration: 1, ticketId: "ABC-1", runId: "run-1", prs: options.prs ?? [], integrations: options.integrations ?? makeIntegrations(), agentToolGateway: { availableTools: () => [], execute: vi.fn() }, config });
 }
 
 function makeConfig(): BearMetalConfig {
   return {
     linear: { clientId: "id", getClientSecret: () => "secret" },
     github: { appId: 1, installationId: 2, getPrivateKey: () => "private" },
+    agentIntegrations: {
+      github: { appId: 3, installationId: 4, getPrivateKey: () => "agent-private" },
+      linear: { clientId: "agent-id", getClientSecret: () => "agent-secret" },
+      slack: { getBotToken: () => "agent-slack" },
+    },
     llmProviders: { anthropic: { getApiKey: vi.fn(() => "anthropic-key") }, openai: { getApiKey: vi.fn(() => "openai-key") } },
     customizeTask: async (task) => {
       expect(task.identifier).toBe("ABC-1"); expect(Object.isFrozen(task)).toBe(true); state.tasks.push(task); state.calls.push("customize");
