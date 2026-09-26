@@ -440,8 +440,26 @@ async function refreshTrackedTickets(
               recipientEmail,
             });
           } catch (err) {
-            logger.warn({ err, ticketId: ticket.id }, "failed to send needs_input Slack notification");
+            logger.warn(
+              {
+                err,
+                ticketId: ticket.id,
+                ticketIdentifier: ticket.identifier,
+                notificationKind: "needs_input",
+                stage: "failed",
+              },
+              "failed to send needs_input Slack notification",
+            );
           }
+        } else {
+          logger.info(
+            {
+              ticketId: ticket.id,
+              ticketIdentifier: ticket.identifier,
+              notificationKind: "needs_input",
+            },
+            "slack integration not configured; skipping needs-input notification",
+          );
         }
         continue;
       }
@@ -574,67 +592,38 @@ async function refreshTrackedTickets(
           { ticket: ticket.identifier, shouldDm, hasSlack: !!slack, prCount: decision.context.prs.length },
           "tryTransitionToWaitingForHuman result",
         );
-        if (shouldDm && slack && decision.context.prs.length > 0) {
-          try {
-            const recipientEmail = ticket.assignee
-              ? await linear.getUserEmail(ticket.assignee.id)
-              : null;
-            const perPr = await Promise.all(
-              decision.context.prs.map(async (prRef) => {
-                const prDbId = `${prRef.owner}/${prRef.repo}#${prRef.number}`;
-                const [prStatus, prNotifiedAt] = await Promise.all([
-                  github.getPullRequestStatus(prRef),
-                  db.getPrNotifiedAt(prDbId),
-                ]);
-                return {
-                  prRef,
-                  prDbId,
-                  url: prStatus.pr.url,
-                  kind: validationTimedOut
-                    ? "validation_delayed" as const
-                    : (prNotifiedAt == null ? "opened" as const : "updated" as const),
-                };
-              }),
+        if (shouldDm) {
+          if (!slack) {
+            logger.info(
+              {
+                ticketId: ticket.id,
+                ticketIdentifier: ticket.identifier,
+                notificationKind: "pull_request",
+              },
+              "slack integration not configured; skipping PR notification",
             );
-            const groups: Array<"opened" | "updated" | "validation_delayed"> = ["opened", "updated", "validation_delayed"];
-            for (const kind of groups) {
-              const items = perPr.filter((p) => p.kind === kind);
-              if (items.length === 0) continue;
-              await slack.notifyPullRequest({
-                kind,
-                prs: items.map((p) => ({ pr: p.prRef, url: p.url })),
-                title: ticket.title,
-                ticketId: ticket.identifier,
-                ticketUrl: ticket.url,
-                validationWaitMinutes: kind === "validation_delayed"
-                  ? Math.max(1, Math.ceil(ciDeferralMaxMs / 60_000))
-                  : undefined,
-                recipientEmail: recipientEmail ?? undefined,
-              });
-              for (const p of items) {
-                try {
-                  await db.markPrNotified(p.prDbId);
-                } catch (markErr) {
-                  logger.warn(
-                    { err: markErr, ticketId: ticket.id, prDbId: p.prDbId },
-                    "failed to mark PR as notified after Slack send",
-                  );
-                }
-                void db.recordEvent({
-                  id: randomUUID(),
-                  ticketId: ticket.id,
-                  runId: slot.latestTask.id,
-                  workerId: null,
-                  source: "manager",
-                  type: "user_notified",
-                  summary: `user notified via Slack — PR #${p.prRef.number} in ${p.prRef.repo}`,
-                  payloadJson: recipientEmail ? JSON.stringify({ recipientEmail }) : null,
-                  createdAt: new Date().toISOString(),
-                });
-              }
-            }
-          } catch (err) {
-            logger.warn({ err, ticketId: ticket.id }, "failed to send waiting_for_human Slack DM");
+          } else if (decision.context.prs.length === 0) {
+            logger.info(
+              {
+                ticketId: ticket.id,
+                ticketIdentifier: ticket.identifier,
+                notificationKind: "pull_request",
+              },
+              "no PRs in ticket context; skipping PR notification",
+            );
+          } else {
+            await sendPullRequestNotifications(
+              slack,
+              db,
+              github,
+              linear,
+              logger,
+              ticket,
+              decision.context.prs,
+              slot.latestTask.id,
+              validationTimedOut,
+              ciDeferralMaxMs,
+            );
           }
         }
       }

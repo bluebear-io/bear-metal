@@ -217,9 +217,13 @@ class FakeSlack {
   pullRequestCalls: Array<Parameters<SlackIntegration["notifyPullRequest"]>[0]> = [];
   maxIterationsCalls: Array<MaxIterationsSpy> = [];
   pullRequestError: Error | null = null;
+  pullRequestErrorForKind: Set<"opened" | "updated" | "validation_delayed"> = new Set();
   maxIterationsError: Error | null = null;
   async notifyPullRequest(n: Parameters<SlackIntegration["notifyPullRequest"]>[0]): Promise<void> {
     this.pullRequestCalls.push(n);
+    if (this.pullRequestErrorForKind.has(n.kind)) {
+      throw new Error(`slack chat.postMessage failed for kind ${n.kind}`);
+    }
     if (this.pullRequestError) throw this.pullRequestError;
   }
   async notifyNeedsInput(n: Parameters<SlackIntegration["notifyNeedsInput"]>[0]): Promise<void> {
@@ -996,6 +1000,64 @@ describe("Scheduler.tick CI-in-progress deferral", () => {
     expect(detail?.events.some((e) => e.type === "user_notified")).toBe(false);
     // The transition to waiting_for_human still succeeded (that is orthogonal to the Slack side-effect).
     expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+
+  it('a Slack failure on "opened" does not skip "updated" notifications for other PRs on the same ticket', async () => {
+    const db = await makeDb();
+    // Seed a slot whose completed task produced two PRs: #7 and #8.
+    await seedCompletedTask(
+      db,
+      { state: "new", ticketId: "A", prs: [] },
+      { status: "done", prs: [prRef(7), prRef(8)] },
+    );
+    // #8 has already been notified previously → will be classified as "updated".
+    // #7 has never been notified → will be classified as "opened".
+    // markPrNotified is an UPDATE, so the pull_requests row must exist first.
+    for (const n of [7, 8]) {
+      await db.upsertPullRequest(`acme/widgets#${n}`, "a", {
+        number: n,
+        title: `PR #${n}`,
+        headRef: `feature/pr-${n}`,
+        state: "open",
+        draft: false,
+        merged: false,
+        url: `https://github.com/acme/widgets/pull/${n}`,
+        lastRunId: null,
+        reviewThreadsJson: "[]",
+      });
+    }
+    await db.markPrNotified("acme/widgets#8");
+    await db.setTicketStatus("a", "validating", true);
+
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      statusByNumber: {
+        7: status(openPr(7), false, false, false, false, false, false),
+        8: status(openPr(8), false, false, false, false, false, false),
+      },
+    });
+    const slack = new FakeSlack();
+    // Only the "opened" kind throws; "updated" must still be attempted and its side-effects must run.
+    slack.pullRequestErrorForKind.add("opened");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    // Both kinds must have been attempted despite "opened" throwing.
+    const kinds = slack.pullRequestCalls.map((c) => c.kind).sort();
+    expect(kinds).toEqual(["opened", "updated"]);
+    // #7 (opened kind, threw) must NOT be marked notified and must NOT record user_notified.
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).toBeNull();
+    // #8 (updated kind, succeeded) retains its existing notified_at timestamp.
+    expect(await db.getPrNotifiedAt("acme/widgets#8")).not.toBeNull();
+    const detail = await db.getTicketDetail("a");
+    const notifiedEvents = detail?.events.filter((e) => e.type === "user_notified") ?? [];
+    // Exactly one user_notified event — for the successful "updated" send on PR #8.
+    expect(notifiedEvents).toHaveLength(1);
+    expect(notifiedEvents[0]?.summary).toContain("#8");
   });
 
   it("sends a validation-delayed notification when the CI deferral threshold expires", async () => {
