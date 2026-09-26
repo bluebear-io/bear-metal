@@ -26,6 +26,26 @@ describe("workspace guard", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+  it("recovers on a later shell command after cache home becomes creatable", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bear-metal-home-recovery-test-"));
+    const workspace = await mkdtemp(join(tmpdir(), "bear-metal-workspace-recovery-test-"));
+    const blockedParent = join(home, ".bear-metal");
+    await writeFile(blockedParent, "blocked");
+    vi.stubEnv("HOME", home);
+    try {
+      const bash = createWorkspaceGuardedTools(workspace).find((tool) => tool.name === "bash");
+      expect(bash).toBeDefined();
+      const execute = bash!.execute as unknown as (id: string, params: { command: string }) => Promise<{ content: Array<{ text: string }> }>;
+      await expect(execute("blocked", { command: "printf ready" })).rejects.toThrow(/ENOTDIR|EEXIST/);
+      await rm(blockedParent);
+      const result = await execute("recovered", { command: "printf ready" });
+      expect(result.content[0]?.text).toContain("ready");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(workspace, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   it("rejects repo roots outside the cloned workspace", () => {
     expect(() => assertRepoRootInWorkspace("/tmp/workspace/myrepo", "/tmp/workspace/myrepo/bear-metal")).not.toThrow();
     expect(() => assertRepoRootInWorkspace("/tmp/workspace/myrepo", "/Users/other/projects/bear-metal")).toThrow(

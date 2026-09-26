@@ -23,7 +23,10 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
   const bashOperations: BashOperations = {
     exec: async (command, _cwd, options) => {
       validateWorkspaceBashCommand(command, root);
-      cacheHomeReady ??= mkdir(cacheHome, { recursive: true, mode: 0o700 });
+      cacheHomeReady ??= mkdir(cacheHome, { recursive: true, mode: 0o700 }).catch((error: unknown) => {
+        cacheHomeReady = undefined;
+        throw error;
+      });
       await cacheHomeReady;
       return localBash.exec(command, root, {
         ...options,
