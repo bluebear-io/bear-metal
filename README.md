@@ -190,9 +190,11 @@ RUN apt-get update \
         ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
-# Example: install uv into a system-wide location so it works under a
-# read-only rootfs at runtime.
-RUN pipx install --global uv
+# Install uv into a system-wide location so it works under a read-only
+# rootfs at runtime. Use PIPX_HOME / PIPX_BIN_DIR rather than
+# `pipx install --global`, which the pipx shipped by Debian bookworm
+# (the base image OS) does not yet support.
+RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv
 
 # Copy your trusted configuration module into the image so its path is stable
 # and it ships with the same immutable artifact as the toolchains it depends on.
@@ -211,6 +213,7 @@ docker build -t my-org/bear-metal:1.0.0 .
 docker run --rm \
   --read-only \
   --tmpfs /tmp \
+  --tmpfs /root/.bear-metal/cache-home \
   -v bear-metal-data:/data \
   -v bear-metal-workspace:/workspace \
   -e BEAR_METAL_WORKSPACE_DIR=/workspace \
