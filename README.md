@@ -176,8 +176,6 @@ Build once, run many times.
 # Pin to a released tag in production; :latest is used here for readability.
 FROM ghcr.io/bluebear-io/bear-metal:latest
 
-USER root
-
 # Extra toolchains needed by your customizeTask.buildWorkspace and by the
 # coding agent while it works inside the task workspace.
 RUN apt-get update \
