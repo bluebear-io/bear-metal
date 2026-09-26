@@ -191,6 +191,7 @@ function buildScheduler(deps: {
   maxIterations?: number;
   slack?: SlackIntegration;
   ciDeferralMaxMs?: number;
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -205,6 +206,7 @@ function buildScheduler(deps: {
     maxIterations: deps.maxIterations ?? 50,
     slack: deps.slack,
     ciDeferralMaxMs: deps.ciDeferralMaxMs,
+    shouldRetryCi: deps.shouldRetryCi,
   });
 }
 
@@ -481,6 +483,32 @@ describe("Scheduler.tick", () => {
     expect(await db.countTracked()).toBe(1);
     expect(handler.handled.at(-1)?.ticket.id).toBe("a");
     expect(handler.handled.at(-1)?.prs[0]?.number).toBe(7);
+  });
+
+  it("lets a CI policy ignore a non-actionable check without suppressing other failures", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const ciStatus = status(openPr(7), true);
+    ciStatus.context.failedCheckRuns.push({ checkRun: { name: "manual-gate" }, annotations: [] });
+    const github = new FakeGitHub({ status: ciStatus });
+    const handler = new RecordingHandler(db);
+    const seen: string[] = [];
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }), github, db, handler, concurrency: 1,
+      shouldRetryCi: (result) => {
+        seen.push(result.pr.url);
+        return result.context.failedStatuses.length > 0 || result.context.failedCheckRuns.some(({ checkRun }) => (checkRun as { name: string }).name !== "manual-gate");
+      },
+    });
+
+    await scheduler.tick();
+    expect(handler.handled).toHaveLength(0);
+    expect(seen).toEqual([ciStatus.pr.url]);
+
+    ciStatus.context.failedCheckRuns.push({ checkRun: { name: "unit-tests" }, annotations: [] });
+    await scheduler.tick();
+    await scheduler.stop();
+    expect(handler.triggers).toEqual(["ci_failure"]);
   });
 
   it("re-dispatches an iteration with actionable unresolved review comments", async () => {

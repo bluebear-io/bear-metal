@@ -1,3 +1,5 @@
+import type { PullRequestStatus } from "../shared/integrations/github/types.js";
+
 export const DEFAULT_MAX_DURATION_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_MAX_TOKENS = 20_000_000;
 export const DEFAULT_MAX_ITERATIONS = 50;
@@ -55,6 +57,8 @@ export interface BearMetalConfig {
   maxIterations?: number;
   /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
   ciDeferralMaxMs?: number;
+  /** Return true when CI failures on this PR warrant another agent iteration. */
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean;
   llmProviders: Partial<{
     anthropic: { getApiKey: SecretGetter };
     openai: { getApiKey: SecretGetter };

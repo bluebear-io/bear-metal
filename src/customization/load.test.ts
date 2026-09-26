@@ -66,6 +66,11 @@ describe("configuration validation", () => {
     expect(validateBearMetalConfig({ ...valid(), ciDeferralMaxMs: 7_200_000 }).ciDeferralMaxMs).toBe(7_200_000);
     expect(() => validateBearMetalConfig({ ...valid(), ciDeferralMaxMs: 0 })).toThrow("config.ciDeferralMaxMs");
   });
+  it("accepts only a callable CI retry policy", () => {
+    const shouldRetryCi = vi.fn(() => false);
+    expect(validateBearMetalConfig({ ...valid(), shouldRetryCi }).shouldRetryCi).toBe(shouldRetryCi);
+    expect(() => validateBearMetalConfig({ ...valid(), shouldRetryCi: true })).toThrow("config.shouldRetryCi");
+  });
 
   it("validates the optional anonymous web transport configuration", () => {
     const config = valid();

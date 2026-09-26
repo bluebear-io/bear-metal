@@ -34,6 +34,7 @@ export async function runWorkspaceBuilder(input: {
     netrcDir = await mkdtemp(resolve(tmpdir(), "bear-metal-git-"));
     await chmod(netrcDir, 0o700);
     await writeFile(resolve(netrcDir, ".netrc"), `machine github.com login x-access-token password ${input.githubToken}\n`, { mode: 0o600 });
+    await writeFile(resolve(netrcDir, "askpass.sh"), '#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s\\n" "x-access-token" ;;\n  *Password*) sed -n "s/^machine github.com login x-access-token password //p" "$(dirname "$0")/.netrc" ;;\n  *) exit 1 ;;\nesac\n', { mode: 0o700 });
     return { agentWorkdir, workspaceDir: input.workspaceDir, stdout: "", stderr: "", netrcDir };
   } catch (error) {
     await rm(input.workspaceDir, { recursive: true, force: true });

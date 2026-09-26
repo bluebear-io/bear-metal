@@ -1,6 +1,7 @@
 import { constants, existsSync } from "node:fs";
 import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import {
   createBashToolDefinition,
   createEditToolDefinition,
@@ -24,9 +25,8 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
         ...options,
         env: {
           ...options.env,
-          HOME: root,
+          HOME: homedir(),
           PWD: root,
-          // git credentials and SSH→HTTPS rewrite — override HOME last so .netrc is found
           ...gitEnv,
         },
       });
@@ -49,7 +49,7 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
         cwd: root,
         env: {
           ...context.env,
-          HOME: root,
+          HOME: homedir(),
           PWD: root,
           ...gitEnv,
         },

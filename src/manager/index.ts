@@ -143,6 +143,7 @@ if (runtimeConfig.apiOnly) {
     taskStaleAfterMs: runtimeConfig.taskStaleAfterMs,
     taskMaxReclaims: runtimeConfig.taskMaxReclaims,
     ciDeferralMaxMs,
+    shouldRetryCi: customizationConfig.shouldRetryCi,
     maxIterations,
     slack,
   });

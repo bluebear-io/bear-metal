@@ -1,4 +1,5 @@
 import { mkdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig } from "../customization/types.js";
 import { buildTask, customizeAndResolve } from "../customization/task.js";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
@@ -121,7 +122,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   const botEmail = `${botIdentity.userNumericId}+${botIdentity.login}@users.noreply.github.com`;
   const gitEnv: NodeJS.ProcessEnv = {
-    HOME: cloneScript.netrcDir,
+    GIT_ASKPASS: resolve(cloneScript.netrcDir, "askpass.sh"),
+    GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
     GIT_CONFIG_VALUE_0: "git@github.com:",

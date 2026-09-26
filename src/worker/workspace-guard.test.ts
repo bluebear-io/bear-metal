@@ -1,7 +1,27 @@
-import { describe, expect, it } from "vitest";
-import { assertRepoRootInWorkspace, validateWorkspaceBashCommand } from "./workspace-guard.js";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { assertRepoRootInWorkspace, createWorkspaceGuardedTools, validateWorkspaceBashCommand } from "./workspace-guard.js";
 
 describe("workspace guard", () => {
+  it("keeps language caches outside the disposable workspace", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bear-metal-home-test-"));
+    const workspace = await mkdtemp(join(tmpdir(), "bear-metal-workspace-test-"));
+    vi.stubEnv("HOME", home);
+    try {
+      const bash = createWorkspaceGuardedTools(workspace).find((tool) => tool.name === "bash");
+      expect(bash).toBeDefined();
+      await (bash!.execute as (id: string, params: { command: string }) => Promise<unknown>)("cache", { command: 'mkdir -p "$HOME/go/pkg/mod" "$HOME/.cache/pip" && printf go > "$HOME/go/pkg/mod/marker" && printf python > "$HOME/.cache/pip/marker"' });
+      await rm(workspace, { recursive: true, force: true });
+      expect(await readFile(join(home, "go/pkg/mod/marker"), "utf8")).toBe("go");
+      expect(await readFile(join(home, ".cache/pip/marker"), "utf8")).toBe("python");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(workspace, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   it("rejects repo roots outside the cloned workspace", () => {
     expect(() => assertRepoRootInWorkspace("/tmp/workspace/myrepo", "/tmp/workspace/myrepo/bear-metal")).not.toThrow();
     expect(() => assertRepoRootInWorkspace("/tmp/workspace/myrepo", "/Users/other/projects/bear-metal")).toThrow(
