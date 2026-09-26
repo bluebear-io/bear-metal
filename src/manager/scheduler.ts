@@ -88,7 +88,7 @@ export interface SchedulerDeps {
    * hung / abandoned check run from silently blocking the Slack DM forever. Defaults to 60 min.
    */
   ciDeferralMaxMs?: number;
-  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean;
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>;
 }
 
 export class Scheduler {
@@ -282,7 +282,7 @@ async function evaluateTicket(
   github: GitHubSource,
   db: DbClient,
   logger: Logger,
-  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean,
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>,
 ): Promise<TicketDecision> {
   if (isTerminalLinearTicket(ticket)) {
     logger.debug(
@@ -348,11 +348,15 @@ async function evaluateTicket(
     };
   }
 
-  const testsFailed = statuses.some((status) => {
-    const retry = shouldRetryCi ? shouldRetryCi(status) : status.testsFailed;
+  let testsFailed = false;
+  for (const status of statuses) {
+    const retry = shouldRetryCi ? await shouldRetryCi(status) : status.testsFailed;
     if (typeof retry !== "boolean") throw new Error("config.shouldRetryCi must return a boolean");
-    return retry;
-  });
+    if (retry) {
+      testsFailed = true;
+      break;
+    }
+  }
   const checksInProgress = statuses.some((s) => s.checksInProgress);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
   const hasActionableIssueComments = statuses.some((s) => s.hasActionableIssueComments);
@@ -408,7 +412,7 @@ async function refreshTrackedTickets(
   ciDeferralStartedAt: Map<string, number>,
   ciDeferralMaxMs: number,
   slack?: SlackIntegration,
-  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean,
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>,
 ): Promise<DispatchItem[]> {
   const toDispatch: DispatchItem[] = [];
   for (const slot of await db.listTracked()) {

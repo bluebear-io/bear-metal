@@ -17,15 +17,17 @@ import {
 
 export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: NodeJS.ProcessEnv): ToolDefinition[] {
   const root = normalizeWorkspaceRoot(workspaceRoot);
+  const cacheHome = resolve(homedir(), ".bear-metal", "cache-home");
   const localBash = createLocalBashOperations();
   const bashOperations: BashOperations = {
-    exec: (command, _cwd, options) => {
+    exec: async (command, _cwd, options) => {
       validateWorkspaceBashCommand(command, root);
+      await mkdir(cacheHome, { recursive: true, mode: 0o700 });
       return localBash.exec(command, root, {
         ...options,
         env: {
           ...options.env,
-          HOME: homedir(),
+          HOME: cacheHome,
           PWD: root,
           ...gitEnv,
         },
@@ -49,7 +51,7 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
         cwd: root,
         env: {
           ...context.env,
-          HOME: homedir(),
+          HOME: cacheHome,
           PWD: root,
           ...gitEnv,
         },

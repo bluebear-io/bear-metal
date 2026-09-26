@@ -31,6 +31,15 @@ describe("runWorkspaceBuilder", () => {
     await writeFile(join(result.netrcDir, ".netrc"), "machine github.com login x-access-token password refreshed-token\n", { mode: 0o600 });
     expect(fill()).toContain("password=refreshed-token");
   });
+  it("reads the token without external shell utilities and reports missing credentials", async () => {
+    const workspaceDir = await mkdtemp(join(tmpdir(), "bear-metal-workspace-test-")); paths.push(workspaceDir);
+    const result = await runWorkspaceBuilder({ workspaceDir, githubToken: "initial-token", buildWorkspace: async ({ workspacePath }) => { await writeFile(join(workspacePath, "README.md"), "ready"); } });
+    paths.push(result.netrcDir);
+    const helper = join(result.netrcDir, "askpass.sh");
+    expect(execFileSync(helper, ["Password for https://github.com"], { encoding: "utf8", env: { PATH: "/nonexistent" } })).toBe("initial-token\n");
+    await rm(join(result.netrcDir, ".netrc"));
+    expect(() => execFileSync(helper, ["Password for https://github.com"], { encoding: "utf8", env: { PATH: "/nonexistent" }, stdio: "pipe" })).toThrow("Git credential file is unreadable");
+  });
   it("rejects an empty workspace", async () => {
     const workspaceDir = await mkdtemp(join(tmpdir(), "bear-metal-workspace-test-")); paths.push(workspaceDir);
     await expect(runWorkspaceBuilder({ workspaceDir, githubToken: "token", buildWorkspace: async () => {} })).rejects.toThrow("workspacePath is empty");

@@ -191,7 +191,7 @@ function buildScheduler(deps: {
   maxIterations?: number;
   slack?: SlackIntegration;
   ciDeferralMaxMs?: number;
-  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean;
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -495,7 +495,7 @@ describe("Scheduler.tick", () => {
     const seen: string[] = [];
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: makeTicket("a") }), github, db, handler, concurrency: 1,
-      shouldRetryCi: (result) => {
+      shouldRetryCi: async (result) => {
         seen.push(result.pr.url);
         return result.context.failedStatuses.length > 0 || result.context.failedCheckRuns.some(({ checkRun }) => (checkRun as { name: string }).name !== "manual-gate");
       },

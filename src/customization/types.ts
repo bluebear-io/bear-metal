@@ -58,7 +58,7 @@ export interface BearMetalConfig {
   /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
   ciDeferralMaxMs?: number;
   /** Return true when CI failures on this PR warrant another agent iteration. */
-  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean;
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>;
   llmProviders: Partial<{
     anthropic: { getApiKey: SecretGetter };
     openai: { getApiKey: SecretGetter };

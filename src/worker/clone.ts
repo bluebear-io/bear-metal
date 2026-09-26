@@ -34,7 +34,25 @@ export async function runWorkspaceBuilder(input: {
     netrcDir = await mkdtemp(resolve(tmpdir(), "bear-metal-git-"));
     await chmod(netrcDir, 0o700);
     await writeFile(resolve(netrcDir, ".netrc"), `machine github.com login x-access-token password ${input.githubToken}\n`, { mode: 0o600 });
-    await writeFile(resolve(netrcDir, "askpass.sh"), '#!/bin/sh\ncase "$1" in\n  *Username*) printf "%s\\n" "x-access-token" ;;\n  *Password*) sed -n "s/^machine github.com login x-access-token password //p" "$(dirname "$0")/.netrc" ;;\n  *) exit 1 ;;\nesac\n', { mode: 0o700 });
+    await writeFile(resolve(netrcDir, "askpass.sh"), [
+      "#!/bin/sh",
+      'case "$1" in',
+      '  *Username*) printf "%s\\n" "x-access-token" ;;',
+      "  *Password*)",
+      '    case "$0" in */*) netrc_path="${0%/*}/.netrc" ;; *) printf "Git credential helper path is invalid\\n" >&2; exit 1 ;; esac',
+      '    if [ ! -r "$netrc_path" ]; then printf "Git credential file is unreadable\\n" >&2; exit 1; fi',
+      '    while IFS= read -r line; do',
+      '      case "$line" in',
+      "        'machine github.com login x-access-token password '*)",
+      '          printf "%s\\n" "${line#machine github.com login x-access-token password }"',
+      "          exit 0 ;;",
+      "      esac",
+      '    done < "$netrc_path"',
+      '    printf "Git credential entry is missing\\n" >&2; exit 1 ;;',
+      "  *) exit 1 ;;",
+      "esac",
+      "",
+    ].join("\n"), { mode: 0o700 });
     return { agentWorkdir, workspaceDir: input.workspaceDir, stdout: "", stderr: "", netrcDir };
   } catch (error) {
     await rm(input.workspaceDir, { recursive: true, force: true });
