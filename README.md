@@ -20,6 +20,7 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 - [Configuration module](#configuration-module)
 - [Task customization](#task-customization)
 - [Environment variables](#environment-variables)
+- [Custom runtime image](#custom-runtime-image)
 - [Quick guides](#quick-guides)
   - [GitHub App](#github-app)
   - [Linear](#linear)
@@ -154,6 +155,76 @@ Bear Metal itself reads only these deployment and process settings:
 Integration credentials, database URL, max iterations, provider/model selection, prompt additions, limits, and workspace behavior have no Bear Metal environment-variable fallback. Your configuration module may independently choose to read environment variables.
 
 See [`.env.example`](.env.example) for the process-level variables.
+
+---
+
+## Custom runtime image
+
+Bear Metal ships a minimal base image (`ghcr.io/bluebear-io/bear-metal:latest`) that contains only the manager, the UI bundle, `git`, and CA certificates. If your `customizeTask.buildWorkspace` needs project toolchains — Go, Python, Rust, `uv`, `pnpm`, cloud CLIs, private registry certificates, etc. — bake them into a derived image at build time.
+
+Runtime package installation inside the running container is not supported:
+
+- The removed worker environment builder is not coming back. `customizeTask.buildWorkspace` runs per task under a ten-minute abort signal, is scoped to `workspacePath`, and is meant to prepare the workspace, not to install system packages on the host.
+- Bear Metal deployments are expected to run with a read-only container filesystem (`docker run --read-only`, Kubernetes `readOnlyRootFilesystem: true`). `apt-get install`, `pip install --user`, `npm install -g`, and similar commands write to `/var`, `/etc`, `/usr`, or `$HOME` and will fail. Only Bear Metal's own writable paths (`BEAR_METAL_WORKSPACE_DIR`, the SQLite/Postgres data directory, and `~/.bear-metal/cache-home`) need to be writable, and they should be mounted as `tmpfs` or dedicated volumes.
+- Installing at task time also multiplies latency, network egress, and supply-chain risk by every worker run.
+
+Build once, run many times.
+
+### Example Dockerfile
+
+```dockerfile
+# Pin to a released tag in production; :latest is used here for readability.
+FROM ghcr.io/bluebear-io/bear-metal:latest
+
+USER root
+
+# Extra toolchains needed by your customizeTask.buildWorkspace and by the
+# coding agent while it works inside the task workspace.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        golang-go \
+        python3 \
+        python3-venv \
+        python3-pip \
+        pipx \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Example: install uv into a system-wide location so it works under a
+# read-only rootfs at runtime.
+RUN pipx install --global uv
+
+# Copy your trusted configuration module into the image so its path is stable
+# and it ships with the same immutable artifact as the toolchains it depends on.
+COPY bear-metal.config.mts /config/bear-metal.config.mts
+ENV BEAR_METAL_CONFIG_FILE=/config/bear-metal.config.mts
+
+# WORKDIR, ENTRYPOINT, and CMD are inherited from the base image; do not
+# override them unless you know you need to.
+```
+
+### Build and run
+
+```bash
+docker build -t my-org/bear-metal:1.0.0 .
+
+docker run --rm \
+  --read-only \
+  --tmpfs /tmp \
+  -v bear-metal-data:/data \
+  -v bear-metal-workspace:/workspace \
+  -e BEAR_METAL_WORKSPACE_DIR=/workspace \
+  -e LINEAR_CLIENT_ID=... \
+  -e LINEAR_CLIENT_SECRET=... \
+  -e GITHUB_APP_PRIVATE_KEY="$(cat github-app.pem)" \
+  -e ANTHROPIC_API_KEY=... \
+  -p 3100:3100 \
+  my-org/bear-metal:1.0.0
+```
+
+The process reads `BEAR_METAL_CONFIG_FILE` on startup and imports the module once; the toolchains you added are visible to `customizeTask.buildWorkspace` and to every shell the coding agent runs inside the workspace. See [Configuration module](#configuration-module) for how to wire the toolchain into `buildWorkspace` and secrets into lazy getters.
+
+If your configuration module itself needs third-party npm packages, either publish it as an ordinary package your derived image installs with `npm ci`, or `COPY` a `package.json` + `node_modules` alongside the module. Bear Metal does not install its dependencies.
 
 ---
 
