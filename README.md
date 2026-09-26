@@ -14,6 +14,8 @@
 
 Autonomous coding agent. Picks up tasks from Linear, implements them, and opens pull requests ready to merge. Runs continuously in the background.
 
+For a runtime overview — the scheduler loop, delegation model, and how bear-metal reacts to PR review — see [docs/how-it-works.md](docs/how-it-works.md).
+
 ## Table of contents
 
 - [How to deploy](#how-to-deploy)
