@@ -216,14 +216,18 @@ class FakeSlack {
   needsInputCalls: Array<Parameters<SlackIntegration["notifyNeedsInput"]>[0]> = [];
   pullRequestCalls: Array<Parameters<SlackIntegration["notifyPullRequest"]>[0]> = [];
   maxIterationsCalls: Array<MaxIterationsSpy> = [];
+  pullRequestError: Error | null = null;
+  maxIterationsError: Error | null = null;
   async notifyPullRequest(n: Parameters<SlackIntegration["notifyPullRequest"]>[0]): Promise<void> {
     this.pullRequestCalls.push(n);
+    if (this.pullRequestError) throw this.pullRequestError;
   }
   async notifyNeedsInput(n: Parameters<SlackIntegration["notifyNeedsInput"]>[0]): Promise<void> {
     this.needsInputCalls.push(n);
   }
   async notifyMaxIterationsReached(n: MaxIterationsSpy): Promise<void> {
     this.maxIterationsCalls.push(n);
+    if (this.maxIterationsError) throw this.maxIterationsError;
   }
   asIntegration(): SlackIntegration {
     return this as unknown as SlackIntegration;
@@ -967,6 +971,33 @@ describe("Scheduler.tick CI-in-progress deferral", () => {
     expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
   });
 
+  it("does not mark a PR as notified or record user_notified when notifyPullRequest throws", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    // Mark the slot as validating with a pending notify so refreshTrackedTickets attempts the DM.
+    await db.setTicketStatus("a", "validating", true);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    // CI is settled and no checks in progress — scheduler will attempt the "opened" DM.
+    const github = new FakeGitHub({ status: status(openPr(7), false, false, false, false, false, false) });
+    const slack = new FakeSlack();
+    slack.pullRequestError = new Error("slack chat.postMessage HTTP error 500");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("opened");
+    // Failure path: no PR notified_at, no user_notified event.
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).toBeNull();
+    const detail = await db.getTicketDetail("a");
+    expect(detail?.events.some((e) => e.type === "user_notified")).toBe(false);
+    // The transition to waiting_for_human still succeeded (that is orthogonal to the Slack side-effect).
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+
   it("sends a validation-delayed notification when the CI deferral threshold expires", async () => {
     const db = await makeDb();
     await seedValidatingSlot(db, "A", prRef(7));
@@ -998,6 +1029,34 @@ describe("Scheduler.tick CI-in-progress deferral", () => {
 });
 
 describe("Scheduler.tick max-iteration notification", () => {
+  it("does not record a user_notified event when the max-iterations Slack post fails", async () => {
+    const db = await makeDb();
+    for (let i = 0; i < 5; i++) {
+      await seedCompletedTask(
+        db,
+        { state: "new", ticketId: "A", prs: [] },
+        { status: "done", prs: [prRef(7)] },
+      );
+    }
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7), true, false) });
+    const slack = new FakeSlack();
+    slack.maxIterationsError = new Error("slack chat.postMessage HTTP error 500");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, maxIterations: 5, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.maxIterationsCalls).toHaveLength(1);
+    // notifyMaxIterationsReached rejected — no user_notified event must exist for this ticket.
+    const detail = await db.getTicketDetail("a");
+    expect(detail?.events.some((e) => e.type === "user_notified")).toBe(false);
+    // Ticket status still moves to failed and slot still released — the failure is only about the notify side-effects.
+    expect(await db.readTicketStatus("a")).toEqual({ status: "failed", notify: 0 });
+  });
+
   it("sends a Slack notification when a ticket hits the iteration cap", async () => {
     const db = await makeDb();
     for (let i = 0; i < 5; i++) {

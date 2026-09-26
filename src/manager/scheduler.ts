@@ -765,11 +765,30 @@ async function enforceIterationLimit(
         );
         await db.setTicketStatus(ctx.ticket.id, "failed");
         await db.setSlotStatus(ctx.ticket.id, "released");
-        if (slack) {
+        if (!slack) {
+          logger.info(
+            {
+              ticketId: ctx.ticket.id,
+              ticketIdentifier: ctx.ticket.identifier,
+              notificationKind: "max_iterations_reached",
+            },
+            "slack integration not configured; skipping max-iterations notification",
+          );
+        } else {
+          const recipientEmail = ctx.ticket.assignee
+            ? (await linear.getUserEmail(ctx.ticket.assignee.id).catch((emailErr) => {
+                logger.warn(
+                  {
+                    err: emailErr,
+                    ticketId: ctx.ticket.id,
+                    notificationKind: "max_iterations_reached",
+                  },
+                  "linear.getUserEmail threw; will post max-iterations notification to channel",
+                );
+                return null;
+              })) ?? undefined
+            : undefined;
           try {
-            const recipientEmail = ctx.ticket.assignee
-              ? (await linear.getUserEmail(ctx.ticket.assignee.id)) ?? undefined
-              : undefined;
             await slack.notifyMaxIterationsReached({
               ticketId: ctx.ticket.identifier,
               ticketUrl: ctx.ticket.url,
@@ -777,6 +796,9 @@ async function enforceIterationLimit(
               maxIterations,
               recipientEmail,
             });
+            // Only record user_notified after a proven-successful send. notifyMaxIterationsReached
+            // now throws on chat.postMessage failure (HTTP / ok=false / network) — reaching this
+            // line means Slack accepted the post.
             void db.recordEvent({
               id: randomUUID(),
               ticketId: ctx.ticket.id,
@@ -790,7 +812,13 @@ async function enforceIterationLimit(
             });
           } catch (err) {
             logger.warn(
-              { err, ticketId: ctx.ticket.id },
+              {
+                err,
+                ticketId: ctx.ticket.id,
+                ticketIdentifier: ctx.ticket.identifier,
+                notificationKind: "max_iterations_reached",
+                stage: "failed",
+              },
               "failed to send max-iterations Slack notification",
             );
           }
@@ -829,4 +857,109 @@ function knownPrsForSlot(slot: TaskSlot): PullRequestRef[] {
 
 function isTerminalLinearTicket(ticket: Ticket): boolean {
   return TERMINAL_STATE_TYPES.includes(ticket.status.type) || TERMINAL_STATE_NAMES.includes(ticket.status.name);
+}
+
+type PrNotificationKind = "opened" | "updated" | "validation_delayed";
+
+/**
+ * Send waiting_for_human PR notifications to Slack, one grouped message per kind.
+ * Per-kind failures do not cascade: if `opened` throws, `updated` and
+ * `validation_delayed` still get attempted. Success side-effects
+ * (`db.markPrNotified`, `user_notified` event) run only for the kinds that
+ * Slack accepted — SlackIntegration throws on HTTP / ok=false / network so a
+ * silent failure cannot record a fake "notified" outcome (DEN-4167).
+ */
+async function sendPullRequestNotifications(
+  slack: SlackIntegration,
+  db: DbClient,
+  github: GitHubSource,
+  linear: LinearSource,
+  logger: Logger,
+  ticket: Ticket,
+  prs: PullRequestRef[],
+  runId: string,
+  validationTimedOut: boolean,
+  ciDeferralMaxMs: number,
+): Promise<void> {
+  const recipientEmail = ticket.assignee
+    ? await linear.getUserEmail(ticket.assignee.id).catch((emailErr) => {
+        logger.warn(
+          { err: emailErr, ticketId: ticket.id, notificationKind: "pull_request" },
+          "linear.getUserEmail threw; will post PR notification to channel",
+        );
+        return null;
+      })
+    : null;
+  const perPr = await Promise.all(
+    prs.map(async (prRef) => {
+      const prDbId = `${prRef.owner}/${prRef.repo}#${prRef.number}`;
+      const [prStatus, prNotifiedAt] = await Promise.all([
+        github.getPullRequestStatus(prRef),
+        db.getPrNotifiedAt(prDbId),
+      ]);
+      return {
+        prRef,
+        prDbId,
+        url: prStatus.pr.url,
+        kind: validationTimedOut
+          ? ("validation_delayed" as const)
+          : prNotifiedAt == null
+            ? ("opened" as const)
+            : ("updated" as const),
+      };
+    }),
+  );
+  const groups: PrNotificationKind[] = ["opened", "updated", "validation_delayed"];
+  for (const kind of groups) {
+    const items = perPr.filter((p) => p.kind === kind);
+    if (items.length === 0) continue;
+    const prRefsForLog = items.map((p) => ({ owner: p.prRef.owner, repo: p.prRef.repo, number: p.prRef.number }));
+    try {
+      await slack.notifyPullRequest({
+        kind,
+        prs: items.map((p) => ({ pr: p.prRef, url: p.url })),
+        title: ticket.title,
+        ticketId: ticket.identifier,
+        ticketUrl: ticket.url,
+        validationWaitMinutes: kind === "validation_delayed"
+          ? Math.max(1, Math.ceil(ciDeferralMaxMs / 60_000))
+          : undefined,
+        recipientEmail: recipientEmail ?? undefined,
+      });
+    } catch (err) {
+      logger.warn(
+        {
+          err,
+          ticketId: ticket.id,
+          ticketIdentifier: ticket.identifier,
+          notificationKind: kind,
+          prRefs: prRefsForLog,
+          stage: "failed",
+        },
+        "failed to send waiting_for_human Slack notification; will not mark PRs as notified",
+      );
+      continue;
+    }
+    for (const p of items) {
+      try {
+        await db.markPrNotified(p.prDbId);
+      } catch (markErr) {
+        logger.warn(
+          { err: markErr, ticketId: ticket.id, prDbId: p.prDbId, notificationKind: kind },
+          "failed to mark PR as notified after Slack send",
+        );
+      }
+      void db.recordEvent({
+        id: randomUUID(),
+        ticketId: ticket.id,
+        runId,
+        workerId: null,
+        source: "manager",
+        type: "user_notified",
+        summary: `user notified via Slack — PR #${p.prRef.number} in ${p.prRef.repo}`,
+        payloadJson: recipientEmail ? JSON.stringify({ recipientEmail }) : null,
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
 }

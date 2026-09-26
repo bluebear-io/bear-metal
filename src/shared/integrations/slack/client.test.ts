@@ -1,9 +1,28 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../../logger.js";
-import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackReadClient } from "./client.js";
+import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackPostMessageError, SlackReadClient } from "./client.js";
+import { pino } from "pino";
 
 const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
+
+type LogRecord = Record<string, unknown> & { level: number; stage?: string };
+
+function captureLogger(): { logger: ReturnType<typeof pino>; records: LogRecord[] } {
+  const records: LogRecord[] = [];
+  const logger = pino(
+    { level: "debug" },
+    {
+      write(chunk: string): void {
+        for (const line of chunk.split("\n")) {
+          if (!line) continue;
+          records.push(JSON.parse(line) as LogRecord);
+        }
+      },
+    } as unknown as NodeJS.WritableStream,
+  );
+  return { logger, records };
+}
 
 describe("SlackReadClient", () => {
   it("authenticates read requests with the agent bot token", async () => {
@@ -249,15 +268,16 @@ describe("SlackIntegration", () => {
     expect(body.text).toContain("PR opened");
   });
 
-  it("logs errors but does not throw when Slack returns ok=false", async () => {
+  it("throws SlackPostMessageError with ticketId + kind + slack error when Slack returns ok=false", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ ok: false, error: "channel_not_found" }), { status: 200 }),
     );
+    const { logger, records } = captureLogger();
     const slack = new SlackIntegration({
       token: "xoxb-test",
       channel: "C12345",
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      logger: SILENT_LOGGER,
+      logger,
     });
 
     await expect(
@@ -268,16 +288,30 @@ describe("SlackIntegration", () => {
         ticketId: "ABC-2",
         ticketUrl: "https://linear.app/x/ABC-2",
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(SlackPostMessageError);
+
+    const failed = records.find((r) => r.stage === "failed");
+    expect(failed).toMatchObject({
+      level: 50,
+      ticketId: "ABC-2",
+      notificationKind: "updated",
+      slackError: "channel_not_found",
+      stage: "failed",
+    });
+    // Never log the message body or the bot token.
+    const serialized = JSON.stringify(records);
+    expect(serialized).not.toContain("xoxb-test");
+    expect(serialized).not.toContain("Updated PR");
   });
 
-  it("logs errors but does not throw on HTTP error", async () => {
-    const fetchImpl = vi.fn(async () => new Response("nope", { status: 500 }));
+  it("throws SlackPostMessageError with httpStatus on chat.postMessage HTTP error", async () => {
+    const fetchImpl = vi.fn(async () => new Response("nope", { status: 500, statusText: "boom" }));
+    const { logger, records } = captureLogger();
     const slack = new SlackIntegration({
       token: "xoxb-test",
       channel: "C12345",
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      logger: SILENT_LOGGER,
+      logger,
     });
 
     await expect(
@@ -288,18 +322,29 @@ describe("SlackIntegration", () => {
         ticketId: "ABC-3",
         ticketUrl: "https://linear.app/x/ABC-3",
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(SlackPostMessageError);
+
+    const failed = records.find((r) => r.stage === "failed");
+    expect(failed).toMatchObject({
+      level: 50,
+      ticketId: "ABC-3",
+      notificationKind: "opened",
+      httpStatus: 500,
+      stage: "failed",
+    });
+    expect(failed?.prRefs).toEqual([{ owner: "acme", repo: "repo", number: 3 }]);
   });
 
-  it("logs errors but does not throw when fetch rejects", async () => {
+  it("throws SlackPostMessageError when fetch rejects (network / timeout)", async () => {
     const fetchImpl = vi.fn(async () => {
-      throw new Error("network");
+      throw new Error("ETIMEDOUT");
     });
+    const { logger, records } = captureLogger();
     const slack = new SlackIntegration({
       token: "xoxb-test",
       channel: "C12345",
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      logger: SILENT_LOGGER,
+      logger,
     });
 
     await expect(
@@ -310,7 +355,16 @@ describe("SlackIntegration", () => {
         ticketId: "ABC-4",
         ticketUrl: "https://linear.app/x/ABC-4",
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(SlackPostMessageError);
+
+    const failed = records.find((r) => r.stage === "failed");
+    expect(failed).toMatchObject({
+      level: 50,
+      ticketId: "ABC-4",
+      notificationKind: "opened",
+      stage: "failed",
+    });
+    expect(failed?.err ?? failed?.error).toBeDefined();
   });
 
   it("throws when constructed without a token or channel", () => {

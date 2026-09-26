@@ -46,6 +46,7 @@ export type {
 } from "./integrations/github/types.js";
 export {
   SlackIntegration,
+  SlackPostMessageError,
   SlackReadClient,
   formatNotificationText,
   formatNeedsInputText,
