@@ -19,10 +19,12 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
   const root = normalizeWorkspaceRoot(workspaceRoot);
   const cacheHome = resolve(homedir(), ".bear-metal", "cache-home");
   const localBash = createLocalBashOperations();
+  let cacheHomeReady: ReturnType<typeof mkdir> | undefined;
   const bashOperations: BashOperations = {
     exec: async (command, _cwd, options) => {
       validateWorkspaceBashCommand(command, root);
-      await mkdir(cacheHome, { recursive: true, mode: 0o700 });
+      cacheHomeReady ??= mkdir(cacheHome, { recursive: true, mode: 0o700 });
+      await cacheHomeReady;
       return localBash.exec(command, root, {
         ...options,
         env: {
