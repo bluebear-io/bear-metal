@@ -214,7 +214,7 @@ docker run --rm \
   --read-only \
   --tmpfs /tmp \
   --tmpfs /root/.bear-metal/cache-home \
-  -v bear-metal-data:/data \
+  -v bear-metal-data:/app/data \
   -v bear-metal-workspace:/workspace \
   -e BEAR_METAL_WORKSPACE_DIR=/workspace \
   -e LINEAR_CLIENT_ID=... \
