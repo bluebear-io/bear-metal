@@ -88,6 +88,7 @@ export interface SchedulerDeps {
    * hung / abandoned check run from silently blocking the Slack DM forever. Defaults to 60 min.
    */
   ciDeferralMaxMs?: number;
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>;
 }
 
 export class Scheduler {
@@ -180,6 +181,7 @@ export class Scheduler {
       this.ciDeferralStartedAt,
       this.deps.ciDeferralMaxMs ?? DEFAULT_CI_DEFERRAL_MAX_MS,
       this.deps.slack,
+      this.deps.shouldRetryCi,
     );
     const admitted = await admitNewTickets(
       db,
@@ -280,6 +282,7 @@ async function evaluateTicket(
   github: GitHubSource,
   db: DbClient,
   logger: Logger,
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>,
 ): Promise<TicketDecision> {
   if (isTerminalLinearTicket(ticket)) {
     logger.debug(
@@ -345,7 +348,15 @@ async function evaluateTicket(
     };
   }
 
-  const testsFailed = statuses.some((s) => s.testsFailed);
+  let testsFailed = false;
+  for (const status of statuses) {
+    const retry = shouldRetryCi ? await shouldRetryCi(status) : status.testsFailed;
+    if (typeof retry !== "boolean") throw new Error("config.shouldRetryCi must return a boolean");
+    if (retry) {
+      testsFailed = true;
+      break;
+    }
+  }
   const checksInProgress = statuses.some((s) => s.checksInProgress);
   const hasActionableUnresolvedComments = statuses.some((s) => s.hasActionableUnresolvedComments);
   const hasActionableIssueComments = statuses.some((s) => s.hasActionableIssueComments);
@@ -401,6 +412,7 @@ async function refreshTrackedTickets(
   ciDeferralStartedAt: Map<string, number>,
   ciDeferralMaxMs: number,
   slack?: SlackIntegration,
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>,
 ): Promise<DispatchItem[]> {
   const toDispatch: DispatchItem[] = [];
   for (const slot of await db.listTracked()) {
@@ -434,7 +446,7 @@ async function refreshTrackedTickets(
         continue;
       }
       const knownPrs = knownPrsForSlot(slot);
-      const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, db, logger);
+      const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, db, logger, shouldRetryCi);
       if (decision.remove) {
         if (decision.terminated) {
           logger.info({ ticket: ticket.identifier, linearStatus: ticket.status.name }, "linear ticket terminal; releasing slot as completed");

@@ -1,6 +1,7 @@
 import { constants, existsSync } from "node:fs";
 import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import {
   createBashToolDefinition,
   createEditToolDefinition,
@@ -16,17 +17,23 @@ import {
 
 export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: NodeJS.ProcessEnv): ToolDefinition[] {
   const root = normalizeWorkspaceRoot(workspaceRoot);
+  const cacheHome = resolve(homedir(), ".bear-metal", "cache-home");
   const localBash = createLocalBashOperations();
+  let cacheHomeReady: ReturnType<typeof mkdir> | undefined;
   const bashOperations: BashOperations = {
-    exec: (command, _cwd, options) => {
+    exec: async (command, _cwd, options) => {
       validateWorkspaceBashCommand(command, root);
+      cacheHomeReady ??= mkdir(cacheHome, { recursive: true, mode: 0o700 }).catch((error: unknown) => {
+        cacheHomeReady = undefined;
+        throw error;
+      });
+      await cacheHomeReady;
       return localBash.exec(command, root, {
         ...options,
         env: {
           ...options.env,
-          HOME: root,
+          HOME: cacheHome,
           PWD: root,
-          // git credentials and SSH→HTTPS rewrite — override HOME last so .netrc is found
           ...gitEnv,
         },
       });
@@ -49,7 +56,7 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
         cwd: root,
         env: {
           ...context.env,
-          HOME: root,
+          HOME: cacheHome,
           PWD: root,
           ...gitEnv,
         },

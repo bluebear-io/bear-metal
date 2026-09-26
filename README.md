@@ -50,9 +50,11 @@ The module is trusted deployment code. Bear Metal does not transpile it, install
 
 [**Canonical configuration, task, and customization types →**](src/customization/types.ts)
 
-The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, `maxIterations`, and `ciDeferralMaxMs` are optional.
+The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, `maxIterations`, `ciDeferralMaxMs`, and `shouldRetryCi` are optional.
 
 Secret getters are lazy and may read environment variables, files, workload APIs, or secret managers. Bear Metal owns the vendor clients and consumes each value only where the corresponding integration is used. `agentIntegrations` and each vendor inside it are optional and independent of the top-level deterministic integrations. Omitting an agent vendor means its tools are not shown to the coding agent. Omitting top-level `slack` disables notifications, while omitting database uses `sqlite:./data/bear-metal.sqlite`. `maxIterations` defaults to 50. `ciDeferralMaxMs` controls how long the manager waits for PR validation before sending a delayed-validation notification and defaults to 60 minutes.
+
+`shouldRetryCi(status)` receives each pull request's CI status and may return a boolean or a Promise of one: `true` dispatches another iteration for CI, `false` does not. If omitted, Bear Metal retries when any check run or commit status failed. Other dispatch reasons, such as review comments and merge conflicts, are unaffected. The status includes `context.failedCheckRuns` and `context.failedStatuses` for deployment-specific filtering.
 
 Example standalone JavaScript configuration:
 
@@ -125,6 +127,8 @@ The hook must return an LLM provider/model and an async `buildWorkspace({ worksp
 `llmProviders` is required and may be empty. It contains only key-based providers: Anthropic, OpenAI, and Google entries require lazy `getApiKey` functions. Only the key-based provider selected by `customizeTask` is resolved; selecting one without an entry fails that task with the exact configuration entry to add. Bedrock is not registered here because it uses the ambient AWS SDK credential chain.
 
 Bear Metal creates `workspacePath`, calls `buildWorkspace` with a ten-minute abort signal, requires a non-empty result, and removes its owned task workspace after success or failure. Builder code is responsible for cloning and authentication. The core Bear Metal system prompt is immutable; a truthy `additionalSystemPrompt` is appended. Limit fields independently default to 7,200,000 ms and 20,000,000 tokens.
+
+Agent shell commands use a dedicated cache-only `HOME` under `~/.bear-metal/cache-home`; it survives task workspace cleanup and is separate from the service user's normal home and temporary Git credentials. The workspace command guard is not an operating-system sandbox, so deployments must still isolate the worker process from host secrets.
 
 ## Environment variables
 
