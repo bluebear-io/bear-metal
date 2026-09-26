@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createLogger } from "../../logger.js";
+import { createLogger, type Logger } from "../../logger.js";
 import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackPostMessageError, SlackReadClient } from "./client.js";
 import { pino } from "pino";
 
@@ -8,7 +8,7 @@ const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
 
 type LogRecord = Record<string, unknown> & { level: number; stage?: string };
 
-function captureLogger(): { logger: ReturnType<typeof pino>; records: LogRecord[] } {
+function captureLogger(): { logger: Logger; records: LogRecord[] } {
   const records: LogRecord[] = [];
   const logger = pino(
     { level: "debug" },
@@ -20,7 +20,7 @@ function captureLogger(): { logger: ReturnType<typeof pino>; records: LogRecord[
         }
       },
     } as unknown as NodeJS.WritableStream,
-  );
+  ) as unknown as Logger;
   return { logger, records };
 }
 
