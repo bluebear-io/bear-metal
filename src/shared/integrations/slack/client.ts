@@ -148,29 +148,69 @@ export class SlackIntegration implements Integration {
 
   async notifyPullRequest(notification: PullRequestNotification): Promise<void> {
     const text = formatNotificationText(notification);
-    const channel = notification.recipientEmail
-      ? await this.resolveUserChannel(notification.recipientEmail)
-      : this.channel;
-    await this.postMessage(channel, text);
+    const prRefs = notification.prs.map(({ pr }) => ({ owner: pr.owner, repo: pr.repo, number: pr.number }));
+    const { channel, destinationType } = await this.selectChannel(notification.recipientEmail, {
+      ticketId: notification.ticketId,
+      notificationKind: notification.kind,
+      prRefs,
+    });
+    await this.postMessage(channel, text, {
+      ticketId: notification.ticketId,
+      notificationKind: notification.kind,
+      destinationType,
+      prRefs,
+    });
   }
 
   async notifyNeedsInput(notification: NeedsInputNotification): Promise<void> {
     const text = formatNeedsInputText(notification);
-    const channel = notification.recipientEmail
-      ? await this.resolveUserChannel(notification.recipientEmail)
-      : this.channel;
-    await this.postMessage(channel, text);
+    const { channel, destinationType } = await this.selectChannel(notification.recipientEmail, {
+      ticketId: notification.ticketId,
+      notificationKind: "needs_input",
+    });
+    await this.postMessage(channel, text, {
+      ticketId: notification.ticketId,
+      notificationKind: "needs_input",
+      destinationType,
+    });
   }
 
   async notifyMaxIterationsReached(notification: MaxIterationsReachedNotification): Promise<void> {
     const text = formatMaxIterationsReachedText(notification);
-    const channel = notification.recipientEmail
-      ? await this.resolveUserChannel(notification.recipientEmail)
-      : this.channel;
-    await this.postMessage(channel, text);
+    const { channel, destinationType } = await this.selectChannel(notification.recipientEmail, {
+      ticketId: notification.ticketId,
+      notificationKind: "max_iterations_reached",
+    });
+    await this.postMessage(channel, text, {
+      ticketId: notification.ticketId,
+      notificationKind: "max_iterations_reached",
+      destinationType,
+    });
   }
 
-  private async resolveUserChannel(email: string): Promise<string> {
+  private async selectChannel(
+    recipientEmail: string | undefined,
+    logCtx: PostLogContext,
+  ): Promise<{ channel: string; destinationType: "dm" | "channel" }> {
+    if (!recipientEmail) {
+      this.logger.debug(
+        { ...logCtx, destinationType: "channel", stage: "decision" },
+        "slack notification decision: no recipient email; will post to channel",
+      );
+      return { channel: this.channel, destinationType: "channel" };
+    }
+    const resolved = await this.resolveUserChannel(recipientEmail, logCtx);
+    this.logger.debug(
+      { ...logCtx, destinationType: resolved.destinationType, stage: "decision" },
+      "slack notification decision",
+    );
+    return resolved;
+  }
+
+  private async resolveUserChannel(
+    email: string,
+    logCtx: PostLogContext,
+  ): Promise<{ channel: string; destinationType: "dm" | "channel" }> {
     try {
       const response = await this.fetchImpl(
         `${this.apiBaseUrl}/users.lookupByEmail?email=${encodeURIComponent(email)}`,
@@ -178,29 +218,32 @@ export class SlackIntegration implements Integration {
       );
       if (!response.ok) {
         this.logger.warn(
-          { status: response.status, email },
+          { ...logCtx, httpStatus: response.status, email },
           "slack users.lookupByEmail HTTP error; falling back to channel",
         );
-        return this.channel;
+        return { channel: this.channel, destinationType: "channel" };
       }
       const body = (await response.json()) as { ok: boolean; user?: { id: string }; error?: string };
       if (!body.ok || !body.user?.id) {
         this.logger.warn(
-          { error: body.error, email },
+          { ...logCtx, slackError: body.error, email },
           "slack users.lookupByEmail returned ok=false; falling back to channel",
         );
-        return this.channel;
+        return { channel: this.channel, destinationType: "channel" };
       }
-      return body.user.id;
+      return { channel: body.user.id, destinationType: "dm" };
     } catch (err) {
-      this.logger.warn({ err, email }, "slack users.lookupByEmail threw; falling back to channel");
-      return this.channel;
+      this.logger.warn({ ...logCtx, err, email }, "slack users.lookupByEmail threw; falling back to channel");
+      return { channel: this.channel, destinationType: "channel" };
     }
   }
 
-  private async postMessage(channel: string, text: string): Promise<void> {
+  private async postMessage(channel: string, text: string, logCtx: PostLogContext): Promise<void> {
+    // Never log `text` (message body) or the bearer token — logCtx carries only ids/kinds.
+    this.logger.info({ ...logCtx, stage: "attempting" }, "slack chat.postMessage attempt");
+    let response: Response;
     try {
-      const response = await this.fetchImpl(`${this.apiBaseUrl}/chat.postMessage`, {
+      response = await this.fetchImpl(`${this.apiBaseUrl}/chat.postMessage`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
@@ -208,20 +251,51 @@ export class SlackIntegration implements Integration {
         },
         body: JSON.stringify({ channel, text, unfurl_links: false, unfurl_media: false }),
       });
-      if (!response.ok) {
-        this.logger.error(
-          { status: response.status, statusText: response.statusText, channel },
-          "slack chat.postMessage HTTP error",
-        );
-        return;
-      }
-      const body = (await response.json()) as { ok: boolean; error?: string };
-      if (!body.ok) {
-        this.logger.error({ error: body.error, channel }, "slack chat.postMessage returned ok=false");
-      }
     } catch (err) {
-      this.logger.error({ err, channel }, "slack chat.postMessage threw");
+      this.logger.error({ ...logCtx, stage: "failed", err }, "slack chat.postMessage threw");
+      throw new SlackPostMessageError(
+        `slack chat.postMessage threw: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err instanceof Error ? err : undefined },
+      );
     }
+    if (!response.ok) {
+      this.logger.error(
+        { ...logCtx, stage: "failed", httpStatus: response.status, statusText: response.statusText },
+        "slack chat.postMessage HTTP error",
+      );
+      throw new SlackPostMessageError(
+        `slack chat.postMessage HTTP error ${response.status} ${response.statusText}`.trim(),
+      );
+    }
+    const body = (await response.json()) as { ok: boolean; error?: string };
+    if (!body.ok) {
+      this.logger.error(
+        { ...logCtx, stage: "failed", slackError: body.error },
+        "slack chat.postMessage returned ok=false",
+      );
+      throw new SlackPostMessageError(`slack chat.postMessage returned ok=false: ${body.error ?? "unknown"}`);
+    }
+    this.logger.info({ ...logCtx, stage: "sent" }, "slack chat.postMessage sent");
+  }
+}
+
+interface PostLogContext {
+  ticketId: string;
+  notificationKind: string;
+  destinationType?: "dm" | "channel";
+  prRefs?: Array<{ owner: string; repo: string; number: number }>;
+}
+
+/**
+ * Thrown by SlackIntegration when a chat.postMessage attempt fails (HTTP
+ * non-2xx, Slack ok=false, or network/timeout). Callers use the throw to
+ * avoid recording success side-effects (e.g. pr.notified_at) for a send
+ * that did not land.
+ */
+export class SlackPostMessageError extends Error {
+  constructor(message: string, options?: { cause?: Error }) {
+    super(message, options);
+    this.name = "SlackPostMessageError";
   }
 }
 
