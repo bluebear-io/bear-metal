@@ -43,6 +43,54 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it("replaces a processed request from a Slack edit and reads from the original message", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    const oldTask = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find old answer", quote: "old answer" })).task;
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "Find new answer");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "Find new answer" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
+      if (!task.request) throw new Error("Coordinator request missing");
+      const payload = JSON.parse(task.request) as { messages: Array<{ ts: string; kind: string; originalMessageTs: string; text: string; readReference: { messageTs: string } }> };
+      expect(payload.messages).toEqual([expect.objectContaining({ ts: "100.2", kind: "edit", originalMessageTs: "100.1", text: "Find new answer", readReference: expect.objectContaining({ messageTs: "100.1" }) })]);
+      const revision = tools.find((tool) => tool.name === "get_message_revision");
+      if (!revision) throw new Error("get_message_revision missing");
+      expect(await revision.execute("revision", { sourceTs: "100.2" }, undefined, undefined, {} as never)).toEqual(expect.objectContaining({ content: [{ type: "text", text: JSON.stringify({ ts: "100.2", originalTs: "100.1", user: "U1", text: "Find new answer" }) }] }));
+      const update = tools.find((tool) => tool.name === "update_task");
+      if (!update) throw new Error("update_task missing");
+      await update.execute("update", { id: oldTask.id, sourceTs: "100.2", requestIndex: 1, type: "research", request: "Find new answer", quote: "new answer" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(vi.mocked(api.readThread)).toHaveBeenCalledWith(key, "100.1");
+      expect((await db.getSlackTask(oldTask.id))?.state).toBe("canceled");
+      expect((await db.listSlackThreadTasks(key)).find((task) => task.sourceTs === "100.2")?.request).toBe("Find new answer");
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+  it("cancels a task when its source message is edited to withdraw the request", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    const oldTask = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find answer", quote: "answer" })).task;
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "Never mind");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "Never mind" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const cancel = tools.find((tool) => tool.name === "cancel_task");
+      if (!cancel) throw new Error("cancel_task missing");
+      await cancel.execute("cancel", { id: oldTask.id, sourceTs: "100.2" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect((await db.getSlackTask(oldTask.id))?.state).toBe("canceled");
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
   it("fills gaps between pending replies from a bounded read", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();

@@ -30,6 +30,7 @@ describe("Slack event intake", () => {
     try {
       expect((await send({ type: "message", channel: "C1", ts: "100.1", thread_ts: "100.0", user: "U1" })).status).toBe(200);
       expect((await send({ type: "message", channel: "C1", ts: "100.3", thread_ts: "100.0", user: "U2" })).status).toBe(200);
+      expect((await send({ type: "message", subtype: "message_changed", channel: "C1", ts: "100.35", message: { ts: "100.1", thread_ts: "100.0", user: "U1", text: "Changed old message" } })).status).toBe(200);
       expect(await db.listSlackPendingThreads()).toEqual([]);
       expect(await db.listSlackPendingMessages({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" })).toEqual([]);
       expect(wake).not.toHaveBeenCalled();
@@ -58,10 +59,13 @@ describe("Slack event intake", () => {
     try {
       await send({ type: "app_mention", channel: "C1", ts: "300.1", user: "U1" });
       await send({ type: "message", subtype: "file_share", channel: "C1", ts: "300.2", thread_ts: "300.1", user: "U1", files: [{ id: "F1" }] });
-      await send({ type: "message", subtype: "message_changed", channel: "C1", ts: "300.3", thread_ts: "300.1", user: "U1" });
+      const edit = { type: "message", subtype: "message_changed", channel: "C1", ts: "300.3", message: { ts: "300.2", thread_ts: "300.1", user: "U1", text: "Use the new attachment" } };
+      await send(edit);
+      await send(edit);
+      await send({ type: "message", subtype: "message_changed", channel: "C1", ts: "300.35", message: { ts: "300.2", thread_ts: "300.1", user: "UBOT", text: "Bot edit" } });
       await send({ type: "message", subtype: "file_share", channel: "C1", ts: "300.4", thread_ts: "300.1", user: "UBOT" });
-      expect(await db.listSlackPendingMessages({ workspaceId: "T1", channelId: "C1", threadTs: "300.1" })).toEqual(["300.1", "300.2"]);
-      expect(wake).toHaveBeenCalledTimes(2);
+      expect(await db.listSlackPendingMessages({ workspaceId: "T1", channelId: "C1", threadTs: "300.1" })).toEqual(["300.1", "300.2", "300.3"]);
+      expect(wake).toHaveBeenCalledTimes(3);
     } finally {
       await db.close();
     }

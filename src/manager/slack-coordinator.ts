@@ -17,7 +17,7 @@ function safeSlackLine(text: string): string {
 }
 
 function messagePrompt(payload: string): string {
-  return `Infer the tasks requested by the new Slack messages and use the task tools to create, update, or cancel tasks. For each independent new coding request, call create_ticket. You can use list_ticket_destinations to resolve the team or an applicable project for the ticket. For each new research question, call start_research with the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; call ignore_message for the superseded request and cancel_task or ignore_message for the withdrawal, as appropriate. Make at least one decision for every message in this batch. The JSON messages array is that current group, processed together in this run. Earlier thread replies are context; tasks created from previously processed messages appear in the task summaries. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. If a message has no request directed at Bear Metal, call ignore_message with its sourceTs and reason. Do not post to Slack.\n${payload}`;
+  return `Infer the tasks requested by the new Slack messages and use the task tools to create, update, or cancel tasks. An entry with kind "edit" revises the message identified by originalMessageTs; check tasks from that original message and call update_task or cancel_task if its request changed or was withdrawn. Use the edit entry's ts as sourceTs for task tools. If this batch contains the original or multiple edits of it, ignore every superseded version and act on the latest edit. Follow supersededBy links or use get_thread_task to find the current task after earlier edits. For each independent new coding request, call create_ticket. You can use list_ticket_destinations to resolve the team or an applicable project for the ticket. For each new research question, call start_research with the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; call ignore_message for the superseded request and cancel_task or ignore_message for the withdrawal, as appropriate. Make at least one decision for every message in this batch. The JSON messages array is that current group, processed together in this run. Earlier thread replies are context; tasks created from previously processed messages appear in the task summaries. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated edit text, use get_message_revision; for other truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. If a message has no request directed at Bear Metal, call ignore_message with its sourceTs and reason. Do not post to Slack.\n${payload}`;
 }
 
 function researchResultPrompt(key: SlackThreadKey, task: SlackTaskRecord): string {
@@ -85,16 +85,22 @@ export class SlackCoordinator {
     for (;;) {
       const pending = await this.input.db.listSlackPendingMessages(key);
       if (pending.length > 0) {
-        const thread = await this.input.api.readThread(key, pending[0]!);
-        if (!thread.some((message) => message.ts === pending.at(-1))) throw new Error(`Slack thread ${key.channelId}/${key.threadTs} omitted latest pending message ${pending.at(-1)}`);
+        const pendingEdits = await this.input.db.listSlackPendingEdits(key);
+        const editSources = new Map(pendingEdits.map((edit) => [edit.ts, edit.originalTs]));
+        const oldest = pending.map((ts) => editSources.get(ts) ?? ts).sort()[0]!;
+        const thread = await this.input.api.readThread(key, oldest);
+        const latestSource = editSources.get(pending.at(-1)!) ?? pending.at(-1)!;
+        if (!thread.some((message) => message.ts === latestSource)) throw new Error(`Slack thread ${key.channelId}/${key.threadTs} omitted latest pending message ${pending.at(-1)}`);
         for (const message of thread) {
           if (message.user && message.user !== this.input.botUserId && !message.botId && (!message.subtype || message.subtype === "file_share")) {
             await this.input.db.recordSlackMessage(key, message.ts);
           }
         }
         const availableTs = new Set(thread.map((message) => message.ts));
-        const batch = (await this.input.db.listSlackPendingMessages(key)).filter((ts) => availableTs.has(ts));
-        const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key));
+        const edits = await this.input.db.listSlackPendingEdits(key);
+        const sources = new Map(edits.map((edit) => [edit.ts, edit.originalTs]));
+        const batch = (await this.input.db.listSlackPendingMessages(key)).filter((ts) => availableTs.has(sources.get(ts) ?? ts));
+        const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key), edits);
         const decisions = new Set<string>();
         const tools = this.createTools(key, batch, undefined, decisions);
         const task: Task = {
@@ -254,6 +260,18 @@ export class SlackCoordinator {
         }),
       }),
       getThreadTask,
+      defineTool({
+        name: "get_message_revision",
+        label: "Read Slack edit revision",
+        description: "Read the complete saved text of a Slack edit in this coordinator batch. Use when an edit entry is truncated: slack_read shows the message's latest text, which may differ if it was edited again. Pass the edit entry's ts, not originalMessageTs.",
+        parameters: Type.Object({ sourceTs: Type.String({ minLength: 1, description: "The edit entry's ts from the JSON messages array; this is its revision timestamp, not originalMessageTs." }) }),
+        execute: async (_id, params) => {
+          requireSource(params.sourceTs);
+          const edit = (await this.input.db.listSlackPendingEdits(key)).find((item) => item.ts === params.sourceTs);
+          if (!edit) throw new Error(`Slack edit ${params.sourceTs} is not pending`);
+          return { content: [{ type: "text", text: JSON.stringify(edit) }], details: {} };
+        },
+      }),
       defineTool({
         name: "create_ticket",
         label: "Create coding ticket",

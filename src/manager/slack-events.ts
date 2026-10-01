@@ -16,6 +16,7 @@ interface SlackEventEnvelope {
     thread_ts?: string;
     user?: string;
     bot_id?: string;
+    message?: { ts?: string; thread_ts?: string; user?: string; bot_id?: string; text?: string; subtype?: string };
   };
 }
 
@@ -65,6 +66,23 @@ export function createSlackEventsRouter(input: {
       const event = payload.event;
       if (!event || (event.type !== "app_mention" && event.type !== "message")) {
         res.sendStatus(200);
+        return;
+      }
+      if (event.subtype === "message_changed") {
+        const edited = event.message;
+        if (!payload.team_id || !event.channel || !event.ts || !edited?.ts || !edited.user || typeof edited.text !== "string") {
+          throw new Error("Slack message edit omitted workspace, channel, timestamp, user, or text");
+        }
+        if (event.bot_id || edited.bot_id || edited.user === input.botUserId || edited.subtype) {
+          res.sendStatus(200);
+          return;
+        }
+        const key: SlackThreadKey = {
+          workspaceId: payload.team_id, channelId: event.channel, threadTs: edited.thread_ts ?? event.thread_ts ?? edited.ts,
+        };
+        const inserted = await input.db.recordSlackEdit(key, event.ts, edited.ts, edited.user, edited.text);
+        res.sendStatus(200);
+        if (inserted) void input.wake(key).catch((err) => input.logger.error({ err, key }, "Slack thread wake failed"));
         return;
       }
       if ((event.subtype && event.subtype !== "file_share") || event.bot_id || event.user === input.botUserId) {

@@ -90,6 +90,13 @@ export interface SlackThreadKey {
   threadTs: string;
 }
 
+export interface SlackMessageEdit {
+  ts: string;
+  originalTs: string;
+  user: string;
+  text: string;
+}
+
 export interface SlackTaskRecord {
   id: string;
   type: "coding" | "research";
@@ -534,6 +541,8 @@ export interface DbClient {
   followSlackThread(key: SlackThreadKey, firstMessageTs: string): Promise<void>;
   hasSlackThread(key: SlackThreadKey): Promise<boolean>;
   recordSlackMessage(key: SlackThreadKey, messageTs: string): Promise<boolean>;
+  recordSlackEdit(key: SlackThreadKey, eventTs: string, originalTs: string, user: string, text: string): Promise<boolean>;
+  listSlackPendingEdits(key: SlackThreadKey): Promise<SlackMessageEdit[]>;
   listSlackPendingThreads(): Promise<SlackThreadKey[]>;
   listSlackPendingMessages(key: SlackThreadKey): Promise<string[]>;
   markSlackMessagesProcessed(key: SlackThreadKey, messageTs: string[]): Promise<void>;
@@ -1164,6 +1173,27 @@ export class SqlDbClient implements DbClient {
         key.workspaceId, key.channelId, key.threadTs, messageTs],
     );
     return result.changes === 1;
+  }
+
+  async recordSlackEdit(key: SlackThreadKey, eventTs: string, originalTs: string, user: string, text: string): Promise<boolean> {
+    const result = await this.run(
+      `INSERT INTO slack_processed_messages (workspace_id, channel_id, message_ts, thread_ts, original_message_ts, edited_user, edited_text, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ? FROM slack_threads
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND first_message_ts <= ?
+       ON CONFLICT (workspace_id, channel_id, message_ts) DO NOTHING`,
+      [key.workspaceId, key.channelId, eventTs, key.threadTs, originalTs, user, text, this.clock.nowIso(),
+        key.workspaceId, key.channelId, key.threadTs, originalTs],
+    );
+    return result.changes === 1;
+  }
+
+  async listSlackPendingEdits(key: SlackThreadKey): Promise<SlackMessageEdit[]> {
+    const rows = await this.query<{ message_ts: string; original_message_ts: string; edited_user: string; edited_text: string }>(
+      `SELECT message_ts, original_message_ts, edited_user, edited_text FROM slack_processed_messages
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND processed_at IS NULL AND original_message_ts IS NOT NULL`,
+      [key.workspaceId, key.channelId, key.threadTs],
+    );
+    return rows.map((row) => ({ ts: row.message_ts, originalTs: row.original_message_ts, user: row.edited_user, text: row.edited_text }));
   }
 
   async listSlackPendingThreads(): Promise<SlackThreadKey[]> {

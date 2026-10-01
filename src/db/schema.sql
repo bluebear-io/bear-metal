@@ -235,6 +235,9 @@ CREATE TABLE IF NOT EXISTS slack_processed_messages (
   created_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, channel_id, message_ts)
 );
+ALTER TABLE slack_processed_messages ADD COLUMN original_message_ts TEXT;
+ALTER TABLE slack_processed_messages ADD COLUMN edited_text TEXT;
+ALTER TABLE slack_processed_messages ADD COLUMN edited_user TEXT;
 
 CREATE INDEX IF NOT EXISTS slack_messages_pending ON slack_processed_messages
   (workspace_id, channel_id, thread_ts, processed_at);
