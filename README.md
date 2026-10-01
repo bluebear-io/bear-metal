@@ -107,7 +107,7 @@ export default {
       async buildWorkspace({ workspacePath, signal }) {
         await exec("git", ["clone", "https://github.com/example/repository", workspacePath], { signal });
       },
-      additionalSystemPrompt: task.priority === "urgent"
+      additionalSystemPrompt: !("type" in task) && task.priority === "urgent"
         ? "Prioritize the smallest safe change."
         : undefined,
       limits: { maxDurationMs: 7_200_000, maxTokens: 20_000_000 },
@@ -120,7 +120,7 @@ The same module may be `.mts`; use the canonical source above as the typing refe
 
 ## Task customization
 
-`customizeTask` receives the deeply frozen, tracker-neutral [`Task` contract](src/customization/types.ts). It includes normalized task identity, workflow, priority, labels, project, assignee, timestamps, discussion, relations, repositories, run context, and pull-request context. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
+`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, or a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
 
 The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt` and independent duration/token limits. See the canonical source for the exact nested DTO and return shapes.
 
@@ -258,11 +258,13 @@ For a deployed smoke test, delegate one task for each branch of your `customizeT
 
 Both Slack apps are optional and independent. Create them at [Slack App Management](https://api.slack.com/apps) using **Create New App → From scratch**.
 
-The first app is used only by the trusted harness for deterministic notifications. Omit the top-level `slack` configuration to disable notifications.
+The first app is used by the trusted harness for notifications and, when `slack.getSigningSecret` is configured, thread requests. Omit the top-level `slack` configuration to disable both.
+Incoming events must belong to the workspace reported by that app's bot token. The Slack Events endpoint runs in the manager process when `API_ONLY` is false.
 
-1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write` and `chat:write.public`.
+1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write`, `chat:write.public`, `channels:history`, `groups:history`, `im:history`, and `files:read`.
 2. Select **Install to Workspace**, approve the installation, and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
 3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
+4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow. Every new top-level DM to the app starts a thread; in channels, an `@Bear Metal` mention starts one.
 
 The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
 

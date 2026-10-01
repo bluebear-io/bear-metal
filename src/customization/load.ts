@@ -35,6 +35,7 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
     const slack = object(config.slack, "config.slack");
     nonEmptyString(slack.notificationChannel, "config.slack.notificationChannel");
     callable(slack.getBotToken, "config.slack.getBotToken");
+    if (slack.getSigningSecret !== undefined) callable(slack.getSigningSecret, "config.slack.getSigningSecret");
   }
   if (config.agentIntegrations !== undefined) {
     const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");

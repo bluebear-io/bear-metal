@@ -1,10 +1,27 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools, validateWorkspaceBashCommand } from "./workspace-guard.js";
 
 describe("workspace guard", () => {
+  it("rejects research file reads outside the cloned workspace", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "bear-metal-research-workspace-"));
+    const outside = await mkdtemp(join(tmpdir(), "bear-metal-research-outside-"));
+    try {
+      const secret = join(outside, "secret.txt");
+      await writeFile(secret, "host secret");
+      await symlink(secret, join(workspace, "linked-secret.txt"));
+      const read = createWorkspaceGuardedTools(workspace).find((tool) => tool.name === "read");
+      if (!read) throw new Error("read tool missing");
+      const execute = read.execute as unknown as (id: string, params: { path: string }) => Promise<unknown>;
+      await expect(execute("absolute", { path: secret })).rejects.toThrow(/outside workspace/);
+      await expect(execute("symlink", { path: join(workspace, "linked-secret.txt") })).rejects.toThrow(/outside workspace/);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
   it("keeps language caches outside the disposable workspace", async () => {
     const home = await mkdtemp(join(tmpdir(), "bear-metal-home-test-"));
     const workspace = await mkdtemp(join(tmpdir(), "bear-metal-workspace-test-"));

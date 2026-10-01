@@ -669,7 +669,7 @@ async function readAgentsMd(repoRoot: string): Promise<string | undefined> {
 const MAX_AGENT_TOOL_RESULT_CHARS = 64_000;
 const AGENT_TOOL_NAMES = new Set<AgentToolName>(["github_read", "linear_read", "slack_read", "web_get", "github_dispatch"]);
 
-function createAgentGatewayTools(
+export function createAgentGatewayTools(
   gateway: AgentToolGatewayLike,
   context: { taskId: string; runId: string; workspaceRoot: string },
 ) {

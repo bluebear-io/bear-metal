@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import express, { type ErrorRequestHandler, type Express } from "express";
+import express, { type ErrorRequestHandler, type Express, type Router } from "express";
 import type { DbClient } from "../db/client.js";
 import { createRouter } from "./routes.js";
 import type { LinearSource } from "./scheduler.js";
@@ -22,11 +22,12 @@ const managerApiErrorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   res.status(500).json({ error: "oops, something went wrong" });
 };
 
-export function createApp(db: DbClient, maxIterations: number, linear: LinearSource): Express {
+export function createApp(db: DbClient, maxIterations: number, linear: LinearSource, slackEvents?: Router): Express {
   const app = express();
+  if (slackEvents) app.use("/slack", slackEvents);
   app.use(express.json());
   app.use("/api", createRouter(db, maxIterations, linear));
-  app.use("/api", managerApiErrorHandler);
+  app.use(managerApiErrorHandler);
   app.use(express.static(UI_DIST));
   // SPA fallback — all non-API routes serve index.html so React Router handles them
   app.get("*", (_req, res) => {

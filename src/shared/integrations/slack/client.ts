@@ -170,6 +170,22 @@ export class SlackIntegration implements Integration {
     await this.postMessage(channel, text);
   }
 
+  async postThreadMessage(channel: string, threadTs: string, text: string): Promise<string> {
+    if (!channel || !threadTs || !text.trim()) throw new Error("Slack thread reply requires channel, thread timestamp, and text");
+    const response = await this.fetchImpl(`${this.apiBaseUrl}/chat.postMessage`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${this.token}`,
+      },
+      body: JSON.stringify({ channel, thread_ts: threadTs, text, unfurl_links: false, unfurl_media: false }),
+    });
+    if (!response.ok) throw new Error(`Slack chat.postMessage HTTP ${response.status}`);
+    const body = (await response.json()) as { ok?: boolean; ts?: string; error?: string };
+    if (!body.ok || !body.ts) throw new Error(`Slack chat.postMessage failed: ${body.error ?? "missing ts"}`);
+    return body.ts;
+  }
+
   private async resolveUserChannel(email: string): Promise<string> {
     try {
       const response = await this.fetchImpl(

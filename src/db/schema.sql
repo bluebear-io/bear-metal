@@ -32,6 +32,19 @@ CREATE TABLE IF NOT EXISTS tasks (
   result_status TEXT,
   result_json TEXT,
   slot_status TEXT NOT NULL DEFAULT 'active',
+  task_type TEXT NOT NULL DEFAULT 'coding',
+  slack_workspace_id TEXT,
+  slack_channel_id TEXT,
+  slack_thread_ts TEXT,
+  slack_source_ts TEXT,
+  slack_request_index INTEGER,
+  slack_request TEXT,
+  slack_quote TEXT,
+  slack_state TEXT,
+  slack_reply_ts TEXT,
+  slack_ack_state TEXT,
+  coordinated_at TEXT,
+  superseded_by TEXT,
   iteration_number INTEGER NOT NULL DEFAULT 1,
   worker_heartbeat_at TEXT,
   reclaim_count INTEGER NOT NULL DEFAULT 0,
@@ -79,6 +92,19 @@ ALTER TABLE tasks ADD COLUMN worker_id TEXT;
 ALTER TABLE tasks ADD COLUMN result_status TEXT;
 ALTER TABLE tasks ADD COLUMN result_json TEXT;
 ALTER TABLE tasks ADD COLUMN slot_status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'coding';
+ALTER TABLE tasks ADD COLUMN slack_workspace_id TEXT;
+ALTER TABLE tasks ADD COLUMN slack_channel_id TEXT;
+ALTER TABLE tasks ADD COLUMN slack_thread_ts TEXT;
+ALTER TABLE tasks ADD COLUMN slack_source_ts TEXT;
+ALTER TABLE tasks ADD COLUMN slack_request_index INTEGER;
+ALTER TABLE tasks ADD COLUMN slack_request TEXT;
+ALTER TABLE tasks ADD COLUMN slack_quote TEXT;
+ALTER TABLE tasks ADD COLUMN slack_state TEXT;
+ALTER TABLE tasks ADD COLUMN slack_reply_ts TEXT;
+ALTER TABLE tasks ADD COLUMN slack_ack_state TEXT;
+ALTER TABLE tasks ADD COLUMN coordinated_at TEXT;
+ALTER TABLE tasks ADD COLUMN superseded_by TEXT;
 ALTER TABLE tasks ADD COLUMN iteration_number INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE tasks ADD COLUMN worker_heartbeat_at TEXT;
 ALTER TABLE tasks ADD COLUMN reclaim_count INTEGER NOT NULL DEFAULT 0;
@@ -190,3 +216,27 @@ CREATE TABLE IF NOT EXISTS ticket_statuses (
   notify     INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS slack_threads (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  first_message_ts TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, channel_id, thread_ts)
+);
+
+CREATE TABLE IF NOT EXISTS slack_processed_messages (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  message_ts TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  processed_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, channel_id, message_ts)
+);
+
+CREATE INDEX IF NOT EXISTS slack_messages_pending ON slack_processed_messages
+  (workspace_id, channel_id, thread_ts, processed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS slack_task_request ON tasks
+  (slack_workspace_id, slack_channel_id, slack_source_ts, slack_request_index);

@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   builtWith: [] as string[],
   userFn: vi.fn(),
   issueFn: vi.fn(),
+  createIssueFn: vi.fn(),
   rawRequestFn: vi.fn(),
   AuthErr: class AuthenticationLinearError extends Error {},
 }));
@@ -27,6 +28,9 @@ vi.mock("@linear/sdk", () => {
     }
     issue(id: string) {
       return h.issueFn(this.accessToken, id);
+    }
+    createIssue(input: Record<string, unknown>) {
+      return h.createIssueFn(this.accessToken, input);
     }
   }
   return { LinearClient, AuthenticationLinearError: h.AuthErr };
@@ -91,7 +95,17 @@ beforeEach(() => {
   h.builtWith.length = 0;
   h.userFn.mockReset();
   h.issueFn.mockReset();
+  h.createIssueFn.mockReset();
   h.rawRequestFn.mockReset();
+});
+
+describe("LinearIntegration Slack ticket creation", () => {
+  it("omits projectId when creating a team ticket without a project", async () => {
+    h.createIssueFn.mockResolvedValue({ success: true, issue: Promise.resolve({ id: "issue-1", url: "https://linear.app/issue/DEN-1", identifier: "DEN-1" }) });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    await linear.createSlackCodingTicket({ teamId: "team-1", title: "Title", description: "Description" });
+    expect(h.createIssueFn).toHaveBeenCalledWith("tok", { teamId: "team-1", title: "Title", description: "Description" });
+  });
 });
 
 describe("LinearIntegration getTicket", () => {
