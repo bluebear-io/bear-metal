@@ -3,6 +3,13 @@ import type { SlackReadClient, SlackIntegration } from "../shared/integrations/s
 import { SlackThreadApi } from "./slack-thread-api.js";
 
 describe("Slack thread reader", () => {
+  it("bounds an edited message read to its original timestamp", async () => {
+    const call = vi.fn(async () => ({ ok: true, messages: [{ ts: "100.1", user: "U1", text: "edited" }] }));
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    const messages = await api.readThread({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "100.1", "100.1");
+    expect(messages.map((message) => message.ts)).toEqual(["100.1"]);
+    expect(call).toHaveBeenCalledWith("conversations.replies", { channel: "C1", ts: "100.0", oldest: "100.1", latest: "100.1", inclusive: true, limit: 1 });
+  });
   it("starts at the oldest pending reply inclusively and paginates forward", async () => {
     const call = vi.fn()
       .mockResolvedValueOnce({ ok: true, messages: [{ ts: "100.2", user: "U1", text: "pending" }], has_more: true, response_metadata: { next_cursor: "next" } })

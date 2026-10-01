@@ -87,8 +87,18 @@ export class SlackCoordinator {
       if (pending.length > 0) {
         const pendingEdits = await this.input.db.listSlackPendingEdits(key);
         const editSources = new Map(pendingEdits.map((edit) => [edit.ts, edit.originalTs]));
-        const oldest = pending.map((ts) => editSources.get(ts) ?? ts).sort()[0]!;
-        const thread = await this.input.api.readThread(key, oldest);
+        const newMessages = pending.filter((ts) => !editSources.has(ts));
+        const thread = newMessages.length > 0 ? await this.input.api.readThread(key, newMessages[0]!) : [];
+        const fetched = new Set(thread.map((message) => message.ts));
+        for (const originalTs of new Set(pending.map((ts) => editSources.get(ts)).filter((ts): ts is string => ts !== undefined))) {
+          if (fetched.has(originalTs)) continue;
+          const editedMessage = await this.input.api.readThread(key, originalTs, originalTs);
+          if (editedMessage.length !== 1 || editedMessage[0]!.ts !== originalTs) {
+            throw new Error(`Slack thread ${key.channelId}/${key.threadTs} omitted edited message ${originalTs}`);
+          }
+          thread.push(editedMessage[0]!);
+          fetched.add(originalTs);
+        }
         const latestSource = editSources.get(pending.at(-1)!) ?? pending.at(-1)!;
         if (!thread.some((message) => message.ts === latestSource)) throw new Error(`Slack thread ${key.channelId}/${key.threadTs} omitted latest pending message ${pending.at(-1)}`);
         for (const message of thread) {

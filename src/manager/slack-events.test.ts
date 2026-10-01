@@ -59,7 +59,7 @@ describe("Slack event intake", () => {
     try {
       await send({ type: "app_mention", channel: "C1", ts: "300.1", user: "U1" });
       await send({ type: "message", subtype: "file_share", channel: "C1", ts: "300.2", thread_ts: "300.1", user: "U1", files: [{ id: "F1" }] });
-      const edit = { type: "message", subtype: "message_changed", channel: "C1", ts: "300.3", message: { ts: "300.2", thread_ts: "300.1", user: "U1", text: "Use the new attachment" } };
+      const edit = { type: "message", subtype: "message_changed", channel: "C1", ts: "300.3", message: { ts: "300.2", thread_ts: "300.1", user: "U1", subtype: "file_share", text: "Use the new attachment" } };
       await send(edit);
       await send(edit);
       await send({ type: "message", subtype: "message_changed", channel: "C1", ts: "300.35", message: { ts: "300.2", thread_ts: "300.1", user: "UBOT", text: "Bot edit" } });

@@ -14,7 +14,7 @@ export interface SlackThreadMessage {
 export class SlackThreadApi {
   constructor(private readonly readClient: SlackReadClient, private readonly writer: SlackIntegration) {}
 
-  async readThread(key: SlackThreadKey, oldest: string): Promise<SlackThreadMessage[]> {
+  async readThread(key: SlackThreadKey, oldest: string, latest?: string): Promise<SlackThreadMessage[]> {
     const messages: SlackThreadMessage[] = [];
     let cursor: string | undefined;
     const seenCursors = new Set<string>();
@@ -23,8 +23,9 @@ export class SlackThreadApi {
         channel: key.channelId,
         ts: key.threadTs,
         oldest,
+        ...(latest ? { latest } : {}),
         inclusive: true,
-        limit: 200,
+        limit: latest ? 1 : 200,
         ...(cursor ? { cursor } : {}),
       }) as {
         ok?: boolean;

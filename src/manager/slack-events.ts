@@ -73,7 +73,7 @@ export function createSlackEventsRouter(input: {
         if (!payload.team_id || !event.channel || !event.ts || !edited?.ts || !edited.user || typeof edited.text !== "string") {
           throw new Error("Slack message edit omitted workspace, channel, timestamp, user, or text");
         }
-        if (event.bot_id || edited.bot_id || edited.user === input.botUserId || edited.subtype) {
+        if (event.bot_id || edited.bot_id || edited.user === input.botUserId || (edited.subtype && edited.subtype !== "file_share")) {
           res.sendStatus(200);
           return;
         }

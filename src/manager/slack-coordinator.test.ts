@@ -43,6 +43,42 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it("bounds old edits while backfilling gaps after pending new replies", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "Edited request");
+    await db.recordSlackMessage(key, "100.8");
+    const api = {
+      readThread: vi.fn(async (_key: SlackThreadKey, oldest: string, latest?: string) => {
+        if (oldest === "100.1" && latest === "100.1") return [{ ts: "100.1", user: "U1", text: "Edited request" }];
+        if (oldest === "100.8" && latest === undefined) return [
+          { ts: "100.8", user: "U1", text: "Pending" },
+          { ts: "100.9", user: "U1", text: "Gap reply" },
+        ];
+        throw new Error(`Unexpected Slack read ${oldest}/${latest}`);
+      }),
+      reply: vi.fn(),
+    } as unknown as SlackThreadApi;
+    const batches: string[][] = [];
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
+      if (!task.request) throw new Error("Coordinator request missing");
+      const messages = (JSON.parse(task.request) as { messages: Array<{ ts: string }> }).messages;
+      batches.push(messages.map((message) => message.ts));
+      const ignore = tools.find((tool) => tool.name === "ignore_message");
+      if (!ignore) throw new Error("ignore_message missing");
+      for (const message of messages) await ignore.execute(`ignore-${message.ts}`, { sourceTs: message.ts, reason: "test" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(vi.mocked(api.readThread)).toHaveBeenNthCalledWith(1, key, "100.8");
+      expect(vi.mocked(api.readThread)).toHaveBeenNthCalledWith(2, key, "100.1", "100.1");
+      expect(batches).toEqual([["100.2", "100.8", "100.9"]]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
   it("replaces a processed request from a Slack edit and reads from the original message", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
@@ -63,7 +99,8 @@ describe("Slack coordinator", () => {
     } });
     try {
       await coordinator.wake(key);
-      expect(vi.mocked(api.readThread)).toHaveBeenCalledWith(key, "100.1");
+      expect(vi.mocked(api.readThread)).toHaveBeenCalledWith(key, "100.1", "100.1");
+      expect(vi.mocked(api.readThread)).toHaveBeenCalledTimes(1);
       expect((await db.getSlackTask(oldTask.id))?.state).toBe("canceled");
       expect((await db.listSlackThreadTasks(key)).find((task) => task.sourceTs === "100.2")?.request).toBe("Find new answer");
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
