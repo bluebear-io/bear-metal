@@ -645,6 +645,7 @@ export interface DbClient {
   hasSlackThread(key: SlackThreadKey): Promise<boolean>;
   recordSlackMessage(key: SlackThreadKey, messageTs: string): Promise<boolean>;
   recordSlackEdit(key: SlackThreadKey, eventTs: string, originalTs: string, user: string, text: string): Promise<boolean>;
+  abandonSlackDeletedMessage(workspaceId: string, channelId: string, deletedTs: string): Promise<SlackThreadKey[]>;
   listSlackPendingEdits(key: SlackThreadKey): Promise<SlackMessageEdit[]>;
   listSlackPendingThreads(): Promise<SlackThreadKey[]>;
   listSlackPendingMessages(key: SlackThreadKey): Promise<string[]>;
@@ -1470,13 +1471,32 @@ export class SqlDbClient implements DbClient {
     return result.changes === 1;
   }
 
+  async abandonSlackDeletedMessage(workspaceId: string, channelId: string, deletedTs: string): Promise<SlackThreadKey[]> {
+    const rows = await this.query<{ thread_ts: string }>(
+      `SELECT DISTINCT thread_ts FROM slack_processed_messages
+       WHERE workspace_id = ? AND channel_id = ? AND processed_at IS NULL
+         AND (message_ts = ? OR original_message_ts = ?)`,
+      [workspaceId, channelId, deletedTs, deletedTs],
+    );
+    await this.run(
+      `UPDATE slack_processed_messages SET processed_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND processed_at IS NULL
+         AND (message_ts = ? OR original_message_ts = ?)`,
+      [this.clock.nowIso(), workspaceId, channelId, deletedTs, deletedTs],
+    );
+    return rows.map((row) => ({ workspaceId, channelId, threadTs: row.thread_ts }));
+  }
+
   async listSlackPendingEdits(key: SlackThreadKey): Promise<SlackMessageEdit[]> {
-    const rows = await this.query<{ message_ts: string; original_message_ts: string; edited_user: string; edited_text: string }>(
+    const rows = await this.query<{ message_ts: string; original_message_ts: string; edited_user: string | null; edited_text: string | null }>(
       `SELECT message_ts, original_message_ts, edited_user, edited_text FROM slack_processed_messages
        WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND processed_at IS NULL AND original_message_ts IS NOT NULL`,
       [key.workspaceId, key.channelId, key.threadTs],
     );
-    return rows.map((row) => ({ ts: row.message_ts, originalTs: row.original_message_ts, user: row.edited_user, text: row.edited_text }));
+    return rows.map((row) => {
+      if (!row.edited_user || row.edited_text === null) throw new Error(`Slack edit ${row.message_ts} is missing user or text`);
+      return { ts: row.message_ts, originalTs: row.original_message_ts, user: row.edited_user, text: row.edited_text };
+    });
   }
 
   async listSlackPendingThreads(): Promise<SlackThreadKey[]> {

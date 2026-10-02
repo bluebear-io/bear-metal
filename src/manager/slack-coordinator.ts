@@ -97,15 +97,21 @@ export class SlackCoordinator {
         const newMessages = pending.filter((ts) => !editSources.has(ts));
         const thread = newMessages.length > 0 ? await this.input.api.readThread(key, newMessages[0]!) : [];
         const fetched = new Set(thread.map((message) => message.ts));
+        let deletedOriginal = false;
         for (const originalTs of new Set(pending.map((ts) => editSources.get(ts)).filter((ts): ts is string => ts !== undefined))) {
           if (fetched.has(originalTs)) continue;
           const editedMessage = await this.input.api.readThread(key, originalTs, originalTs);
-          if (editedMessage.length !== 1 || editedMessage[0]!.ts !== originalTs) {
-            throw new Error(`Slack thread ${key.channelId}/${key.threadTs} omitted edited message ${originalTs}`);
+          if (editedMessage.length === 0) {
+            await this.input.db.abandonSlackDeletedMessage(key.workspaceId, key.channelId, originalTs);
+            this.input.logger.warn({ key, originalTs }, "Slack edit original was deleted; pending revisions abandoned");
+            deletedOriginal = true;
+            break;
           }
+          if (editedMessage.length !== 1 || editedMessage[0]!.ts !== originalTs) throw new Error(`Slack thread ${key.channelId}/${key.threadTs} returned unexpected edited message ${originalTs}`);
           thread.push(editedMessage[0]!);
           fetched.add(originalTs);
         }
+        if (deletedOriginal) continue;
         const latestSource = editSources.get(pending.at(-1)!) ?? pending.at(-1)!;
         if (!thread.some((message) => message.ts === latestSource)) throw new Error(`Slack thread ${key.channelId}/${key.threadTs} omitted latest pending message ${pending.at(-1)}`);
         for (const message of thread) {

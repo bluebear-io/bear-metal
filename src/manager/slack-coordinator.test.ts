@@ -50,6 +50,33 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it("abandons a pending edit whose original message was deleted and continues with later replies", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "Edited, then deleted");
+    await db.recordSlackMessage(key, "100.3");
+    const api = {
+      readThread: vi.fn(async (_key: SlackThreadKey, oldest: string, latest?: string) => {
+        if (oldest === "100.3" && latest === undefined) return [{ ts: "100.3", user: "U1", text: "New request" }];
+        if (oldest === "100.1" && latest === "100.1") return [];
+        throw new Error(`Unexpected Slack read ${oldest}/${latest}`);
+      }),
+      reply: vi.fn(),
+    } as unknown as SlackThreadApi;
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const ignore = tools.find((tool) => tool.name === "ignore_message");
+      if (!ignore) throw new Error("ignore_message missing");
+      await ignore.execute("ignore", { sourceTs: "100.3", reason: "test" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(await db.listSlackPendingEdits(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
   it("bounds old edits while backfilling gaps after pending new replies", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");

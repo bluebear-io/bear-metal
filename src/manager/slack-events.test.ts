@@ -16,6 +16,29 @@ function signed(body: object) {
 }
 
 describe("Slack event intake", () => {
+  it("abandons a deleted message and its pending edits", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const key = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
+    await db.followSlackThread(key, "100.0");
+    await db.recordSlackMessage(key, "100.1");
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "Changed");
+    const wake = vi.fn(async () => {});
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }), wake }));
+    const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event: {
+      type: "message", subtype: "message_deleted", channel: "C1", ts: "100.3", deleted_ts: "100.1",
+      previous_message: { ts: "100.1", thread_ts: "100.0" },
+    } });
+    try {
+      expect((await request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text)).status).toBe(200);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(wake).toHaveBeenCalledWith(key);
+    } finally {
+      await db.close();
+    }
+  });
   it("starts at a mention inside an existing thread, deduplicates it, follows later replies, and ignores self messages", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();

@@ -13,6 +13,7 @@ interface SlackEventEnvelope {
     channel?: string;
     channel_type?: string;
     ts?: string;
+    deleted_ts?: string;
     thread_ts?: string;
     user?: string;
     bot_id?: string;
@@ -66,6 +67,15 @@ export function createSlackEventsRouter(input: {
       const event = payload.event;
       if (!event || (event.type !== "app_mention" && event.type !== "message")) {
         res.sendStatus(200);
+        return;
+      }
+      if (event.subtype === "message_deleted") {
+        if (!payload.team_id || !event.channel || !event.deleted_ts) {
+          throw new Error("Slack message deletion omitted workspace, channel, or deleted timestamp");
+        }
+        const affected = await input.db.abandonSlackDeletedMessage(payload.team_id, event.channel, event.deleted_ts);
+        res.sendStatus(200);
+        for (const key of affected) void input.wake(key).catch((err) => input.logger.error({ err, key }, "Slack thread wake failed"));
         return;
       }
       if (event.subtype === "message_changed") {

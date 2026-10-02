@@ -55,6 +55,7 @@ export class SlackThreadApi {
         });
       }
       cursor = response.response_metadata?.next_cursor || undefined;
+      if (latest && (response.has_more || cursor)) throw new Error("Slack bounded thread read unexpectedly paginated");
       if (response.has_more && !cursor) throw new Error("Slack thread has more replies but no pagination cursor");
       if (cursor && seenCursors.has(cursor)) throw new Error("Slack thread pagination repeated a cursor");
       if (cursor) seenCursors.add(cursor);

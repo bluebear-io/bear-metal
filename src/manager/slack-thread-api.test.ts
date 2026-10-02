@@ -16,6 +16,13 @@ describe("Slack thread reader", () => {
     expect(messages.map((message) => message.ts)).toEqual(["100.1"]);
     expect(call).toHaveBeenCalledWith("conversations.replies", { channel: "C1", ts: "100.0", oldest: "100.1", latest: "100.1", inclusive: true, limit: 1 });
   });
+  it("rejects pagination for a single-message bounded read", async () => {
+    const call = vi.fn(async () => ({ ok: true, messages: [{ ts: "100.1", user: "U1" }], has_more: true, response_metadata: { next_cursor: "next" } }));
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(api.readThread({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "100.1", "100.1"))
+      .rejects.toThrow("Slack bounded thread read unexpectedly paginated");
+    expect(call).toHaveBeenCalledTimes(1);
+  });
   it("starts at the oldest pending reply inclusively and paginates forward", async () => {
     const call = vi.fn()
       .mockResolvedValueOnce({ ok: true, messages: [{ ts: "100.2", user: "U1", text: "pending" }], has_more: true, response_metadata: { next_cursor: "next" } })

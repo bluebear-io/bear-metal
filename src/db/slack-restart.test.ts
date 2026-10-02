@@ -8,6 +8,28 @@ import { SqlDbClient, type SlackThreadKey } from "./client.js";
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "1.0" };
 
 describe("Slack restart recovery", () => {
+  it("rejects an edit row missing its required user or text", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-malformed-edit-"));
+    const path = join(dir, "db.sqlite");
+    const db = new SqlDbClient(`sqlite:${path}`, 5);
+    try {
+      await db.initSchema();
+      await db.followSlackThread(key, "1.0");
+      const raw = new DatabaseSync(path);
+      try {
+        raw.prepare(`INSERT INTO slack_processed_messages
+          (workspace_id, channel_id, message_ts, thread_ts, original_message_ts, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(key.workspaceId, key.channelId, "1.2", key.threadTs, "1.1", new Date().toISOString());
+      } finally {
+        raw.close();
+      }
+      await expect(db.listSlackPendingEdits(key)).rejects.toThrow("Slack edit 1.2 is missing user or text");
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("does not retain replies from unfollowed threads or before the first mention", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-early-reply-"));
     const url = `sqlite:${join(dir, "db.sqlite")}`;
