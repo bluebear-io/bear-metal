@@ -21,12 +21,12 @@ function applyResearchCorrection(request: string, correction: string): string {
   return `${request}\n\nCorrection: ${correction}\nLater corrections override earlier conflicting details; retain the original scope, sources, and other unchanged requirements.`;
 }
 
-function messagePrompt(payload: string): string {
-  return `Infer the tasks requested by the new Slack messages and use the task tools to create, update, or cancel tasks. Analyze new message for every distinct ask before using task tools. For each independent information-seeking question, call start_research. For each independent request to change or implement code, call create_ticket. One message can require multiple tasks; preserve the target and full details of each ask. Use the workspace read tools to understand unfamiliar references. An entry with kind "edit" revises the message identified by originalMessageTs; check tasks from that original message and call update_task or cancel_task if its request changed or was withdrawn. Use the edit entry's ts as sourceTs for task tools. If this batch contains the original or multiple edits of it, ignore every superseded version and act on the latest edit. Follow supersededBy links or use get_thread_task to find the current task after earlier edits. Give start_research the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. For a research follow-up, send only the correction to update_task; it preserves the previous request automatically. For a Slack edit, send the complete edited request. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; call ignore_message for the superseded request and cancel_task or ignore_message for the withdrawal, as appropriate. Make at least one decision for every message in this batch. The JSON messages array is that current group, processed together in this run. Earlier thread replies are context; tasks created from previously processed messages appear in the task summaries. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated edit text, use get_message_revision; for other truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. If a message has no request directed at Bear Metal, call ignore_message with its sourceTs and reason. Do not post to Slack.\n${payload}`;
+function messagePrompt(key: SlackThreadKey, payload: string): string {
+  return `Infer the requests in the new Slack messages and use the task tools to create, update, cancel, or clarify each distinct request. Analyze new message for every distinct ask before using task tools. For each clear independent information-seeking question, call start_research. For each clear independent request to change or implement code, call create_ticket. If a request directed at Bear Metal remains ambiguous after reading available context, call clarify_request with a short quote of that request and the specific question needed to understand it. Handle clear requests and ambiguous requests from the same message separately. One message can require multiple tasks; preserve the target and full details of each ask. Use the workspace read tools to understand unfamiliar references. An entry with kind "edit" revises the message identified by originalMessageTs; check tasks from that original message and call update_task or cancel_task if its request changed or was withdrawn. Use the edit entry's ts as sourceTs for task tools. If this batch contains the original or multiple edits of it, ignore every superseded version and act on the latest edit. Follow supersededBy links or use get_thread_task to find the current task after earlier edits. Give start_research the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. For a research follow-up, send only the correction to update_task; it preserves the previous request automatically. For a Slack edit, send the complete edited request. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; call ignore_message for the superseded request and cancel_task or ignore_message for the withdrawal, as appropriate. Make at least one decision for every message in this batch. The JSON messages array contains only current unprocessed messages, not earlier thread messages. Tasks created from previously processed messages appear in the task summaries. If a message refers to a previous request, changes it, or earlier messages could help interpret it in any way, call slack_read with operation "thread_replies" and parameters ${JSON.stringify({ channel: key.channelId, ts: key.threadTs })} to read the thread before deciding on an action. Do not guess from current messages or task summaries alone. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated edit text, use get_message_revision; for other truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. Call ignore_message only if you are sure the entire message is clearly non-actionable for Bear Metal. Never use it for one part of a message that also contains an actionable coding request or research question. If uncertain, read more context; if the request remains ambiguous, call clarify_request instead. Pass its sourceTs and reason. Do not post to Slack.\n${payload}`;
 }
 
 function researchResultPrompt(key: SlackThreadKey, task: SlackTaskRecord): string {
-  return `Review the completed research result for task ${task.id}. Call get_thread_task with this ID to read its full request and answer. Call slack_read with operation "thread_replies" and parameters ${JSON.stringify({ channel: key.channelId, ts: key.threadTs })} to inspect the current conversation. If the answer still addresses the latest request, call approve_research_result with this task ID. If the request was withdrawn or superseded, call cancel_task with this task ID. Make exactly one of those decisions. Do not post to Slack.`;
+  return `Review the completed research result for task ${task.id}. Call get_thread_task with this ID to read its full request and answer. Call slack_read with operation "thread_replies" and parameters ${JSON.stringify({ channel: key.channelId, ts: key.threadTs })} to inspect the current conversation. Use earlier thread messages as context before deciding on an action. If you need more context to decide whether to approve the result, use slack_read again before making that decision. If the answer still addresses the latest request, call approve_research_result with this task ID. If the request was withdrawn or superseded, call cancel_task with this task ID. Make exactly one of those decisions. Do not post to Slack.`;
 }
 
 export class SlackCoordinator {
@@ -138,7 +138,7 @@ export class SlackCoordinator {
           gateway: this.input.gateway,
           getGithubToken: () => this.input.github.getInstallationToken(),
           tools,
-          prompt: messagePrompt(payload),
+          prompt: messagePrompt(key, payload),
           validateOutcome: async () => assertDecisions(),
         });
         assertDecisions();
@@ -190,6 +190,7 @@ export class SlackCoordinator {
 
   private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void): ToolDefinition[] {
     let resultDetailsRead = false;
+    const clarificationReplies = new Map<string, { quote: string; question: string; posted: Promise<string> }>();
     const deferReviewIfPending = async () => {
       if ((await this.input.db.listSlackPendingMessages(key)).length === 0) return false;
       onReviewDeferred?.();
@@ -333,7 +334,7 @@ export class SlackCoordinator {
         description: "Use once per independent new coding request. Persist its Slack source, create a Linear ticket, and delegate that ticket to Bear Metal for normal implementation. Look up destinations only when needed to resolve the team or an optional project. Returns the task and ticket link.",
         parameters: Type.Object({
           sourceTs: Type.String({ minLength: 1, description: "Exact ts of the new Slack message containing this request, from the JSON messages array. Example: '1712345678.000100'. Do not use the thread root timestamp unless it is the source message." }),
-          requestIndex: Type.Integer({ minimum: 1, description: "Stable 1-based index among all independent requests in sourceTs, across coding and research. For a ticket request followed by a research question in one message, use 1 and 2, not 1 twice." }),
+          requestIndex: Type.Integer({ minimum: 1, description: "Stable 1-based index among all independent requests in sourceTs, across coding, research, and clarification. For a ticket request followed by a research question in one message, use 1 and 2, not 1 twice." }),
           request: Type.String({ minLength: 1, description: "The user's complete coding request and relevant context, stored with the Slack task. The Linear worker receives description, so include the actionable requirements there too." }),
           teamId: Type.String({ minLength: 1, description: "Linear team ID for the team that should own the ticket. Use list_ticket_destinations if the team ID is unknown." }),
           projectId: Type.Optional(Type.String({ minLength: 1, description: "Optional Linear project ID. Include only when the requested work belongs to a specific project associated with teamId; otherwise omit. Use list_ticket_destinations if the project ID is unknown." })),
@@ -353,7 +354,7 @@ export class SlackCoordinator {
         description: "Use once per independent new research question. The research worker receives request directly; quote is only a short label used in Slack acknowledgments and final replies. Example: request asks for a summary of all hooks in Claude's official docs, while quote is 'all available hooks'.",
         parameters: Type.Object({
           sourceTs: Type.String({ minLength: 1, description: "Exact ts of the new Slack message containing this question, from the JSON messages array. Example: '1712345678.000100'." }),
-          requestIndex: Type.Integer({ minimum: 1, description: "Stable 1-based index among all independent requests in sourceTs, across coding and research. For a ticket request followed by this question in one message, use 2." }),
+          requestIndex: Type.Integer({ minimum: 1, description: "Stable 1-based index among all independent requests in sourceTs, across coding, research, and clarification. For a ticket request followed by this question in one message, use 2." }),
           request: Type.String({ minLength: 1, description: "Complete research instruction sent directly to the research agent. Preserve the user's full question and necessary context; do not replace it with the short quote." }),
           quote: Type.String({ minLength: 1, description: "Short phrase identifying this question in Slack replies, such as 'all available hooks'. It is not the research prompt." }),
         }),
@@ -362,14 +363,44 @@ export class SlackCoordinator {
           return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
         },
       }),
+      defineTool({
+        name: "clarify_request",
+        label: "Ask for clarification",
+        description: "Use once per independent ambiguous request directed at Bear Metal, including when other requests in the same message are clear. Ask one specific question needed to understand the user's intent. This posts a Slack reply; it does not create a coding or research task.",
+        parameters: Type.Object({
+          sourceTs: Type.String({ minLength: 1, description: "Exact ts of the new Slack message containing the ambiguous request, from the JSON messages array." }),
+          requestIndex: Type.Integer({ minimum: 1, description: "Stable 1-based index of this request among all independent coding, research, and clarification requests in sourceTs." }),
+          quote: Type.String({ minLength: 1, maxLength: 240, description: "Short excerpt of the user's ambiguous request to quote in the Slack reply. Do not include the user's mention." }),
+          question: Type.String({ minLength: 1, maxLength: 500, description: "The concise, specific question to ask the user. Do not include a user mention or repeat the quoted request." }),
+        }),
+        execute: async (_id, params) => {
+          const userId = requireSource(params.sourceTs);
+          const actionKey = `${params.sourceTs}/${params.requestIndex}`;
+          const existing = clarificationReplies.get(actionKey);
+          if (existing && (existing.quote !== params.quote || existing.question !== params.question)) {
+            throw new Error(`Clarification ${actionKey} was already posted with different content`);
+          }
+          const posted = existing?.posted ?? this.input.api.reply(key, `<@${userId}>\n> ${safeSlackLine(params.quote)}\n\n${safeSlackLine(params.question)}`);
+          if (!existing) clarificationReplies.set(actionKey, { quote: params.quote, question: params.question, posted });
+          let replyTs: string;
+          try {
+            replyTs = await posted;
+          } catch (err) {
+            clarificationReplies.delete(actionKey);
+            throw err;
+          }
+          decisions?.add(params.sourceTs);
+          return { content: [{ type: "text", text: `Clarification posted in thread at ${replyTs}.` }], details: {} };
+        },
+      }),
       cancelTask,
       defineTool({
         name: "ignore_message",
         label: "Ignore Slack message",
-        description: "Record an explicit no-task decision for one new message, such as a greeting, a message directed elsewhere, or a request superseded later in this batch. Do not use for an actionable request that still needs a task.",
+        description: "Use only when you are sure the entire message is clearly non-actionable for Bear Metal, such as a greeting, a message directed elsewhere, or a request superseded later in this batch. Never use for a message containing any actionable coding request, research question, or ambiguous request that needs clarification. Read more context first if uncertain.",
         parameters: Type.Object({
           sourceTs: Type.String({ minLength: 1, description: "Exact ts of the new message being ignored, from the JSON messages array." }),
-          reason: Type.String({ minLength: 1, description: "Brief reason no task is needed for this message, such as 'superseded by later message in this batch'." }),
+          reason: Type.String({ minLength: 1, description: "Brief reason the entire message needs no Bear Metal action, such as 'superseded by later message in this batch'." }),
         }),
         execute: async (_id, params) => {
           requireSource(params.sourceTs);

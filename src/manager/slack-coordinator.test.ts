@@ -228,15 +228,99 @@ describe("Slack coordinator", () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
     const { api } = makeApi([{ ts: "100.1", user: "U1", text: "Thanks" }]);
-    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
+      expect(prompt).toContain("entire message is clearly non-actionable for Bear Metal");
       const ignore = tools.find((tool) => tool.name === "ignore_message");
       if (!ignore) throw new Error("ignore_message missing");
+      expect(ignore.description).toContain("entire message is clearly non-actionable for Bear Metal");
       await ignore.execute("ignore", { sourceTs: "100.1", reason: "No request" }, undefined, undefined, {} as never);
     } });
     try {
       await coordinator.wake(key);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect(await db.listSlackThreadTasks(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("asks a specific clarification and processes the source message", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> make me a pizza please" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
+      expect(prompt).toContain("clarify_request");
+      const clarify = tools.find((tool) => tool.name === "clarify_request");
+      if (!clarify) throw new Error("clarify_request missing");
+      await clarify.execute("clarify", {
+        sourceTs: "100.1", requestIndex: 1, quote: "make me a pizza please",
+        question: "What code change, if any, do you mean by this?",
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(replies).toEqual(["<@U1>\n> make me a pizza please\n\nWhat code change, if any, do you mean by this?"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(await db.listSlackThreadTasks(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("leaves clarification pending when the Slack reply fails", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> make me a pizza" }]);
+    vi.mocked(api.reply).mockRejectedValueOnce(new Error("Slack unavailable"));
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const clarify = tools.find((tool) => tool.name === "clarify_request");
+      if (!clarify) throw new Error("clarify_request missing");
+      await clarify.execute("clarify", {
+        sourceTs: "100.1", requestIndex: 1, quote: "make me a pizza",
+        question: "What code change do you mean by this?",
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("creates clear tasks and clarifies a separate ambiguous ask in the same message", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Change A, change B, and make me a pizza" }]);
+    const create = vi.fn(async (input: { title: string }) => ({ id: input.title, url: `https://linear.app/ticket/${input.title}`, identifier: input.title }));
+    const coordinator = makeCoordinator({
+      db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn() },
+      runAgent: async ({ tools }) => {
+        const ticket = tools.find((tool) => tool.name === "create_ticket");
+        const clarify = tools.find((tool) => tool.name === "clarify_request");
+        if (!ticket || !clarify) throw new Error("Task or clarification tool missing");
+        for (const [index, title] of ["A", "B"].entries()) {
+          await ticket.execute(`ticket-${index}`, {
+            sourceTs: "100.1", requestIndex: index + 1, request: `Change ${title}`,
+            teamId: "team", title, slackTitle: `change ${title}`, description: `Change ${title}`,
+          }, undefined, undefined, {} as never);
+        }
+        await clarify.execute("clarify", {
+          sourceTs: "100.1", requestIndex: 3, quote: "make me a pizza",
+          question: "What change do you want Bear Metal to make?",
+        }, undefined, undefined, {} as never);
+      },
+    });
+    try {
+      await coordinator.wake(key);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(replies).toEqual([
+        "Created a ticket for <https://linear.app/ticket/A|change A>.",
+        "Created a ticket for <https://linear.app/ticket/B|change B>.",
+        "<@U1>\n> make me a pizza\n\nWhat change do you want Bear Metal to make?",
+      ]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect((await db.listSlackThreadTasks(key)).map((task) => task.type)).toEqual(["coding", "coding"]);
     } finally {
       await db.close();
     }
@@ -280,8 +364,12 @@ describe("Slack coordinator", () => {
       db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: delegate },
       runAgent: async ({ tools, prompt }) => {
         expect(prompt).toContain("create_ticket");
-        expect(prompt).toContain("create_ticket");
         expect(prompt).toContain("start_research");
+        expect(prompt).toContain("only current unprocessed messages");
+        expect(prompt).toContain("slack_read");
+        expect(prompt).toContain('"thread_replies"');
+        expect(prompt).toContain(JSON.stringify({ channel: key.channelId, ts: key.threadTs }));
+        expect(prompt).toContain("before deciding on an action");
         expect(tools.some((candidate) => candidate.name === "approve_research_result")).toBe(false);
         const tool = tools.find((candidate) => candidate.name === "create_ticket");
         if (!tool) throw new Error("create_ticket missing");
@@ -439,6 +527,9 @@ describe("Slack coordinator", () => {
     const runAgent = vi.fn(async ({ tools, prompt }: Parameters<NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>>[0]) => {
       expect(prompt).toContain("get_thread_task");
       expect(prompt).toContain("approve_research_result");
+      expect(prompt).toContain("earlier thread messages");
+      expect(prompt).toContain("before deciding on an action");
+      expect(prompt).toContain("If you need more context to decide whether to approve the result, use slack_read again");
       expect(tools.some((tool) => tool.name === "create_ticket")).toBe(false);
       const detail = tools.find((tool) => tool.name === "get_thread_task");
       const approval = tools.find((tool) => tool.name === "approve_research_result");
