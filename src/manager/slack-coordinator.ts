@@ -496,7 +496,9 @@ export class SlackCoordinator {
       if (!sourceUserId) throw new Error(`Research task ${task.id} has no source Slack user`);
       await this.input.db.beginSlackTaskReply(task.id);
       try {
-        const replyTs = await this.input.api.replyResearch(key, sourceUserId, current.quote, current.result);
+        const replyTs = current.summary
+          ? await this.input.api.replyResearch(key, sourceUserId, current.quote, current.result, current.summary)
+          : await this.input.api.replyResearch(key, sourceUserId, current.quote, current.result);
         await this.input.db.markSlackTaskCoordinated(task.id, replyTs);
       } catch (err) {
         await this.input.db.failSlackTask(task.id, String(err));

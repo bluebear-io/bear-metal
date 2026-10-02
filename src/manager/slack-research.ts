@@ -66,8 +66,11 @@ export class SlackResearchWorker {
     const answerTool = defineTool({
       name: "answer_research",
       label: "Submit research answer",
-      description: "Submit the complete answer to this research task. The coordinator reviews it against the current Slack thread before posting; this tool does not post a Slack message.",
-      parameters: Type.Object({ answer: Type.String({ minLength: 1, description: "The full user-facing answer with findings and source references. Begin with the answer itself; do not repeat the question as a title or introductory heading. Bad: '**Why B is slow**\\nB is slow because...'. Good: 'B is slow because...'." }) }),
+      description: "Submit a very short summary and the complete answer to this research task. The coordinator reviews them against the current Slack thread before posting; this tool does not post a Slack message.",
+      parameters: Type.Object({
+        summary: Type.String({ minLength: 1, maxLength: 300, description: "One very short paragraph that directly answers the question and summarizes the research result. No bullets or repeated question title." }),
+        answer: Type.String({ minLength: 1, description: "The full user-facing answer with findings and source references. Begin with the answer itself; do not repeat the question as a title or introductory heading. Bad: '**Why B is slow**\\nB is slow because...'. Good: 'B is slow because...'." }),
+      }),
       execute: async (_id, params) => {
         if (answered) return { content: [{ type: "text", text: "Research answer was already stored; duplicate ignored." }], details: {} };
         const latest = await this.input.db.getSlackTask(task.id);
@@ -75,7 +78,7 @@ export class SlackResearchWorker {
         if (latest.state === "canceled" || latest.state === "coordinated") {
           return { content: [{ type: "text", text: "Task was superseded; answer ignored." }], details: {} };
         }
-        const completed = await this.input.db.completeSlackResearchTask(task.id, params.answer);
+        const completed = await this.input.db.completeSlackResearchTask(task.id, params.answer, params.summary);
         answered = true;
         if (!completed) return { content: [{ type: "text", text: "Task was superseded; answer ignored." }], details: {} };
         void this.input.wakeThread(completed.thread).catch((err) => {
@@ -97,7 +100,7 @@ export class SlackResearchWorker {
       githubToken: await this.input.github.getInstallationToken(),
       gateway: this.input.gateway,
       tools: [answerTool],
-      prompt: `Research this Slack request. Use read tools as needed. Submit exactly one answer through answer_research. The Slack reply already shows the user's question, so start the answer directly with your findings. Do not add a title that repeats the question. Bad answer: "**Why B is slow**\\nB is slow because..." Good answer: "B is slow because..."\nRequest: ${JSON.stringify(task.request)}`,
+      prompt: `Research this Slack request. Use read tools as needed. Submit exactly one short summary and full answer through answer_research. Keep the summary very short: one paragraph that directly answers the question and summarizes the research result, with no bullets. Preserve details and sources in the full answer. The Slack reply already shows the user's question, so start both fields directly with findings. Do not add a title that repeats the question. Bad answer: "**Why B is slow**\\nB is slow because..." Good answer: "B is slow because..."\nRequest: ${JSON.stringify(task.request)}`,
       validateOutcome: async () => {
         if (!answered) {
           const latest = await this.input.db.getSlackTask(task.id);

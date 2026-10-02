@@ -194,6 +194,7 @@ export interface SlackTaskRecord {
   quote: string | null;
   state: "queued" | "running" | "awaiting_coordination" | "approved" | "posting" | "coordinated" | "canceled" | "failed";
   result: string | null;
+  summary: string | null;
   ticketId: string | null;
   ticketUrl: string | null;
   replyTs: string | null;
@@ -222,11 +223,14 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
   }
   if (row.slack_ack_state !== null && row.slack_ack_state !== "posting" && row.slack_ack_state !== "posted" && row.slack_ack_state !== "failed") throw new Error(`Invalid Slack acknowledgment state for ${row.id}: ${row.slack_ack_state}`);
   let result: string | null = null;
+  let summary: string | null = null;
   if (row.result_json !== null) {
     if (row.task_type !== "research") throw new Error(`Coding task ${row.id} has a research result`);
-    const parsed = JSON.parse(row.result_json) as { answer?: unknown };
+    const parsed = JSON.parse(row.result_json) as { answer?: unknown; summary?: unknown };
     if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error(`Research task ${row.id} has an invalid result`);
+    if (parsed.summary !== undefined && (typeof parsed.summary !== "string" || !parsed.summary.trim())) throw new Error(`Research task ${row.id} has an invalid summary`);
     result = parsed.answer;
+    summary = parsed.summary ?? null;
   }
   return {
     id: row.id,
@@ -239,6 +243,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     quote: row.slack_quote,
     state: row.slack_state,
     result,
+    summary,
     ticketId: row.ticket_id,
     ticketUrl: row.ticket_url,
     replyTs: row.slack_reply_ts,
@@ -649,7 +654,7 @@ export interface DbClient {
   listSlackThreadTasks(key: SlackThreadKey): Promise<SlackTaskRecord[]>;
   claimSlackResearchTask(): Promise<SlackTaskRecord | null>;
   recoverSlackResearchTasks(): Promise<void>;
-  completeSlackResearchTask(id: string, answer: string): Promise<SlackTaskRecord | null>;
+  completeSlackResearchTask(id: string, answer: string, summary?: string): Promise<SlackTaskRecord | null>;
   approveSlackResearchResult(id: string): Promise<void>;
   failSlackTask(id: string, error: string): Promise<void>;
   attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void>;
@@ -1594,13 +1599,14 @@ export class SqlDbClient implements DbClient {
     );
   }
 
-  async completeSlackResearchTask(id: string, answer: string): Promise<SlackTaskRecord | null> {
+  async completeSlackResearchTask(id: string, answer: string, summary?: string): Promise<SlackTaskRecord | null> {
     if (!answer.trim()) throw new Error("Research answer must not be empty");
+    if (summary !== undefined && (!summary.trim() || summary.length > 600)) throw new Error("Research summary must be 1–600 characters");
     const now = this.clock.nowIso();
     const result = await this.run(
       `UPDATE tasks SET result_json = ?, slack_state = 'awaiting_coordination', updated_at = ?, completed_at = ?
        WHERE id = ? AND task_type = 'research' AND slack_state = 'running'`,
-      [JSON.stringify({ answer }), now, now, id],
+      [JSON.stringify(summary === undefined ? { answer } : { answer, summary }), now, now, id],
     );
     if (result.changes !== 1) {
       const current = await this.getSlackTask(id);

@@ -18,10 +18,11 @@ describe("Slack research worker", () => {
       db, github: { getInstallationToken: async () => "token" } as GitHubIntegration,
       config: {} as ConstructorParameters<typeof SlackResearchWorker>[0]["config"],
       logger: createLogger({ name: "test", level: "silent" }), pollIntervalMs: 60_000, wakeThread,
-      runAgent: async ({ tools }) => {
+      runAgent: async ({ tools, prompt }) => {
+        expect(prompt).not.toContain("500");
         const tool = tools.find((candidate) => candidate.name === "answer_research");
         if (!tool) throw new Error("answer_research missing");
-        await tool.execute("answer", { answer: "Answer" }, undefined, undefined, {} as never);
+        await tool.execute("answer", { summary: "Short answer.", answer: "Answer" }, undefined, undefined, {} as never);
         submitted = true;
       },
     });
@@ -34,6 +35,7 @@ describe("Slack research worker", () => {
       expect(completedBeforeWake).toBe(true);
       expect(submitted).toBe(true);
       expect((await db.getSlackTask(task.id))?.state).toBe("awaiting_coordination");
+      expect((await db.getSlackTask(task.id))?.summary).toBe("Short answer.");
     } finally {
       releaseWake?.();
       await worker.stop();
@@ -55,7 +57,7 @@ describe("Slack research worker", () => {
         expect(prompt).toContain("answer_research");
         const tool = tools.find((candidate) => candidate.name === "answer_research");
         if (!tool) throw new Error("answer_research missing");
-        await tool.execute("answer", { answer: "The answer is 42" }, undefined, undefined, {} as never);
+        await tool.execute("answer", { summary: "It is 42.", answer: "The answer is 42" }, undefined, undefined, {} as never);
       },
     });
     try {
@@ -63,6 +65,7 @@ describe("Slack research worker", () => {
       await worker.stop();
       expect((await db.getSlackTask(task.id))?.state).toBe("awaiting_coordination");
       expect((await db.getSlackTask(task.id))?.result).toBe("The answer is 42");
+      expect((await db.getSlackTask(task.id))?.summary).toBe("It is 42.");
       expect(wakeThread).toHaveBeenCalledWith(key);
     } finally {
       await db.close();

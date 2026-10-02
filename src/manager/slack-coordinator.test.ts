@@ -434,7 +434,7 @@ describe("Slack coordinator", () => {
     const db = await makeDb();
     const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", sourceUserId: "U1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
     await db.claimSlackResearchTask();
-    await db.completeSlackResearchTask(task.id, "Answer A");
+    await db.completeSlackResearchTask(task.id, "Answer A", "Summary A");
     const { api, replies } = makeApi([]);
     const runAgent = vi.fn(async ({ tools, prompt }: Parameters<NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>>[0]) => {
       expect(prompt).toContain("get_thread_task");
@@ -452,6 +452,7 @@ describe("Slack coordinator", () => {
       await coordinator.wake(key);
       expect(runAgent).toHaveBeenCalledTimes(1);
       expect(replies).toEqual(["Looking into Find A.", "Replying to <@U1>\n> Find A\n\nAnswer A"]);
+      expect(vi.mocked(api.replyResearch)).toHaveBeenCalledWith(key, "U1", "Find A", "Answer A", "Summary A");
       expect((await db.getSlackTask(task.id))?.state).toBe("coordinated");
     } finally {
       await db.close();

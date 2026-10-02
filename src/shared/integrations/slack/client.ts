@@ -186,6 +186,50 @@ export class SlackIntegration implements Integration {
     return body.ts;
   }
 
+  async postThreadMarkdownFile(channel: string, threadTs: string, comment: string, markdown: string): Promise<void> {
+    if (!channel || !threadTs || !comment.trim() || !markdown.trim()) throw new Error("Slack Markdown file reply requires a channel, thread timestamp, comment, and content");
+    const bytes = new TextEncoder().encode(markdown);
+    const request = await this.fetchImpl(`${this.apiBaseUrl}/files.getUploadURLExternal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Bearer ${this.token}`,
+      },
+      body: new URLSearchParams({ filename: "research-answer.md", length: String(bytes.byteLength) }),
+    });
+    if (!request.ok) throw new Error(`Slack files.getUploadURLExternal HTTP ${request.status}`);
+    const upload = (await request.json()) as { ok?: boolean; upload_url?: string; file_id?: string; error?: string };
+    if (!upload.ok || !upload.upload_url || !upload.file_id) throw new Error(`Slack files.getUploadURLExternal failed: ${upload.error ?? "missing upload URL or file ID"}`);
+    const uploadUrl = new URL(upload.upload_url);
+    if (uploadUrl.protocol !== "https:" || uploadUrl.hostname !== "files.slack.com" || uploadUrl.username || uploadUrl.password) {
+      throw new Error("Slack returned an invalid file upload URL");
+    }
+    const transfer = await this.fetchImpl(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: bytes,
+    });
+    if (!transfer.ok) throw new Error(`Slack file upload HTTP ${transfer.status}`);
+    const completion = await this.fetchImpl(`${this.apiBaseUrl}/files.completeUploadExternal`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${this.token}`,
+      },
+      body: JSON.stringify({
+        files: [{ id: upload.file_id, title: "Research answer.md" }],
+        channel_id: channel,
+        thread_ts: threadTs,
+        initial_comment: comment,
+      }),
+    });
+    if (!completion.ok) throw new Error(`Slack files.completeUploadExternal HTTP ${completion.status}`);
+    const result = (await completion.json()) as { ok?: boolean; files?: Array<{ id?: string }>; error?: string };
+    if (!result.ok || !result.files?.some((file) => file.id === upload.file_id)) {
+      throw new Error(`Slack files.completeUploadExternal failed: ${result.error ?? "missing uploaded file"}`);
+    }
+  }
+
   private async resolveUserChannel(email: string): Promise<string> {
     try {
       const response = await this.fetchImpl(
