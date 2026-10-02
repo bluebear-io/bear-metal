@@ -67,7 +67,7 @@ export class SlackResearchWorker {
       name: "answer_research",
       label: "Submit research answer",
       description: "Submit the complete answer to this research task. The coordinator reviews it against the current Slack thread before posting; this tool does not post a Slack message.",
-      parameters: Type.Object({ answer: Type.String({ minLength: 1, description: "The full user-facing research answer, with findings and relevant source references. Example: a summary of Claude's documented hooks and links to the official docs. Do not send only a short status or question quote." }) }),
+      parameters: Type.Object({ answer: Type.String({ minLength: 1, description: "The full user-facing answer with findings and source references. Begin with the answer itself; do not repeat the question as a title or introductory heading. Bad: '**Why B is slow**\\nB is slow because...'. Good: 'B is slow because...'." }) }),
       execute: async (_id, params) => {
         if (answered) return { content: [{ type: "text", text: "Research answer was already stored; duplicate ignored." }], details: {} };
         const latest = await this.input.db.getSlackTask(task.id);
@@ -78,7 +78,9 @@ export class SlackResearchWorker {
         const completed = await this.input.db.completeSlackResearchTask(task.id, params.answer);
         answered = true;
         if (!completed) return { content: [{ type: "text", text: "Task was superseded; answer ignored." }], details: {} };
-        await this.input.wakeThread(completed.thread);
+        void this.input.wakeThread(completed.thread).catch((err) => {
+          this.input.logger.error({ err, taskId: task.id }, "Cannot wake Slack thread after research answer");
+        });
         return { content: [{ type: "text", text: "Answer stored for thread coordination." }], details: {} };
       },
     });
@@ -90,11 +92,18 @@ export class SlackResearchWorker {
     };
     await (this.input.runAgent ?? runSlackAgent)({
       task: customizationTask,
+      db: this.input.db,
       config: this.input.config,
       githubToken: await this.input.github.getInstallationToken(),
       gateway: this.input.gateway,
       tools: [answerTool],
-      prompt: `Research this Slack request. Use read tools as needed. Submit exactly one answer through answer_research.\nRequest: ${JSON.stringify(task.request)}`,
+      prompt: `Research this Slack request. Use read tools as needed. Submit exactly one answer through answer_research. The Slack reply already shows the user's question, so start the answer directly with your findings. Do not add a title that repeats the question. Bad answer: "**Why B is slow**\\nB is slow because..." Good answer: "B is slow because..."\nRequest: ${JSON.stringify(task.request)}`,
+      validateOutcome: async () => {
+        if (!answered) {
+          const latest = await this.input.db.getSlackTask(task.id);
+          if (latest?.state === "running") throw new Error("Research agent ended without answer_research");
+        }
+      },
     });
     if (!answered) {
       const latest = await this.input.db.getSlackTask(task.id);

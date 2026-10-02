@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +33,7 @@ const makeTool = (name: string) => ({
 
 // Unique netrc dir per test, assigned in beforeEach; read by makeContext's fixture.
 let netrcDir: string;
+let workspaceRoot: string;
 
 vi.mock("../shared/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../shared/index.js")>();
@@ -81,6 +82,8 @@ describe("runPiWorker", () => {
   // rm's its netrcDir, can't delete ours mid-write.
   beforeEach(async () => {
     netrcDir = await mkdtemp(join(tmpdir(), "bear-metal-pi-test-"));
+    workspaceRoot = join(netrcDir, "agent");
+    await mkdir(workspaceRoot);
     piMock.setRuntimeApiKey.mockClear();
     piMock.modelRegistryFind.mockClear();
   });
@@ -99,7 +102,7 @@ describe("runPiWorker", () => {
         id: "thread-1",
       });
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "fix",
       });
@@ -131,7 +134,7 @@ describe("runPiWorker", () => {
         text: "The current code already handles this path.",
       });
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "fix",
       });
@@ -250,7 +253,7 @@ describe("runPiWorker", () => {
     });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "fix",
       });
@@ -273,7 +276,7 @@ describe("runPiWorker", () => {
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Blocked here." });
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "fix",
       });
@@ -503,7 +506,7 @@ describe("runPiWorker", () => {
       expect.objectContaining({
         taskId: "ABC-1",
         runId: "run-123",
-        workspaceRoot: "/tmp/workspace/agent",
+        workspaceRoot: workspaceRoot,
       }),
     );
     expect(prompt).toContain("untrusted data");
@@ -544,7 +547,7 @@ describe("runPiWorker", () => {
     const linear = makeLinear();
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "fix",
       });
@@ -568,7 +571,7 @@ describe("runPiWorker", () => {
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "feat: ship",
         prBody: "body",
       });
@@ -584,7 +587,7 @@ describe("runPiWorker", () => {
     const { runPiWorker } = await import("./pi.js");
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix typo",
         prBody: "body",
       });
@@ -611,7 +614,7 @@ describe("runPiWorker", () => {
     github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "feat: ship",
         prBody: "body",
       });
@@ -630,7 +633,7 @@ describe("runPiWorker", () => {
     botPrContext.unresolvedReviewThreads = botPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "body",
       });
@@ -681,7 +684,7 @@ describe("runPiWorker", () => {
     mixedPrContext.unresolvedReviewThreads = mixedPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "body",
       });
@@ -708,7 +711,7 @@ describe("runPiWorker", () => {
     prContext.unresolvedReviewThreads = [];
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "body",
       });
@@ -738,7 +741,7 @@ describe("runPiWorker", () => {
     ownBotPrContext.unresolvedReviewThreads = ownBotPrContext.reviewThreads;
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       await executeTool(customTools, "push_for_review", {
-        repoRoot: "/tmp/workspace/agent",
+        repoRoot: workspaceRoot,
         prTitle: "fix",
         prBody: "body",
       });
@@ -853,8 +856,8 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
     },
     pullRequests: [],
     cloneScript: {
-      agentWorkdir: "/tmp/workspace/agent",
-      workspaceDir: "/tmp/workspace",
+      agentWorkdir: workspaceRoot,
+      workspaceDir: netrcDir,
       stdout: "",
       stderr: "",
       netrcDir,

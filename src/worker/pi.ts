@@ -29,6 +29,7 @@ import type {
 } from "../agent-tools/types.js";
 import { SLACK_READ_OPERATIONS } from "../agent-tools/slack-read.js";
 import { redactCredentials, redactSensitiveText } from "../agent-tools/transport.js";
+import { redactTraceText, traceText } from "./trace.js";
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -60,6 +61,7 @@ export async function runPiWorker(input: {
     prompt: string;
   }) => void;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
+  onTraceEvent?: (kind: string, content: Record<string, unknown>) => void;
   maxWorkerTimeMs: number;
   maxWorkerTokens: number;
   llmProvider: string;
@@ -311,6 +313,7 @@ export async function runPiWorker(input: {
     customSystemPrompt: input.systemPrompt ?? undefined,
     hasAgentTools: input.agentToolGateway !== undefined,
   });
+  input.onTraceEvent?.("prompt", { text: redactTraceText(prompt) });
   const workspaceDir = input.context.cloneScript.workspaceDir;
   const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
 
@@ -387,6 +390,11 @@ export async function runPiWorker(input: {
         }),
       });
       input.onToolCallProgress?.(toolCalls);
+      const call = toolCalls[toolCalls.length - 1]!;
+      input.onTraceEvent?.("tool_call", {
+        toolCallId: call.id, toolName: call.toolName, argsJson: traceText(call.argsJson),
+        resultText: call.resultText, resultStatus: call.resultStatus, outputSize: call.outputSize,
+      });
     } else if (event.type === "turn_end") {
       const msg = event.message;
       if (isRecord(msg) && msg.role === "assistant") {
@@ -394,6 +402,14 @@ export async function runPiWorker(input: {
           logger.error({ errorMessage: (msg as Record<string, unknown>).errorMessage }, "pi LLM call failed");
         }
         const blocks = contentBlocks(msg as { content: unknown });
+        for (const block of blocks) {
+          if (!isRecord(block)) continue;
+          if (block.type === "text" && typeof block.text === "string" && block.text) {
+            input.onTraceEvent?.("assistant_text", { text: redactTraceText(block.text) });
+          } else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) {
+            input.onTraceEvent?.("thinking", { text: redactTraceText(block.thinking), redacted: block.redacted === true });
+          }
+        }
         const text = blocks
           .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && (b as { text: string }).text.length > 0)
           .map((b) => (b as { text: string }).text)

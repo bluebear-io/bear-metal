@@ -55,6 +55,7 @@ export interface BearMetalConfig {
   database?: {
     getUrl: SecretGetter;
   };
+  traceRetentionDays?: number;
   maxIterations?: number;
   /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
   ciDeferralMaxMs?: number;

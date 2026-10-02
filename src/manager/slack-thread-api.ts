@@ -55,4 +55,17 @@ export class SlackThreadApi {
   async reply(key: SlackThreadKey, text: string): Promise<string> {
     return this.writer.postThreadMessage(key.channelId, key.threadTs, text);
   }
+
+  async replyResearch(key: SlackThreadKey, userId: string, quote: string, answer: string): Promise<string> {
+    if (answer.length + quote.length + 4 > 12_000) throw new Error("Slack research answer exceeds the Markdown block limit");
+    const mention = `Replying to <@${userId}>`;
+    const quoted = quote.replace(/\s+/g, " ").replace(/([\\*_`~])/g, "\\$1");
+    return this.writer.postThreadMessage(
+      key.channelId, key.threadTs, `${mention}\n> ${quoted}\n\n${answer}`,
+      [
+        { type: "section", text: { type: "mrkdwn", text: mention } },
+        { type: "markdown", text: `> ${quoted}\n\n${answer}` },
+      ],
+    );
+  }
 }

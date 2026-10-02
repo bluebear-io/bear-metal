@@ -26,7 +26,7 @@ export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "fai
 export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
-export type StopReason = "completed" | "timeout" | "crash" | "error";
+export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error";
 
 export interface TaskRow {
   id: string;
@@ -53,6 +53,7 @@ export interface TaskRow {
   slack_channel_id: string | null;
   slack_thread_ts: string | null;
   slack_source_ts: string | null;
+  slack_source_user_id: string | null;
   slack_request_index: number | null;
   slack_request: string | null;
   slack_quote: string | null;
@@ -90,6 +91,91 @@ export interface SlackThreadKey {
   threadTs: string;
 }
 
+export interface AgentRunSummary {
+  id: string;
+  type: string;
+  status: string;
+  slackState: string | null;
+  slackQuote: string | null;
+  slackReplyTs: string | null;
+  attemptNumber: number;
+  workerId: string | null;
+  stopReason: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  contextJson: string | null;
+  inputJson: string | null;
+  ticketId: string | null;
+  ticketIdentifier: string | null;
+  ticketTitle: string | null;
+  ticketUrl: string | null;
+  slackWorkspaceId: string | null;
+  slackChannelId: string | null;
+  slackThreadTs: string | null;
+  slackSourceTs: string | null;
+  request: string | null;
+  resultJson: string | null;
+  error: string | null;
+  provider: string | null;
+  modelName: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  createdAt: string;
+}
+
+export interface AgentTraceEvent {
+  id: string;
+  runId: string;
+  kind: string;
+  contentJson: string;
+  createdAt: string;
+}
+
+export interface TaskListItem {
+  id: string;
+  type: "coding" | "research" | "coordinator";
+  ticketId: string | null;
+  identifier: string | null;
+  title: string;
+  ticketUrl: string | null;
+  status: string;
+  runStatus: string | null;
+  attemptCount: number;
+  workerId: string | null;
+  assigneeName: string | null;
+  updatedAt: string;
+  createdAt: string;
+  pullRequests: TicketListPullRequest[];
+}
+
+export interface TaskListOptions {
+  q?: string;
+  type?: TaskListItem["type"];
+  statuses?: string[];
+  workerId?: string;
+  label?: string;
+  stopReason?: StopReason;
+  page: number;
+  pageSize: number;
+}
+
+function rowToAgentRun(row: TaskRow): AgentRunSummary {
+  return {
+    id: row.id, type: row.task_type, status: row.run_status ?? row.slack_state ?? row.dispatch_state ?? "queued",
+    slackState: row.slack_state,
+    slackQuote: row.slack_quote, slackReplyTs: row.slack_reply_ts,
+    attemptNumber: row.attempt_number, workerId: row.worker_id, stopReason: row.stop_reason,
+    promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens,
+    contextJson: row.context_json, inputJson: row.input_json,
+    ticketId: row.ticket_id, ticketIdentifier: row.ticket_identifier, ticketTitle: row.ticket_title,
+    ticketUrl: row.ticket_url, slackWorkspaceId: row.slack_workspace_id,
+    slackChannelId: row.slack_channel_id, slackThreadTs: row.slack_thread_ts,
+    slackSourceTs: row.slack_source_ts, request: row.slack_request,
+    resultJson: row.result_json, error: row.error, provider: row.provider, modelName: row.model_name,
+    startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at,
+  };
+}
+
 export interface SlackMessageEdit {
   ts: string;
   originalTs: string;
@@ -102,6 +188,7 @@ export interface SlackTaskRecord {
   type: "coding" | "research";
   thread: SlackThreadKey;
   sourceTs: string;
+  sourceUserId: string | null;
   requestIndex: number;
   request: string;
   quote: string | null;
@@ -119,6 +206,7 @@ export interface NewSlackTask {
   type: SlackTaskRecord["type"];
   thread: SlackThreadKey;
   sourceTs: string;
+  sourceUserId?: string;
   requestIndex: number;
   request: string;
   quote?: string;
@@ -145,6 +233,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     type: row.task_type,
     thread: { workspaceId: row.slack_workspace_id, channelId: row.slack_channel_id, threadTs: row.slack_thread_ts },
     sourceTs: row.slack_source_ts,
+    sourceUserId: row.slack_source_user_id,
     requestIndex: row.slack_request_index,
     request: row.slack_request,
     quote: row.slack_quote,
@@ -538,6 +627,15 @@ export interface EventInput {
 
 export interface DbClient {
   initSchema(): Promise<void>;
+  startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
+  setAgentRunModel(id: string, provider: string, model: string): Promise<void>;
+  setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void>;
+  finishAgentRun(id: string, error: string | null, stopReason?: "deferred"): Promise<void>;
+  recordAgentTrace(runId: string, kind: string, contentJson: string, createdAt?: string): Promise<void>;
+  purgeAgentTraces(retentionDays: number, now?: Date): Promise<void>;
+  listAgentRuns(page: number, pageSize: number): Promise<{ items: AgentRunSummary[]; total: number; page: number; pageSize: number }>;
+  listTasks(options: TaskListOptions): Promise<{ items: TaskListItem[]; total: number; page: number; pageSize: number }>;
+  getAgentRunDetail(id: string): Promise<{ run: AgentRunSummary; trace: AgentTraceEvent[] } | null>;
   followSlackThread(key: SlackThreadKey, firstMessageTs: string): Promise<void>;
   hasSlackThread(key: SlackThreadKey): Promise<boolean>;
   recordSlackMessage(key: SlackThreadKey, messageTs: string): Promise<boolean>;
@@ -1143,6 +1241,186 @@ export class SqlDbClient implements DbClient {
     }
   }
 
+  async startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void> {
+    if (task.type === "coding") throw new Error("startAgentRun is only for coordinator and research tasks");
+    const now = this.clock.nowIso();
+    if (task.type === "coordinator") {
+      if (!task.slack) throw new Error("Coordinator run requires Slack source");
+      await this.run(
+        `INSERT INTO tasks (id, task_type, slack_workspace_id, slack_channel_id, slack_thread_ts,
+         slack_source_ts, slack_request, run_status, trigger, started_at, provider, model_name, created_at, updated_at)
+         VALUES (?, 'coordinator', ?, ?, ?, ?, ?, 'running', 'new', ?, ?, ?, ?, ?)`,
+        [task.id, task.slack.workspaceId, task.slack.channelId, task.slack.threadTs,
+          task.slack.sourceTs, "Slack thread coordination", now, provider, model, now, now],
+      );
+      return;
+    }
+    const result = await this.run(
+      `UPDATE tasks SET run_status = 'running', started_at = ?, ended_at = NULL,
+       provider = ?, model_name = ?, updated_at = ? WHERE id = ? AND task_type = 'research' AND slack_state = 'running'`,
+      [now, provider, model, now, task.id],
+    );
+    if (result.changes !== 1) throw new Error(`Research run ${task.id} does not exist`);
+  }
+
+  async setAgentRunModel(id: string, provider: string, model: string): Promise<void> {
+    const result = await this.run(
+      `UPDATE tasks SET provider = ?, model_name = ?, updated_at = ?
+       WHERE id = ? AND task_type IN ('coordinator', 'research') AND run_status = 'running'`,
+      [provider, model, this.clock.nowIso(), id],
+    );
+    if (result.changes !== 1) throw new Error(`Cannot set model for agent run ${id}`);
+  }
+
+  async setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void> {
+    const result = await this.run(
+      `UPDATE tasks SET prompt_tokens = ?, completion_tokens = ?, updated_at = ?
+       WHERE id = ? AND task_type IN ('coordinator', 'research') AND run_status = 'running'`,
+      [promptTokens, completionTokens, this.clock.nowIso(), id],
+    );
+    if (result.changes !== 1) throw new Error(`Cannot record usage for agent run ${id}`);
+  }
+
+  async finishAgentRun(id: string, error: string | null, stopReason?: "deferred"): Promise<void> {
+    const now = this.clock.nowIso();
+    const result = await this.run(
+      `UPDATE tasks SET run_status = ?, stop_reason = ?, error = ?, ended_at = ?, updated_at = ?
+       WHERE id = ? AND task_type IN ('coordinator', 'research')`,
+      [error === null ? "succeeded" : "failed", error === null ? stopReason ?? "completed" : "error", error, now, now, id],
+    );
+    if (result.changes !== 1) throw new Error(`Agent run ${id} does not exist`);
+  }
+
+  async recordAgentTrace(runId: string, kind: string, contentJson: string, createdAt = this.clock.nowIso()): Promise<void> {
+    await this.run(
+      `INSERT INTO agent_trace_events (id, run_id, kind, content_json, created_at) VALUES (?, ?, ?, ?, ?)`,
+      [randomUUID(), runId, kind, contentJson, createdAt],
+    );
+  }
+
+  async purgeAgentTraces(retentionDays: number, now = new Date()): Promise<void> {
+    if (!Number.isInteger(retentionDays) || retentionDays < 1) throw new Error("Trace retention must be a positive number of days");
+    const cutoff = new Date(now.getTime() - retentionDays * 86_400_000).toISOString();
+    await this.run(`DELETE FROM agent_trace_events WHERE created_at < ?`, [cutoff]);
+    await this.run(`UPDATE tasks SET tool_calls_json = NULL WHERE tool_calls_json IS NOT NULL AND ended_at < ?`, [cutoff]);
+    await this.run(`UPDATE events SET payload_json = NULL WHERE type = 'agent_started' AND payload_json IS NOT NULL AND created_at < ?`, [cutoff]);
+  }
+
+  async listAgentRuns(page: number, pageSize: number): Promise<{ items: AgentRunSummary[]; total: number; page: number; pageSize: number }> {
+    if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+      throw new Error("Invalid agent run page or page size");
+    }
+    const filter = `task_type IN ('coordinator', 'research') OR run_status IS NOT NULL`;
+    const count = await this.query<{ total: number | string }>(`SELECT COUNT(*) AS total FROM tasks WHERE ${filter}`);
+    const rows = await this.query<TaskRow>(this.sql(
+      `SELECT * FROM tasks WHERE ${filter} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+    ), [pageSize, (page - 1) * pageSize]);
+    return { items: rows.map(rowToAgentRun), total: Number(count[0]?.total ?? 0), page, pageSize };
+  }
+
+  async listTasks(options: TaskListOptions): Promise<{ items: TaskListItem[]; total: number; page: number; pageSize: number }> {
+    const { page, pageSize } = options;
+    if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > MAX_TICKET_PAGE_SIZE) {
+      throw new Error("Invalid task page or page size");
+    }
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (options.type) { conditions.push("task_type = ?"); params.push(options.type); }
+    if (options.statuses?.length) {
+      conditions.push(`task_status IN (${options.statuses.map(() => "?").join(", ")})`);
+      params.push(...options.statuses);
+    }
+    if (options.q?.trim()) {
+      const needle = `%${likeEscape(options.q.trim())}%`;
+      conditions.push(`(COALESCE(ticket_identifier, '') LIKE ? ESCAPE '\\' OR COALESCE(ticket_title, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(ticket_description, '') LIKE ? ESCAPE '\\' OR COALESCE(ticket_branch_name, '') LIKE ? ESCAPE '\\'
+        OR COALESCE(slack_request, '') LIKE ? ESCAPE '\\')`);
+      params.push(needle, needle, needle, needle, needle);
+    }
+    if (options.workerId) { conditions.push("worker_id = ?"); params.push(options.workerId); }
+    if (options.label) {
+      const jsonEncoded = options.label.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      conditions.push(`ticket_labels_json LIKE ? ESCAPE '\\'`);
+      params.push(`%"${likeEscape(jsonEncoded)}"%`);
+    }
+    if (options.stopReason) { conditions.push("stop_reason = ?"); params.push(options.stopReason); }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const feed = `WITH ranked AS (
+      SELECT t.*, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at DESC, id DESC) AS ticket_rank
+      FROM tasks t
+    ), task_feed AS (
+      SELECT ranked.*, CASE
+        WHEN task_type = 'coding' AND ranked.ticket_id IS NULL THEN COALESCE(slack_state, run_status, 'queued')
+        WHEN task_type = 'coding' THEN COALESCE(ts.status, 'in_progress')
+        WHEN task_type = 'research' THEN COALESCE(slack_state, run_status, 'queued')
+        ELSE COALESCE(run_status, 'queued') END AS task_status
+      FROM ranked LEFT JOIN ticket_statuses ts ON ts.ticket_id = ranked.ticket_id
+      WHERE (ranked.task_type = 'coding' AND (ranked.ticket_id IS NULL OR ticket_rank = 1))
+         OR (ranked.task_type IN ('research', 'coordinator') AND ranked.ticket_id IS NULL)
+    )`;
+    const count = await this.query<{ total: number | string }>(this.sql(`${feed} SELECT COUNT(*) AS total FROM task_feed ${where}`), params);
+    const rows = await this.query<TaskRow & { task_status: string }>(
+      this.sql(`${feed} SELECT * FROM task_feed ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`),
+      [...params, pageSize, (page - 1) * pageSize],
+    );
+    const ticketIds = rows.map((row) => row.ticket_id).filter((id): id is string => id !== null);
+    const pullRequests = ticketIds.length ? await this.query<{
+      id: string; ticket_id: string; number: number; title: string; head_ref: string; url: string;
+      state: string; draft: number | boolean; merged: number | boolean;
+    }>(this.sql(`SELECT id, ticket_id, number, title, head_ref, url, state, draft, merged FROM pull_requests
+      WHERE ticket_id IN (${ticketIds.map(() => "?").join(", ")}) ORDER BY updated_at DESC`), ticketIds) : [];
+    const prsByTicket = new Map<string, TicketListPullRequest[]>();
+    for (const pr of pullRequests) {
+      const entries = prsByTicket.get(pr.ticket_id) ?? [];
+      entries.push({ id: pr.id, number: pr.number, title: pr.title, headRef: pr.head_ref, url: pr.url,
+        state: pr.state, draft: intBool(pr.draft), merged: intBool(pr.merged) });
+      prsByTicket.set(pr.ticket_id, entries);
+    }
+    const items: TaskListItem[] = rows.map((row) => {
+      if (row.task_type !== "coding" && row.task_type !== "research" && row.task_type !== "coordinator") {
+        throw new Error(`Unexpected task type ${row.task_type}`);
+      }
+      return {
+        id: row.ticket_id ?? row.id, type: row.task_type, ticketId: row.ticket_id,
+        identifier: row.ticket_identifier, title: row.ticket_title ?? row.slack_request ?? "Slack thread coordination",
+        ticketUrl: row.ticket_url, status: row.task_status, runStatus: row.run_status,
+        attemptCount: Number(row.attempt_number), workerId: row.worker_id, assigneeName: null,
+        updatedAt: row.updated_at, createdAt: row.created_at,
+        pullRequests: row.ticket_id ? prsByTicket.get(row.ticket_id) ?? [] : [],
+      };
+    });
+    return { items, total: Number(count[0]?.total ?? 0), page, pageSize };
+  }
+
+  async getAgentRunDetail(id: string): Promise<{ run: AgentRunSummary; trace: AgentTraceEvent[] } | null> {
+    const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE id = ?`, [id]);
+    if (!rows[0]) return null;
+    const trace = await this.query<{ id: string; run_id: string; kind: string; content_json: string; created_at: string }>(
+      `SELECT * FROM agent_trace_events WHERE run_id = ? ORDER BY created_at ASC, id ASC`, [id],
+    );
+    const events: AgentTraceEvent[] = trace.map((event) => ({
+      id: event.id, runId: event.run_id, kind: event.kind, contentJson: event.content_json, createdAt: event.created_at,
+    }));
+    if (events.length === 0 && rows[0].tool_calls_json) {
+      const legacy = JSON.parse(rows[0].tool_calls_json) as unknown;
+      if (!Array.isArray(legacy)) throw new Error(`tool_calls_json for task ${id} is not an array`);
+      for (const [index, value] of legacy.entries()) {
+        const call = value as Record<string, unknown>;
+        const createdAt = typeof call.createdAt === "number"
+          ? new Date(call.createdAt)
+          : new Date(String(call.createdAt));
+        if (Number.isNaN(createdAt.getTime())) throw new Error(`Invalid tool call timestamp for task ${id}`);
+        events.push({
+          id: String(call.id ?? `${id}:${index}`), runId: id, kind: "tool_call",
+          contentJson: JSON.stringify({ toolName: call.toolName, argsJson: call.argsJson,
+            resultText: call.resultText, resultStatus: call.resultStatus, thoughtText: call.thoughtText }),
+          createdAt: createdAt.toISOString(),
+        });
+      }
+    }
+    return { run: rowToAgentRun(rows[0]), trace: events };
+  }
+
   async followSlackThread(key: SlackThreadKey, firstMessageTs: string): Promise<void> {
     await this.run(
       `INSERT INTO slack_threads (workspace_id, channel_id, thread_ts, first_message_ts, created_at)
@@ -1253,11 +1531,11 @@ export class SqlDbClient implements DbClient {
     const now = this.clock.nowIso();
     const result = await this.run(
       `INSERT INTO tasks (id, task_type, slack_workspace_id, slack_channel_id, slack_thread_ts,
-       slack_source_ts, slack_request_index, slack_request, slack_quote, slack_state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+       slack_source_ts, slack_source_user_id, slack_request_index, slack_request, slack_quote, slack_state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
        ON CONFLICT (slack_workspace_id, slack_channel_id, slack_source_ts, slack_request_index) DO NOTHING`,
       [id, input.type, input.thread.workspaceId, input.thread.channelId, input.thread.threadTs,
-        input.sourceTs, input.requestIndex, input.request, input.quote ?? null, now, now],
+        input.sourceTs, input.sourceUserId ?? null, input.requestIndex, input.request, input.quote ?? null, now, now],
     );
     const rows = await this.query<TaskRow>(
       `SELECT * FROM tasks WHERE slack_workspace_id = ? AND slack_channel_id = ? AND slack_source_ts = ? AND slack_request_index = ?`,

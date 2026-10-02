@@ -5,6 +5,7 @@ import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import type { BearMetalConfig, Task } from "../customization/types.js";
 import type { DbClient, NewSlackTask, SlackTaskRecord, SlackThreadKey } from "../db/client.js";
 import type { LinearIntegration } from "../shared/integrations/linear/client.js";
+import type { GitHubIntegration } from "../shared/integrations/github/client.js";
 import type { Logger } from "../shared/logger.js";
 import { runSlackAgent } from "../worker/slack-agent.js";
 import { buildCoordinatorPayload } from "./slack-payload.js";
@@ -16,8 +17,12 @@ function safeSlackLine(text: string): string {
   return text.replace(/\s+/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function applyResearchCorrection(request: string, correction: string): string {
+  return `${request}\n\nCorrection: ${correction}\nLater corrections override earlier conflicting details; retain the original scope, sources, and other unchanged requirements.`;
+}
+
 function messagePrompt(payload: string): string {
-  return `Infer the tasks requested by the new Slack messages and use the task tools to create, update, or cancel tasks. An entry with kind "edit" revises the message identified by originalMessageTs; check tasks from that original message and call update_task or cancel_task if its request changed or was withdrawn. Use the edit entry's ts as sourceTs for task tools. If this batch contains the original or multiple edits of it, ignore every superseded version and act on the latest edit. Follow supersededBy links or use get_thread_task to find the current task after earlier edits. For each independent new coding request, call create_ticket. You can use list_ticket_destinations to resolve the team or an applicable project for the ticket. For each new research question, call start_research with the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; call ignore_message for the superseded request and cancel_task or ignore_message for the withdrawal, as appropriate. Make at least one decision for every message in this batch. The JSON messages array is that current group, processed together in this run. Earlier thread replies are context; tasks created from previously processed messages appear in the task summaries. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated edit text, use get_message_revision; for other truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. If a message has no request directed at Bear Metal, call ignore_message with its sourceTs and reason. Do not post to Slack.\n${payload}`;
+  return `Infer the tasks requested by the new Slack messages and use the task tools to create, update, or cancel tasks. Analyze new message for every distinct ask before using task tools. For each independent information-seeking question, call start_research. For each independent request to change or implement code, call create_ticket. One message can require multiple tasks; preserve the target and full details of each ask. Use the workspace read tools to understand unfamiliar references. An entry with kind "edit" revises the message identified by originalMessageTs; check tasks from that original message and call update_task or cancel_task if its request changed or was withdrawn. Use the edit entry's ts as sourceTs for task tools. If this batch contains the original or multiple edits of it, ignore every superseded version and act on the latest edit. Follow supersededBy links or use get_thread_task to find the current task after earlier edits. Give start_research the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. For a research follow-up, send only the correction to update_task; it preserves the previous request automatically. For a Slack edit, send the complete edited request. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; call ignore_message for the superseded request and cancel_task or ignore_message for the withdrawal, as appropriate. Make at least one decision for every message in this batch. The JSON messages array is that current group, processed together in this run. Earlier thread replies are context; tasks created from previously processed messages appear in the task summaries. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated edit text, use get_message_revision; for other truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. If a message has no request directed at Bear Metal, call ignore_message with its sourceTs and reason. Do not post to Slack.\n${payload}`;
 }
 
 function researchResultPrompt(key: SlackThreadKey, task: SlackTaskRecord): string {
@@ -34,6 +39,7 @@ export class SlackCoordinator {
     api: SlackThreadApi;
     botUserId: string;
     linear: LinearIntegration;
+    github: GitHubIntegration;
     config: BearMetalConfig;
     gateway?: AgentToolGatewayLike;
     logger: Logger;
@@ -82,7 +88,7 @@ export class SlackCoordinator {
   }
 
   private async runThread(key: SlackThreadKey): Promise<void> {
-    for (;;) {
+    threadLoop: for (;;) {
       const pending = await this.input.db.listSlackPendingMessages(key);
       if (pending.length > 0) {
         const pendingEdits = await this.input.db.listSlackPendingEdits(key);
@@ -112,22 +118,30 @@ export class SlackCoordinator {
         const batch = (await this.input.db.listSlackPendingMessages(key)).filter((ts) => availableTs.has(sources.get(ts) ?? ts));
         const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key), edits);
         const decisions = new Set<string>();
-        const tools = this.createTools(key, batch, undefined, decisions);
+        const sourceUsers = new Map(thread.filter((message) => message.user).map((message) => [message.ts, message.user!]));
+        for (const edit of edits) sourceUsers.set(edit.ts, edit.user);
+        const tools = this.createTools(key, batch, undefined, decisions, sourceUsers);
         const task: Task = {
           type: "coordinator",
           id: randomUUID(),
           request: payload,
           slack: { ...key, sourceTs: batch.at(-1)! },
         };
+        const assertDecisions = () => {
+          const undecided = batch.filter((ts) => !decisions.has(ts));
+          if (undecided.length > 0) throw new Error(`Coordinator made no decision for Slack messages: ${undecided.join(", ")}`);
+        };
         await (this.input.runAgent ?? runSlackAgent)({
           task,
+          db: this.input.db,
           config: this.input.config,
           gateway: this.input.gateway,
+          getGithubToken: () => this.input.github.getInstallationToken(),
           tools,
           prompt: messagePrompt(payload),
+          validateOutcome: async () => assertDecisions(),
         });
-        const undecided = batch.filter((ts) => !decisions.has(ts));
-        if (undecided.length > 0) throw new Error(`Coordinator made no decision for Slack messages: ${undecided.join(", ")}`);
+        assertDecisions();
         await this.input.db.markSlackMessagesProcessed(key, batch);
       }
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
@@ -137,13 +151,26 @@ export class SlackCoordinator {
         const current = await this.input.db.getSlackTask(result.id);
         if (!current || current.state !== "awaiting_coordination") continue;
         const request = JSON.stringify({ thread: key, resultTaskId: current.id, quote: current.quote });
+        let reviewDeferred = false;
         await (this.input.runAgent ?? runSlackAgent)({
           task: { type: "coordinator", id: randomUUID(), request, slack: { ...key, sourceTs: current.sourceTs } },
+          db: this.input.db,
           config: this.input.config,
           gateway: this.input.gateway,
-          tools: this.createTools(key, [], current.id),
+          getGithubToken: () => this.input.github.getInstallationToken(),
+          tools: this.createTools(key, [], current.id, undefined, undefined, () => { reviewDeferred = true; }),
           prompt: researchResultPrompt(key, current),
+          stopRequested: () => reviewDeferred,
+          validateOutcome: async () => {
+            if ((await this.input.db.listSlackPendingMessages(key)).length > 0) {
+              reviewDeferred = true;
+              return;
+            }
+            const decided = await this.input.db.getSlackTask(current.id);
+            if (decided?.state !== "approved" && decided?.state !== "canceled") throw new Error(`Coordinator made no decision for research result ${current.id}`);
+          },
         });
+        if (reviewDeferred) continue threadLoop;
         if ((await this.input.db.listSlackPendingMessages(key)).length > 0) break;
         const decided = await this.input.db.getSlackTask(current.id);
         if (decided?.state !== "approved" && decided?.state !== "canceled") throw new Error(`Coordinator made no decision for research result ${current.id}`);
@@ -157,10 +184,19 @@ export class SlackCoordinator {
     }
   }
 
-  private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>): ToolDefinition[] {
+  private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void): ToolDefinition[] {
     let resultDetailsRead = false;
+    const deferReviewIfPending = async () => {
+      if ((await this.input.db.listSlackPendingMessages(key)).length === 0) return false;
+      onReviewDeferred?.();
+      return true;
+    };
+    const deferredResult = { content: [{ type: "text" as const, text: "Review deferred while newer Slack messages are processed." }], details: { deferred: true } };
     const requireSource = (sourceTs: string) => {
       if (!pending.includes(sourceTs)) throw new Error(`Message ${sourceTs} is not in this coordinator batch`);
+      const user = sourceUsers?.get(sourceTs);
+      if (!user) throw new Error(`Message ${sourceTs} has no verified Slack user`);
+      return user;
     };
     const getTask = async (id: string) => {
       const task = await this.input.db.getSlackTask(id);
@@ -169,19 +205,20 @@ export class SlackCoordinator {
       }
       return task;
     };
-    const createCoding = async (args: NewSlackTask & TicketInput) => {
-      requireSource(args.sourceTs);
-      const { task, created } = await this.input.db.createSlackTask(args);
+    const createCoding = async (args: NewSlackTask & TicketInput & { slackTitle: string }) => {
+      const sourceUserId = requireSource(args.sourceTs);
+      const { task, created } = await this.input.db.createSlackTask({ ...args, sourceUserId });
       if (!created) {
         decisions?.add(args.sourceTs);
         return { task, created: false };
       }
       try {
-        const ticket = await this.input.linear.createSlackCodingTicket(args);
+        const ticket = await this.input.linear.createSlackCodingTicket({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId });
         await this.input.db.attachSlackTicket(task.id, ticket.id, ticket.url);
         // Delegating before attachment lets the scheduler create a second row for this ticket.
         await this.input.linear.delegateSlackCodingTicket(ticket.id);
         const updated = await getTask(task.id);
+        await this.postTaskAcknowledgment(updated, args.slackTitle);
         decisions?.add(args.sourceTs);
         return { task: updated, created: true };
       } catch (err) {
@@ -190,9 +227,15 @@ export class SlackCoordinator {
       }
     };
     const createResearch = async (args: NewSlackTask) => {
-      requireSource(args.sourceTs);
-      const result = await this.input.db.createSlackTask(args);
-      if (result.created) this.input.wakeResearch();
+      const sourceUserId = requireSource(args.sourceTs);
+      const result = await this.input.db.createSlackTask({ ...args, sourceUserId });
+      if (result.created) {
+        try {
+          await this.postTaskAcknowledgment(result.task);
+        } finally {
+          this.input.wakeResearch();
+        }
+      }
       decisions?.add(args.sourceTs);
       return result;
     };
@@ -232,12 +275,13 @@ export class SlackCoordinator {
       execute: async (_id, params) => {
         if (resultTaskId && params.id !== resultTaskId) throw new Error(`Result review can only cancel task ${resultTaskId}`);
         if (resultTaskId && !resultDetailsRead) throw new Error(`Read task details before deciding on research result ${resultTaskId}`);
-        if (resultTaskId && (await this.input.db.listSlackPendingMessages(key)).length > 0) throw new Error("New Slack messages arrived before research cancellation");
+        if (resultTaskId && await deferReviewIfPending()) return deferredResult;
         if (!resultTaskId) {
           if (!params.sourceTs) throw new Error("Cancellation requires the source Slack message timestamp");
           requireSource(params.sourceTs);
         }
         const canceled = await cancel(params.id);
+        if (!resultTaskId && !canceled.coordinatedAt && !canceled.ackState) await this.postTaskAcknowledgment(canceled);
         if (params.sourceTs) decisions?.add(params.sourceTs);
         return { content: [{ type: "text", text: JSON.stringify(canceled) }], details: {} };
       },
@@ -252,7 +296,7 @@ export class SlackCoordinator {
           if (params.id !== resultTaskId) throw new Error(`Result review can only approve task ${resultTaskId}`);
           if (!resultDetailsRead) throw new Error(`Read task details before deciding on research result ${resultTaskId}`);
           await getTask(params.id);
-          if ((await this.input.db.listSlackPendingMessages(key)).length > 0) throw new Error("New Slack messages arrived before research approval");
+          if (await deferReviewIfPending()) return deferredResult;
           await this.input.db.approveSlackResearchResult(params.id);
           return { content: [{ type: "text", text: "Research result approved for thread reply." }], details: {} };
         },
@@ -293,6 +337,7 @@ export class SlackCoordinator {
           teamId: Type.String({ minLength: 1, description: "Linear team ID for the team that should own the ticket. Use list_ticket_destinations if the team ID is unknown." }),
           projectId: Type.Optional(Type.String({ minLength: 1, description: "Optional Linear project ID. Include only when the requested work belongs to a specific project associated with teamId; otherwise omit. Use list_ticket_destinations if the project ID is unknown." })),
           title: Type.String({ minLength: 1, description: "Concise, human-readable Linear issue title describing the requested outcome." }),
+          slackTitle: Type.String({ minLength: 1, description: "Short, natural phrase for the Slack ticket link, such as 'change startup to fast in A'. This is not stored or used as the Linear issue title." }),
           description: Type.String({ minLength: 1, description: "Complete Linear issue instructions for the coding worker, including the user's requirements and necessary context." }),
           cycleId: Type.Optional(Type.String({ minLength: 1, description: "Optional Linear cycle ID, only when an exact cycle has been resolved; omit when unknown rather than guessing." })),
         }),
@@ -334,27 +379,38 @@ export class SlackCoordinator {
       defineTool({
         name: "update_task",
         label: "Replace thread task",
-        description: "Use when a new Slack message revises an existing task. Supersede the old task with a replacement from the new message. For coding replacements, provide teamId, title, and description, plus projectId when a specific project applies; for research replacements, provide quote. Example: 'Use TypeScript instead' replaces the earlier coding task with a revised ticket.",
+        description: "Use when a new Slack message revises an existing task. Supersede the old task with a replacement from the new message. For research follow-up replies, provide only the correction, not a rewritten request: the saved request is carried forward automatically. For edits to the original Slack message, provide its complete new request instead. For coding replacements, provide the complete revised request, teamId, title, and description, plus projectId when a specific project applies.",
         parameters: Type.Object({
           id: Type.String({ minLength: 1, description: "ID of the existing task to replace, from the JSON tasks array or get_thread_task; not a Slack timestamp or Linear issue ID." }),
           sourceTs: Type.String({ minLength: 1, description: "Exact ts of the new Slack message that revises the task, from the JSON messages array." }),
           requestIndex: Type.Integer({ minimum: 1, description: "Stable 1-based index of this replacement among all independent requests in sourceTs, across coding and research. Never reuse another task's index from the same message." }),
           type: Type.Union([Type.Literal("coding"), Type.Literal("research")], { description: "Type of the replacement task: 'coding' creates a new delegated Linear ticket; 'research' starts a new research worker." }),
-          request: Type.String({ minLength: 1, description: "Complete revised instruction after applying the user's correction and relevant prior context. For research, this is sent directly to the worker." }),
+          request: Type.Optional(Type.String({ minLength: 1, description: "Complete revised instruction for a coding replacement or an edit to the original Slack message. Omit for a research follow-up reply." })),
+          correction: Type.Optional(Type.String({ minLength: 1, description: "For a research follow-up reply, the user's correction to this task, without rewriting the prior request. Omit for coding replacements and Slack edits." })),
           quote: Type.Optional(Type.String({ minLength: 1, description: "Required when type='research': short identifying phrase for Slack replies, not the research instruction. Omit for coding." })),
           teamId: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': Linear team ID. Use list_ticket_destinations if unknown. Omit for research." })),
           projectId: Type.Optional(Type.String({ minLength: 1, description: "Optional when type='coding': Linear project ID whose teamIds includes teamId. Omit when no specific project applies or for research." })),
           title: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': concise title for the new Linear ticket. Omit for research." })),
+          slackTitle: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': short natural phrase for the Slack ticket link. Omit for research." })),
           description: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': complete instructions for the new Linear ticket, including the revised requirements. Omit for research." })),
           cycleId: Type.Optional(Type.String({ minLength: 1, description: "Optional Linear cycle ID for a coding replacement, only when the exact cycle is known. Omit for research or when unknown." })),
         }),
         execute: async (_id, params) => {
-          requireSource(params.sourceTs);
-          await getTask(params.id);
+          const sourceUserId = requireSource(params.sourceTs);
+          const previous = await getTask(params.id);
+          const isEdit = (await this.input.db.listSlackPendingEdits(key)).some((edit) => edit.ts === params.sourceTs);
+          let request: string;
+          if (params.type === "research" && !isEdit) {
+            if (!params.correction || params.request) throw new Error("Updated research task requires a correction, not a rewritten request");
+            request = applyResearchCorrection(previous.request, params.correction);
+          } else {
+            if (!params.request || params.correction) throw new Error("Updated task requires a complete request without a correction");
+            request = params.request;
+          }
           let codingInput: TicketInput | undefined;
           if (params.type === "coding") {
-            if (!params.teamId || !params.title || !params.description) {
-              throw new Error("Updated coding task requires Linear destination, title, and description");
+            if (!params.teamId || !params.title || !params.description || !params.slackTitle) {
+              throw new Error("Updated coding task requires Linear destination, title, Slack title, and description");
             }
             codingInput = {
               teamId: params.teamId, projectId: params.projectId, title: params.title,
@@ -362,8 +418,8 @@ export class SlackCoordinator {
             };
           }
           const next = await this.input.db.createSlackTask({
-            type: params.type, thread: key, sourceTs: params.sourceTs,
-            requestIndex: params.requestIndex, request: params.request, quote: params.quote,
+            type: params.type, thread: key, sourceTs: params.sourceTs, sourceUserId,
+            requestIndex: params.requestIndex, request, quote: params.quote,
           });
           if (next.created) {
             try {
@@ -372,7 +428,9 @@ export class SlackCoordinator {
                 const ticket = await this.input.linear.createSlackCodingTicket(codingInput);
                 await this.input.db.attachSlackTicket(next.task.id, ticket.id, ticket.url);
                 await this.input.linear.delegateSlackCodingTicket(ticket.id);
+                await this.postTaskAcknowledgment(await getTask(next.task.id), params.slackTitle);
               } else {
+                await this.postTaskAcknowledgment(next.task);
                 this.input.wakeResearch();
               }
             } catch (err) {
@@ -389,33 +447,35 @@ export class SlackCoordinator {
 
   private async postBatchReply(key: SlackThreadKey): Promise<void> {
     const tasks = await this.input.db.listSlackThreadTasks(key);
-    const coding = tasks.filter((task) => task.type === "coding" && task.state === "awaiting_coordination" && task.ackState === null);
-    const research = tasks.filter((task) => task.type === "research" && (task.state === "queued" || task.state === "running" || task.state === "awaiting_coordination" || task.state === "approved") && task.ackState === null);
-    const canceled = tasks.filter((task) => task.state === "canceled" && !task.coordinatedAt && task.ackState === null);
-    if (coding.length + research.length + canceled.length === 0) return;
-    const lines = [
-      ...coding.map((task) => {
-        if (!task.ticketUrl) throw new Error(`Coding task ${task.id} has no Linear ticket URL`);
-        return `Created ticket: ${task.ticketUrl}`;
-      }),
-      ...canceled.map((task) => `Canceled: ${safeSlackLine(task.ticketUrl ?? task.quote ?? task.request.slice(0, 120))}`),
-      ...research.map((task) => {
-        if (!task.quote) throw new Error(`Research task ${task.id} has no question quote`);
-        return `Looking into “${safeSlackLine(task.quote)}”.`;
-      }),
-    ];
-    const ids = [...coding, ...research, ...canceled].map((task) => task.id);
-    await this.input.db.beginSlackBatchAcknowledgment(ids);
+    for (const task of tasks) {
+      if (task.ackState !== null) continue;
+      if (task.type === "coding" && task.state === "awaiting_coordination") await this.postTaskAcknowledgment(task, task.request.slice(0, 100));
+      if (task.type === "research" && ["queued", "running", "awaiting_coordination", "approved"].includes(task.state)) await this.postTaskAcknowledgment(task);
+      if (task.state === "canceled" && !task.coordinatedAt) await this.postTaskAcknowledgment(task);
+    }
+  }
+
+  private async postTaskAcknowledgment(task: SlackTaskRecord, slackTitle?: string): Promise<void> {
+    let message: string;
+    if (task.state === "canceled") {
+      message = `Canceled: ${safeSlackLine(task.ticketUrl ?? task.quote ?? task.request.slice(0, 120))}`;
+    } else if (task.type === "coding") {
+      if (!task.ticketUrl || !slackTitle?.trim()) throw new Error(`Coding task ${task.id} is missing a ticket URL or Slack title`);
+      message = `Created a ticket for <${task.ticketUrl}|${safeSlackLine(slackTitle)}>.`;
+    } else {
+      if (!task.quote) throw new Error(`Research task ${task.id} has no question quote`);
+      message = `Looking into ${safeSlackLine(task.quote)}.`;
+    }
+    await this.input.db.beginSlackBatchAcknowledgment([task.id]);
     let replyTs: string;
     try {
-      replyTs = await this.input.api.reply(key, lines.join("\n"));
+      replyTs = await this.input.api.reply(task.thread, message);
     } catch (err) {
-      await this.input.db.failSlackBatchAcknowledgment(ids, String(err));
+      await this.input.db.failSlackBatchAcknowledgment([task.id], String(err));
       throw err;
     }
-    for (const task of coding) await this.input.db.markSlackTaskCoordinated(task.id, replyTs);
-    for (const task of research) await this.input.db.markSlackResearchStartedReply(task.id, replyTs);
-    for (const task of canceled) await this.input.db.markSlackTaskCoordinated(task.id, replyTs);
+    if (task.type === "research" && task.state !== "canceled") await this.input.db.markSlackResearchStartedReply(task.id, replyTs);
+    else await this.input.db.markSlackTaskCoordinated(task.id, replyTs);
   }
 
   private async postResearchAnswers(key: SlackThreadKey): Promise<void> {
@@ -426,9 +486,15 @@ export class SlackCoordinator {
       const current = await this.input.db.getSlackTask(task.id);
       if (!current || current.state !== "approved") continue;
       if (!current.result || !current.quote) throw new Error(`Completed research task ${task.id} is missing answer or quote`);
+      let sourceUserId = current.sourceUserId;
+      if (!sourceUserId) {
+        const source = await this.input.api.readThread(key, current.sourceTs, current.sourceTs);
+        sourceUserId = source.find((message) => message.ts === current.sourceTs)?.user ?? null;
+      }
+      if (!sourceUserId) throw new Error(`Research task ${task.id} has no source Slack user`);
       await this.input.db.beginSlackTaskReply(task.id);
       try {
-        const replyTs = await this.input.api.reply(key, `“${safeSlackLine(current.quote)}”\n${current.result}`);
+        const replyTs = await this.input.api.replyResearch(key, sourceUserId, current.quote, current.result);
         await this.input.db.markSlackTaskCoordinated(task.id, replyTs);
       } catch (err) {
         await this.input.db.failSlackTask(task.id, String(err));

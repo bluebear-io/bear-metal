@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../../logger.js";
+import { SlackThreadApi } from "../../../manager/slack-thread-api.js";
 import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackReadClient } from "./client.js";
 
 const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
@@ -218,6 +219,20 @@ describe("formatMaxIterationsReachedText", () => {
 });
 
 describe("SlackIntegration", () => {
+  it("posts a research answer as a Slack Markdown block with a text fallback", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, ts: "200.1" }), { status: 200 }));
+    const slack = new SlackIntegration({ token: "xoxb-test", channel: "C1", fetchImpl: fetchImpl as unknown as typeof fetch, logger: SILENT_LOGGER });
+    const answer = "**Slow path**\n```go\nfunc main() {}\n```";
+    const api = new SlackThreadApi({} as SlackReadClient, slack);
+    await expect(api.replyResearch({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "U1", "why B is slow", answer)).resolves.toBe("200.1");
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.blocks).toEqual([
+      { type: "section", text: { type: "mrkdwn", text: "Replying to <@U1>" } },
+      { type: "markdown", text: `> why B is slow\n\n${answer}` },
+    ]);
+    expect(body.text).toContain("Replying to <@U1>");
+  });
   it("posts to chat.postMessage with bearer token and channel", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),

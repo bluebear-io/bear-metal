@@ -7,6 +7,39 @@ import { SlackResearchWorker } from "./slack-research.js";
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "1.0" };
 
 describe("Slack research worker", () => {
+  it("finishes answer submission without waiting for the coordinator run", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "1.3", requestIndex: 1, request: "Find the answer", quote: "Find the answer" })).task;
+    let releaseWake: (() => void) | undefined;
+    const wakeThread = vi.fn(() => new Promise<void>((resolve) => { releaseWake = resolve; }));
+    let submitted = false;
+    const worker = new SlackResearchWorker({
+      db, github: { getInstallationToken: async () => "token" } as GitHubIntegration,
+      config: {} as ConstructorParameters<typeof SlackResearchWorker>[0]["config"],
+      logger: createLogger({ name: "test", level: "silent" }), pollIntervalMs: 60_000, wakeThread,
+      runAgent: async ({ tools }) => {
+        const tool = tools.find((candidate) => candidate.name === "answer_research");
+        if (!tool) throw new Error("answer_research missing");
+        await tool.execute("answer", { answer: "Answer" }, undefined, undefined, {} as never);
+        submitted = true;
+      },
+    });
+    try {
+      await worker.tick();
+      const completedBeforeWake = await Promise.race([
+        worker.stop().then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
+      ]);
+      expect(completedBeforeWake).toBe(true);
+      expect(submitted).toBe(true);
+      expect((await db.getSlackTask(task.id))?.state).toBe("awaiting_coordination");
+    } finally {
+      releaseWake?.();
+      await worker.stop();
+      await db.close();
+    }
+  });
   it("stores the answer for coordination and wakes the owning thread", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();

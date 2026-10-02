@@ -5,6 +5,36 @@ import { describe, expect, it, vi } from "vitest";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools, validateWorkspaceBashCommand } from "./workspace-guard.js";
 
 describe("workspace guard", () => {
+  it("reads files when the workspace root is a symlinked path", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "bear-metal-aliased-workspace-"));
+    const workspace = join(parent, "workspace");
+    const alias = join(parent, "alias");
+    try {
+      await mkdir(workspace);
+      await writeFile(join(workspace, "source.txt"), "source contents");
+      await symlink(workspace, alias, process.platform === "win32" ? "junction" : "dir");
+      const tools = createWorkspaceGuardedTools(alias);
+      const ls = tools.find((tool) => tool.name === "ls");
+      if (!ls) throw new Error("ls tool missing");
+      const list = ls.execute as unknown as (id: string, params: { path: string }) => Promise<{ content: Array<{ text: string }> }>;
+      expect((await list("root", { path: "." })).content[0]?.text).toContain("source.txt");
+      const read = tools.find((tool) => tool.name === "read");
+      if (!read) throw new Error("read tool missing");
+      const execute = read.execute as unknown as (id: string, params: { path: string }) => Promise<{ content: Array<{ text: string }> }>;
+      const result = await execute("canonical", { path: join(workspace, "source.txt") });
+      expect(result.content[0]?.text).toContain("source contents");
+      const write = tools.find((tool) => tool.name === "write");
+      if (!write) throw new Error("write tool missing");
+      await (write.execute as unknown as (id: string, params: { path: string; content: string }) => Promise<unknown>)(
+        "aliased-write",
+        { path: join(alias, "new.txt"), content: "written through alias" },
+      );
+      expect(await readFile(join(workspace, "new.txt"), "utf8")).toBe("written through alias");
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it("rejects research file reads outside the cloned workspace", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "bear-metal-research-workspace-"));
     const outside = await mkdtemp(join(tmpdir(), "bear-metal-research-outside-"));

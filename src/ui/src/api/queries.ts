@@ -1,6 +1,8 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 import {
+  fetchAgentRunDetail,
+  fetchTasks,
   fetchConfig,
   fetchModelComparison,
   fetchSummary,
@@ -12,7 +14,18 @@ import {
   fetchWorkers,
   type SummaryRange,
 } from "./client.js";
-import type { TicketListQuery } from "./types.js";
+
+export const useAgentRunDetail = (id: string) =>
+  useQuery({ queryKey: ["agent-run", id], queryFn: () => fetchAgentRunDetail(id), refetchInterval: 5000 });
+import type { TaskListQuery, TicketListQuery } from "./types.js";
+
+export const useTasks = (query: TaskListQuery = {}) => useInfiniteQuery({
+  queryKey: ["tasks", query],
+  initialPageParam: query.page ?? 1,
+  queryFn: ({ pageParam }) => fetchTasks({ ...query, page: Number(pageParam) }),
+  getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
+  refetchInterval: 5000,
+});
 
 export const useTickets = (query: TicketListQuery = {}) => {
   return useInfiniteQuery({
@@ -28,6 +41,13 @@ export const useTickets = (query: TicketListQuery = {}) => {
 
 export const useTicketFilterOptions = () =>
   useQuery({ queryKey: ["tickets", "filters"], queryFn: () => fetchTicketFilters() });
+
+export const useTaskFilterOptions = () => useQuery({
+  queryKey: ["tickets", "filters"],
+  queryFn: () => fetchTicketFilters(),
+  select: (filters) => ({ ...filters, statuses: [...filters.bmStatuses, "queued", "running", "awaiting_coordination",
+    "approved", "posting", "coordinated", "canceled", "succeeded", "dispatched", "timed_out", "crashed"] }),
+});
 
 export const useTicketDetail = (id: string) =>
   useQuery({

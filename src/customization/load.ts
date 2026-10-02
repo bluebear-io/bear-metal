@@ -70,6 +70,7 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
   }
   if (config.database !== undefined) callable(object(config.database, "config.database").getUrl, "config.database.getUrl");
   if (config.maxIterations !== undefined) positiveInteger(config.maxIterations, "config.maxIterations");
+  if (config.traceRetentionDays !== undefined) positiveInteger(config.traceRetentionDays, "config.traceRetentionDays");
   if (config.ciDeferralMaxMs !== undefined) positiveInteger(config.ciDeferralMaxMs, "config.ciDeferralMaxMs");
   if (config.shouldRetryCi !== undefined) callable(config.shouldRetryCi, "config.shouldRetryCi");
   const registry = object(config.llmProviders, "config.llmProviders");

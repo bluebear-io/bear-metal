@@ -51,6 +51,7 @@ logger.info(
     concurrency: runtimeConfig.workerConcurrency,
     pollIntervalMs: runtimeConfig.pollIntervalMs,
     apiOnly: runtimeConfig.apiOnly,
+    runMode: runtimeConfig.runMode,
   },
   "config loaded",
 );
@@ -121,6 +122,11 @@ const databaseUrl = customizationConfig.database
   : DEFAULT_DATABASE_URL;
 const db = new SqlDbClient(databaseUrl, maxIterations);
 await db.initSchema();
+const traceRetentionDays = customizationConfig.traceRetentionDays ?? 14;
+await db.purgeAgentTraces(traceRetentionDays);
+const tracePurgeTimer = setInterval(() => {
+  void db.purgeAgentTraces(traceRetentionDays).catch((err) => logger.error({ err }, "agent trace retention cleanup failed"));
+}, 60 * 60 * 1000);
 
 let scheduler: Scheduler | null = null;
 let taskWorker: TaskWorker | null = null;
@@ -141,7 +147,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
   });
   const slackGateway = new AgentToolGateway({ handlers: slackGatewayHandlers, logger });
   slackCoordinator = new SlackCoordinator({
-    db, api: threadApi, linear, config: customizationConfig, gateway: slackGateway, logger, botUserId: auth.user_id,
+    db, api: threadApi, linear, github, config: customizationConfig, gateway: slackGateway, logger, botUserId: auth.user_id,
     pollIntervalMs: runtimeConfig.pollIntervalMs,
     wakeResearch: () => slackResearch?.wake(),
   });
@@ -158,6 +164,9 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     logger,
     wake: (key) => slackCoordinator!.wake(key),
   });
+}
+if (runtimeConfig.runMode === "slack_only" && (!slackCoordinator || !slackResearch || !slackEvents)) {
+  throw new Error("slack_only mode requires Slack bot token and signing secret");
 }
 
 const server = createApp(db, maxIterations, linear, slackEvents).listen(runtimeConfig.backendPort, () => {
@@ -225,8 +234,12 @@ if (runtimeConfig.apiOnly) {
 
   logger.info({ port: runtimeConfig.backendPort, pid: process.pid }, "🐻 Bear Metal is awake and hungry for tickets — let's ship some code!");
 
-  scheduler.start();
-  taskWorker.start();
+  if (runtimeConfig.runMode === "normal") {
+    scheduler.start();
+    taskWorker.start();
+  } else {
+    logger.info("Slack-only mode: Linear scheduler and coding worker disabled");
+  }
   if (slackResearch) await slackResearch.start();
   slackCoordinator?.start();
 }
@@ -237,6 +250,7 @@ function shutdown(signal: string): void {
     return;
   }
   shuttingDown = true;
+  clearInterval(tracePurgeTimer);
   logger.info({ signal }, "shutting down");
   logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
   void Promise.all([scheduler?.stop(), taskWorker?.stop(), slackCoordinator?.stop(), slackResearch?.stop()])

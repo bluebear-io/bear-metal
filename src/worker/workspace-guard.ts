@@ -1,5 +1,5 @@
-import { constants, existsSync } from "node:fs";
-import { access, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { constants, existsSync, lstatSync, realpathSync } from "node:fs";
+import { access, lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -16,7 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: NodeJS.ProcessEnv): ToolDefinition[] {
-  const root = normalizeWorkspaceRoot(workspaceRoot);
+  const root = realpathSync(workspaceRoot);
   const cacheHome = resolve(homedir(), ".bear-metal", "cache-home");
   const localBash = createLocalBashOperations();
   let cacheHomeReady: ReturnType<typeof mkdir> | undefined;
@@ -92,8 +92,7 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
     createFindToolDefinition(root, {
       operations: {
         exists: (path) => {
-          assertPathInWorkspace(root, path);
-          return existsSync(path);
+          return existsSync(assertPathForExistence(root, path));
         },
         glob: async (pattern, cwd, options) => findWorkspaceFiles(root, cwd, pattern, options.limit),
       },
@@ -101,8 +100,7 @@ export function createWorkspaceGuardedTools(workspaceRoot: string, gitEnv?: Node
     createLsToolDefinition(root, {
       operations: {
         exists: (path) => {
-          assertPathInWorkspace(root, path);
-          return existsSync(path);
+          return existsSync(assertPathForExistence(root, path));
         },
         stat: async (path) => stat(await assertExistingPathInWorkspace(root, path)),
         readdir: async (path) => readdir(await assertExistingPathInWorkspace(root, path)),
@@ -161,24 +159,39 @@ function assertPathInWorkspace(workspaceRoot: string, candidate: string): string
 }
 
 async function assertExistingPathInWorkspace(workspaceRoot: string, candidate: string): Promise<string> {
-  const target = assertPathInWorkspace(workspaceRoot, candidate);
-  const resolvedTarget = await realpath(target);
+  const resolvedTarget = await realpath(candidate);
   return assertPathInWorkspace(workspaceRoot, resolvedTarget);
 }
 
 async function assertWritePathInWorkspace(workspaceRoot: string, candidate: string): Promise<string> {
-  const target = assertPathInWorkspace(workspaceRoot, candidate);
+  const target = resolve(candidate);
   const existingAncestor = await nearestExistingPath(target);
   const resolvedAncestor = await realpath(existingAncestor);
-  assertPathInWorkspace(workspaceRoot, resolvedAncestor);
-  return target;
+  return assertPathInWorkspace(workspaceRoot, resolve(resolvedAncestor, relative(existingAncestor, target)));
+}
+
+function assertPathForExistence(workspaceRoot: string, candidate: string): string {
+  const target = resolve(candidate);
+  let ancestor = target;
+  while (true) {
+    try {
+      lstatSync(ancestor);
+      break;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
+  return assertPathInWorkspace(workspaceRoot, resolve(realpathSync(ancestor), relative(ancestor, target)));
 }
 
 async function nearestExistingPath(target: string): Promise<string> {
   let current = target;
   while (true) {
     try {
-      await access(current);
+      await lstat(current);
       return current;
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {

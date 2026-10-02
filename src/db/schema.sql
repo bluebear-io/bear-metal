@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   slack_channel_id TEXT,
   slack_thread_ts TEXT,
   slack_source_ts TEXT,
+  slack_source_user_id TEXT,
   slack_request_index INTEGER,
   slack_request TEXT,
   slack_quote TEXT,
@@ -97,6 +98,7 @@ ALTER TABLE tasks ADD COLUMN slack_workspace_id TEXT;
 ALTER TABLE tasks ADD COLUMN slack_channel_id TEXT;
 ALTER TABLE tasks ADD COLUMN slack_thread_ts TEXT;
 ALTER TABLE tasks ADD COLUMN slack_source_ts TEXT;
+ALTER TABLE tasks ADD COLUMN slack_source_user_id TEXT;
 ALTER TABLE tasks ADD COLUMN slack_request_index INTEGER;
 ALTER TABLE tasks ADD COLUMN slack_request TEXT;
 ALTER TABLE tasks ADD COLUMN slack_quote TEXT;
@@ -175,6 +177,17 @@ CREATE TABLE IF NOT EXISTS events (
   payload_json TEXT,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_trace_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  run_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_trace_events_run ON agent_trace_events (run_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_agent_trace_events_retention ON agent_trace_events (created_at);
 
 ALTER TABLE events ADD COLUMN ticket_id TEXT;
 ALTER TABLE events ADD COLUMN run_id TEXT;

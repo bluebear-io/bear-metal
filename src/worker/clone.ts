@@ -63,6 +63,23 @@ export async function runWorkspaceBuilder(input: {
 
 export function workspaceForTicket(ticketId: string): string {
   const safeTicketId = ticketId.replace(/[^a-zA-Z0-9_-]/g, "-");
+  return resolve(workspaceBase(), safeTicketId);
+}
+
+export function workspaceForResearchTask(taskId: string): string {
+  const safeTaskId = taskId.replace(/[^a-zA-Z0-9_-]/g, "-");
+  return resolve(workspaceBase(), "research", safeTaskId);
+}
+
+export function workspaceForCoordinatorGeneration(generationId: string): string {
+  return resolve(workspaceForCoordinatorRoot(), generationId);
+}
+
+export function workspaceForCoordinatorRoot(): string {
+  return resolve(workspaceBase(), "coordinator");
+}
+
+function workspaceBase(): string {
   const base = process.env.BEAR_METAL_WORKSPACE_DIR ?? resolve(homedir(), ".bear-metal", "workspace");
-  return resolve(base, safeTicketId);
+  return base;
 }

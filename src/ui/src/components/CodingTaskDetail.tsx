@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { useConfig, useEventPayload, useTicketDetail, useToolCallDetail } from "../api/queries.js";
 import type {
@@ -15,21 +15,8 @@ import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
-import { formatDateTime, formatDuration, formatTokens, parseLabels } from "../lib/format.js";
-
-const Field = ({ label, value }: { label: string; value: string }) => (
-  <div className="min-w-0">
-    <dt className="text-xs font-medium uppercase text-text-muted">{label}</dt>
-    <dd className="mt-1 truncate text-sm text-text-primary">{value}</dd>
-  </div>
-);
-
-const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <section className="flex flex-col gap-3">
-    <h2 className="text-sm font-semibold uppercase text-text-secondary">{title}</h2>
-    {children}
-  </section>
-);
+import { formatDateTime, parseLabels } from "../lib/format.js";
+import { CopyableBlock, Field, RunsSection, Section } from "./TaskDetailSections.js";
 
 const TicketSummary = ({ ticket, maxIterations }: { ticket: Ticket; maxIterations: number | undefined }) => {
   const labels = parseLabels(ticket.labelsJson);
@@ -79,55 +66,6 @@ const TicketSummary = ({ ticket, maxIterations }: { ticket: Ticket; maxIteration
     </Section>
   );
 };
-
-const RunsSection = ({ runs }: { runs: Run[] }) => (
-  <Section title="Runs">
-    {runs.length === 0 ? (
-      <p className="text-sm text-text-muted">No runs</p>
-    ) : (
-      <div className="overflow-x-auto rounded-md border border-border-default bg-bg-card">
-        <table className="min-w-full divide-y divide-border-default text-left text-sm">
-          <thead className="text-xs uppercase text-text-muted">
-            <tr>
-              <th className="px-3 py-2 font-medium">Attempt</th>
-              <th className="px-3 py-2 font-medium">Status</th>
-              <th className="px-3 py-2 font-medium">Trigger</th>
-              <th className="px-3 py-2 font-medium">Worker</th>
-              <th className="px-3 py-2 font-medium">Duration</th>
-              <th className="px-3 py-2 font-medium">Model</th>
-              <th className="px-3 py-2 font-medium">Prompt</th>
-              <th className="px-3 py-2 font-medium">Completion</th>
-              <th className="px-3 py-2 font-medium">Stop / error</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border-default">
-            {runs.map((run) => (
-              <tr key={run.id}>
-                <td className="whitespace-nowrap px-3 py-2 font-medium">Attempt {run.attemptNumber}</td>
-                <td className="whitespace-nowrap px-3 py-2">
-                  <StatusBadge status={run.status} />
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{run.trigger.replaceAll("_", " ")}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{run.worker?.name ?? "—"}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">
-                  {formatDuration(run.startedAt, run.endedAt)}
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">
-                  {run.modelName === null ? "—" : (
-                    <span title={run.provider ?? undefined}>{run.modelName}</span>
-                  )}
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.promptTokens)}</td>
-                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.completionTokens)}</td>
-                <td className="min-w-48 px-3 py-2 text-text-secondary">{[run.stopReason, run.error].filter(Boolean).join(": ") || "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )}
-  </Section>
-);
 
 // Best-effort JSON parser — server stores comments as a JSON string; bad data renders as no comments.
 function parseComments(json: string): ReviewThreadComment[] {
@@ -231,42 +169,6 @@ const PullRequestSection = ({ pullRequests }: { pullRequests: PullRequest[] }) =
     </div>
   </Section>
 );
-
-function CopyableBlock({ content, tall }: { content: string; tall?: boolean }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    void navigator.clipboard.writeText(content).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {
-      console.warn("Clipboard write failed");
-    });
-  };
-  return (
-    <div className="mt-1">
-      <div className="flex items-center justify-end rounded-t border border-b-0 border-border-default bg-bg-card px-2 py-0.5">
-        <button
-          onClick={copy}
-          title="Copy to clipboard"
-          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-primary transition-colors"
-        >
-          {copied ? (
-            <>
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-              copied
-            </>
-          ) : (
-            <>
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              copy
-            </>
-          )}
-        </button>
-      </div>
-      <pre className={`${tall ? "max-h-96" : "max-h-64"} overflow-auto rounded-b border border-border-default bg-bg-card p-2 text-xs text-text-primary whitespace-pre-wrap`}>{content}</pre>
-    </div>
-  );
-}
 
 function prettyJson(raw: string): string {
   try {
@@ -408,7 +310,7 @@ const LogRow = ({ item }: { item: LogItem }) => {
 
 const ACTIVE_RUN_STATUSES = new Set(["running", "dispatched"]);
 
-const EventLogSection = ({ runs, events }: { runs: Run[]; events: TicketEvent[] }) => {
+export const EventLogSection = ({ runs, events }: { runs: Run[]; events: TicketEvent[] }) => {
   const items = buildLog(runs, events);
   const isActive = runs.some((r) => r.status !== null && ACTIVE_RUN_STATUSES.has(r.status));
   return (
@@ -451,7 +353,7 @@ const EventLogSection = ({ runs, events }: { runs: Run[]; events: TicketEvent[] 
   );
 };
 
-export const TicketDetailPage = () => {
+export const CodingTaskDetail = () => {
   const { id } = useParams();
   const hasTicketId = id !== undefined && id.trim() !== "";
   const query = useTicketDetail(id ?? "");
@@ -460,14 +362,9 @@ export const TicketDetailPage = () => {
 
   if (!hasTicketId) {
     return (
-      <main className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-6 py-8 sm:px-8">
-        <Link to="/tickets" className="text-sm font-medium text-primary hover:underline">
-          Back to tickets
-        </Link>
-        <div role="alert" className="rounded-md border border-status-red/40 bg-bg-card p-3 text-sm text-status-red">
-          Missing ticket id.
-        </div>
-      </main>
+      <div role="alert" className="rounded-md border border-status-red/40 bg-bg-card p-3 text-sm text-status-red">
+        Missing coding task id.
+      </div>
     );
   }
 
@@ -478,11 +375,7 @@ export const TicketDetailPage = () => {
   }, [detail?.ticket.identifier, detail?.ticket.title]);
 
   return (
-    <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8 sm:px-8">
-      <Link to="/tickets" className="text-sm font-medium text-primary hover:underline">
-        Back to tickets
-      </Link>
-
+    <>
       <PageHeader title={title}>
         <RefreshButton busy={query.isFetching} onClick={() => void query.refetch()} />
       </PageHeader>
@@ -491,7 +384,7 @@ export const TicketDetailPage = () => {
         isLoading={query.isLoading}
         error={query.error}
         isEmpty={detail === undefined}
-        emptyLabel="Ticket detail not found"
+        emptyLabel="Coding task detail not found"
       >
         {detail === undefined ? null : (
           <div className="flex flex-col gap-6">
@@ -502,8 +395,8 @@ export const TicketDetailPage = () => {
           </div>
         )}
       </QueryBoundary>
-    </main>
+    </>
   );
 };
 
-export default TicketDetailPage;
+export default CodingTaskDetail;

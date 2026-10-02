@@ -34,6 +34,7 @@ export interface DispatchInput {
   config: BearMetalConfig;
   iteration: number;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
+  onTraceEvent?: (kind: string, content: Record<string, unknown>) => void;
   onWorkspaceBuilding?: () => void;
   onWorkspaceBuilt?: (agentWorkdir: string) => void;
   onAgentStarted?: (payload: {
@@ -139,6 +140,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       systemPrompt: customization.additionalSystemPrompt,
       onAgentStarted: input.onAgentStarted,
       onToolCallProgress: input.onToolCallProgress,
+      onTraceEvent: input.onTraceEvent,
       maxWorkerTimeMs: customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS,
       maxWorkerTokens: customization.limits?.maxTokens ?? DEFAULT_MAX_TOKENS,
       llmProvider: llm.provider,

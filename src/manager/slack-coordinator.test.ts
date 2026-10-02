@@ -22,6 +22,10 @@ function makeApi(messages: Array<{ ts: string; user: string; text: string }>) {
       replies.push(text);
       return `reply-${replies.length}`;
     }),
+    replyResearch: vi.fn(async (_key: SlackThreadKey, userId: string, quote: string, answer: string) => {
+      replies.push(`Replying to <@${userId}>\n> ${quote}\n\n${answer}`);
+      return `reply-${replies.length}`;
+    }),
   } as unknown as SlackThreadApi;
   return { api, replies };
 }
@@ -31,14 +35,16 @@ function makeCoordinator(input: {
   api: SlackThreadApi;
   runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>;
   linear?: Partial<LinearIntegration>;
+  wakeResearch?: () => void;
 }) {
   return new SlackCoordinator({
     db: input.db, api: input.api,
     botUserId: "UBOT",
     linear: input.linear as LinearIntegration,
+    github: { getInstallationToken: async () => "token" } as ConstructorParameters<typeof SlackCoordinator>[0]["github"],
     config: {} as ConstructorParameters<typeof SlackCoordinator>[0]["config"],
     logger: createLogger({ name: "test", level: "silent" }),
-    pollIntervalMs: 60_000, wakeResearch: () => {}, runAgent: input.runAgent,
+    pollIntervalMs: 60_000, wakeResearch: input.wakeResearch ?? (() => {}), runAgent: input.runAgent,
   });
 }
 
@@ -104,6 +110,45 @@ describe("Slack coordinator", () => {
       expect((await db.getSlackTask(oldTask.id))?.state).toBe("canceled");
       expect((await db.listSlackThreadTasks(key)).find((task) => task.sourceTs === "100.2")?.request).toBe("Find new answer");
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+  it("preserves the original research scope across successive Slack corrections", async () => {
+    const db = await makeDb();
+    const original = "Count external sub-repositories cloned by scripts/clone-repos.sh; use AGENTS.md Repository map.";
+    const old = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: original, quote: "external repositories" })).task;
+    await db.recordSlackMessage(key, "100.2");
+    const { api } = makeApi([
+      { ts: "100.2", user: "U1", text: "Only those with a in their name" },
+      { ts: "100.3", user: "U1", text: "Sorry, h instead" },
+    ]);
+    let finalRequest: string | undefined;
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const update = tools.find((tool) => tool.name === "update_task");
+      if (!update) throw new Error("update_task missing");
+      const second = await update.execute("v2", {
+        id: old.id, sourceTs: "100.2", requestIndex: 1, type: "research",
+        correction: "Only those with a in their name", quote: "repositories with a",
+      }, undefined, undefined, {} as never);
+      const secondContent = second.content[0];
+      if (secondContent?.type !== "text") throw new Error("update_task returned no task");
+      const secondId = (JSON.parse(secondContent.text) as { id: string }).id;
+      const third = await update.execute("v3", {
+        id: secondId, sourceTs: "100.3", requestIndex: 1, type: "research",
+        correction: "Sorry, h instead", quote: "repositories with h",
+      }, undefined, undefined, {} as never);
+      const thirdContent = third.content[0];
+      if (thirdContent?.type !== "text") throw new Error("update_task returned no task");
+      const thirdId = (JSON.parse(thirdContent.text) as { id: string }).id;
+      finalRequest = (await db.getSlackTask(thirdId))?.request;
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(finalRequest).toContain(original);
+      expect(finalRequest).toContain("Only those with a in their name");
+      expect(finalRequest).toContain("Sorry, h instead");
+      expect(finalRequest).toContain("Later corrections override earlier conflicting details");
     } finally {
       await db.close();
     }
@@ -198,7 +243,7 @@ describe("Slack coordinator", () => {
 
   it("keeps research runnable when its acknowledgment fails", async () => {
     const db = await makeDb();
-    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
+    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", sourceUserId: "U1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
     const { api } = makeApi([]);
     vi.mocked(api.reply).mockRejectedValueOnce(new Error("Slack unavailable"));
     const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
@@ -216,13 +261,12 @@ describe("Slack coordinator", () => {
       expect((await db.getSlackTask(task.id))?.result).toBe("Answer A");
       await coordinator.wake(key);
       expect((await db.getSlackTask(task.id))?.state).toBe("coordinated");
-      expect(vi.mocked(api.reply)).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(api.reply).mock.calls[1]?.[1]).toContain("Answer A");
+      expect(vi.mocked(api.replyResearch)).toHaveBeenCalledWith(key, "U1", "Find A", "Answer A");
     } finally {
       await db.close();
     }
   });
-  it("creates separate tickets from one message and combines their links into one reply", async () => {
+  it("creates separate tickets from one message and replies for each task", async () => {
     const db = await makeDb();
     const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Please do A and B" }]);
     await db.recordSlackMessage(key, "100.1");
@@ -234,8 +278,7 @@ describe("Slack coordinator", () => {
     const coordinator = makeCoordinator({
       db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: delegate },
       runAgent: async ({ tools, prompt }) => {
-        expect(prompt).toContain("list_ticket_destinations");
-        expect(prompt).not.toContain("call list_ticket_destinations and then create_ticket");
+        expect(prompt).toContain("create_ticket");
         expect(prompt).toContain("create_ticket");
         expect(prompt).toContain("start_research");
         expect(tools.some((candidate) => candidate.name === "approve_research_result")).toBe(false);
@@ -244,7 +287,7 @@ describe("Slack coordinator", () => {
         for (const [index, title] of ["A", "B"].entries()) {
           await tool.execute(`call-${index}`, {
             sourceTs: "100.1", requestIndex: index + 1, request: title,
-            teamId: "team", projectId: "project", title, description: title,
+            teamId: "team", projectId: "project", title, slackTitle: title, description: title,
           }, undefined, undefined, {} as never);
         }
       },
@@ -254,9 +297,10 @@ describe("Slack coordinator", () => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project" }));
       expect(delegate).toHaveBeenCalledTimes(2);
-      expect(replies).toHaveLength(1);
-      expect(replies[0]).toContain("https://linear.app/ticket/A");
-      expect(replies[0]).toContain("https://linear.app/ticket/B");
+      expect(replies).toEqual([
+        "Created a ticket for <https://linear.app/ticket/A|A>.",
+        "Created a ticket for <https://linear.app/ticket/B|B>.",
+      ]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect((await db.listSlackThreadTasks(key)).map((task) => task.state)).toEqual(["coordinated", "coordinated"]);
     } finally {
@@ -274,13 +318,41 @@ describe("Slack coordinator", () => {
       runAgent: async ({ tools }) => {
         const tool = tools.find((candidate) => candidate.name === "create_ticket");
         if (!tool) throw new Error("create_ticket missing");
-        await tool.execute("ticket", { sourceTs: "100.1", requestIndex: 1, request: "Create a ticket", teamId: "team", title: "Ticket", description: "Task" }, undefined, undefined, {} as never);
+        await tool.execute("ticket", { sourceTs: "100.1", requestIndex: 1, request: "Create a ticket", teamId: "team", title: "Ticket", slackTitle: "create a ticket", description: "Task" }, undefined, undefined, {} as never);
       },
     });
     try {
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledWith(expect.not.objectContaining({ projectId: expect.anything() }));
       expect((await db.listSlackThreadTasks(key))[0]?.state).toBe("coordinated");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("posts coding and research acknowledgments in task order before coordination ends", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Change A, explain B, and change C" }]);
+    const create = vi.fn(async (input: { title: string }) => ({ id: input.title, url: `https://linear.app/ticket/${input.title}`, identifier: input.title }));
+    const coordinator = makeCoordinator({
+      db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn() },
+      runAgent: async ({ tools }) => {
+        const ticket = tools.find((tool) => tool.name === "create_ticket");
+        const research = tools.find((tool) => tool.name === "start_research");
+        if (!ticket || !research) throw new Error("Task tools missing");
+        await ticket.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Change A", teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
+        expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>."]);
+        await research.execute("b", { sourceTs: "100.1", requestIndex: 2, request: "Explain B", quote: "why B is slow" }, undefined, undefined, {} as never);
+        expect(replies[1]).toBe("Looking into why B is slow.");
+        await ticket.execute("c", { sourceTs: "100.1", requestIndex: 3, request: "Change C", teamId: "team", title: "C", slackTitle: "change C", description: "Change C" }, undefined, undefined, {} as never);
+        expect(replies[2]).toBe("Created a ticket for <https://linear.app/ticket/C|change C>.");
+      },
+    });
+    try {
+      await coordinator.wake(key);
+      expect(replies).toHaveLength(3);
+      expect((await db.listSlackThreadTasks(key))[1]?.sourceUserId).toBe("U1");
     } finally {
       await db.close();
     }
@@ -312,7 +384,7 @@ describe("Slack coordinator", () => {
 
   it("posts a completed research answer after coordinator review", async () => {
     const db = await makeDb();
-    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
+    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", sourceUserId: "U1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
     await db.claimSlackResearchTask();
     await db.completeSlackResearchTask(task.id, "Answer A");
     const { api, replies } = makeApi([]);
@@ -331,7 +403,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(runAgent).toHaveBeenCalledTimes(1);
-      expect(replies).toEqual(["Looking into “Find A”.", "“Find A”\nAnswer A"]);
+      expect(replies).toEqual(["Looking into Find A.", "Replying to <@U1>\n> Find A\n\nAnswer A"]);
       expect((await db.getSlackTask(task.id))?.state).toBe("coordinated");
     } finally {
       await db.close();
@@ -355,33 +427,42 @@ describe("Slack coordinator", () => {
     }
   });
 
-  it("processes a message arriving during result review before posting the answer", async () => {
+  it("defers a review and starts replacement research immediately when a message arrives", async () => {
     const db = await makeDb();
     const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
     await db.claimSlackResearchTask();
     await db.completeSlackResearchTask(task.id, "Answer A");
-    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Find A" }, { ts: "100.2", user: "U1", text: "Never mind A" }]);
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Find A" }, { ts: "100.2", user: "U1", text: "Find B instead" }]);
+    const wakeResearch = vi.fn();
+    let replacementStarted = false;
     const coordinator = makeCoordinator({
-      db, api,
-      runAgent: async ({ tools, prompt }) => {
+      db, api, wakeResearch,
+      runAgent: async ({ tools, prompt, stopRequested, validateOutcome }) => {
         if (prompt.startsWith("Review the completed research result")) {
           const detail = tools.find((tool) => tool.name === "get_thread_task");
           const approval = tools.find((tool) => tool.name === "approve_research_result");
           if (!detail || !approval) throw new Error("Research review tools missing");
           await detail.execute("detail", { id: task.id }, undefined, undefined, {} as never);
           await db.recordSlackMessage(key, "100.2");
-          await expect(approval.execute("approve", { id: task.id }, undefined, undefined, {} as never)).rejects.toThrow("New Slack messages");
+          const decision = await approval.execute("approve", { id: task.id }, undefined, undefined, {} as never);
+          expect(decision).toMatchObject({ details: { deferred: true } });
+          expect(stopRequested?.()).toBe(true);
+          await validateOutcome?.();
           return;
         }
-        const cancel = tools.find((tool) => tool.name === "cancel_task");
-        if (!cancel) throw new Error("cancel_task missing");
-        await cancel.execute("cancel", { id: task.id, sourceTs: "100.2" }, undefined, undefined, {} as never);
+        const update = tools.find((tool) => tool.name === "update_task");
+        if (!update) throw new Error("update_task missing");
+        await update.execute("update", { id: task.id, sourceTs: "100.2", requestIndex: 1, type: "research", correction: "Find B instead", quote: "Find B" }, undefined, undefined, {} as never);
+        replacementStarted = true;
       },
     });
     try {
       await coordinator.wake(key);
       expect(replies.join("\n")).not.toContain("Answer A");
       expect((await db.getSlackTask(task.id))?.state).toBe("canceled");
+      expect(replacementStarted).toBe(true);
+      expect(wakeResearch).toHaveBeenCalledTimes(1);
+      expect((await db.listSlackThreadTasks(key)).find((item) => item.sourceTs === "100.2")?.state).toBe("queued");
     } finally {
       await db.close();
     }
@@ -397,7 +478,7 @@ describe("Slack coordinator", () => {
     const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create }, runAgent });
     try {
       await coordinator.wake(key);
-      expect(replies).toEqual(["Created ticket: https://linear.app/ticket/1"]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/1|Create ticket>."]);
       expect(create).not.toHaveBeenCalled();
       expect(runAgent).not.toHaveBeenCalled();
       expect((await db.getSlackTask(task.id))?.state).toBe("coordinated");

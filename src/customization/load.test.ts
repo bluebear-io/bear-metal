@@ -66,6 +66,10 @@ describe("configuration validation", () => {
     expect(validateBearMetalConfig({ ...valid(), ciDeferralMaxMs: 7_200_000 }).ciDeferralMaxMs).toBe(7_200_000);
     expect(() => validateBearMetalConfig({ ...valid(), ciDeferralMaxMs: 0 })).toThrow("config.ciDeferralMaxMs");
   });
+  it("validates trace retention overrides", () => {
+    expect(validateBearMetalConfig({ ...valid(), traceRetentionDays: 30 }).traceRetentionDays).toBe(30);
+    expect(() => validateBearMetalConfig({ ...valid(), traceRetentionDays: 0 })).toThrow("config.traceRetentionDays");
+  });
   it("accepts only a callable CI retry policy", () => {
     const shouldRetryCi = vi.fn(() => false);
     expect(validateBearMetalConfig({ ...valid(), shouldRetryCi }).shouldRetryCi).toBe(shouldRetryCi);
