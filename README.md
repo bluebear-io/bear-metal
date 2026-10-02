@@ -264,7 +264,7 @@ Both Slack apps are optional and independent. Create them at [Slack App Manageme
 The first app is used by the trusted harness for notifications and, when `slack.getSigningSecret` is configured, thread requests. Omit the top-level `slack` configuration to disable both.
 Incoming events must belong to the workspace reported by that app's bot token. The Slack Events endpoint runs in the manager process when `API_ONLY` is false.
 
-1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write`, `chat:write.public`, `channels:history`, `groups:history`, `im:history`, and `files:read`.
+1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write`, `chat:write.public`, `channels:history`, `groups:history`, `im:history`, `files:read`, `users:read`, and `users:read.email`. The user scopes let Bear Metal assign new Linear tickets to the Slack requester by email.
 2. Select **Install to Workspace**, approve the installation, and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
 3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
 4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow. Every new top-level DM to the app starts a thread; in channels, an `@Bear Metal` mention starts one.

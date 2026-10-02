@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   userFn: vi.fn(),
   issueFn: vi.fn(),
   createIssueFn: vi.fn(),
+  usersFn: vi.fn(),
+  workflowStatesFn: vi.fn(),
   rawRequestFn: vi.fn(),
   AuthErr: class AuthenticationLinearError extends Error {},
 }));
@@ -31,6 +33,12 @@ vi.mock("@linear/sdk", () => {
     }
     createIssue(input: Record<string, unknown>) {
       return h.createIssueFn(this.accessToken, input);
+    }
+    users(input: Record<string, unknown>) {
+      return h.usersFn(this.accessToken, input);
+    }
+    workflowStates(input: Record<string, unknown>) {
+      return h.workflowStatesFn(this.accessToken, input);
     }
   }
   return { LinearClient, AuthenticationLinearError: h.AuthErr };
@@ -96,10 +104,32 @@ beforeEach(() => {
   h.userFn.mockReset();
   h.issueFn.mockReset();
   h.createIssueFn.mockReset();
+  h.usersFn.mockReset();
+  h.workflowStatesFn.mockReset();
   h.rawRequestFn.mockReset();
 });
 
 describe("LinearIntegration Slack ticket creation", () => {
+  it("finds the exact Linear assignee by Slack email", async () => {
+    h.usersFn.mockResolvedValue({ nodes: [{ id: "user-1", email: "user@example.com" }], pageInfo: { hasNextPage: false } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    await expect(linear.findUserIdByEmail("user@example.com")).resolves.toBe("user-1");
+    expect(h.usersFn).toHaveBeenCalledWith("tok", { filter: { email: { eq: "user@example.com" } }, first: 2 });
+  });
+  it("assigns a newly created ticket", async () => {
+    h.createIssueFn.mockResolvedValue({ success: true, issue: Promise.resolve({ id: "issue-1", url: "https://linear.app/issue/DEN-1", identifier: "DEN-1" }) });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    await linear.createSlackCodingTicket({ teamId: "team-1", title: "Title", description: "Description", assigneeId: "user-1" });
+    expect(h.createIssueFn).toHaveBeenCalledWith("tok", expect.objectContaining({ assigneeId: "user-1" }));
+  });
+  it("removes delegation while canceling the ticket", async () => {
+    const update = vi.fn(async () => ({ success: true }));
+    h.issueFn.mockResolvedValue({ team: Promise.resolve({ id: "team-1" }), update });
+    h.workflowStatesFn.mockResolvedValue({ nodes: [{ id: "canceled-1", teamId: "team-1", type: "canceled" }] });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    await linear.cancelSlackCodingTicket("issue-1");
+    expect(update).toHaveBeenCalledWith({ stateId: "canceled-1", delegateId: null });
+  });
   it("omits projectId when creating a team ticket without a project", async () => {
     h.createIssueFn.mockResolvedValue({ success: true, issue: Promise.resolve({ id: "issue-1", url: "https://linear.app/issue/DEN-1", identifier: "DEN-1" }) });
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });

@@ -16,6 +16,7 @@ Each task tool posts its own acknowledgment after successful task creation. The 
 
 External Linear creation and Slack posting are never retried automatically after an uncertain outcome. A task is persisted before the external call and records a failed or posting state so event retries do not duplicate it.
 For coding requests, the Slack task becomes the normal ticket task: store the Linear ticket ID on that row before delegating the ticket. The scheduler can then discover and dispatch the ticket using that same row. A ticket row without a dispatch state does not occupy a scheduler slot.
+Coding ticket creation resolves the source Slack user's email to exactly one Linear user, assigns that user, then delegates to Bear Metal. Replacing a task cancels its prior Linear ticket and removes delegation before creating the new ticket; the superseded task does not post a cancellation reply. Recovery closes an interrupted research run as crashed while requeuing the Slack task.
 
 ## Consequences
 

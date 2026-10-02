@@ -371,6 +371,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     title: string;
     description: string;
     cycleId?: string;
+    assigneeId?: string;
   }): Promise<{ id: string; url: string; identifier: string }> {
     if (!input.teamId || !input.title.trim() || !input.description.trim()) {
       throw new Error("Coding ticket requires team, title, and description");
@@ -381,12 +382,26 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
         ...(input.projectId ? { projectId: input.projectId } : {}),
         title: input.title,
         description: input.description,
+        ...(input.assigneeId ? { assigneeId: input.assigneeId } : {}),
         ...(input.cycleId ? { cycleId: input.cycleId } : {}),
       });
       if (!result.success) throw new Error("Linear did not create the coding ticket");
       const issue = await result.issue;
       if (!issue) throw new Error("Linear creation response omitted the issue");
       return { id: issue.id, url: issue.url, identifier: issue.identifier };
+    });
+  }
+
+  async findUserIdByEmail(email: string): Promise<string> {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) throw new Error("Cannot find Linear user without email");
+    return this.withClient(async (client) => {
+      const page = await client.users({ filter: { email: { eq: normalized } }, first: 2 });
+      const matches = page.nodes.filter((user) => user.email?.toLowerCase() === normalized);
+      if (matches.length !== 1 || page.pageInfo.hasNextPage) {
+        throw new Error(`Expected one Linear user for Slack email ${normalized}, got ${matches.length}${page.pageInfo.hasNextPage ? "+" : ""}`);
+      }
+      return matches[0]!.id;
     });
   }
 
@@ -436,7 +451,8 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       const states = await client.workflowStates({ filter: { type: { eq: "canceled" }, team: { id: { eq: team.id } } }, first: 10 });
       const canceled = states.nodes.filter((state) => state.type === "canceled" && state.teamId === team.id);
       if (canceled.length !== 1) throw new Error(`Expected one canceled state for Linear team ${team.id}, got ${canceled.length}`);
-      await issue.update({ stateId: canceled[0]!.id });
+      const result = await issue.update({ stateId: canceled[0]!.id, delegateId: null });
+      if (!result.success) throw new Error(`Linear did not cancel coding ticket ${ticketId}`);
     });
   }
 

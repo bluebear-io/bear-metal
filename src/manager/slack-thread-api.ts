@@ -14,6 +14,16 @@ export interface SlackThreadMessage {
 export class SlackThreadApi {
   constructor(private readonly readClient: SlackReadClient, private readonly writer: SlackIntegration) {}
 
+  async getUserEmail(userId: string): Promise<string> {
+    const response = await this.readClient.call("users.info", { user: userId }) as {
+      ok?: boolean; error?: string; user?: { id?: string; profile?: { email?: string } };
+    };
+    if (!response.ok || response.user?.id !== userId || !response.user.profile?.email) {
+      throw new Error(`Cannot resolve Slack email for ${userId}: ${response.error ?? "missing user email"}`);
+    }
+    return response.user.profile.email;
+  }
+
   async readThread(key: SlackThreadKey, oldest: string, latest?: string): Promise<SlackThreadMessage[]> {
     const messages: SlackThreadMessage[] = [];
     let cursor: string | undefined;

@@ -125,6 +125,7 @@ describe("Slack restart recovery", () => {
       await first.recordSlackMessage(key, "1.1");
       const task = (await first.createSlackTask({ type: "research", thread: key, sourceTs: "1.1", requestIndex: 1, request: "Question", quote: "Question" })).task;
       await first.claimSlackResearchTask();
+      await first.startAgentRun({ type: "research", id: task.id, request: "Question", slack: { ...key, sourceTs: "1.1" } }, null, null);
       await first.close();
 
       const second = new SqlDbClient(url, 5);
@@ -135,7 +136,12 @@ describe("Slack restart recovery", () => {
         expect(await second.listSlackPendingMessages(key)).toEqual(["1.1"]);
         expect(await second.listTracked()).toEqual([]);
         expect(await second.countTracked()).toBe(0);
+        expect((await second.getAgentRunDetail(task.id))?.run.status).toBe("crashed");
+        expect((await second.getAgentRunDetail(task.id))?.run.stopReason).toBe("crash");
         expect((await second.claimSlackResearchTask())?.id).toBe(task.id);
+        await second.startAgentRun({ type: "research", id: task.id, request: "Question", slack: { ...key, sourceTs: "1.1" } }, null, null);
+        expect((await second.getAgentRunDetail(task.id))?.run.status).toBe("running");
+        expect((await second.getAgentRunDetail(task.id))?.run.stopReason).toBeNull();
       } finally {
         await second.close();
       }

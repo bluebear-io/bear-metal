@@ -88,7 +88,7 @@ export class SlackCoordinator {
   }
 
   private async runThread(key: SlackThreadKey): Promise<void> {
-    threadLoop: for (;;) {
+    for (;;) {
       const pending = await this.input.db.listSlackPendingMessages(key);
       if (pending.length > 0) {
         const pendingEdits = await this.input.db.listSlackPendingEdits(key);
@@ -145,36 +145,7 @@ export class SlackCoordinator {
         await this.input.db.markSlackMessagesProcessed(key, batch);
       }
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
-      const results = (await this.input.db.listSlackThreadTasks(key)).filter((task) => task.type === "research" && task.state === "awaiting_coordination");
-      for (const result of results) {
-        if ((await this.input.db.listSlackPendingMessages(key)).length > 0) break;
-        const current = await this.input.db.getSlackTask(result.id);
-        if (!current || current.state !== "awaiting_coordination") continue;
-        const request = JSON.stringify({ thread: key, resultTaskId: current.id, quote: current.quote });
-        let reviewDeferred = false;
-        await (this.input.runAgent ?? runSlackAgent)({
-          task: { type: "coordinator", id: randomUUID(), request, slack: { ...key, sourceTs: current.sourceTs } },
-          db: this.input.db,
-          config: this.input.config,
-          gateway: this.input.gateway,
-          getGithubToken: () => this.input.github.getInstallationToken(),
-          tools: this.createTools(key, [], current.id, undefined, undefined, () => { reviewDeferred = true; }),
-          prompt: researchResultPrompt(key, current),
-          stopRequested: () => reviewDeferred,
-          validateOutcome: async () => {
-            if ((await this.input.db.listSlackPendingMessages(key)).length > 0) {
-              reviewDeferred = true;
-              return;
-            }
-            const decided = await this.input.db.getSlackTask(current.id);
-            if (decided?.state !== "approved" && decided?.state !== "canceled") throw new Error(`Coordinator made no decision for research result ${current.id}`);
-          },
-        });
-        if (reviewDeferred) continue threadLoop;
-        if ((await this.input.db.listSlackPendingMessages(key)).length > 0) break;
-        const decided = await this.input.db.getSlackTask(current.id);
-        if (decided?.state !== "approved" && decided?.state !== "canceled") throw new Error(`Coordinator made no decision for research result ${current.id}`);
-      }
+      if (await this.reviewResearchResults(key)) continue;
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
       await this.postBatchReply(key);
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
@@ -182,6 +153,39 @@ export class SlackCoordinator {
       const remaining = await this.input.db.listSlackPendingMessages(key);
       if (remaining.length === 0) return;
     }
+  }
+
+  private async reviewResearchResults(key: SlackThreadKey): Promise<boolean> {
+    const results = (await this.input.db.listSlackThreadTasks(key)).filter((task) => task.type === "research" && task.state === "awaiting_coordination");
+    for (const result of results) {
+      if ((await this.input.db.listSlackPendingMessages(key)).length > 0) return true;
+      const current = await this.input.db.getSlackTask(result.id);
+      if (!current || current.state !== "awaiting_coordination") continue;
+      const request = JSON.stringify({ thread: key, resultTaskId: current.id, quote: current.quote });
+      let reviewDeferred = false;
+      await (this.input.runAgent ?? runSlackAgent)({
+        task: { type: "coordinator", id: randomUUID(), request, slack: { ...key, sourceTs: current.sourceTs } },
+        db: this.input.db,
+        config: this.input.config,
+        gateway: this.input.gateway,
+        getGithubToken: () => this.input.github.getInstallationToken(),
+        tools: this.createTools(key, [], current.id, undefined, undefined, () => { reviewDeferred = true; }),
+        prompt: researchResultPrompt(key, current),
+        stopRequested: () => reviewDeferred,
+        validateOutcome: async () => {
+          if ((await this.input.db.listSlackPendingMessages(key)).length > 0) {
+            reviewDeferred = true;
+            return;
+          }
+          const decided = await this.input.db.getSlackTask(current.id);
+          if (decided?.state !== "approved" && decided?.state !== "canceled") throw new Error(`Coordinator made no decision for research result ${current.id}`);
+        },
+      });
+      if (reviewDeferred || (await this.input.db.listSlackPendingMessages(key)).length > 0) return true;
+      const decided = await this.input.db.getSlackTask(current.id);
+      if (decided?.state !== "approved" && decided?.state !== "canceled") throw new Error(`Coordinator made no decision for research result ${current.id}`);
+    }
+    return false;
   }
 
   private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void): ToolDefinition[] {
@@ -205,15 +209,17 @@ export class SlackCoordinator {
       }
       return task;
     };
+    const assigneeFor = async (slackUserId: string) => this.input.linear.findUserIdByEmail(await this.input.api.getUserEmail(slackUserId));
     const createCoding = async (args: NewSlackTask & TicketInput & { slackTitle: string }) => {
       const sourceUserId = requireSource(args.sourceTs);
+      const assigneeId = await assigneeFor(sourceUserId);
       const { task, created } = await this.input.db.createSlackTask({ ...args, sourceUserId });
       if (!created) {
         decisions?.add(args.sourceTs);
         return { task, created: false };
       }
       try {
-        const ticket = await this.input.linear.createSlackCodingTicket({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId });
+        const ticket = await this.input.linear.createSlackCodingTicket({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId, assigneeId });
         await this.input.db.attachSlackTicket(task.id, ticket.id, ticket.url);
         // Delegating before attachment lets the scheduler create a second row for this ticket.
         await this.input.linear.delegateSlackCodingTicket(ticket.id);
@@ -242,15 +248,10 @@ export class SlackCoordinator {
     const cancel = async (id: string, supersededBy?: string) => {
       const task = await getTask(id);
       if (task.state === "canceled") return task;
-      await this.input.db.cancelSlackTask(id, supersededBy);
       if (task.type === "coding" && task.ticketId) {
-        try {
-          await this.input.linear.cancelSlackCodingTicket(task.ticketId);
-        } catch (err) {
-          await this.input.db.failSlackTask(id, String(err));
-          throw err;
-        }
+        await this.input.linear.cancelSlackCodingTicket(task.ticketId);
       }
+      await this.input.db.cancelSlackTask(id, supersededBy);
       return getTask(id);
     };
     const getThreadTask = defineTool({
@@ -415,6 +416,7 @@ export class SlackCoordinator {
             codingInput = {
               teamId: params.teamId, projectId: params.projectId, title: params.title,
               description: params.description, cycleId: params.cycleId,
+              assigneeId: await assigneeFor(sourceUserId),
             };
           }
           const next = await this.input.db.createSlackTask({
@@ -451,14 +453,14 @@ export class SlackCoordinator {
       if (task.ackState !== null) continue;
       if (task.type === "coding" && task.state === "awaiting_coordination") await this.postTaskAcknowledgment(task, task.request.slice(0, 100));
       if (task.type === "research" && ["queued", "running", "awaiting_coordination", "approved"].includes(task.state)) await this.postTaskAcknowledgment(task);
-      if (task.state === "canceled" && !task.coordinatedAt) await this.postTaskAcknowledgment(task);
+      if (task.state === "canceled" && !task.supersededBy && !task.coordinatedAt) await this.postTaskAcknowledgment(task);
     }
   }
 
   private async postTaskAcknowledgment(task: SlackTaskRecord, slackTitle?: string): Promise<void> {
     let message: string;
     if (task.state === "canceled") {
-      message = `Canceled: ${safeSlackLine(task.ticketUrl ?? task.quote ?? task.request.slice(0, 120))}`;
+      message = `Canceled ${safeSlackLine(task.ticketUrl ?? task.quote ?? task.request.slice(0, 120))}`;
     } else if (task.type === "coding") {
       if (!task.ticketUrl || !slackTitle?.trim()) throw new Error(`Coding task ${task.id} is missing a ticket URL or Slack title`);
       message = `Created a ticket for <${task.ticketUrl}|${safeSlackLine(slackTitle)}>.`;

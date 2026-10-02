@@ -3,6 +3,12 @@ import type { SlackReadClient, SlackIntegration } from "../shared/integrations/s
 import { SlackThreadApi } from "./slack-thread-api.js";
 
 describe("Slack thread reader", () => {
+  it("reads the requesting user's Slack email", async () => {
+    const call = vi.fn(async () => ({ ok: true, user: { id: "U1", profile: { email: "user@example.com" } } }));
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(api.getUserEmail("U1")).resolves.toBe("user@example.com");
+    expect(call).toHaveBeenCalledWith("users.info", { user: "U1" });
+  });
   it("bounds an edited message read to its original timestamp", async () => {
     const call = vi.fn(async () => ({ ok: true, messages: [{ ts: "100.1", user: "U1", text: "edited" }] }));
     const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);

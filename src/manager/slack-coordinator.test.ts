@@ -18,6 +18,7 @@ function makeApi(messages: Array<{ ts: string; user: string; text: string }>) {
   const replies: string[] = [];
   const api = {
     readThread: vi.fn(async () => messages),
+    getUserEmail: vi.fn(async () => "user@example.com"),
     reply: vi.fn(async (_key: SlackThreadKey, text: string) => {
       replies.push(text);
       return `reply-${replies.length}`;
@@ -40,7 +41,7 @@ function makeCoordinator(input: {
   return new SlackCoordinator({
     db: input.db, api: input.api,
     botUserId: "UBOT",
-    linear: input.linear as LinearIntegration,
+    linear: { findUserIdByEmail: async () => "linear-user-1", ...input.linear } as LinearIntegration,
     github: { getInstallationToken: async () => "token" } as ConstructorParameters<typeof SlackCoordinator>[0]["github"],
     config: {} as ConstructorParameters<typeof SlackCoordinator>[0]["config"],
     logger: createLogger({ name: "test", level: "silent" }),
@@ -295,7 +296,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledTimes(2);
-      expect(create).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project" }));
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project", assigneeId: "linear-user-1" }));
       expect(delegate).toHaveBeenCalledTimes(2);
       expect(replies).toEqual([
         "Created a ticket for <https://linear.app/ticket/A|A>.",
@@ -325,6 +326,53 @@ describe("Slack coordinator", () => {
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledWith(expect.not.objectContaining({ projectId: expect.anything() }));
       expect((await db.listSlackThreadTasks(key))[0]?.state).toBe("coordinated");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("cancels an old ticket before creating its replacement without a cancellation reply", async () => {
+    const db = await makeDb();
+    const old = (await db.createSlackTask({ type: "coding", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Implement A" })).task;
+    await db.attachSlackTicket(old.id, "old-ticket", "https://linear.app/old");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "Implement B instead" }]);
+    const order: string[] = [];
+    const cancel = vi.fn(async (id: string) => { order.push(`cancel ${id}`); });
+    const create = vi.fn(async () => { order.push("create new"); return { id: "new-ticket", url: "https://linear.app/new", identifier: "DEN-2" }; });
+    const delegate = vi.fn(async () => { order.push("delegate new"); });
+    const coordinator = makeCoordinator({ db, api, linear: { cancelSlackCodingTicket: cancel, createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
+      const update = tools.find((tool) => tool.name === "update_task");
+      if (!update) throw new Error("update_task missing");
+      await update.execute("update", {
+        id: old.id, sourceTs: "100.2", requestIndex: 1, type: "coding", request: "Implement B",
+        teamId: "team", title: "B", slackTitle: "implement B", description: "Implement B",
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(order).toEqual(["cancel old-ticket", "create new", "delegate new"]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B>."]);
+      expect((await db.getSlackTask(old.id))?.state).toBe("canceled");
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("posts a cancellation without a colon", async () => {
+    const db = await makeDb();
+    const old = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find repositories", quote: "repos with 'h' in name" })).task;
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "Cancel that" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const cancel = tools.find((tool) => tool.name === "cancel_task");
+      if (!cancel) throw new Error("cancel_task missing");
+      await cancel.execute("cancel", { id: old.id, sourceTs: "100.2" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(replies).toEqual(["Canceled repos with 'h' in name"]);
     } finally {
       await db.close();
     }

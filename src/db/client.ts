@@ -1256,7 +1256,7 @@ export class SqlDbClient implements DbClient {
       return;
     }
     const result = await this.run(
-      `UPDATE tasks SET run_status = 'running', started_at = ?, ended_at = NULL,
+      `UPDATE tasks SET run_status = 'running', started_at = ?, ended_at = NULL, stop_reason = NULL, error = NULL,
        provider = ?, model_name = ?, updated_at = ? WHERE id = ? AND task_type = 'research' AND slack_state = 'running'`,
       [now, provider, model, now, task.id],
     );
@@ -1490,7 +1490,7 @@ export class SqlDbClient implements DbClient {
          slack_state = 'approved' OR
          (slack_ack_state IS NULL AND slack_state = 'awaiting_coordination' AND task_type = 'coding') OR
          (slack_ack_state IS NULL AND task_type = 'research' AND slack_state IN ('queued', 'running')) OR
-         (slack_ack_state IS NULL AND slack_state = 'canceled' AND coordinated_at IS NULL)
+         (slack_ack_state IS NULL AND slack_state = 'canceled' AND coordinated_at IS NULL AND superseded_by IS NULL)
        )`,
     );
     return rows.map((row) => {
@@ -1580,8 +1580,12 @@ export class SqlDbClient implements DbClient {
       [this.clock.nowIso()],
     );
     await this.run(
-      `UPDATE tasks SET slack_state = 'queued', updated_at = ? WHERE task_type = 'research' AND slack_state = 'running'`,
-      [this.clock.nowIso()],
+      `UPDATE tasks SET slack_state = 'queued',
+       run_status = CASE WHEN run_status = 'running' THEN 'crashed' ELSE run_status END,
+       stop_reason = CASE WHEN run_status = 'running' THEN 'crash' ELSE stop_reason END,
+       ended_at = CASE WHEN run_status = 'running' THEN ? ELSE ended_at END,
+       updated_at = ? WHERE task_type = 'research' AND slack_state = 'running'`,
+      [this.clock.nowIso(), this.clock.nowIso()],
     );
     await this.run(
       `UPDATE tasks SET slack_state = 'failed', error = 'Slack reply outcome unknown after restart', updated_at = ?
