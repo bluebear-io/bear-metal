@@ -123,6 +123,8 @@ export class SlackCoordinator {
         const edits = await this.input.db.listSlackPendingEdits(key);
         const sources = new Map(edits.map((edit) => [edit.ts, edit.originalTs]));
         const batch = (await this.input.db.listSlackPendingMessages(key)).filter((ts) => availableTs.has(sources.get(ts) ?? ts));
+        const latestBatchTs = batch.at(-1);
+        if (!latestBatchTs) continue;
         const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key), edits);
         const decisions = new Set<string>();
         const replies: CoordinationReply[] = [];
@@ -133,7 +135,7 @@ export class SlackCoordinator {
           type: "coordinator",
           id: randomUUID(),
           request: payload,
-          slack: { ...key, sourceTs: batch.at(-1)! },
+          slack: { ...key, sourceTs: latestBatchTs },
         };
         const assertDecisions = () => {
           const undecided = batch.filter((ts) => !decisions.has(ts));
@@ -226,7 +228,11 @@ export class SlackCoordinator {
       const assigneeId = await assigneeFor(sourceUserId);
       const { task, created } = await this.input.db.createSlackTask({ ...args, sourceUserId });
       if (!created) {
-        if (task.ackState === null) queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: task.id, text: this.taskAcknowledgmentText(task, args.slackTitle) });
+        if (task.ackState === null && task.state === "awaiting_coordination") {
+          queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: task.id, text: this.taskAcknowledgmentText(task, args.slackTitle) });
+        } else if (task.ackState === null && task.state !== "failed" && task.state !== "canceled") {
+          throw new Error(`Cannot replay coding task ${task.id} in state ${task.state}`);
+        }
         decisions?.add(args.sourceTs);
         return { task, created: false };
       }

@@ -450,8 +450,10 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
       if (!team) throw new Error(`Linear issue ${ticketId} has no team`);
       const states = await client.workflowStates({ filter: { type: { eq: "canceled" }, team: { id: { eq: team.id } } }, first: 10 });
       const canceled = states.nodes.filter((state) => state.type === "canceled" && state.teamId === team.id);
-      if (canceled.length !== 1) throw new Error(`Expected one canceled state for Linear team ${team.id}, got ${canceled.length}`);
-      const result = await issue.update({ stateId: canceled[0]!.id, delegateId: null });
+      const named = canceled.filter((state) => state.name.trim().toLowerCase() === "canceled");
+      const target = named.length === 1 ? named[0] : canceled.length === 1 ? canceled[0] : null;
+      if (!target) throw new Error(`Cannot identify one Canceled state for Linear team ${team.id}; found ${canceled.length} canceled states and ${named.length} named Canceled`);
+      const result = await issue.update({ stateId: target.id, delegateId: null });
       if (!result.success) throw new Error(`Linear did not cancel coding ticket ${ticketId}`);
     });
   }

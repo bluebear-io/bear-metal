@@ -125,7 +125,11 @@ describe("LinearIntegration Slack ticket creation", () => {
   it("removes delegation while canceling the ticket", async () => {
     const update = vi.fn(async () => ({ success: true }));
     h.issueFn.mockResolvedValue({ team: Promise.resolve({ id: "team-1" }), update });
-    h.workflowStatesFn.mockResolvedValue({ nodes: [{ id: "canceled-1", teamId: "team-1", type: "canceled" }] });
+    h.workflowStatesFn.mockResolvedValue({ nodes: [
+      { id: "wont-do", teamId: "team-1", type: "canceled", name: "Won't Do" },
+      { id: "canceled-1", teamId: "team-1", type: "canceled", name: "Canceled" },
+      { id: "duplicate", teamId: "team-1", type: "canceled", name: "Duplicate" },
+    ] });
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
     await linear.cancelSlackCodingTicket("issue-1");
     expect(update).toHaveBeenCalledWith({ stateId: "canceled-1", delegateId: null });

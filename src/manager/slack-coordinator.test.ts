@@ -686,7 +686,7 @@ describe("Slack coordinator", () => {
       runAgent: async ({ tools }) => {
         const tool = tools.find((candidate) => candidate.name === "create_ticket");
         if (!tool) throw new Error("create_ticket missing");
-        const args = { sourceTs: "100.1", requestIndex: 1, request: "Create ticket", teamId: "team", projectId: "project", title: "Ticket", description: "Task" };
+        const args = { sourceTs: "100.1", requestIndex: 1, request: "Create ticket", teamId: "team", projectId: "project", title: "Ticket", slackTitle: "create ticket", description: "Task" };
         await expect(tool.execute("first", args, undefined, undefined, {} as never)).rejects.toThrow("Linear response lost");
         await tool.execute("replay", args, undefined, undefined, {} as never);
       },
@@ -696,6 +696,58 @@ describe("Slack coordinator", () => {
       expect(create).toHaveBeenCalledTimes(1);
       expect(replies).toEqual([]);
       expect((await db.listSlackThreadTasks(key))[0]?.state).toBe("failed");
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("does not acknowledge a failed ticket after delegation fails", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Create ticket" }]);
+    const create = vi.fn(async () => ({ id: "linear-1", url: "https://linear.app/ticket/1", identifier: "DEN-1" }));
+    const coordinator = makeCoordinator({
+      db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn(async () => { throw new Error("Delegation failed"); }) },
+      runAgent: async ({ tools }) => {
+        const ticket = tools.find((tool) => tool.name === "create_ticket");
+        if (!ticket) throw new Error("create_ticket missing");
+        const args = { sourceTs: "100.1", requestIndex: 1, request: "Create ticket", teamId: "team", title: "Ticket", slackTitle: "create ticket", description: "Task" };
+        await expect(ticket.execute("first", args, undefined, undefined, {} as never)).rejects.toThrow("Delegation failed");
+        await ticket.execute("replay", args, undefined, undefined, {} as never);
+      },
+    });
+    try {
+      await coordinator.wake(key);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(replies).toEqual([]);
+      expect((await db.listSlackThreadTasks(key))[0]?.state).toBe("failed");
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("does not start a coordinator run after the entire fetched batch is processed concurrently", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "Already processed" }]);
+    const listPending = db.listSlackPendingMessages.bind(db);
+    let reads = 0;
+    vi.spyOn(db, "listSlackPendingMessages").mockImplementation(async (thread) => {
+      reads += 1;
+      if (reads === 2) {
+        await db.markSlackMessagesProcessed(key, ["100.1"]);
+        return [];
+      }
+      return listPending(thread);
+    });
+    const runAgent = vi.fn(async () => {});
+    const coordinator = makeCoordinator({ db, api, runAgent });
+    try {
+      await coordinator.wake(key);
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally {
       await db.close();
     }
