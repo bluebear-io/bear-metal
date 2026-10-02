@@ -1675,8 +1675,8 @@ export class SqlDbClient implements DbClient {
 
   async failSlackBatchAcknowledgment(ids: string[], error: string): Promise<void> {
     const result = await this.run(
-      `UPDATE tasks SET slack_ack_state = 'failed',
-       slack_state = CASE WHEN task_type = 'coding' AND slack_state = 'posting' THEN 'failed' ELSE slack_state END,
+      `UPDATE tasks SET slack_ack_state = NULL,
+       slack_state = CASE WHEN task_type = 'coding' AND slack_state = 'posting' THEN 'awaiting_coordination' ELSE slack_state END,
        error = ?, updated_at = ? WHERE id IN (${ids.map(() => "?").join(",")}) AND slack_ack_state = 'posting'`,
       [error, this.clock.nowIso(), ...ids],
     );

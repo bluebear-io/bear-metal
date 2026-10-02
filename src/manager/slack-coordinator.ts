@@ -12,6 +12,7 @@ import { buildCoordinatorPayload } from "./slack-payload.js";
 import type { SlackThreadApi } from "./slack-thread-api.js";
 
 type TicketInput = Parameters<LinearIntegration["createSlackCodingTicket"]>[0];
+type CoordinationReply = { sourceTs: string; requestIndex: number; text: string; taskId?: string };
 
 function safeSlackLine(text: string): string {
   return text.replace(/\s+/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -118,9 +119,10 @@ export class SlackCoordinator {
         const batch = (await this.input.db.listSlackPendingMessages(key)).filter((ts) => availableTs.has(sources.get(ts) ?? ts));
         const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key), edits);
         const decisions = new Set<string>();
+        const replies: CoordinationReply[] = [];
         const sourceUsers = new Map(thread.filter((message) => message.user).map((message) => [message.ts, message.user!]));
         for (const edit of edits) sourceUsers.set(edit.ts, edit.user);
-        const tools = this.createTools(key, batch, undefined, decisions, sourceUsers);
+        const tools = this.createTools(key, batch, undefined, decisions, sourceUsers, undefined, (reply) => replies.push(reply));
         const task: Task = {
           type: "coordinator",
           id: randomUUID(),
@@ -142,6 +144,7 @@ export class SlackCoordinator {
           validateOutcome: async () => assertDecisions(),
         });
         assertDecisions();
+        await this.postCoordinationReply(key, batch, replies);
         await this.input.db.markSlackMessagesProcessed(key, batch);
       }
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
@@ -188,9 +191,10 @@ export class SlackCoordinator {
     return false;
   }
 
-  private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void): ToolDefinition[] {
+  private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void, queueReply?: (reply: CoordinationReply) => void): ToolDefinition[] {
     let resultDetailsRead = false;
-    const clarificationReplies = new Map<string, { quote: string; question: string; posted: Promise<string> }>();
+    let cancellationOrder = 0;
+    const clarificationReplies = new Map<string, { quote: string; question: string }>();
     const deferReviewIfPending = async () => {
       if ((await this.input.db.listSlackPendingMessages(key)).length === 0) return false;
       onReviewDeferred?.();
@@ -216,6 +220,7 @@ export class SlackCoordinator {
       const assigneeId = await assigneeFor(sourceUserId);
       const { task, created } = await this.input.db.createSlackTask({ ...args, sourceUserId });
       if (!created) {
+        if (task.ackState === null) queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: task.id, text: this.taskAcknowledgmentText(task, args.slackTitle) });
         decisions?.add(args.sourceTs);
         return { task, created: false };
       }
@@ -225,7 +230,7 @@ export class SlackCoordinator {
         // Delegating before attachment lets the scheduler create a second row for this ticket.
         await this.input.linear.delegateSlackCodingTicket(ticket.id);
         const updated = await getTask(task.id);
-        await this.postTaskAcknowledgment(updated, args.slackTitle);
+        queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, args.slackTitle) });
         decisions?.add(args.sourceTs);
         return { task: updated, created: true };
       } catch (err) {
@@ -236,13 +241,8 @@ export class SlackCoordinator {
     const createResearch = async (args: NewSlackTask) => {
       const sourceUserId = requireSource(args.sourceTs);
       const result = await this.input.db.createSlackTask({ ...args, sourceUserId });
-      if (result.created) {
-        try {
-          await this.postTaskAcknowledgment(result.task);
-        } finally {
-          this.input.wakeResearch();
-        }
-      }
+      if (result.task.ackState === null) queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: result.task.id, text: this.taskAcknowledgmentText(result.task) });
+      if (result.created) this.input.wakeResearch();
       decisions?.add(args.sourceTs);
       return result;
     };
@@ -283,7 +283,7 @@ export class SlackCoordinator {
           requireSource(params.sourceTs);
         }
         const canceled = await cancel(params.id);
-        if (!resultTaskId && !canceled.coordinatedAt && !canceled.ackState) await this.postTaskAcknowledgment(canceled);
+        if (!resultTaskId && !canceled.coordinatedAt && !canceled.ackState) queueReply?.({ sourceTs: params.sourceTs!, requestIndex: 1_000_000 + ++cancellationOrder, taskId: canceled.id, text: this.taskAcknowledgmentText(canceled) });
         if (params.sourceTs) decisions?.add(params.sourceTs);
         return { content: [{ type: "text", text: JSON.stringify(canceled) }], details: {} };
       },
@@ -366,7 +366,7 @@ export class SlackCoordinator {
       defineTool({
         name: "clarify_request",
         label: "Ask for clarification",
-        description: "Use once per independent ambiguous request directed at Bear Metal, including when other requests in the same message are clear. Ask one specific question needed to understand the user's intent. This posts a Slack reply; it does not create a coding or research task.",
+        description: "Use once per independent ambiguous request directed at Bear Metal, including when other requests in the same message are clear. Ask one specific question needed to understand the user's intent. This queues a clarification in the combined Slack reply; it does not create a coding or research task.",
         parameters: Type.Object({
           sourceTs: Type.String({ minLength: 1, description: "Exact ts of the new Slack message containing the ambiguous request, from the JSON messages array." }),
           requestIndex: Type.Integer({ minimum: 1, description: "Stable 1-based index of this request among all independent coding, research, and clarification requests in sourceTs." }),
@@ -378,19 +378,14 @@ export class SlackCoordinator {
           const actionKey = `${params.sourceTs}/${params.requestIndex}`;
           const existing = clarificationReplies.get(actionKey);
           if (existing && (existing.quote !== params.quote || existing.question !== params.question)) {
-            throw new Error(`Clarification ${actionKey} was already posted with different content`);
+            throw new Error(`Clarification ${actionKey} was already requested with different content`);
           }
-          const posted = existing?.posted ?? this.input.api.reply(key, `<@${userId}>\n> ${safeSlackLine(params.quote)}\n\n${safeSlackLine(params.question)}`);
-          if (!existing) clarificationReplies.set(actionKey, { quote: params.quote, question: params.question, posted });
-          let replyTs: string;
-          try {
-            replyTs = await posted;
-          } catch (err) {
-            clarificationReplies.delete(actionKey);
-            throw err;
+          if (!existing) {
+            clarificationReplies.set(actionKey, { quote: params.quote, question: params.question });
+            queueReply?.({ sourceTs: params.sourceTs, requestIndex: params.requestIndex, text: `<@${userId}>\n> ${safeSlackLine(params.quote)}\n\n${safeSlackLine(params.question)}` });
           }
           decisions?.add(params.sourceTs);
-          return { content: [{ type: "text", text: `Clarification posted in thread at ${replyTs}.` }], details: {} };
+          return { content: [{ type: "text", text: "Clarification queued for the combined thread reply." }], details: {} };
         },
       }),
       cancelTask,
@@ -461,9 +456,10 @@ export class SlackCoordinator {
                 const ticket = await this.input.linear.createSlackCodingTicket(codingInput);
                 await this.input.db.attachSlackTicket(next.task.id, ticket.id, ticket.url);
                 await this.input.linear.delegateSlackCodingTicket(ticket.id);
-                await this.postTaskAcknowledgment(await getTask(next.task.id), params.slackTitle);
+                const updated = await getTask(next.task.id);
+                queueReply?.({ sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) });
               } else {
-                await this.postTaskAcknowledgment(next.task);
+                queueReply?.({ sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: next.task.id, text: this.taskAcknowledgmentText(next.task) });
                 this.input.wakeResearch();
               }
             } catch (err) {
@@ -471,6 +467,7 @@ export class SlackCoordinator {
               throw err;
             }
           }
+          if (!next.created && next.task.ackState === null) queueReply?.({ sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: next.task.id, text: this.taskAcknowledgmentText(next.task, params.slackTitle) });
           decisions?.add(params.sourceTs);
           return { content: [{ type: "text", text: JSON.stringify(await getTask(next.task.id)) }], details: {} };
         },
@@ -480,35 +477,59 @@ export class SlackCoordinator {
 
   private async postBatchReply(key: SlackThreadKey): Promise<void> {
     const tasks = await this.input.db.listSlackThreadTasks(key);
+    const replies: CoordinationReply[] = [];
     for (const task of tasks) {
       if (task.ackState !== null) continue;
-      if (task.type === "coding" && task.state === "awaiting_coordination") await this.postTaskAcknowledgment(task, task.request.slice(0, 100));
-      if (task.type === "research" && ["queued", "running", "awaiting_coordination", "approved"].includes(task.state)) await this.postTaskAcknowledgment(task);
-      if (task.state === "canceled" && !task.supersededBy && !task.coordinatedAt) await this.postTaskAcknowledgment(task);
+      if (task.type === "coding" && task.state === "awaiting_coordination" ||
+        task.type === "research" && ["queued", "running", "awaiting_coordination", "approved"].includes(task.state) ||
+        task.state === "canceled" && !task.supersededBy && !task.coordinatedAt) {
+        replies.push({ sourceTs: task.sourceTs, requestIndex: task.requestIndex, taskId: task.id, text: this.taskAcknowledgmentText(task, task.type === "coding" ? task.request.slice(0, 100) : undefined) });
+      }
     }
+    await this.postCoordinationReply(key, [...new Set(replies.map((reply) => reply.sourceTs))].sort(), replies);
   }
 
-  private async postTaskAcknowledgment(task: SlackTaskRecord, slackTitle?: string): Promise<void> {
-    let message: string;
+  private taskAcknowledgmentText(task: SlackTaskRecord, slackTitle?: string): string {
     if (task.state === "canceled") {
-      message = `Canceled ${safeSlackLine(task.ticketUrl ?? task.quote ?? task.request.slice(0, 120))}`;
-    } else if (task.type === "coding") {
-      if (!task.ticketUrl || !slackTitle?.trim()) throw new Error(`Coding task ${task.id} is missing a ticket URL or Slack title`);
-      message = `Created a ticket for <${task.ticketUrl}|${safeSlackLine(slackTitle)}>.`;
-    } else {
-      if (!task.quote) throw new Error(`Research task ${task.id} has no question quote`);
-      message = `Looking into ${safeSlackLine(task.quote)}.`;
+      return `Canceled ${safeSlackLine(task.ticketUrl ?? task.quote ?? task.request.slice(0, 120))}`;
     }
-    await this.input.db.beginSlackBatchAcknowledgment([task.id]);
+    if (task.type === "coding") {
+      if (!task.ticketUrl || !slackTitle?.trim()) throw new Error(`Coding task ${task.id} is missing a ticket URL or Slack title`);
+      return `Created a ticket for <${task.ticketUrl}|${safeSlackLine(slackTitle)}>.`;
+    }
+    if (!task.quote) throw new Error(`Research task ${task.id} has no question quote`);
+    return `Looking into ${safeSlackLine(task.quote)}.`;
+  }
+
+  private async postCoordinationReply(key: SlackThreadKey, sourceOrder: string[], replies: CoordinationReply[]): Promise<void> {
+    if (replies.length === 0) return;
+    const distinct = new Map<string, CoordinationReply>();
+    for (const reply of replies) {
+      const actionKey = `${reply.sourceTs}/${reply.requestIndex}`;
+      const existing = distinct.get(actionKey);
+      if (existing && (existing.text !== reply.text || existing.taskId !== reply.taskId)) throw new Error(`Conflicting coordination replies for ${actionKey}`);
+      distinct.set(actionKey, reply);
+    }
+    const ordered = [...distinct.values()].sort((a, b) => sourceOrder.indexOf(a.sourceTs) - sourceOrder.indexOf(b.sourceTs) || a.requestIndex - b.requestIndex);
+    const current = new Map((await this.input.db.listSlackThreadTasks(key)).map((task) => [task.id, task]));
+    for (const reply of ordered) if (reply.taskId && !current.has(reply.taskId)) throw new Error(`Missing acknowledged task ${reply.taskId}`);
+    const active = ordered.filter((reply) => !reply.taskId || !current.get(reply.taskId)?.supersededBy);
+    if (active.length === 0) return;
+    const ids = active.flatMap((reply) => reply.taskId ? [reply.taskId] : []);
+    if (ids.length > 0) await this.input.db.beginSlackBatchAcknowledgment(ids);
     let replyTs: string;
     try {
-      replyTs = await this.input.api.reply(task.thread, message);
+      replyTs = await this.input.api.reply(key, active.map((reply) => reply.text).join("\n\n"));
     } catch (err) {
-      await this.input.db.failSlackBatchAcknowledgment([task.id], String(err));
+      if (ids.length > 0) await this.input.db.failSlackBatchAcknowledgment(ids, String(err));
       throw err;
     }
-    if (task.type === "research" && task.state !== "canceled") await this.input.db.markSlackResearchStartedReply(task.id, replyTs);
-    else await this.input.db.markSlackTaskCoordinated(task.id, replyTs);
+    for (const id of ids) {
+      const task = current.get(id);
+      if (!task) throw new Error(`Missing acknowledged task ${id}`);
+      if (task.type === "research" && task.state !== "canceled") await this.input.db.markSlackResearchStartedReply(id, replyTs);
+      else await this.input.db.markSlackTaskCoordinated(id, replyTs);
+    }
   }
 
   private async postResearchAnswers(key: SlackThreadKey): Promise<void> {

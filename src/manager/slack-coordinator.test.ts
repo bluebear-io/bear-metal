@@ -256,6 +256,7 @@ describe("Slack coordinator", () => {
         sourceTs: "100.1", requestIndex: 1, quote: "make me a pizza please",
         question: "What code change, if any, do you mean by this?",
       }, undefined, undefined, {} as never);
+      expect(replies).toEqual([]);
     } });
     try {
       await coordinator.wake(key);
@@ -288,6 +289,34 @@ describe("Slack coordinator", () => {
     }
   });
 
+  it("retries the combined reply without creating duplicate tickets after Slack fails", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Change A and explain B" }]);
+    vi.mocked(api.reply).mockRejectedValueOnce(new Error("Slack unavailable"));
+    const create = vi.fn(async () => ({ id: "A", url: "https://linear.app/ticket/A", identifier: "A" }));
+    const coordinator = makeCoordinator({
+      db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn() },
+      runAgent: async ({ tools }) => {
+        const ticket = tools.find((tool) => tool.name === "create_ticket");
+        const research = tools.find((tool) => tool.name === "start_research");
+        if (!ticket || !research) throw new Error("Task tools missing");
+        await ticket.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Change A", teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
+        await research.execute("b", { sourceTs: "100.1", requestIndex: 2, request: "Explain B", quote: "why B is slow" }, undefined, undefined, {} as never);
+      },
+    });
+    try {
+      await coordinator.wake(key);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
+      await coordinator.wake(key);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nLooking into why B is slow."]);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
   it("creates clear tasks and clarifies a separate ambiguous ask in the same message", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
@@ -314,11 +343,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledTimes(2);
-      expect(replies).toEqual([
-        "Created a ticket for <https://linear.app/ticket/A|change A>.",
-        "Created a ticket for <https://linear.app/ticket/B|change B>.",
-        "<@U1>\n> make me a pizza\n\nWhat change do you want Bear Metal to make?",
-      ]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nCreated a ticket for <https://linear.app/ticket/B|change B>.\n\n<@U1>\n> make me a pizza\n\nWhat change do you want Bear Metal to make?"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect((await db.listSlackThreadTasks(key)).map((task) => task.type)).toEqual(["coding", "coding"]);
     } finally {
@@ -351,7 +376,7 @@ describe("Slack coordinator", () => {
       await db.close();
     }
   });
-  it("creates separate tickets from one message and replies for each task", async () => {
+  it("creates separate tickets from one message and replies once", async () => {
     const db = await makeDb();
     const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Please do A and B" }]);
     await db.recordSlackMessage(key, "100.1");
@@ -386,10 +411,7 @@ describe("Slack coordinator", () => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project", assigneeId: "linear-user-1" }));
       expect(delegate).toHaveBeenCalledTimes(2);
-      expect(replies).toEqual([
-        "Created a ticket for <https://linear.app/ticket/A|A>.",
-        "Created a ticket for <https://linear.app/ticket/B|B>.",
-      ]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|A>.\n\nCreated a ticket for <https://linear.app/ticket/B|B>."]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect((await db.listSlackThreadTasks(key)).map((task) => task.state)).toEqual(["coordinated", "coordinated"]);
     } finally {
@@ -466,7 +488,7 @@ describe("Slack coordinator", () => {
     }
   });
 
-  it("posts coding and research acknowledgments in task order before coordination ends", async () => {
+  it("posts coding and research acknowledgments in one reply after coordination ends", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
     const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Change A, explain B, and change C" }]);
@@ -478,16 +500,16 @@ describe("Slack coordinator", () => {
         const research = tools.find((tool) => tool.name === "start_research");
         if (!ticket || !research) throw new Error("Task tools missing");
         await ticket.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Change A", teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
-        expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>."]);
+        expect(replies).toEqual([]);
         await research.execute("b", { sourceTs: "100.1", requestIndex: 2, request: "Explain B", quote: "why B is slow" }, undefined, undefined, {} as never);
-        expect(replies[1]).toBe("Looking into why B is slow.");
+        expect(replies).toEqual([]);
         await ticket.execute("c", { sourceTs: "100.1", requestIndex: 3, request: "Change C", teamId: "team", title: "C", slackTitle: "change C", description: "Change C" }, undefined, undefined, {} as never);
-        expect(replies[2]).toBe("Created a ticket for <https://linear.app/ticket/C|change C>.");
+        expect(replies).toEqual([]);
       },
     });
     try {
       await coordinator.wake(key);
-      expect(replies).toHaveLength(3);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nLooking into why B is slow.\n\nCreated a ticket for <https://linear.app/ticket/C|change C>."]);
       expect((await db.listSlackThreadTasks(key))[1]?.sourceUserId).toBe("U1");
     } finally {
       await db.close();
