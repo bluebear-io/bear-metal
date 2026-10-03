@@ -213,7 +213,7 @@ export class SlackIntegration implements Integration {
         "Content-Type": "application/x-www-form-urlencoded",
         Authorization: `Bearer ${this.token}`,
       },
-      body: new URLSearchParams({ filename: "research-answer.md", length: String(bytes.byteLength) }),
+      body: new URLSearchParams({ filename: "full-research-result.md", length: String(bytes.byteLength) }),
     });
     if (!request.ok) throw new Error(`Slack files.getUploadURLExternal HTTP ${request.status}`);
     const upload = (await request.json()) as { ok?: boolean; upload_url?: string; file_id?: string; error?: string };
@@ -235,7 +235,7 @@ export class SlackIntegration implements Integration {
         Authorization: `Bearer ${this.token}`,
       },
       body: JSON.stringify({
-        files: [{ id: upload.file_id, title: "Research answer.md" }],
+        files: [{ id: upload.file_id, title: "full-research-result.md" }],
         channel_id: channel,
         thread_ts: threadTs,
         initial_comment: comment,

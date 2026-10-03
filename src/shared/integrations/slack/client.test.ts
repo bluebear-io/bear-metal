@@ -247,10 +247,10 @@ describe("SlackIntegration", () => {
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(call[1].body as string);
     expect(body.blocks).toEqual([
-      { type: "section", text: { type: "mrkdwn", text: "Replying to <@U1>" } },
-      { type: "markdown", text: `> why B is slow\n\n${answer}` },
+      { type: "section", text: { type: "mrkdwn", text: 'Replying to <@U1>\'s "why B is slow"' } },
+      { type: "markdown", text: answer },
     ]);
-    expect(body.text).toContain("Replying to <@U1>");
+    expect(body.text).toBe(`Replying to <@U1>'s "why B is slow"\n\n${answer}`);
   });
 
   it("posts a research TL;DR with its full answer attached as Markdown in the thread", async () => {
@@ -258,7 +258,7 @@ describe("SlackIntegration", () => {
       const url = String(input);
       if (url.endsWith("/files.getUploadURLExternal")) return new Response(JSON.stringify({ ok: true, upload_url: "https://files.slack.com/upload/v1/test", file_id: "F1" }), { status: 200 });
       if (url === "https://files.slack.com/upload/v1/test") return new Response("OK", { status: 200 });
-      if (url.endsWith("/files.completeUploadExternal")) return new Response(JSON.stringify({ ok: true, files: [{ id: "F1", title: "Research answer.md" }] }), { status: 200 });
+      if (url.endsWith("/files.completeUploadExternal")) return new Response(JSON.stringify({ ok: true, files: [{ id: "F1", title: "full-research-result.md" }] }), { status: 200 });
       throw new Error(`Unexpected request: ${url} ${init?.method}`);
     });
     const slack = new SlackIntegration({ token: "xoxb-test", channel: "C1", fetchImpl: fetchImpl as unknown as typeof fetch, logger: SILENT_LOGGER });
@@ -267,15 +267,15 @@ describe("SlackIntegration", () => {
     await expect(api.replyResearch({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "U1", "why B is slow", answer, "The slow path retries too often.")).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     const request = new URLSearchParams((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
-    expect(Object.fromEntries(request)).toEqual({ filename: "research-answer.md", length: String(Buffer.byteLength(answer)) });
+    expect(Object.fromEntries(request)).toEqual({ filename: "full-research-result.md", length: String(Buffer.byteLength(answer)) });
     const upload = (fetchImpl.mock.calls[1] as unknown as [string, RequestInit])[1];
     expect(upload.headers).not.toMatchObject({ Authorization: expect.anything() });
     expect(Buffer.from(upload.body as Uint8Array).toString()).toBe(answer);
     const complete = JSON.parse((fetchImpl.mock.calls[2] as unknown as [string, RequestInit])[1].body as string);
     expect(complete).toEqual({
-      files: [{ id: "F1", title: "Research answer.md" }],
+      files: [{ id: "F1", title: "full-research-result.md" }],
       channel_id: "C1", thread_ts: "100.0",
-      initial_comment: "Replying to <@U1>\n> why B is slow\n\n*TL;DR* - The slow path retries too often.\n\n_Full research is in the attached file._",
+      initial_comment: 'Replying to <@U1>\'s "why B is slow"\n\n*TL;DR* - The slow path retries too often.',
     });
   });
 
@@ -289,7 +289,7 @@ describe("SlackIntegration", () => {
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(call[0]).toBe("https://slack.com/api/chat.postMessage");
     const body = JSON.parse(call[1].body as string);
-    expect(body.text).toBe(`Replying to <@U1>\n> why B is slow\n\n${answer}`);
+    expect(body.text).toBe(`Replying to <@U1>'s "why B is slow"\n\n${answer}`);
     expect(body.text).not.toContain("TL;DR");
   });
   it("posts to chat.postMessage with bearer token and channel", async () => {

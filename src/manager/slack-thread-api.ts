@@ -68,19 +68,19 @@ export class SlackThreadApi {
   }
 
   async replyResearch(key: SlackThreadKey, userId: string, quote: string, answer: string, summary?: string): Promise<string | undefined> {
-    const mention = `Replying to <@${userId}>`;
     const quoted = quote.replace(/\s+/g, " ").replace(/([\\*_`~])/g, "\\$1");
+    const header = `Replying to <@${userId}>'s "${quoted}"`;
     if (summary !== undefined && Array.from(answer).length > 500) {
       if (!summary.trim() || summary.length > 600) throw new Error("Slack research summary must be 1–600 characters");
-      await this.writer.postThreadMarkdownFile(key.channelId, key.threadTs, `${mention}\n> ${quoted}\n\n*TL;DR* - ${summary}\n\n_Full research is in the attached file._`, answer);
+      await this.writer.postThreadMarkdownFile(key.channelId, key.threadTs, `${header}\n\n*TL;DR* - ${summary}`, answer);
       return;
     }
     if (answer.length + quote.length + 4 > 12_000) throw new Error("Slack research answer exceeds the Markdown block limit");
     return this.writer.postThreadMessage(
-      key.channelId, key.threadTs, `${mention}\n> ${quoted}\n\n${answer}`,
+      key.channelId, key.threadTs, `${header}\n\n${answer}`,
       [
-        { type: "section", text: { type: "mrkdwn", text: mention } },
-        { type: "markdown", text: `> ${quoted}\n\n${answer}` },
+        { type: "section", text: { type: "mrkdwn", text: header } },
+        { type: "markdown", text: answer },
       ],
     );
   }

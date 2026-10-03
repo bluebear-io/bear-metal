@@ -24,7 +24,7 @@ function makeApi(messages: Array<{ ts: string; user: string; text: string }>) {
       return `reply-${replies.length}`;
     }),
     replyResearch: vi.fn(async (_key: SlackThreadKey, userId: string, quote: string, answer: string) => {
-      replies.push(`Replying to <@${userId}>\n> ${quote}\n\n${answer}`);
+      replies.push(`Replying to <@${userId}>'s "${quote}"\n\n${answer}`);
       return `reply-${replies.length}`;
     }),
   } as unknown as SlackThreadApi;
@@ -279,15 +279,16 @@ describe("Slack coordinator", () => {
       expect(prompt).toContain("clarify_request");
       const clarify = tools.find((tool) => tool.name === "clarify_request");
       if (!clarify) throw new Error("clarify_request missing");
+      expect(JSON.stringify(clarify.parameters)).not.toContain('"quote"');
       await clarify.execute("clarify", {
-        sourceTs: "100.1", requestIndex: 1, quote: "make me a pizza please",
+        sourceTs: "100.1", requestIndex: 1,
         question: "What code change, if any, do you mean by this?",
       }, undefined, undefined, {} as never);
       expect(replies).toEqual([]);
     } });
     try {
       await coordinator.wake(key);
-      expect(replies).toEqual(["<@U1>\n> make me a pizza please\n\nWhat code change, if any, do you mean by this?"]);
+      expect(replies).toEqual(["<@U1>, What code change, if any, do you mean by this?"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect(await db.listSlackThreadTasks(key)).toEqual([]);
     } finally {
@@ -304,7 +305,7 @@ describe("Slack coordinator", () => {
       const clarify = tools.find((tool) => tool.name === "clarify_request");
       if (!clarify) throw new Error("clarify_request missing");
       await clarify.execute("clarify", {
-        sourceTs: "100.1", requestIndex: 1, quote: "make me a pizza",
+        sourceTs: "100.1", requestIndex: 1,
         question: "What code change do you mean by this?",
       }, undefined, undefined, {} as never);
     } });
@@ -362,7 +363,7 @@ describe("Slack coordinator", () => {
           }, undefined, undefined, {} as never);
         }
         await clarify.execute("clarify", {
-          sourceTs: "100.1", requestIndex: 3, quote: "make me a pizza",
+          sourceTs: "100.1", requestIndex: 3,
           question: "What change do you want Bear Metal to make?",
         }, undefined, undefined, {} as never);
       },
@@ -370,7 +371,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledTimes(2);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nCreated a ticket for <https://linear.app/ticket/B|change B>.\n\n<@U1>\n> make me a pizza\n\nWhat change do you want Bear Metal to make?"]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nCreated a ticket for <https://linear.app/ticket/B|change B>.\n\n<@U1>, What change do you want Bear Metal to make?"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect((await db.listSlackThreadTasks(key)).map((task) => task.type)).toEqual(["coding", "coding"]);
     } finally {
@@ -591,7 +592,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(runAgent).toHaveBeenCalledTimes(1);
-      expect(replies).toEqual(["Looking into Find A.", "Replying to <@U1>\n> Find A\n\nAnswer A"]);
+      expect(replies).toEqual(["Looking into Find A.", 'Replying to <@U1>\'s "Find A"\n\nAnswer A']);
       expect(vi.mocked(api.replyResearch)).toHaveBeenCalledWith(key, "U1", "Find A", "Answer A", "Summary A");
       expect((await db.getSlackTask(task.id))?.state).toBe("coordinated");
     } finally {
