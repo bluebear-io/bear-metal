@@ -25,6 +25,7 @@ export interface BearMetalConfig {
   slack?: {
     notificationChannel: string;
     getBotToken: SecretGetter;
+    getSigningSecret?: SecretGetter;
   };
   agentIntegrations?: {
     github?: {
@@ -54,6 +55,7 @@ export interface BearMetalConfig {
   database?: {
     getUrl: SecretGetter;
   };
+  traceRetentionDays?: number;
   maxIterations?: number;
   /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
   ciDeferralMaxMs?: number;
@@ -72,25 +74,28 @@ export type TaskPriority = "none" | "urgent" | "high" | "medium" | "low";
 
 export interface Task {
   readonly id: string;
-  readonly identifier: string;
-  readonly title: string;
-  readonly description: string | null;
-  readonly url: string;
-  readonly status: Readonly<{ name: string; category: TaskStatusCategory }>;
-  readonly priority: TaskPriority;
-  readonly labels: readonly string[];
-  readonly project: Readonly<{ id: string; name: string }> | null;
-  readonly assignee: Readonly<{ id: string; name: string | null; email: string | null }> | null;
-  readonly createdAt: string | null;
-  readonly updatedAt: string | null;
-  readonly completedAt: string | null;
-  readonly canceledAt: string | null;
-  readonly comments: readonly TaskComment[];
-  readonly attachments: readonly TaskAttachment[];
-  readonly relations: readonly TaskRelation[];
-  readonly repositories: readonly Repository[];
-  readonly run: Readonly<{ kind: "new" | "iteration"; iteration: number }>;
-  readonly pullRequests: readonly TaskPullRequest[];
+  readonly type: "coding" | "coordinator" | "research";
+  readonly request?: string;
+  readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
+  readonly identifier?: string;
+  readonly title?: string;
+  readonly description?: string | null;
+  readonly url?: string;
+  readonly status?: Readonly<{ name: string; category: TaskStatusCategory }>;
+  readonly priority?: TaskPriority;
+  readonly labels?: readonly string[];
+  readonly project?: Readonly<{ id: string; name: string }> | null;
+  readonly assignee?: Readonly<{ id: string; name: string | null; email: string | null }> | null;
+  readonly createdAt?: string | null;
+  readonly updatedAt?: string | null;
+  readonly completedAt?: string | null;
+  readonly canceledAt?: string | null;
+  readonly comments?: readonly TaskComment[];
+  readonly attachments?: readonly TaskAttachment[];
+  readonly relations?: readonly TaskRelation[];
+  readonly repositories?: readonly Repository[];
+  readonly run?: Readonly<{ kind: "new" | "iteration"; iteration: number }>;
+  readonly pullRequests?: readonly TaskPullRequest[];
 }
 
 export interface TaskComment {

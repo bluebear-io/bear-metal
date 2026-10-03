@@ -1,4 +1,5 @@
 import type {
+  AgentRunDetail,
   BmStatus,
   Config,
   ModelComparisonRow,
@@ -7,9 +8,33 @@ import type {
   TicketFilterOptions,
   TicketListQuery,
   TicketListResponse,
+  TaskListQuery,
+  TaskListResponse,
   ToolCallDetail,
   WorkerListItem,
 } from "./types.js";
+
+export async function fetchAgentRunDetail(id: string): Promise<AgentRunDetail> {
+  return getJson(`/api/agent-runs/${encodeURIComponent(id)}`);
+}
+
+export function buildTasksPath(query: TaskListQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (query.type) params.set("type", query.type);
+  appendList(params, "statuses", query.statuses);
+  if (query.workerId) params.set("workerId", query.workerId);
+  if (query.label) params.set("label", query.label);
+  if (query.stopReason) params.set("stopReason", query.stopReason);
+  if (query.page !== undefined) params.set("page", String(query.page));
+  if (query.pageSize !== undefined) params.set("pageSize", String(query.pageSize));
+  const qs = params.toString();
+  return qs ? `/api/tasks?${qs}` : "/api/tasks";
+}
+
+export async function fetchTasks(query: TaskListQuery = {}): Promise<TaskListResponse> {
+  return getJson<TaskListResponse>(buildTasksPath(query));
+}
 
 export interface SummaryRange {
   from: Date;

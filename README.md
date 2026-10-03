@@ -1,6 +1,4 @@
-<img src="logo.png" alt="Bear Metal" />
-
----
+<img src="src/ui/public/logo-large.png" alt="Bear Metal" align="right" width="300" />
 
 # Bear Metal
 
@@ -51,7 +49,9 @@ The module is trusted deployment code. Bear Metal does not transpile it, install
 
 [**Canonical configuration, task, and customization types →**](src/customization/types.ts)
 
-The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, `maxIterations`, `ciDeferralMaxMs`, and `shouldRetryCi` are optional.
+The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, `maxIterations`, `ciDeferralMaxMs`, `traceRetentionDays`, and `shouldRetryCi` are optional.
+
+`traceRetentionDays` is a positive integer and defaults to 14. Detailed prompts, assistant output, provider-visible thinking, and tool calls expire after that period; task and run metadata remain. The manager applies retention on startup and hourly. The Tasks dashboard includes coding tickets, research tasks, and coordinator executions.
 
 Secret getters are lazy and may read environment variables, files, workload APIs, or secret managers. Bear Metal owns the vendor clients and consumes each value only where the corresponding integration is used. `agentIntegrations` and each vendor inside it are optional and independent of the top-level deterministic integrations. Omitting an agent vendor means its tools are not shown to the coding agent. Omitting top-level `slack` disables notifications, while omitting database uses `sqlite:./data/bear-metal.sqlite`. `maxIterations` defaults to 50. `ciDeferralMaxMs` controls how long the manager waits for PR validation before sending a delayed-validation notification and defaults to 60 minutes.
 
@@ -108,7 +108,7 @@ export default {
       async buildWorkspace({ workspacePath, signal }) {
         await exec("git", ["clone", "https://github.com/example/repository", workspacePath], { signal });
       },
-      additionalSystemPrompt: task.priority === "urgent"
+      additionalSystemPrompt: !("type" in task) && task.priority === "urgent"
         ? "Prioritize the smallest safe change."
         : undefined,
       limits: { maxDurationMs: 7_200_000, maxTokens: 20_000_000 },
@@ -121,13 +121,13 @@ The same module may be `.mts`; use the canonical source above as the typing refe
 
 ## Task customization
 
-`customizeTask` receives the deeply frozen, tracker-neutral [`Task` contract](src/customization/types.ts). It includes normalized task identity, workflow, priority, labels, project, assignee, timestamps, discussion, relations, repositories, run context, and pull-request context. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
+`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, or a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
 
 The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt` and independent duration/token limits. See the canonical source for the exact nested DTO and return shapes.
 
 `llmProviders` is required and may be empty. It contains only key-based providers: Anthropic, OpenAI, and Google entries require lazy `getApiKey` functions. Only the key-based provider selected by `customizeTask` is resolved; selecting one without an entry fails that task with the exact configuration entry to add. Bedrock is not registered here because it uses the ambient AWS SDK credential chain.
 
-Bear Metal creates `workspacePath`, calls `buildWorkspace` with a ten-minute abort signal, requires a non-empty result, and removes its owned task workspace after success or failure. Builder code is responsible for cloning and authentication. The core Bear Metal system prompt is immutable; a truthy `additionalSystemPrompt` is appended. Limit fields independently default to 7,200,000 ms and 20,000,000 tokens.
+For coding and research runs, Bear Metal creates `workspacePath`, calls `buildWorkspace` with a ten-minute abort signal, requires a non-empty result, and removes its owned task workspace after success or failure. Coding workspaces use `BEAR_METAL_WORKSPACE_DIR/<ticket ID>/agent`; research workspaces use `BEAR_METAL_WORKSPACE_DIR/research/<task ID>/agent`. Coordinator runs share a checkout under `BEAR_METAL_WORKSPACE_DIR/coordinator`, built through their configured `buildWorkspace` hook and refreshed every 24 hours. An active run keeps its generation until it ends. Coordinator Pi receives the checkout's root `AGENTS.md` and read-only file tools; the checkout must contain a non-empty `AGENTS.md`. Builder code is responsible for cloning and authentication. The core Bear Metal system prompt is immutable; a truthy `additionalSystemPrompt` is appended. Limit fields independently default to 7,200,000 ms and 20,000,000 tokens.
 
 Agent shell commands use a dedicated cache-only `HOME` under `~/.bear-metal/cache-home`; it survives task workspace cleanup and is separate from the service user's normal home and temporary Git credentials. The workspace command guard is not an operating-system sandbox, so deployments must still isolate the worker process from host secrets.
 
@@ -145,7 +145,8 @@ Bear Metal itself reads only these deployment and process settings:
 | `TASK_MAX_RECLAIMS` | no | `3` | Maximum recoveries before abandoning a task row |
 | `BEAR_METAL_WORKSPACE_DIR` | no | `~/.bear-metal/workspace` | Parent directory for task workspaces |
 | `BACKEND_PORT` | no | `3100` | API and dashboard server port |
-| `API_ONLY` | no | `false` | Disable serving the built UI |
+| `API_ONLY` | no | `false` | Serve the dashboard API/UI without schedulers, workers, or Slack Events API |
+| `BEAR_METAL_RUN_MODE` | no | `normal` | `slack_only` keeps Slack coordination and research active without starting the Linear scheduler or coding worker; coordinator tools can still change Linear tickets |
 | `LOG_LEVEL` | no | `info` | Pino log level |
 | `LOG_PRETTY` | no | `false` | Human-readable local logs |
 | `TEST_TICKET_ID` | no | — | Restrict local polling to one ticket |
@@ -330,11 +331,13 @@ For a deployed smoke test, delegate one task for each branch of your `customizeT
 
 Both Slack apps are optional and independent. Create them at [Slack App Management](https://api.slack.com/apps) using **Create New App → From scratch**.
 
-The first app is used only by the trusted harness for deterministic notifications. Omit the top-level `slack` configuration to disable notifications.
+The first app is used by the trusted harness for notifications and, when `slack.getSigningSecret` is configured, thread requests. Omit the top-level `slack` configuration to disable both.
+Incoming events must belong to the workspace reported by that app's bot token. The Slack Events endpoint runs in the manager process when `API_ONLY` is false.
 
-1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write` and `chat:write.public`.
+1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write`, `chat:write.public`, `channels:history`, `groups:history`, `im:history`, `files:read`, `users:read`, and `users:read.email`. The user scopes let Bear Metal assign new Linear tickets to the Slack requester by email.
 2. Select **Install to Workspace**, approve the installation, and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
 3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
+4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow. Every new top-level DM to the app starts a thread; in channels, an `@Bear Metal` mention starts one.
 
 The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
 

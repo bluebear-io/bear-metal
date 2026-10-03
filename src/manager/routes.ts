@@ -6,6 +6,10 @@ const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "failed",
 type BmStatus = (typeof BM_STATUSES)[number];
 const STOP_REASONS = ["completed", "timeout", "crash", "error"] as const;
 type StopReason = (typeof STOP_REASONS)[number];
+const TASK_TYPES = ["coding", "research", "coordinator"] as const;
+const TASK_STATUSES = ["in_progress", "validating", "waiting_for_human", "failed", "completed", "queued",
+  "running", "awaiting_coordination", "approved", "posting", "coordinated", "canceled", "succeeded",
+  "dispatched", "timed_out", "crashed"] as const;
 
 function isBmStatus(v: unknown): v is BmStatus {
   return typeof v === "string" && (BM_STATUSES as readonly string[]).includes(v);
@@ -90,6 +94,34 @@ export function createRouter(db: DbClient, maxIterations: number, linear: Linear
 
   router.get("/config", (_req, res) => {
     res.json({ maxIterations });
+  });
+
+  router.get("/tasks", async (req, res, next) => {
+    try {
+      const type = readOptionalString(req.query.type);
+      const statuses = readList(req.query.statuses);
+      const stopReason = readOptionalString(req.query.stopReason);
+      const page = readOptionalInt(req.query.page, "page") ?? 1;
+      const pageSize = readOptionalInt(req.query.pageSize, "pageSize") ?? 20;
+      if (type && !(TASK_TYPES as readonly string[]).includes(type)) throw new Error(`invalid task type: ${type}`);
+      const invalidStatus = statuses.find((status) => !(TASK_STATUSES as readonly string[]).includes(status));
+      if (invalidStatus) throw new Error(`invalid task status: ${invalidStatus}`);
+      if (stopReason && !isStopReason(stopReason)) throw new Error(`invalid stop reason: ${stopReason}`);
+      if (page < 1 || pageSize < 1 || pageSize > MAX_TICKET_PAGE_SIZE) throw new Error("invalid task page or pageSize");
+      const result = await db.listTasks({ q: readOptionalString(req.query.q),
+        type: type as (typeof TASK_TYPES)[number] | undefined, statuses,
+        workerId: readOptionalString(req.query.workerId), label: readOptionalString(req.query.label),
+        stopReason: stopReason as StopReason | undefined, page, pageSize });
+      const ticketIds = result.items.map((item) => item.ticketId).filter((id): id is string => id !== null);
+      const assignees = ticketIds.length ? await linear.getTicketAssignees(ticketIds) : new Map<string, string | null>();
+      res.json({ tasks: result.items.map((item) => ({ ...item,
+        assigneeName: item.ticketId ? assignees.get(item.ticketId) ?? null : null })),
+        total: result.total, page: result.page, pageSize: result.pageSize });
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("invalid ")) {
+        res.status(400).json({ error: err.message });
+      } else next(err);
+    }
   });
 
   router.get("/tickets/filters", async (_req, res, next) => {
@@ -179,6 +211,33 @@ export function createRouter(db: DbClient, maxIterations: number, linear: Linear
         page: result.page,
         pageSize: result.pageSize,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/agent-runs", async (req, res, next) => {
+    try {
+      const page = Number(req.query.page ?? 1);
+      const pageSize = Number(req.query.pageSize ?? 50);
+      if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+        res.status(400).json({ error: "invalid agent run page or pageSize" });
+        return;
+      }
+      res.json(await db.listAgentRuns(page, pageSize));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get("/agent-runs/:id", async (req, res, next) => {
+    try {
+      const detail = await db.getAgentRunDetail(req.params.id);
+      if (!detail) {
+        res.status(404).json({ error: "agent run not found" });
+        return;
+      }
+      res.json(detail);
     } catch (err) {
       next(err);
     }

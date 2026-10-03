@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { TicketDetail } from "../api/types.js";
 import { useTicketDetail } from "../api/queries.js";
-import { TicketDetailPage } from "./TicketDetailPage.js";
+import { CodingTaskDetail } from "./CodingTaskDetail.js";
 
 vi.mock("../api/queries.js", () => ({
   useTicketDetail: vi.fn(),
@@ -150,16 +150,16 @@ const renderPage = () => {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/tickets/lin_2"]}>
+      <MemoryRouter initialEntries={["/tasks/coding/lin_2"]}>
         <Routes>
-          <Route path="/tickets/:id" element={<TicketDetailPage />} />
+          <Route path="/tasks/coding/:id" element={<CodingTaskDetail />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
 };
 
-describe("TicketDetailPage", () => {
+describe("CodingTaskDetail", () => {
   it("renders ticket detail, runs, PR/CI status, and timeline events", () => {
     mockUseTicketDetail.mockReturnValue({
       data: ticketDetail,

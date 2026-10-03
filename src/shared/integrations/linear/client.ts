@@ -365,6 +365,99 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     await this.withClient((client) => client.createComment({ issueId: ticketId, body }));
   }
 
+  async createSlackCodingTicket(input: {
+    teamId: string;
+    projectId?: string;
+    title: string;
+    description: string;
+    cycleId?: string;
+    assigneeId?: string;
+  }): Promise<{ id: string; url: string; identifier: string }> {
+    if (!input.teamId || !input.title.trim() || !input.description.trim()) {
+      throw new Error("Coding ticket requires team, title, and description");
+    }
+    return this.withClient(async (client) => {
+      const result = await client.createIssue({
+        teamId: input.teamId,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        title: input.title,
+        description: input.description,
+        ...(input.assigneeId ? { assigneeId: input.assigneeId } : {}),
+        ...(input.cycleId ? { cycleId: input.cycleId } : {}),
+      });
+      if (!result.success) throw new Error("Linear did not create the coding ticket");
+      const issue = await result.issue;
+      if (!issue) throw new Error("Linear creation response omitted the issue");
+      return { id: issue.id, url: issue.url, identifier: issue.identifier };
+    });
+  }
+
+  async findUserIdByEmail(email: string): Promise<string> {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) throw new Error("Cannot find Linear user without email");
+    return this.withClient(async (client) => {
+      const page = await client.users({ filter: { email: { eq: normalized } }, first: 2 });
+      const matches = page.nodes.filter((user) => user.email?.toLowerCase() === normalized);
+      if (matches.length !== 1 || page.pageInfo.hasNextPage) {
+        throw new Error(`Expected one Linear user for Slack email ${normalized}, got ${matches.length}${page.pageInfo.hasNextPage ? "+" : ""}`);
+      }
+      return matches[0]!.id;
+    });
+  }
+
+  async delegateSlackCodingTicket(ticketId: string): Promise<void> {
+    await this.withClient(async (client) => {
+      const result = await client.updateIssue(ticketId, { delegateId: await this.getAgentId() });
+      if (!result.success) throw new Error(`Linear did not delegate coding ticket ${ticketId}`);
+    });
+  }
+
+  async listSlackTicketDestinations(): Promise<{
+    teams: Array<{ id: string; key: string; name: string }>;
+    projects: Array<{ id: string; name: string; teamIds: string[] }>;
+  }> {
+    return this.withClient(async (client) => {
+      const teams: Array<{ id: string; key: string; name: string }> = [];
+      let after: string | undefined;
+      do {
+        const page = await client.teams({ first: 100, after });
+        teams.push(...page.nodes.map((team) => ({ id: team.id, key: team.key, name: team.name })));
+        after = page.pageInfo.hasNextPage ? this.requireNextCursor(page.pageInfo.endCursor ?? null, "teams", "teams") : undefined;
+      } while (after);
+      const projects: Array<{ id: string; name: string; teamIds: string[] }> = [];
+      do {
+        const page = await client.projects({ first: 100, after });
+        for (const project of page.nodes) {
+          const teamIds: string[] = [];
+          let teamAfter: string | undefined;
+          do {
+            const teamPage = await project.teams({ first: 100, after: teamAfter });
+            teamIds.push(...teamPage.nodes.map((team) => team.id));
+            teamAfter = teamPage.pageInfo.hasNextPage ? this.requireNextCursor(teamPage.pageInfo.endCursor ?? null, project.id, "project teams") : undefined;
+          } while (teamAfter);
+          projects.push({ id: project.id, name: project.name, teamIds });
+        }
+        after = page.pageInfo.hasNextPage ? this.requireNextCursor(page.pageInfo.endCursor ?? null, "projects", "projects") : undefined;
+      } while (after);
+      return { teams, projects };
+    });
+  }
+
+  async cancelSlackCodingTicket(ticketId: string): Promise<void> {
+    await this.withClient(async (client) => {
+      const issue = await client.issue(ticketId);
+      const team = await issue.team;
+      if (!team) throw new Error(`Linear issue ${ticketId} has no team`);
+      const states = await client.workflowStates({ filter: { type: { eq: "canceled" }, team: { id: { eq: team.id } } }, first: 10 });
+      const canceled = states.nodes.filter((state) => state.type === "canceled" && state.teamId === team.id);
+      const named = canceled.filter((state) => state.name.trim().toLowerCase() === "canceled");
+      const target = named.length === 1 ? named[0] : canceled.length === 1 ? canceled[0] : null;
+      if (!target) throw new Error(`Cannot identify one Canceled state for Linear team ${team.id}; found ${canceled.length} canceled states and ${named.length} named Canceled`);
+      const result = await issue.update({ stateId: target.id, delegateId: null });
+      if (!result.success) throw new Error(`Linear did not cancel coding ticket ${ticketId}`);
+    });
+  }
+
   async moveTicketToInProgress(ticketId: string): Promise<void> {
     await this.moveTicketToState(ticketId, "In Progress");
   }

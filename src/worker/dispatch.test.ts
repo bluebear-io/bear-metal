@@ -115,6 +115,7 @@ function makeConfig(): BearMetalConfig {
     },
     llmProviders: { anthropic: { getApiKey: vi.fn(() => "anthropic-key") }, openai: { getApiKey: vi.fn(() => "openai-key") } },
     customizeTask: async (task) => {
+      if (!("identifier" in task)) throw new Error("Expected a Linear task");
       expect(task.identifier).toBe("ABC-1"); expect(Object.isFrozen(task)).toBe(true); state.tasks.push(task); state.calls.push("customize");
       return { llm: { provider: "openai", model: "gpt-test" }, additionalSystemPrompt: "Extra", limits: { maxDurationMs: 123, maxTokens: 456 }, buildWorkspace: async ({ workspacePath }) => { state.calls.push("build"); await writeFile(join(workspacePath, "README.md"), "ready"); } };
     },

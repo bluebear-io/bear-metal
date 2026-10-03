@@ -10,12 +10,13 @@ export function buildTask(input: {
   attachments: TicketAttachment[];
   prs: PullRequestRef[];
   pullRequests: PullRequestContext[];
-}): Task {
+}) {
   const issue = input.ticket.issue;
   const pullRequests = input.pullRequests.map((context, index) => normalizePullRequest(input.prs[index]!, context));
   const repositories = [...new Map(input.prs.map((pr) => [`${pr.owner}/${pr.repo}`, Object.freeze({ owner: pr.owner, name: pr.repo })])).values()];
   return deepFreeze({
     id: issue.id,
+    type: "coding" as const,
     identifier: issue.identifier,
     title: issue.title,
     description: issue.description,
@@ -42,7 +43,7 @@ export function buildTask(input: {
     repositories,
     run: { kind: input.state, iteration: input.iteration },
     pullRequests,
-  });
+  } satisfies Task);
 }
 
 export async function customizeAndResolve(config: BearMetalConfig, task: Task): Promise<{ customization: ReturnType<typeof validateTaskCustomization>; llm: ResolvedLlm }> {

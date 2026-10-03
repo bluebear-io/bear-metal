@@ -4,9 +4,9 @@ import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-route
 import { ThemeToggle } from "./components/ThemeToggle.js";
 import ModelsPage from "./pages/ModelsPage.js";
 import SummaryPage from "./pages/SummaryPage.js";
-import TicketDetailPage from "./pages/TicketDetailPage.js";
-import TicketsListPage from "./pages/TicketsListPage.js";
+import TasksListPage from "./pages/TasksListPage.js";
 import WorkersPage from "./pages/WorkersPage.js";
+import TaskDetailPage from "./pages/TaskDetailPage.js";
 
 const navClass = ({ isActive }: { isActive: boolean }) =>
   [
@@ -16,12 +16,12 @@ const navClass = ({ isActive }: { isActive: boolean }) =>
 
 const BearLogo = ({ small }: { small: boolean }) => (
   <div className="flex-shrink-0">
-    <img src="/logo.png" alt="Bear Metal" className={`w-auto transition-all duration-300 ${small ? "h-11" : "h-16"}`} />
+    <img src="/logo-large.png" alt="Bear Metal" className={`w-auto transition-all duration-300 ${small ? "h-11" : "h-16"}`} />
   </div>
 );
 
 const PAGE_TITLES: Record<string, string> = {
-  "/": "Tickets",
+  "/": "Tasks",
   "/summary": "Summary",
   "/workers": "Workers",
   "/models": "Models",
@@ -61,7 +61,7 @@ export default function App() {
           </Link>
           <div className="h-8 w-px bg-border-default" aria-hidden />
           <NavLink to="/" end className={navClass}>
-            Tickets
+            Tasks
           </NavLink>
           <NavLink to="/summary" className={navClass}>
             Summary
@@ -80,9 +80,10 @@ export default function App() {
 
       <div className="pt-[104px]">
         <Routes>
-          <Route path="/" element={<TicketsListPage />} />
+          <Route path="/" element={<TasksListPage />} />
           <Route path="/tickets" element={<Navigate to="/" replace />} />
-          <Route path="/tickets/:id" element={<TicketDetailPage />} />
+          <Route path="/tickets/:id" element={<TaskDetailPage />} />
+          <Route path="/tasks/:type/:id" element={<TaskDetailPage />} />
           <Route path="/summary" element={<SummaryPage />} />
           <Route path="/workers" element={<WorkersPage />} />
           <Route path="/models" element={<ModelsPage />} />

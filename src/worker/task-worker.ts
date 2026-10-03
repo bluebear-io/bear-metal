@@ -8,6 +8,7 @@ import type { DbClient, TaskRecord } from "../db/client.js";
 import { dispatch, type DispatchInput, type DispatchResult } from "./dispatch.js";
 import type { WorkerIntegrations } from "./types.js";
 import { generateWorkerName } from "./worker-name.js";
+import { AgentTraceWriter } from "./trace.js";
 
 export type DispatchRunner = (input: DispatchInput) => Promise<DispatchResult>;
 
@@ -150,6 +151,7 @@ export class TaskWorker {
         this.logger.error({ err, taskId: task.id, workerId: this.workerId }, "task heartbeat failed");
       });
     }, this.heartbeatIntervalMs);
+    const traceWriter = new AgentTraceWriter(this.db, task.id);
     let result: DispatchResult;
     try {
       result = await this.runDispatch({
@@ -159,9 +161,7 @@ export class TaskWorker {
         agentToolGateway: this.agentToolGateway,
         config: this.config,
         iteration: task.iterationNumber,
-        onToolCallProgress: (calls) => {
-          void this.db.upsertToolCalls(task.id, JSON.stringify(calls));
-        },
+        onTraceEvent: (kind, content) => traceWriter.record(kind, content),
         onWorkspaceBuilding: () => {
           void this.db.recordEvent({
             id: randomUUID(),
@@ -220,6 +220,7 @@ export class TaskWorker {
       throw err;
     } finally {
       clearInterval(heartbeat);
+      await traceWriter.flush();
     }
     await this.db.complete(task.id, result);
 
