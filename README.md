@@ -1,6 +1,4 @@
-<img src="logo.png" alt="Bear Metal" />
-
----
+<img src="src/ui/public/logo-large.png" alt="Bear Metal" align="right" width="300" />
 
 # Bear Metal
 

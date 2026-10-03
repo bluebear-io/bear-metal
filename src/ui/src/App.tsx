@@ -16,7 +16,7 @@ const navClass = ({ isActive }: { isActive: boolean }) =>
 
 const BearLogo = ({ small }: { small: boolean }) => (
   <div className="flex-shrink-0">
-    <img src="/logo.png" alt="Bear Metal" className={`w-auto transition-all duration-300 ${small ? "h-11" : "h-16"}`} />
+    <img src="/logo-large.png" alt="Bear Metal" className={`w-auto transition-all duration-300 ${small ? "h-11" : "h-16"}`} />
   </div>
 );
 
