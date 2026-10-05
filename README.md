@@ -339,6 +339,8 @@ Incoming events must belong to the workspace reported by that app's bot token. T
 3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
 4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow. Every new top-level DM to the app starts a thread; in channels, an `@Bear Metal` mention starts one.
 
+PR opened, PR updated, validation-delayed, needs-input, and max-iteration notifications are one attempt each. `SlackIntegration` throws when Slack returns a non-success response or the request fails, and it does not log the bot token or message body. The scheduler records `user_notified` and marks a pull request notified only after that send succeeds. A failure on one pull-request notification kind does not skip the other kinds.
+
 The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
 
 1. Create a separate Slack app.
