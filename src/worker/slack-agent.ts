@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { AuthStorage, createAgentSession, ModelRegistry, SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, ModelRuntime, SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { customizeAndResolve } from "../customization/task.js";
 import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig, type Task } from "../customization/types.js";
@@ -68,10 +68,9 @@ export async function runSlackAgent(input: {
       : "";
     const prompt = `${customization.additionalSystemPrompt ?? ""}\n\n${repositoryContext}${input.prompt}`;
     traceWriter.record("prompt", { text: redactTraceText(prompt) });
-    const authStorage = AuthStorage.create();
-    if (llm.apiKey) authStorage.setRuntimeApiKey(llm.provider, llm.apiKey);
-    const modelRegistry = ModelRegistry.create(authStorage);
-    const model = modelRegistry.find(llm.provider, llm.model);
+    const modelRuntime = await ModelRuntime.create();
+    if (llm.apiKey) await modelRuntime.setRuntimeApiKey(llm.provider, llm.apiKey);
+    const model = modelRuntime.getModel(llm.provider, llm.model);
     if (!model) throw new Error(`No model found for ${llm.provider}/${llm.model}`);
     const gatewayTools = input.gateway
       ? createAgentGatewayTools(input.gateway, { taskId: input.task.id, runId: input.task.id, workspaceRoot: agentWorkdir })
@@ -81,8 +80,7 @@ export async function runSlackAgent(input: {
     const customTools = [...input.tools, ...gatewayTools, ...fileTools];
     const { session } = await createAgentSession({
       cwd: agentWorkdir,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       model,
       sessionManager: SessionManager.inMemory(),
       tools: customTools.map((tool) => tool.name),

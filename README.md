@@ -289,6 +289,8 @@ The agent must be a full Linear workspace member, not a guest.
 
 Create a key in the [Anthropic Console](https://console.anthropic.com), register `llmProviders.anthropic.getApiKey`, and select `{ provider: "anthropic", model: "..." }` from `customizeTask`.
 
+For Claude Opus 5.5, select `{ provider: "anthropic", model: "claude-opus-5-5" }`.
+
 ### OpenAI
 
 Register `llmProviders.openai.getApiKey` and select `{ provider: "openai", model: "..." }` from `customizeTask`.

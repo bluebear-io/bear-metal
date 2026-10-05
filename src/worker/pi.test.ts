@@ -46,13 +46,11 @@ vi.mock("../shared/index.js", async (importOriginal) => {
 });
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
-  AuthStorage: {
-    create: () => ({
+  ModelRuntime: {
+    create: async () => ({
       setRuntimeApiKey: piMock.setRuntimeApiKey,
+      getModel: piMock.modelRegistryFind,
     }),
-  },
-  ModelRegistry: {
-    create: () => ({ find: piMock.modelRegistryFind }),
   },
   SessionManager: {
     inMemory: () => ({}),
