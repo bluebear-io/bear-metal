@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { AuthStorage, createAgentSession, defineTool, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, defineTool, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   push,
@@ -294,14 +294,13 @@ export async function runPiWorker(input: {
     },
   });
 
-  const authStorage = AuthStorage.create();
+  const modelRuntime = await ModelRuntime.create();
   if (input.llmApiKey) {
-    authStorage.setRuntimeApiKey(input.llmProvider, input.llmApiKey);
+    await modelRuntime.setRuntimeApiKey(input.llmProvider, input.llmApiKey);
   } else if (input.llmProvider !== "amazon-bedrock") {
     throw new Error(`Missing API key for LLM provider "${input.llmProvider}"`);
   }
-  const modelRegistry = ModelRegistry.create(authStorage);
-  const model = modelRegistry.find(input.llmProvider, input.llmModel);
+  const model = modelRuntime.getModel(input.llmProvider, input.llmModel);
   if (!model) {
     throw new Error(`No model found for provider "${input.llmProvider}" / model "${input.llmModel}"`);
   }
@@ -347,8 +346,7 @@ export async function runPiWorker(input: {
   let toolCallSequence = 0;
   const { session } = await createAgentSession({
     cwd: workspaceRoot,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     model,
     sessionManager: SessionManager.inMemory(),
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls", ...stateTools, ...agentTools.map((tool) => tool.name)],
@@ -397,9 +395,9 @@ export async function runPiWorker(input: {
       });
     } else if (event.type === "turn_end") {
       const msg = event.message;
-      if (isRecord(msg) && msg.role === "assistant") {
-        if ((msg as Record<string, unknown>).stopReason === "error") {
-          logger.error({ errorMessage: (msg as Record<string, unknown>).errorMessage }, "pi LLM call failed");
+      if (msg.role === "assistant") {
+        if (msg.stopReason === "error") {
+          logger.error({ errorMessage: msg.errorMessage }, "pi LLM call failed");
         }
         const blocks = contentBlocks(msg as { content: unknown });
         for (const block of blocks) {
