@@ -224,8 +224,14 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
   if (row.slack_ack_state !== null && row.slack_ack_state !== "posting" && row.slack_ack_state !== "posted" && row.slack_ack_state !== "failed") throw new Error(`Invalid Slack acknowledgment state for ${row.id}: ${row.slack_ack_state}`);
   let result: string | null = null;
   let summary: string | null = null;
-  if (row.result_json !== null) {
-    if (row.task_type !== "research") throw new Error(`Coding task ${row.id} has a research result`);
+  if (row.result_json !== null && row.task_type === "coding") {
+    try {
+      parseDispatchResult(row.result_json);
+    } catch (err) {
+      throw new Error(`Coding task ${row.id} has an invalid result: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+  }
+  if (row.result_json !== null && row.task_type === "research") {
     const parsed = JSON.parse(row.result_json) as { answer?: unknown; summary?: unknown };
     if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error(`Research task ${row.id} has an invalid result`);
     if (parsed.summary !== undefined && (typeof parsed.summary !== "string" || !parsed.summary.trim())) throw new Error(`Research task ${row.id} has an invalid summary`);

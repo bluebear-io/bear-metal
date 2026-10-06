@@ -100,15 +100,14 @@ export class SlackCoordinator {
         let deletedOriginal = false;
         for (const originalTs of new Set(pending.map((ts) => editSources.get(ts)).filter((ts): ts is string => ts !== undefined))) {
           if (fetched.has(originalTs)) continue;
-          const editedMessage = await this.input.api.readThread(key, originalTs, originalTs);
-          if (editedMessage.length === 0) {
+          const editedMessage = await this.input.api.readThreadMessage(key, originalTs);
+          if (!editedMessage) {
             await this.input.db.abandonSlackDeletedMessage(key.workspaceId, key.channelId, originalTs);
             this.input.logger.warn({ key, originalTs }, "Slack edit original was deleted; pending revisions abandoned");
             deletedOriginal = true;
             break;
           }
-          if (editedMessage.length !== 1 || editedMessage[0]!.ts !== originalTs) throw new Error(`Slack thread ${key.channelId}/${key.threadTs} returned unexpected edited message ${originalTs}`);
-          thread.push(editedMessage[0]!);
+          thread.push(editedMessage);
           fetched.add(originalTs);
         }
         if (deletedOriginal) continue;
