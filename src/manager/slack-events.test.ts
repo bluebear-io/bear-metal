@@ -94,7 +94,7 @@ describe("Slack event intake", () => {
     }
   });
 
-  it("treats each top-level DM as a separate followed thread and rejects unsigned requests", async () => {
+  it("activates every threaded DM and rejects unsigned requests", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     const app = express();
@@ -105,11 +105,12 @@ describe("Slack event intake", () => {
       expect((await request(app).post("/slack/events").set("Content-Type", "application/json")
         .set("X-Slack-Request-Timestamp", foreign.timestamp).set("X-Slack-Signature", foreign.signature).send(foreign.text)).status).toBe(403);
       for (const ts of ["200.1", "200.2"]) {
-        const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event: { type: "message", channel_type: "im", channel: "D1", ts, user: "U1" } });
+        const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event: { type: "message", channel_type: "im", channel: "D1", ts, thread_ts: "199.1", user: "U1" } });
         expect((await request(app).post("/slack/events").set("Content-Type", "application/json")
           .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text)).status).toBe(200);
-        expect(await db.listSlackPendingMessages({ workspaceId: "T1", channelId: "D1", threadTs: ts })).toEqual([ts]);
+        expect(await db.listSlackPendingMessages({ workspaceId: "T1", channelId: "D1", threadTs: "199.1" })).toContain(ts);
       }
+      expect(await db.getSlackThreadActivation({ workspaceId: "T1", channelId: "D1", threadTs: "199.1" })).toEqual({ directMessage: true, mentionTimestamps: ["200.1", "200.2"] });
     } finally {
       await db.close();
     }

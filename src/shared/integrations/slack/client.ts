@@ -61,6 +61,22 @@ export interface MaxIterationsReachedNotification {
 
 const DEFAULT_API_BASE_URL = "https://slack.com/api";
 
+const CONFIRMED_REPLY_REJECTIONS = new Set([
+  "channel_not_found", "invalid_auth", "not_authed", "token_revoked", "token_expired",
+  "account_inactive", "missing_scope", "not_in_channel", "no_permission", "is_archived",
+  "no_text", "invalid_arguments", "invalid_blocks", "invalid_blocks_format",
+  "ratelimited", "rate_limited", "restricted_action", "restricted_action_read_only_channel",
+  "restricted_action_thread_locked", "restricted_action_non_threadable_channel",
+  "messages_tab_disabled", "ekm_access_denied", "cannot_reply_to_message",
+]);
+
+export class SlackThreadReplyRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SlackThreadReplyRejectedError";
+  }
+}
+
 export interface SlackReadClientOptions {
   token: string;
   apiBaseUrl?: string;
@@ -198,9 +214,13 @@ export class SlackIntegration implements Integration {
       },
       body: JSON.stringify({ channel, thread_ts: threadTs, text, ...(blocks ? { blocks } : {}), unfurl_links: false, unfurl_media: false }),
     });
-    if (!response.ok) throw new Error(`Slack chat.postMessage HTTP ${response.status}`);
+    if (response.status === 429) throw new SlackThreadReplyRejectedError("Slack chat.postMessage HTTP 429");
+    if (!response.ok) throw new Error(`Slack chat.postMessage HTTP ${response.status}; delivery is uncertain`);
     const body = (await response.json()) as { ok?: boolean; ts?: string; error?: string };
-    if (!body.ok || !body.ts) throw new Error(`Slack chat.postMessage failed: ${body.error ?? "missing ts"}`);
+    if (body.ok === false && body.error && CONFIRMED_REPLY_REJECTIONS.has(body.error)) {
+      throw new SlackThreadReplyRejectedError(`Slack chat.postMessage rejected: ${body.error}`);
+    }
+    if (body.ok !== true || typeof body.ts !== "string" || !body.ts) throw new Error(`Slack chat.postMessage failed: ${body.error ?? "missing ts"}; delivery is uncertain`);
     return body.ts;
   }
 

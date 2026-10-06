@@ -3,7 +3,9 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import type { BearMetalConfig, Task } from "../customization/types.js";
-import type { DbClient, NewSlackTask, SlackTaskRecord, SlackThreadKey } from "../db/client.js";
+import type { DbClient, NewSlackTask, SlackCoordinationReply, SlackTaskRecord, SlackThreadKey } from "../db/client.js";
+import { slackReplyKey } from "../db/client.js";
+import { SlackThreadReplyRejectedError } from "../shared/integrations/slack/client.js";
 import type { LinearIntegration } from "../shared/integrations/linear/client.js";
 import type { GitHubIntegration } from "../shared/integrations/github/client.js";
 import type { Logger } from "../shared/logger.js";
@@ -12,7 +14,7 @@ import { buildCoordinatorPayload } from "./slack-payload.js";
 import type { SlackThreadApi } from "./slack-thread-api.js";
 
 type TicketInput = Parameters<LinearIntegration["createSlackCodingTicket"]>[0];
-type CoordinationReply = { sourceTs: string; requestIndex: number; text: string; taskId?: string };
+type CoordinationReply = SlackCoordinationReply;
 
 function safeSlackLine(text: string): string {
   return text.replace(/\s+/g, " ").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -22,8 +24,8 @@ function applyResearchCorrection(request: string, correction: string): string {
   return `${request}\n\nCorrection: ${correction}\nLater corrections override earlier conflicting details; retain the original scope, sources, and other unchanged requirements.`;
 }
 
-function messagePrompt(key: SlackThreadKey, payload: string): string {
-  return `Infer the requests in the new Slack messages and use the task tools to create, update, cancel, or clarify each distinct request. Analyze new message for every distinct ask before using task tools. For each clear independent information-seeking question, call start_research. For each clear independent request to change or implement code, call create_ticket. If a request directed at Bear Metal remains ambiguous after reading available context, call clarify_request with the specific question needed to understand it; the harness mentions the user in the Slack reply. Handle clear requests and ambiguous requests from the same message separately. One message can require multiple tasks; preserve the target and full details of each ask. Use the workspace read tools to understand unfamiliar references. An entry with kind "edit" revises the message identified by originalMessageTs; check tasks from that original message and call update_task or cancel_task if its request changed or was withdrawn. Use the edit entry's ts as sourceTs for task tools. If this batch contains the original or multiple edits of it, ignore every superseded version and act on the latest edit. Follow supersededBy links or use get_thread_task to find the current task after earlier edits. Give start_research the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. For a research follow-up, send only the correction to update_task; it preserves the previous request automatically. For a Slack edit, send the complete edited request. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; call ignore_message for the superseded request and cancel_task or ignore_message for the withdrawal, as appropriate. Make at least one decision for every message in this batch. The JSON messages array contains only current unprocessed messages, not earlier thread messages. Tasks created from previously processed messages appear in the task summaries. If a message refers to a previous request, changes it, or earlier messages could help interpret it in any way, call slack_read with operation "thread_replies" and parameters ${JSON.stringify({ channel: key.channelId, ts: key.threadTs })} to read the thread before deciding on an action. Do not guess from current messages or task summaries alone. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated edit text, use get_message_revision; for other truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. Call ignore_message only if you are sure the entire message is clearly non-actionable for Bear Metal. Never use it for one part of a message that also contains an actionable coding request or research question. If uncertain, read more context; if the request remains ambiguous, call clarify_request instead. Pass its sourceTs and reason. Do not post to Slack.\n${payload}`;
+function messagePrompt(key: SlackThreadKey, payload: string, canIgnore: boolean): string {
+  return `Infer the requests directed at Bear Metal in the new Slack messages and use the task tools to create, update, cancel, or clarify each distinct request. Analyze new message for each distinct ask before using task tools. For each independent information-seeking question, if you can answer it directly, including greetings, trivial questions, or basic questions you can directly answer yourself, call direct_answer. If it requires some level of investigation, call start_research. For each clear independent request to change or implement code, call create_ticket. If a request directed at Bear Metal remains ambiguous after reading available context, call clarify_request with the specific question needed to understand it; the harness mentions the user in the Slack reply. Handle clear requests and ambiguous requests from the same message separately. One message can require multiple tasks; preserve the target and full details of each ask. Use the workspace read tools to understand unfamiliar references. An entry with kind "edit" revises the message identified by originalMessageTs; check tasks from that original message and call update_task or cancel_task if its request changed or was withdrawn. Use the edit entry's ts as sourceTs for task tools. If this batch contains the original or multiple edits of it, act on the latest edit. ${canIgnore ? "Acknowledge superseded entries with direct_answer when requiresResponse is true; otherwise use ignore_message." : "Acknowledge superseded entries with direct_answer."} Follow supersededBy links or use get_thread_task to find the current task after earlier edits. Give start_research the complete question and necessary context in request; quote is only a short label for Slack replies. Check the existing task summaries before creating a task: if a new message changes an existing task, call update_task; if it withdraws one, call cancel_task. For a research follow-up, send only the correction to update_task; it preserves the previous request automatically. For a Slack edit, send the complete edited request. Within the current group of new messages, follow the latest instruction before creating tasks. For example, if the group contains "Create a ticket for X" followed by "Never mind X", do not create a ticket for X; cancel_task if a task already exists. ${canIgnore ? "For superseded requests and withdrawals, use direct_answer when requiresResponse is true; otherwise use ignore_message when no action is needed." : "For superseded requests and withdrawals, use direct_answer when no task action is needed."} Make at least one decision for every message in this batch. The JSON messages array contains only current unprocessed messages, not earlier thread messages. Tasks created from previously processed messages appear in the task summaries. If a message refers to a previous request, changes it, or earlier messages could help interpret it in any way, call slack_read with operation "thread_replies" and parameters ${JSON.stringify({ channel: key.channelId, ts: key.threadTs })} to read the thread before deciding on an action. Do not guess from current messages or task summaries alone. Read all new messages in timestamp order before using task tools. Use get_thread_task when a task summary lacks needed detail. For truncated edit text, use get_message_revision; for other truncated text or messages with files or blocks, use slack_read before deciding. Use stable 1-based requestIndex values within each source message. The requiresResponse field is true for explicit mentions and every DM. Those messages must receive a response or action; never silently ignore them. ${canIgnore ? "For ordinary channel-thread messages where requiresResponse is false, use ignore_message when no Bear Metal action is needed, especially messages addressed to others. Do not insert unsolicited replies into their conversation. " : ""} Use direct_answer for conversational messages and clarify_request for unclear requests. Keep professional requests concise and helpful. For casual conversation, use humor and attitude when appropriate, such as "Fine, and how are you doing, amigo?" or "I'm all good, my friend". direct_answer sends your answer verbatim, without added formatting, reply wrappers, or user tags. When asked to stop bothering or following the thread, call unsubscribe_thread. This stops all further task messages, including results from work already in progress, without canceling that work. A later mention or DM resumes following. Do not post to Slack.\n${payload}`;
 }
 
 function researchResultPrompt(key: SlackThreadKey, task: SlackTaskRecord): string {
@@ -90,6 +92,7 @@ export class SlackCoordinator {
 
   private async runThread(key: SlackThreadKey): Promise<void> {
     for (;;) {
+      if (!await this.input.db.isSlackThreadFollowing(key)) return;
       const pending = await this.input.db.listSlackPendingMessages(key);
       if (pending.length > 0) {
         const pendingEdits = await this.input.db.listSlackPendingEdits(key);
@@ -125,12 +128,21 @@ export class SlackCoordinator {
         const batch = (await this.input.db.listSlackPendingMessages(key)).filter((ts) => availableTs.has(sources.get(ts) ?? ts));
         const latestBatchTs = batch.at(-1);
         if (!latestBatchTs) continue;
-        const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key), edits);
+        const activation = await this.input.db.getSlackThreadActivation(key);
+        const mentionTimestamps = new Set(activation.mentionTimestamps);
+        const requiredResponses = new Set(batch.filter((ts) => {
+          const edit = edits.find((entry) => entry.ts === ts);
+          const message = thread.find((entry) => entry.ts === (edit?.originalTs ?? ts));
+          return activation.directMessage || mentionTimestamps.has(edit?.originalTs ?? ts)
+            || (edit?.text ?? message?.text ?? "").includes(`<@${this.input.botUserId}>`);
+        }));
+        const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key), edits, requiredResponses);
         const decisions = new Set<string>();
+        let unsubscribeTs: string | undefined;
         const replies: CoordinationReply[] = [];
         const sourceUsers = new Map(thread.filter((message) => message.user).map((message) => [message.ts, message.user!]));
         for (const edit of edits) sourceUsers.set(edit.ts, edit.user);
-        const tools = this.createTools(key, batch, undefined, decisions, sourceUsers, undefined, (reply) => replies.push(reply));
+        const tools = this.createTools(key, batch, undefined, decisions, sourceUsers, undefined, (reply) => replies.push(reply), (sourceTs) => { unsubscribeTs = sourceTs; }, requiredResponses);
         const task: Task = {
           type: "coordinator",
           id: randomUUID(),
@@ -138,7 +150,7 @@ export class SlackCoordinator {
           slack: { ...key, sourceTs: latestBatchTs },
         };
         const assertDecisions = () => {
-          const undecided = batch.filter((ts) => !decisions.has(ts));
+          const undecided = batch.filter((ts) => !decisions.has(ts) && (unsubscribeTs === undefined || ts <= unsubscribeTs));
           if (undecided.length > 0) throw new Error(`Coordinator made no decision for Slack messages: ${undecided.join(", ")}`);
         };
         await (this.input.runAgent ?? runSlackAgent)({
@@ -148,14 +160,18 @@ export class SlackCoordinator {
           gateway: this.input.gateway,
           getGithubToken: () => this.input.github.getInstallationToken(),
           tools,
-          prompt: messagePrompt(key, payload),
+          prompt: messagePrompt(key, payload, tools.some((tool) => tool.name === "ignore_message")),
+          stopRequested: () => unsubscribeTs !== undefined,
+          output: () => ({ replies: unsubscribeTs ? [] : replies.map((reply) => reply.text), decision: unsubscribeTs ? "Unsubscribed from this thread." : "Requests processed." }),
           validateOutcome: async () => assertDecisions(),
         });
         assertDecisions();
         await this.postCoordinationReply(key, batch, replies);
-        await this.input.db.markSlackMessagesProcessed(key, batch);
+        await this.input.db.markSlackMessagesProcessed(key, batch.filter((ts) => decisions.has(ts)));
+        if (unsubscribeTs !== undefined) continue;
       }
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
+      if (!await this.input.db.isSlackThreadFollowing(key)) return;
       if (await this.reviewResearchResults(key)) continue;
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
       await this.postBatchReply(key);
@@ -169,10 +185,11 @@ export class SlackCoordinator {
   private async reviewResearchResults(key: SlackThreadKey): Promise<boolean> {
     const results = (await this.input.db.listSlackThreadTasks(key)).filter((task) => task.type === "research" && task.state === "awaiting_coordination");
     for (const result of results) {
+      if (!await this.input.db.isSlackThreadFollowing(key, result.sourceTs)) continue;
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) return true;
       const current = await this.input.db.getSlackTask(result.id);
       if (!current || current.state !== "awaiting_coordination") continue;
-      const request = JSON.stringify({ thread: key, resultTaskId: current.id, quote: current.quote });
+      const request = JSON.stringify({ thread: key, resultTaskId: current.id, quote: current.quote, request: current.request, answer: current.result });
       let reviewDeferred = false;
       await (this.input.runAgent ?? runSlackAgent)({
         task: { type: "coordinator", id: randomUUID(), request, slack: { ...key, sourceTs: current.sourceTs } },
@@ -183,6 +200,12 @@ export class SlackCoordinator {
         tools: this.createTools(key, [], current.id, undefined, undefined, () => { reviewDeferred = true; }),
         prompt: researchResultPrompt(key, current),
         stopRequested: () => reviewDeferred,
+        output: async () => {
+          if (reviewDeferred) return { decision: "Research review deferred." };
+          const reviewed = await this.input.db.getSlackTask(current.id);
+          if (!reviewed) throw new Error(`Missing reviewed research task ${current.id}`);
+          return { decision: `Research result ${reviewed.state}.` };
+        },
         validateOutcome: async () => {
           if ((await this.input.db.listSlackPendingMessages(key)).length > 0) {
             reviewDeferred = true;
@@ -199,9 +222,8 @@ export class SlackCoordinator {
     return false;
   }
 
-  private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void, queueReply?: (reply: CoordinationReply) => void): ToolDefinition[] {
+  private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void, queueReply?: (reply: CoordinationReply) => void, onUnsubscribe?: (sourceTs: string) => void, requiredResponses: Set<string> = new Set()): ToolDefinition[] {
     let resultDetailsRead = false;
-    let cancellationOrder = 0;
     const clarificationReplies = new Map<string, string>();
     const deferReviewIfPending = async () => {
       if ((await this.input.db.listSlackPendingMessages(key)).length === 0) return false;
@@ -294,8 +316,15 @@ export class SlackCoordinator {
           if (!params.sourceTs) throw new Error("Cancellation requires the source Slack message timestamp");
           requireSource(params.sourceTs);
         }
+        const previous = await getTask(params.id);
         const canceled = await cancel(params.id);
-        if (!resultTaskId && !canceled.coordinatedAt && !canceled.ackState) queueReply?.({ sourceTs: params.sourceTs!, requestIndex: 1_000_000 + ++cancellationOrder, taskId: canceled.id, text: this.taskAcknowledgmentText(canceled) });
+        if (!resultTaskId && (requiredResponses.has(params.sourceTs!) || (!canceled.coordinatedAt && !canceled.ackState))) {
+          const text = previous.state === "canceled"
+            ? `Already canceled ${safeSlackLine(canceled.ticketUrl ?? canceled.quote ?? canceled.request.slice(0, 120))}`
+            : this.taskAcknowledgmentText(canceled);
+          const reply = await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs!, requestIndex: 1_000_000, taskId: canceled.id, kind: "task_cancel", text });
+          queueReply?.(reply);
+        }
         if (params.sourceTs) decisions?.add(params.sourceTs);
         return { content: [{ type: "text", text: JSON.stringify(canceled) }], details: {} };
       },
@@ -393,25 +422,57 @@ export class SlackCoordinator {
           }
           if (!existing) {
             clarificationReplies.set(actionKey, params.question);
-            queueReply?.({ sourceTs: params.sourceTs, requestIndex: params.requestIndex, text: `<@${userId}>, ${safeSlackLine(params.question)}` });
+            const saved = await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, text: `<@${userId}>, ${safeSlackLine(params.question)}` });
+            if (saved.state === "posting") throw new Error(`Reply ${actionKey} has unresolved delivery`);
+            queueReply?.(saved);
           }
           decisions?.add(params.sourceTs);
           return { content: [{ type: "text", text: "Clarification queued for the combined thread reply." }], details: {} };
         },
       }),
       cancelTask,
-      defineTool({
+      ...(pending.some((ts) => !requiredResponses.has(ts)) ? [defineTool({
         name: "ignore_message",
-        label: "Ignore Slack message",
-        description: "Use only when you are sure the entire message is clearly non-actionable for Bear Metal, such as a greeting, a message directed elsewhere, or a request superseded later in this batch. Never use for a message containing any actionable coding request, research question, or ambiguous request that needs clarification. Read more context first if uncertain.",
+        label: "Ignore ordinary message",
+        description: "Silently ignore an ordinary channel-thread message that needs no Bear Metal action, such as conversation addressed to someone else. Only allowed when requiresResponse is false. Explicit mentions and every DM require a response or action.",
+        parameters: Type.Object({ sourceTs: Type.String({ minLength: 1 }), reason: Type.String({ minLength: 1 }) }),
+        execute: async (_id, params) => {
+          requireSource(params.sourceTs);
+          if (requiredResponses.has(params.sourceTs)) throw new Error(`Message ${params.sourceTs} requires a response or action`);
+          decisions?.add(params.sourceTs);
+          return { content: [{ type: "text", text: `Ignored ordinary message: ${params.reason}` }], details: {} };
+        },
+      })] : []),
+      defineTool({
+        name: "direct_answer",
+        label: "Answer directly",
+        description: "Answer a message addressed to Bear Metal, such as a greeting, trivial question, or another request you can handle yourself. The answer is sent verbatim, without added formatting, reply wrappers, or user tags. Use casual humor and attitude when appropriate.",
         parameters: Type.Object({
-          sourceTs: Type.String({ minLength: 1, description: "Exact ts of the new message being ignored, from the JSON messages array." }),
-          reason: Type.String({ minLength: 1, description: "Brief reason the entire message needs no Bear Metal action, such as 'superseded by later message in this batch'." }),
+          sourceTs: Type.String({ minLength: 1 }),
+          requestIndex: Type.Integer({ minimum: 1 }),
+          answer: Type.String({ minLength: 1 }),
         }),
         execute: async (_id, params) => {
           requireSource(params.sourceTs);
+          if (!params.answer.trim()) throw new Error("Direct answer must contain text");
+          const saved = await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, text: params.answer, direct: true });
+          if (saved.state === "posting") throw new Error(`Direct answer ${params.sourceTs}/${params.requestIndex} has unresolved delivery`);
+          queueReply?.(saved);
           decisions?.add(params.sourceTs);
-          return { content: [{ type: "text", text: `No task for ${params.sourceTs}: ${params.reason}` }], details: {} };
+          return { content: [{ type: "text", text: saved.state === "posted" ? "Direct answer already delivered." : `Direct answer queued: ${saved.text}` }], details: {} };
+        },
+      }),
+      defineTool({
+        name: "unsubscribe_thread",
+        label: "Unsubscribe from thread",
+        description: "Use when asked to stop bothering or following this thread. Suppresses all further task messages including in-flight results; work continues. A later mention or DM resumes following. Sends no reply.",
+        parameters: Type.Object({ sourceTs: Type.String({ minLength: 1 }) }),
+        execute: async (_id, params) => {
+          requireSource(params.sourceTs);
+          await this.input.db.unsubscribeSlackThread(key, params.sourceTs);
+          for (const ts of pending) if (ts <= params.sourceTs) decisions?.add(ts);
+          onUnsubscribe?.(params.sourceTs);
+          return { content: [{ type: "text", text: "Unsubscribed from this thread." }], details: {} };
         },
       }),
       defineTool({
@@ -490,11 +551,11 @@ export class SlackCoordinator {
     const tasks = await this.input.db.listSlackThreadTasks(key);
     const replies: CoordinationReply[] = [];
     for (const task of tasks) {
-      if (task.ackState !== null) continue;
+      if (task.ackState !== null || !await this.input.db.isSlackThreadFollowing(key, task.sourceTs)) continue;
       if (task.type === "coding" && task.state === "awaiting_coordination" ||
         task.type === "research" && ["queued", "running", "awaiting_coordination", "approved"].includes(task.state) ||
         task.state === "canceled" && !task.supersededBy && !task.coordinatedAt) {
-        replies.push({ sourceTs: task.sourceTs, requestIndex: task.requestIndex, taskId: task.id, text: this.taskAcknowledgmentText(task, task.type === "coding" ? task.request.slice(0, 100) : undefined) });
+        replies.push({ sourceTs: task.sourceTs, requestIndex: task.requestIndex, taskId: task.id, kind: task.state === "canceled" ? "task_cancel" : "task_ack", text: this.taskAcknowledgmentText(task, task.type === "coding" ? task.request.slice(0, 100) : undefined) });
       }
     }
     await this.postCoordinationReply(key, [...new Set(replies.map((reply) => reply.sourceTs))].sort(), replies);
@@ -513,40 +574,59 @@ export class SlackCoordinator {
   }
 
   private async postCoordinationReply(key: SlackThreadKey, sourceOrder: string[], replies: CoordinationReply[]): Promise<void> {
-    if (replies.length === 0) return;
+    if (replies.length === 0 || !await this.input.db.isSlackThreadFollowing(key)) return;
     const distinct = new Map<string, CoordinationReply>();
     for (const reply of replies) {
-      const actionKey = `${reply.sourceTs}/${reply.requestIndex}`;
+      const actionKey = slackReplyKey(reply);
       const existing = distinct.get(actionKey);
-      if (existing && (existing.text !== reply.text || existing.taskId !== reply.taskId)) throw new Error(`Conflicting coordination replies for ${actionKey}`);
+      if (existing && (existing.text !== reply.text || existing.taskId !== reply.taskId || existing.direct !== reply.direct)) throw new Error(`Conflicting coordination replies for ${actionKey}`);
       distinct.set(actionKey, reply);
     }
-    const ordered = [...distinct.values()].sort((a, b) => sourceOrder.indexOf(a.sourceTs) - sourceOrder.indexOf(b.sourceTs) || a.requestIndex - b.requestIndex);
+    const ordered = [...distinct.values()].sort((a, b) => sourceOrder.indexOf(a.sourceTs) - sourceOrder.indexOf(b.sourceTs) || a.requestIndex - b.requestIndex || slackReplyKey(a).localeCompare(slackReplyKey(b)));
     const current = new Map((await this.input.db.listSlackThreadTasks(key)).map((task) => [task.id, task]));
     for (const reply of ordered) if (reply.taskId && !current.has(reply.taskId)) throw new Error(`Missing acknowledged task ${reply.taskId}`);
-    const active = ordered.filter((reply) => !reply.taskId || !current.get(reply.taskId)?.supersededBy);
-    if (active.length === 0) return;
-    const ids = active.flatMap((reply) => reply.taskId ? [reply.taskId] : []);
-    if (ids.length > 0) await this.input.db.beginSlackBatchAcknowledgment(ids);
-    let replyTs: string;
-    try {
-      replyTs = await this.input.api.reply(key, active.map((reply) => reply.text).join("\n\n"));
-    } catch (err) {
-      if (ids.length > 0) await this.input.db.failSlackBatchAcknowledgment(ids, String(err));
-      throw err;
+    const active: CoordinationReply[] = [];
+    for (const reply of ordered) {
+      if (!await this.input.db.isSlackThreadFollowing(key, reply.sourceTs) || (reply.kind !== "task_cancel" && reply.taskId && current.get(reply.taskId)?.supersededBy)) continue;
+      const saved = await this.input.db.queueSlackCoordinationReply(key, reply);
+      if (saved.state === "posted") continue;
+      if (saved.state === "posting") throw new Error(`Reply ${reply.sourceTs}/${reply.requestIndex} has unresolved delivery`);
+      active.push(saved);
     }
-    for (const id of ids) {
-      const task = current.get(id);
-      if (!task) throw new Error(`Missing acknowledged task ${id}`);
-      if (task.type === "research" && task.state !== "canceled") await this.input.db.markSlackResearchStartedReply(id, replyTs);
-      else await this.input.db.markSlackTaskCoordinated(id, replyTs);
+    if (active.length === 0) return;
+    const groups: CoordinationReply[][] = [];
+    for (const reply of active) {
+      const previous = groups.at(-1);
+      if (!reply.direct && previous && !previous[0]!.direct) previous.push(reply);
+      else groups.push([reply]);
+    }
+    for (const group of groups) {
+      const ids = group.flatMap((reply) => reply.taskId && current.get(reply.taskId)!.ackState === null && !current.get(reply.taskId)!.coordinatedAt ? [reply.taskId] : []);
+      if (ids.length > 0) await this.input.db.beginSlackBatchAcknowledgment(ids);
+      const groupKey = await this.input.db.beginSlackReplyGroup(key, group);
+      let replyTs: string;
+      try {
+        replyTs = await this.input.api.reply(key, group.map((reply) => reply.text).join("\n\n"));
+      } catch (err) {
+        const rejected = err instanceof SlackThreadReplyRejectedError;
+        await this.input.db.finishSlackReplyGroup(key, groupKey, rejected ? "rejected" : "uncertain", null, String(err));
+        if (rejected && ids.length > 0) await this.input.db.failSlackBatchAcknowledgment(ids, String(err));
+        throw err;
+      }
+      await this.input.db.finishSlackReplyGroup(key, groupKey, "posted", replyTs, null);
+      for (const id of ids) {
+        const task = current.get(id);
+        if (!task) throw new Error(`Missing acknowledged task ${id}`);
+        if (task.type === "research" && task.state !== "canceled") await this.input.db.markSlackResearchStartedReply(id, replyTs);
+        else await this.input.db.markSlackTaskCoordinated(id, replyTs);
+      }
     }
   }
 
   private async postResearchAnswers(key: SlackThreadKey): Promise<void> {
     const tasks = await this.input.db.listSlackThreadTasks(key);
     for (const task of tasks) {
-      if (task.type !== "research" || task.state !== "approved") continue;
+      if (task.type !== "research" || task.state !== "approved" || !await this.input.db.isSlackThreadFollowing(key, task.sourceTs)) continue;
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) return;
       const current = await this.input.db.getSlackTask(task.id);
       if (!current || current.state !== "approved") continue;

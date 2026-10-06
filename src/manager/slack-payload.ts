@@ -5,7 +5,7 @@ const MAX_MESSAGE_CHARS = 8_000;
 const MAX_TOTAL_MESSAGE_CHARS = 64_000;
 const MAX_QUOTE_CHARS = 240;
 
-export function buildCoordinatorPayload(key: SlackThreadKey, pendingTs: string[], thread: SlackThreadMessage[], tasks: SlackTaskRecord[], edits: SlackMessageEdit[] = []): string {
+export function buildCoordinatorPayload(key: SlackThreadKey, pendingTs: string[], thread: SlackThreadMessage[], tasks: SlackTaskRecord[], edits: SlackMessageEdit[] = [], requiredResponses: Set<string> = new Set()): string {
   const byTs = new Map(thread.map((message) => [message.ts, message]));
   const editByTs = new Map(edits.map((edit) => [edit.ts, edit]));
   let remaining = MAX_TOTAL_MESSAGE_CHARS;
@@ -18,6 +18,7 @@ export function buildCoordinatorPayload(key: SlackThreadKey, pendingTs: string[]
     remaining -= included;
     return {
       ts,
+      requiresResponse: requiredResponses.has(ts),
       kind: edit ? "edit" : "message",
       originalMessageTs: edit?.originalTs ?? ts,
       user: edit?.user ?? message.user,

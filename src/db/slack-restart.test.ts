@@ -8,6 +8,77 @@ import { SqlDbClient, type SlackThreadKey } from "./client.js";
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "1.0" };
 
 describe("Slack restart recovery", () => {
+  it("migrates cancellation receipts to stable task identities without resetting delivery state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-cancellation-identity-"));
+    const path = join(dir, "db.sqlite");
+    const url = `sqlite:${path}`;
+    const first = new SqlDbClient(url, 5);
+    try {
+      await first.initSchema();
+      await first.followSlackThread(key, "1.1");
+      await first.close();
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec(`CREATE TABLE slack_coordination_replies (
+          workspace_id TEXT, channel_id TEXT, thread_ts TEXT, source_ts TEXT, request_index INTEGER,
+          reply_text TEXT, reply_kind TEXT, task_id TEXT, direct INTEGER, group_key TEXT,
+          state TEXT, reply_ts TEXT, error TEXT, created_at TEXT, updated_at TEXT,
+          PRIMARY KEY (workspace_id, channel_id, thread_ts, source_ts, request_index, reply_kind))`);
+        const insert = legacy.prepare(`INSERT INTO slack_coordination_replies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        for (const [id, index, state] of [["A", 1_000_001, "queued"], ["B", 1_000_002, "posting"]] as const) {
+          insert.run(key.workspaceId, key.channelId, key.threadTs, "1.2", index, `Canceled ${id}`, "task_cancel", id, 0, "legacy-group", state, null, null, "2026-10-06", "2026-10-06");
+        }
+      } finally { legacy.close(); }
+      const second = new SqlDbClient(url, 5);
+      await second.initSchema();
+      try {
+        const a = await second.queueSlackCoordinationReply(key, { sourceTs: "1.2", requestIndex: 1_000_000, taskId: "A", kind: "task_cancel", text: "Canceled A" });
+        const b = await second.queueSlackCoordinationReply(key, { sourceTs: "1.2", requestIndex: 1_000_000, taskId: "B", kind: "task_cancel", text: "Canceled B" });
+        expect(a).toMatchObject({ state: "queued", requestIndex: 1_000_001 });
+        expect(b).toMatchObject({ state: "posting", requestIndex: 1_000_002 });
+        await expect(second.beginSlackReplyGroup(key, [b])).rejects.toThrow("Cannot begin Slack reply group");
+        const group = await second.beginSlackReplyGroup(key, [a]);
+        await second.finishSlackReplyGroup(key, group, "posted", "reply-1", null);
+        expect((await second.queueSlackCoordinationReply(key, a)).state).toBe("posted");
+        expect((await second.queueSlackCoordinationReply(key, b)).state).toBe("posting");
+      } finally { await second.close(); }
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("keeps unsubscribe durable, rejects replayed mentions, and resumes only new work", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-unsubscribe-restart-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    const first = new SqlDbClient(url, 5);
+    try {
+      await first.initSchema();
+      await first.followSlackThread(key, "1.1");
+      await first.recordSlackMessage(key, "1.1");
+      const task = (await first.createSlackTask({ type: "research", thread: key, sourceTs: "1.1", requestIndex: 1, request: "Question", quote: "Question" })).task;
+      await first.claimSlackResearchTask();
+      await first.unsubscribeSlackThread(key, "1.2");
+      await first.close();
+      const second = new SqlDbClient(url, 5);
+      await second.initSchema();
+      try {
+        await second.recoverSlackResearchTasks();
+        await second.claimSlackResearchTask();
+        await second.completeSlackResearchTask(task.id, "Late answer");
+        expect(await second.hasSlackThread(key)).toBe(false);
+        expect(await second.recordSlackMessage(key, "1.3")).toBe(false);
+        expect(await second.listSlackPendingThreads()).toEqual([]);
+        await second.followSlackThread(key, "1.1");
+        expect(await second.hasSlackThread(key)).toBe(false);
+        await second.followSlackThread(key, "1.4");
+        await second.recordSlackMessage(key, "1.4");
+        expect(await second.hasSlackThread(key)).toBe(true);
+        expect(await second.listSlackPendingMessages(key)).toEqual(["1.4"]);
+        expect(await second.isSlackThreadFollowing(key, task.sourceTs)).toBe(false);
+        expect(await second.isSlackThreadFollowing(key, "1.4")).toBe(true);
+        await second.markSlackMessagesProcessed(key, ["1.4"]);
+        expect(await second.listSlackPendingThreads()).toEqual([]);
+      } finally { await second.close(); }
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
   it("rejects an edit row missing its required user or text", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-malformed-edit-"));
     const path = join(dir, "db.sqlite");
@@ -95,6 +166,9 @@ describe("Slack restart recovery", () => {
     const first = new SqlDbClient(url, 5);
     try {
       await first.initSchema();
+      await first.followSlackThread(key, "1.1");
+      await first.recordSlackMessage(key, "1.1");
+      await first.markSlackMessagesProcessed(key, ["1.1"]);
       const task = (await first.createSlackTask({ type: "research", thread: key, sourceTs: "1.1", requestIndex: 1, request: "Question", quote: "Question" })).task;
       await first.claimSlackResearchTask();
       await first.completeSlackResearchTask(task.id, "Answer");

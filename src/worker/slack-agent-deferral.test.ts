@@ -59,9 +59,11 @@ describe("Slack agent review deferral", () => {
         prompt: "Review answer", config, db, tools: [tool], getGithubToken: async () => "token",
         stopRequested: () => deferred,
         validateOutcome: async () => { expect(deferred).toBe(true); },
+        output: async () => ({ decision: "Research review deferred." }),
       });
       expect(abort).toHaveBeenCalledTimes(1);
       expect((await db.getAgentRunDetail("review-deferred"))?.run).toMatchObject({ status: "succeeded", stopReason: "deferred", error: null });
+      expect((await db.getAgentRunDetail("review-deferred"))?.run.resultJson).toBe('{"decision":"Research review deferred."}');
     } finally {
       sessionFactory.mockReset();
       vi.unstubAllEnvs();

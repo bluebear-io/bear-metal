@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { useConfig, useTaskFilterOptions, useTasks } from "../api/queries.js";
 import type { StopReason, TaskListItem, TaskListQuery } from "../api/types.js";
@@ -15,7 +15,7 @@ const TaskLabel = ({ task }: { task: TaskListItem }) => task.ticketUrl ? (
   <a href={task.ticketUrl} className="font-medium text-primary transition hover:underline" target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
     {task.identifier}
   </a>
-) : <span className="font-medium text-primary capitalize">{task.type}</span>;
+) : <Link to={`/tasks/${task.type === "coding" ? "run" : task.type}/${task.id}`} className="font-medium text-primary capitalize hover:underline" onClick={(event) => event.stopPropagation()}>{task.type}</Link>;
 
 const PrLink = ({ task }: { task: TaskListItem }) => {
   if (task.pullRequests.length === 0) {

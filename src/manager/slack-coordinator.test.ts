@@ -1,8 +1,12 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { SqlDbClient, type SlackThreadKey } from "../db/client.js";
 import { createLogger } from "../shared/logger.js";
 import type { LinearIntegration } from "../shared/integrations/linear/client.js";
 import type { SlackThreadApi } from "./slack-thread-api.js";
+import { SlackIntegration, SlackThreadReplyRejectedError } from "../shared/integrations/slack/client.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
@@ -50,6 +54,403 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it("preserves the first reply when the same cancellation action repeats", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    const old = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Research A", quote: "A" })).task;
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> cancel A" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const cancel = tools.find((tool) => tool.name === "cancel_task")!;
+      for (const call of ["first", "repeated"]) await cancel.execute(call, { id: old.id, sourceTs: "100.2" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(replies).toEqual(["Canceled A"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect((await db.getSlackTask(old.id))?.ackState).toBe("posted");
+    } finally { await db.close(); }
+  });
+
+  it.each([false, true])("responds when an already-canceled task is requested again (DM=%s)", async (dm) => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    const old = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find repositories", quote: "repositories" })).task;
+    await db.cancelSlackTask(old.id);
+    await db.beginSlackBatchAcknowledgment([old.id]);
+    await db.markSlackTaskCoordinated(old.id, "previous-cancellation");
+    await db.followSlackThread(key, "100.2", dm);
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: dm ? "Cancel that again" : "<@UBOT> cancel that again" }]);
+    let requiresResponse = false;
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
+      requiresResponse = JSON.parse(task.request!).messages[0].requiresResponse;
+      await tools.find((tool) => tool.name === "cancel_task")!.execute("cancel", { id: old.id, sourceTs: "100.2" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(requiresResponse).toBe(true);
+      expect(replies).toEqual(["Already canceled repositories"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect((await db.getSlackTask(old.id))?.replyTs).toBe("previous-cancellation");
+      expect((await db.getSlackTask(old.id))?.ackState).toBe("posted");
+    } finally { await db.close(); }
+  });
+
+  it.each([false, true])("omits ignore instructions from response-required prompts (DM=%s)", async (dm) => {
+    const db = await makeDb();
+    if (dm) await db.followSlackThread(key, "100.1", true);
+    await db.recordSlackMessage(key, "100.1");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: dm ? "Hello" : "<@UBOT> hello" }]);
+    let actualPrompt = "";
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
+      actualPrompt = prompt;
+      expect(tools.some((tool) => tool.name === "ignore_message")).toBe(false);
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 1, answer: "Hello" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(actualPrompt).toContain("direct_answer");
+      expect(actualPrompt).not.toContain("ignore_message");
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("retries rejected cancellations in reversed tool order without changing their identities", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    const tasks: Array<{ id: string }> = [];
+    for (const quote of ["A", "B"]) tasks.push((await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: tasks.length + 1, request: `Research ${quote}`, quote })).task);
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> cancel A and B" }]);
+    let attempts = 0;
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: createLogger({ name: "test", level: "silent" }), fetchImpl: async (_url, options) => {
+      attempts++;
+      if (attempts === 1) return new Response("Rate limited", { status: 429 });
+      replies.push(JSON.parse(String(options?.body)).text);
+      return Response.json({ ok: true, ts: "reply-1" });
+    } });
+    api.reply = async (thread, text) => writer.postThreadMessage(thread.channelId, thread.threadTs, text);
+    let runs = 0;
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const order = ++runs === 1 ? tasks : [...tasks].reverse();
+      for (const task of order) await tools.find((tool) => tool.name === "cancel_task")!.execute(`cancel-${task.id}`, { id: task.id, sourceTs: "100.2" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(replies).toEqual([]);
+      expect(attempts).toBe(1);
+      await coordinator.wake(key);
+      expect(attempts).toBe(2);
+      expect(replies).toHaveLength(1);
+      expect(replies[0]!.split("\n\n").sort()).toEqual(["Canceled A", "Canceled B"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect((await db.listSlackThreadTasks(key)).every((task) => task.ackState === "posted")).toBe(true);
+    } finally { await db.close(); }
+  });
+
+  it("does not repeat a delivered clarification when a later answer is rejected", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-clarification-retry-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> implement it and say hello" }]);
+    let rejected = false;
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: createLogger({ name: "test", level: "silent" }), fetchImpl: async (_url, options) => {
+      const text = JSON.parse(String(options?.body)).text as string;
+      if (text === "Answer" && !rejected) {
+        rejected = true;
+        return Response.json({ ok: false, error: "channel_not_found" });
+      }
+      replies.push(text);
+      return Response.json({ ok: true, ts: `reply-${replies.length}` });
+    } });
+    api.reply = async (thread, text) => writer.postThreadMessage(thread.channelId, thread.threadTs, text);
+    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools }) => {
+      await tools.find((tool) => tool.name === "clarify_request")!.execute("clarify", { sourceTs: "100.1", requestIndex: 1, question: "Which project?" }, undefined, undefined, {} as never);
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 2, answer: "Answer" }, undefined, undefined, {} as never);
+    };
+    try {
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(replies).toEqual(["<@U1>, Which project?"]);
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(replies).toEqual(["<@U1>, Which project?", "Answer"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(["connection", "server", "malformed", "missing timestamp", "internal_error", "fatal_error", "unknown_error"])("does not retry an uncertain %s failure after Slack accepted an answer", async (failure) => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-uncertain-reply-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> hello" }]);
+    let attempts = 0;
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: createLogger({ name: "test", level: "silent" }), fetchImpl: async (_url, options) => {
+      attempts++;
+      replies.push(JSON.parse(String(options?.body)).text);
+      if (attempts === 1) {
+        if (failure === "connection") throw new TypeError("Connection closed after acceptance");
+        if (failure === "server") return new Response("Server error", { status: 500 });
+        if (failure === "malformed") return new Response("Invalid JSON");
+        if (failure === "missing timestamp") return Response.json({ ok: true });
+        return Response.json({ ok: false, error: failure });
+      }
+      return Response.json({ ok: true, ts: "reply-2" });
+    } });
+    api.reply = async (thread, text) => writer.postThreadMessage(thread.channelId, thread.threadTs, text);
+    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools }) => {
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 1, answer: "Answer" }, undefined, undefined, {} as never);
+    };
+    try {
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      await db.recoverSlackResearchTasks();
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(replies).toEqual(["Answer"]);
+      expect(attempts).toBe(1);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("does not repeat a delivered task and clarification group when a later answer is rejected", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> change A, change something else, and say hello" }]);
+    let rejected = false;
+    vi.mocked(api.reply).mockImplementation(async (_key, text) => {
+      if (text === "Answer" && !rejected) { rejected = true; throw new SlackThreadReplyRejectedError("Slack rejected answer"); }
+      replies.push(text);
+      return `reply-${replies.length}`;
+    });
+    const create = vi.fn(async () => ({ id: "A", url: "https://linear.app/ticket/A", identifier: "A" }));
+    const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn() }, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "create_ticket")!.execute("ticket", { sourceTs: "100.1", requestIndex: 1, request: "Change A", teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
+      await tools.find((tool) => tool.name === "clarify_request")!.execute("clarify", { sourceTs: "100.1", requestIndex: 2, question: rejected ? "Regenerated question" : "Which project?" }, undefined, undefined, {} as never);
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 3, answer: "Answer" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      await coordinator.wake(key);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\n<@U1>, Which project?", "Answer"]);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("posts a cancellation after an earlier task acknowledgment was delivered", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> research A" }]);
+    let researchId = "";
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
+      if (task.request && JSON.parse(task.request).resultTaskId) {
+        await tools.find((tool) => tool.name === "get_thread_task")!.execute("read", { id: researchId }, undefined, undefined, {} as never);
+        await tools.find((tool) => tool.name === "cancel_task")!.execute("cancel", { id: researchId }, undefined, undefined, {} as never);
+      } else {
+        await tools.find((tool) => tool.name === "start_research")!.execute("research", { sourceTs: "100.1", requestIndex: 1, request: "Research A", quote: "A" }, undefined, undefined, {} as never);
+        researchId = (await db.listSlackThreadTasks(key))[0]!.id;
+      }
+    } });
+    try {
+      await coordinator.wake(key);
+      await db.claimSlackResearchTask();
+      await db.completeSlackResearchTask(researchId, "Old answer");
+      await coordinator.wake(key);
+      expect(replies).toEqual(["Looking into A.", "Canceled A"]);
+    } finally { await db.close(); }
+  });
+
+  it("silently ignores messages addressed to others but rejects ignoring explicit mentions", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    await db.recordSlackMessage(key, "100.2");
+    await db.followSlackThread(key, "100.3");
+    await db.recordSlackMessage(key, "100.3");
+    const { api, replies } = makeApi([
+      { ts: "100.2", user: "U1", text: "<@U2> please check this" },
+      { ts: "100.3", user: "U1", text: "<@UBOT> hello" },
+    ]);
+    let ignoreAvailable = false;
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
+      expect(prompt).toContain("ignore_message");
+      const ignore = tools.find((tool) => tool.name === "ignore_message");
+      ignoreAvailable = ignore !== undefined;
+      if (!ignore) throw new Error("ignore_message missing");
+      await ignore.execute("ignore", { sourceTs: "100.2", reason: "Addressed to U2" }, undefined, undefined, {} as never);
+      await expect(ignore.execute("ignore-mention", { sourceTs: "100.3", reason: "Greeting" }, undefined, undefined, {} as never)).rejects.toThrow("response or action");
+      const answer = tools.find((tool) => tool.name === "direct_answer")!;
+      await answer.execute("answer", { sourceTs: "100.3", requestIndex: 1, answer: "Hello" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(ignoreAvailable, "ordinary messages need a silent-ignore decision").toBe(true);
+      expect(replies).toEqual(["Hello"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("does not resend successful direct answers after a later reply fails and the manager restarts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-direct-answer-retry-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([
+      { ts: "100.1", user: "U1", text: "<@UBOT> hello, how are you?" },
+    ]);
+    let failed = false;
+    vi.mocked(api.reply).mockImplementation(async (_key, text) => {
+      if (text === "I am fine" && !failed) { failed = true; throw new SlackThreadReplyRejectedError("Slack rejected reply"); }
+      replies.push(text);
+      return `reply-${replies.length}`;
+    });
+    const runAgent = async ({ tools }: Parameters<NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>>[0]) => {
+      const answer = tools.find((tool) => tool.name === "direct_answer")!;
+      await answer.execute("first", { sourceTs: "100.1", requestIndex: 1, answer: failed ? "Regenerated greeting" : "Hello" }, undefined, undefined, {} as never);
+      await answer.execute("second", { sourceTs: "100.1", requestIndex: 2, answer: failed ? "Regenerated answer" : "I am fine" }, undefined, undefined, {} as never);
+    };
+    try {
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(replies).toEqual(["Hello"]);
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(replies).toEqual(["Hello", "I am fine"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("requires a response for every DM even without mention text", async () => {
+    const db = await makeDb();
+    await db.followSlackThread(key, "100.1", true);
+    await db.recordSlackMessage(key, "100.1");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([
+      { ts: "100.1", user: "U1", text: "hello" },
+      { ts: "100.2", user: "U1", text: "how are you?" },
+    ]);
+    const required: boolean[] = [];
+    let ignoreAvailable = true;
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
+      if (!task.request) throw new Error("Coordinator request missing");
+      required.push(...JSON.parse(task.request).messages.map((message: { requiresResponse: boolean }) => message.requiresResponse));
+      ignoreAvailable = tools.some((tool) => tool.name === "ignore_message");
+      const answer = tools.find((tool) => tool.name === "direct_answer")!;
+      await answer.execute("first", { sourceTs: "100.1", requestIndex: 1, answer: "Hello" }, undefined, undefined, {} as never);
+      await answer.execute("second", { sourceTs: "100.2", requestIndex: 1, answer: "I am fine" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(required).toEqual([true, true]);
+      expect(ignoreAvailable).toBe(false);
+      expect(replies).toEqual(["Hello", "I am fine"]);
+    } finally { await db.close(); }
+  });
+
+  it("answers a mention verbatim without creating a task or offering ignore", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> how are you?" }]);
+    const answer = "I'm all good, my friend\nFine, and how are you doing, amigo?";
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
+      expect(tools.some((tool) => tool.name === "ignore_message")).toBe(false);
+      expect(prompt).toContain("direct_answer");
+      const tool = tools.find((tool) => tool.name === "direct_answer");
+      if (!tool) throw new Error("direct_answer missing");
+      await tool.execute("answer", { sourceTs: "100.1", requestIndex: 1, answer }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(replies).toEqual([answer]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(await db.listSlackThreadTasks(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("unsubscribes and suppresses late research even after a later mention", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    const research = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", sourceUserId: "U1", requestIndex: 1, request: "Find A", quote: "A" })).task;
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "Stop bothering this thread" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      const tool = tools.find((tool) => tool.name === "unsubscribe_thread");
+      if (!tool) throw new Error("unsubscribe_thread missing");
+      await tool.execute("stop", { sourceTs: "100.2" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(await db.hasSlackThread(key)).toBe(false);
+      expect((await db.claimSlackResearchTask())?.id).toBe(research.id);
+      await db.completeSlackResearchTask(research.id, "Late answer");
+      await coordinator.wake(key);
+      expect(replies).toEqual([]);
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+      await db.followSlackThread(key, "100.4");
+      await db.recordSlackMessage(key, "100.4");
+      await db.markSlackMessagesProcessed(key, ["100.4"]);
+      expect(await db.hasSlackThread(key)).toBe(true);
+      await coordinator.wake(key);
+      expect(replies).toEqual([]);
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("handles a newer mention after unsubscribe in the same pending batch", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    await db.recordSlackMessage(key, "100.2");
+    await db.recordSlackMessage(key, "100.25");
+    await db.followSlackThread(key, "100.3");
+    await db.recordSlackMessage(key, "100.3");
+    await db.followSlackThread(key, "100.4");
+    await db.recordSlackMessage(key, "100.4");
+    const { api, replies } = makeApi([
+      { ts: "100.2", user: "U1", text: "Stop bothering this thread" },
+      { ts: "100.25", user: "U2", text: "This is addressed to somebody else" },
+      { ts: "100.3", user: "U1", text: "<@UBOT> hello again" },
+      { ts: "100.4", user: "U1", text: "<@UBOT> and how are you?" },
+    ]);
+    let runs = 0;
+    const batches: string[][] = [];
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
+      runs++;
+      if (!task.request) throw new Error("Coordinator request missing");
+      batches.push(JSON.parse(task.request).messages.map((message: { ts: string }) => message.ts));
+      const name = runs === 1 ? "unsubscribe_thread" : "direct_answer";
+      const tool = tools.find((tool) => tool.name === name);
+      if (!tool) throw new Error(`${name} missing`);
+      await tool.execute("call", runs === 1 ? { sourceTs: "100.2" }
+        : { sourceTs: "100.3", requestIndex: 1, answer: "Hello again, amigo!" }, undefined, undefined, {} as never);
+      if (runs !== 1) await tool.execute("call-2", { sourceTs: "100.4", requestIndex: 1, answer: "I'm all good, my friend" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(runs).toBe(2);
+      expect(batches[1]).toEqual(["100.3", "100.4"]);
+      expect(replies).toEqual(["Hello again, amigo!", "I'm all good, my friend"]);
+      expect(await db.hasSlackThread(key)).toBe(true);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
   it("abandons a pending edit whose original message was deleted and continues with later replies", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
@@ -62,12 +463,12 @@ describe("Slack coordinator", () => {
         if (oldest === "100.1" && latest === "100.1") return [];
         throw new Error(`Unexpected Slack read ${oldest}/${latest}`);
       }),
-      reply: vi.fn(),
+      reply: vi.fn().mockResolvedValue("reply-1"),
     } as unknown as SlackThreadApi;
     const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
-      const ignore = tools.find((tool) => tool.name === "ignore_message");
-      if (!ignore) throw new Error("ignore_message missing");
-      await ignore.execute("ignore", { sourceTs: "100.3", reason: "test" }, undefined, undefined, {} as never);
+      const answer = tools.find((tool) => tool.name === "direct_answer");
+      if (!answer) throw new Error("direct_answer missing");
+      await answer.execute("ignore", { sourceTs: "100.3", requestIndex: 1, answer: "Acknowledged" }, undefined, undefined, {} as never);
     } });
     try {
       await coordinator.wake(key);
@@ -92,16 +493,16 @@ describe("Slack coordinator", () => {
         ];
         throw new Error(`Unexpected Slack read ${oldest}/${latest}`);
       }),
-      reply: vi.fn(),
+      reply: vi.fn().mockResolvedValue("reply-1"),
     } as unknown as SlackThreadApi;
     const batches: string[][] = [];
     const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
       if (!task.request) throw new Error("Coordinator request missing");
       const messages = (JSON.parse(task.request) as { messages: Array<{ ts: string }> }).messages;
       batches.push(messages.map((message) => message.ts));
-      const ignore = tools.find((tool) => tool.name === "ignore_message");
-      if (!ignore) throw new Error("ignore_message missing");
-      for (const message of messages) await ignore.execute(`ignore-${message.ts}`, { sourceTs: message.ts, reason: "test" }, undefined, undefined, {} as never);
+      const answer = tools.find((tool) => tool.name === "direct_answer");
+      if (!answer) throw new Error("direct_answer missing");
+      for (const message of messages) await answer.execute(`ignore-${message.ts}`, { sourceTs: message.ts, requestIndex: 1, answer: "Acknowledged" }, undefined, undefined, {} as never);
     } });
     try {
       await coordinator.wake(key);
@@ -219,15 +620,15 @@ describe("Slack coordinator", () => {
     const api = { readThread: vi.fn(async () => {
       await db.recordSlackMessage(key, "100.800000");
       return thread;
-    }), reply: vi.fn() } as unknown as SlackThreadApi;
+    }), reply: vi.fn().mockResolvedValue("reply-1") } as unknown as SlackThreadApi;
     const batches: string[][] = [];
     const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
       if (!task.request) throw new Error("Coordinator request missing");
       const messages = (JSON.parse(task.request) as { messages: Array<{ ts: string }> }).messages;
       batches.push(messages.map((message) => message.ts));
-      const ignore = tools.find((tool) => tool.name === "ignore_message");
-      if (!ignore) throw new Error("ignore_message missing");
-      for (const message of messages) await ignore.execute(`ignore-${message.ts}`, { sourceTs: message.ts, reason: "test" }, undefined, undefined, {} as never);
+      const answer = tools.find((tool) => tool.name === "direct_answer");
+      if (!answer) throw new Error("direct_answer missing");
+      for (const message of messages) await answer.execute(`ignore-${message.ts}`, { sourceTs: message.ts, requestIndex: 1, answer: "Acknowledged" }, undefined, undefined, {} as never);
     } });
     try {
       await coordinator.wake(key);
@@ -251,16 +652,16 @@ describe("Slack coordinator", () => {
     }
   });
 
-  it("processes a message only after an explicit no-task decision", async () => {
+  it("responds to a conversational message without creating a task", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
     const { api } = makeApi([{ ts: "100.1", user: "U1", text: "Thanks" }]);
     const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
-      expect(prompt).toContain("entire message is clearly non-actionable for Bear Metal");
-      const ignore = tools.find((tool) => tool.name === "ignore_message");
-      if (!ignore) throw new Error("ignore_message missing");
-      expect(ignore.description).toContain("entire message is clearly non-actionable for Bear Metal");
-      await ignore.execute("ignore", { sourceTs: "100.1", reason: "No request" }, undefined, undefined, {} as never);
+      expect(prompt).toContain("Those messages must receive a response or action");
+      const answer = tools.find((tool) => tool.name === "direct_answer");
+      if (!answer) throw new Error("direct_answer missing");
+      expect(answer.description).toContain("verbatim");
+      await answer.execute("ignore", { sourceTs: "100.1", requestIndex: 1, answer: "You're welcome" }, undefined, undefined, {} as never);
     } });
     try {
       await coordinator.wake(key);
@@ -321,7 +722,7 @@ describe("Slack coordinator", () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
     const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Change A and explain B" }]);
-    vi.mocked(api.reply).mockRejectedValueOnce(new Error("Slack unavailable"));
+    vi.mocked(api.reply).mockRejectedValueOnce(new SlackThreadReplyRejectedError("Slack rate limit rejected reply"));
     const create = vi.fn(async () => ({ id: "A", url: "https://linear.app/ticket/A", identifier: "A" }));
     const coordinator = makeCoordinator({
       db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn() },

@@ -38,9 +38,11 @@ describe("agent run API", () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     try {
-      await db.startAgentRun({ id: "coord-1", type: "coordinator", slack: { workspaceId: "T1", channelId: "C1", threadTs: "100.0", sourceTs: "101.0" } }, "anthropic", "claude");
+      const input = JSON.stringify({ messages: [{ ts: "101.0", text: "How are you?" }] });
+      const output = JSON.stringify({ replies: ["I'm all good, my friend"], decision: "Requests processed." });
+      await db.startAgentRun({ id: "coord-1", type: "coordinator", request: input, slack: { workspaceId: "T1", channelId: "C1", threadTs: "100.0", sourceTs: "101.0" } }, "anthropic", "claude");
       await db.recordAgentTrace("coord-1", "assistant_text", JSON.stringify({ text: "Ignored local test" }));
-      await db.finishAgentRun("coord-1", null);
+      await db.finishAgentRun("coord-1", null, undefined, output);
       const app = createApp(db, 5, {} as LinearSource);
       expect((await request(app).get("/api/agent-runs?page=0")).status).toBe(400);
       const list = await request(app).get("/api/agent-runs");
@@ -48,6 +50,7 @@ describe("agent run API", () => {
       expect(list.body.items[0]).toMatchObject({ id: "coord-1", type: "coordinator", status: "succeeded" });
       const detail = await request(app).get("/api/agent-runs/coord-1");
       expect(detail.status).toBe(200);
+      expect(detail.body.run).toMatchObject({ request: "Slack thread coordination", inputJson: input, resultJson: output });
       expect(detail.body.trace).toMatchObject([{ kind: "assistant_text", contentJson: JSON.stringify({ text: "Ignored local test" }) }]);
     } finally {
       await db.close();

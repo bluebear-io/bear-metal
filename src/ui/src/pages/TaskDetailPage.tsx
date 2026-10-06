@@ -117,6 +117,33 @@ const TaskSummary = ({ run }: { run: AgentRunSummary }) => {
   </Section>;
 };
 
+const TaskInputOutput = ({ run, trace }: { run: AgentRunSummary; trace: AgentTraceEvent[] }) => {
+  let input = run.type === "coordinator" ? run.inputJson : run.request;
+  if (run.type === "coordinator" && run.inputJson) {
+    const payload = JSON.parse(run.inputJson) as { messages?: Array<{ text: string }>; resultTaskId?: string; request?: string; answer?: string };
+    if (payload.messages) input = payload.messages.map((message) => message.text).join("\n\n");
+    else if (payload.resultTaskId) input = payload.request && payload.answer
+      ? `${payload.request}\n\n${payload.answer}` : `Review research result for task ${payload.resultTaskId}`;
+  }
+  let output: string | null = null;
+  if (run.resultJson) {
+    const result = JSON.parse(run.resultJson) as { answer?: string; replies?: string[]; decision?: string };
+    output = run.type === "research" ? result.answer ?? null
+      : result.replies?.join("\n\n") || result.decision || showJson(run.resultJson);
+  } else {
+    const assistant = trace.filter((event) => event.kind === "assistant_text");
+    if (assistant.length > 0) output = assistant.map((event) => traceContent(event.contentJson)).join("\n\n");
+  }
+  return <Section title="Input / output">
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div><h3 className="text-sm font-medium text-text-secondary">Input</h3>
+        {input ? <CopyableBlock content={input} tall /> : <p className="text-sm text-text-muted">No input recorded.</p>}</div>
+      <div><h3 className="text-sm font-medium text-text-secondary">Output</h3>
+        {output ? <CopyableBlock content={output} tall /> : <p className="text-sm text-text-muted">No output recorded yet.</p>}</div>
+    </div>
+  </Section>;
+};
+
 const ExecutionDetail = () => {
   const { id } = useParams();
   const query = useAgentRunDetail(id ?? "");
@@ -129,6 +156,7 @@ const ExecutionDetail = () => {
     <PageHeader title={title}><RefreshButton busy={query.isFetching} onClick={() => { void query.refetch(); }} /></PageHeader>
     <QueryBoundary isLoading={query.isLoading} error={query.error} isEmpty={!run} emptyLabel="Task detail not found">
       {run && detail && <div className="flex flex-col gap-6">
+        {run.type !== "coding" && <TaskInputOutput run={run} trace={detail.trace} />}
         <TaskSummary run={run} />
         {run.request && run.type !== "coordinator" && <Section title="Request"><CopyableBlock content={run.request} tall /></Section>}
         {run.inputJson && <Section title="Task input"><CopyableBlock content={showJson(run.inputJson)} tall /></Section>}
