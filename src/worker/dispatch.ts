@@ -1,4 +1,5 @@
 import { mkdir, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig } from "../customization/types.js";
 import { buildTask, customizeAndResolve } from "../customization/task.js";
@@ -25,6 +26,7 @@ const logger = createLogger({
 });
 
 export interface DispatchInput {
+  signal?: AbortSignal;
   state: DispatchState;
   ticketId: string;
   runId: string;
@@ -49,9 +51,10 @@ export interface DispatchInput {
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const { state, ticketId, integrations, prs } = input;
   validateDispatchInputs(state, ticketId, prs);
+  input.signal?.throwIfAborted();
 
   const { github, linear, commentStore } = integrations;
-  const workspaceDir = workspaceForTicket(ticketId);
+  const workspaceDir = resolve(workspaceForTicket(ticketId), randomUUID());
 
   logger.debug({ ticketId, state, prCount: prs.length, workspaceDir }, "dispatch starting");
 
@@ -86,6 +89,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const ticketAttachments = ticket.attachments ?? [];
   const task = buildTask({ state, iteration: input.iteration, ticket, attachments: ticketAttachments, prs, pullRequests });
   const { customization, llm } = await customizeAndResolve(input.config, task);
+  input.signal?.throwIfAborted();
   logger.info({ ticketId, provider: llm.provider, model: llm.model }, "selected task LLM");
 
   await mkdir(workspaceDir, { recursive: true });
@@ -94,6 +98,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     workspaceDir,
     githubToken,
     buildWorkspace: customization.buildWorkspace,
+    signal: input.signal,
   }).then((r) => {
     logger.debug({ workspaceDir, agentWorkdir: r.agentWorkdir }, "workspace builder completed");
     input.onWorkspaceBuilt?.(r.agentWorkdir);
@@ -101,6 +106,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   });
 
   try {
+  input.signal?.throwIfAborted();
   const linearAccessToken = await linear.getAccessToken();
   const evidenceAttachments = await downloadTicketAttachments(
     ticketAttachments.filter((attachment) => URL.canParse(attachment.url) && new URL(attachment.url).hostname === "uploads.linear.app"),
@@ -118,7 +124,9 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     evidenceAttachments,
   };
 
+  input.signal?.throwIfAborted();
   await linear.moveTicketToInProgress(ticketId);
+  input.signal?.throwIfAborted();
   logger.debug({ ticketId }, "linear ticket moved to in progress");
 
   const botEmail = `${botIdentity.userNumericId}+${botIdentity.login}@users.noreply.github.com`;
@@ -136,6 +144,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
     const result = await runPiWorker({
       context, github, linear, commentStore, gitEnv, agentToolGateway: input.agentToolGateway,
+      signal: input.signal,
       runId: input.runId,
       systemPrompt: customization.additionalSystemPrompt,
       onAgentStarted: input.onAgentStarted,

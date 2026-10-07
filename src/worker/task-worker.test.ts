@@ -11,6 +11,35 @@ const config = { llmProviders: {}, customizeTask: vi.fn() } as unknown as BearMe
 const agentToolGateway = { availableTools: () => [], execute: vi.fn() };
 
 describe("TaskWorker", () => {
+  it("aborts dispatch and discards its result after losing the lease", async () => {
+    const db = new FakeDb(taskRecord({}));
+    vi.spyOn(db, "heartbeat").mockImplementation(async (taskId, workerId) => {
+      db.heartbeats.push({ taskId, workerId });
+      return false;
+    });
+    let captured: (DispatchInput & { signal?: AbortSignal }) | undefined;
+    let finish!: (result: DispatchResult) => void;
+    const done = new Promise<DispatchResult>((resolve) => { finish = resolve; });
+    const worker = new TaskWorker({
+      logger, db: db as unknown as DbClient, integrations: makeIntegrations(),
+      concurrency: 1, pollIntervalMs: 60_000, workerId: "old-worker",
+      runDispatch: async (input) => { captured = input; return done; },
+      heartbeatIntervalMs: 10, maxReclaims: 3, agentId: undefined, config,
+    });
+    await worker.tick();
+    try {
+      await vi.waitFor(() => expect(db.heartbeats.length).toBeGreaterThan(0));
+      expect(captured?.signal?.aborted).toBe(true);
+    } finally {
+      finish({ status: "done", prs: [] });
+      await worker.stop();
+    }
+    expect(db.completed).toEqual([]);
+    expect(db.upsertRunSucceededCalls).toEqual([]);
+    expect(db.upsertRunCrashedCalls).toEqual([]);
+    expect(db.markCrashedCalls).toEqual([]);
+  });
+
   it("acquires a task with its worker id and writes the dispatch result", async () => {
     const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ input }));

@@ -156,10 +156,25 @@ export class SlackCoordinator {
           return activation.directMessage || mentionTimestamps.has(edit?.originalTs ?? ts)
             || (edit?.text ?? message?.text ?? "").includes(`<@${this.input.botUserId}>`);
         }));
-        const payload = buildCoordinatorPayload(key, batch, thread, await this.input.db.listSlackThreadTasks(key), edits, requiredResponses);
-        const decisions = new Set<string>();
+        const tasks = await this.input.db.listSlackThreadTasks(key);
+        const payload = buildCoordinatorPayload(key, batch, thread, tasks, edits, requiredResponses);
+        const persistedReplies = await this.input.db.listSlackCoordinationReplies(key, batch);
+        const completedActions = tasks.filter((task) => batch.includes(task.sourceTs) && task.state !== "failed"
+          && (task.type === "research" || task.ticketId !== null && task.ticketUrl !== null
+            && (!task.delegateToBearMetal || task.ackState !== null || task.coordinatedAt !== null
+              || persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))));
+        const savedReplies = persistedReplies.filter((reply) =>
+          !reply.taskId || completedActions.some((task) => task.id === reply.taskId));
+        // Restore saved actions without bypassing the agent: the same message may contain unfinished requests.
+        const decisions = new Set([...completedActions.map((task) => task.sourceTs), ...savedReplies.map((reply) => reply.sourceTs)]);
         let unsubscribeTs: string | undefined;
-        const replies: CoordinationReply[] = [];
+        const replies: CoordinationReply[] = [...savedReplies];
+        for (const task of completedActions) {
+          if (task.ackState !== null || task.supersededBy || savedReplies.some((reply) => reply.taskId === task.id)) continue;
+          replies.push({ sourceTs: task.sourceTs, requestIndex: task.requestIndex, taskId: task.id,
+            kind: task.state === "canceled" ? "task_cancel" : "task_ack",
+            text: this.taskAcknowledgmentText(task, task.type === "coding" ? task.request.slice(0, 100) : undefined) });
+        }
         const sourceUsers = new Map(thread.filter((message) => message.user).map((message) => [message.ts, message.user!]));
         for (const edit of edits) sourceUsers.set(edit.ts, edit.user);
         const tools = this.createTools(key, batch, undefined, decisions, sourceUsers, undefined, (reply) => replies.push(reply), (sourceTs) => { unsubscribeTs = sourceTs; }, requiredResponses);
@@ -272,7 +287,7 @@ export class SlackCoordinator {
       const { task, created } = await this.input.db.createSlackTask({ ...args, sourceUserId });
       if (!created) {
         if (task.ackState === null && task.state === "awaiting_coordination") {
-          queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: task.id, text: this.taskAcknowledgmentText(task, args.slackTitle) });
+          queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: task.id, text: this.taskAcknowledgmentText(task, args.slackTitle) }));
         } else if (task.ackState === null && task.state !== "failed" && task.state !== "canceled") {
           throw new Error(`Cannot replay coding task ${task.id} in state ${task.state}`);
         }
@@ -285,7 +300,7 @@ export class SlackCoordinator {
         // Delegating before attachment lets the scheduler create a second row for this ticket.
         if (task.delegateToBearMetal) await this.input.linear.delegateSlackCodingTicket(ticket.id);
         const updated = await getTask(task.id);
-        queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, args.slackTitle) });
+        queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, args.slackTitle) }));
         decisions?.add(args.sourceTs);
         return { task: updated, created: true };
       } catch (err) {
@@ -296,7 +311,7 @@ export class SlackCoordinator {
     const createResearch = async (args: NewSlackTask) => {
       const sourceUserId = requireSource(args.sourceTs);
       const result = await this.input.db.createSlackTask({ ...args, sourceUserId });
-      if (result.task.ackState === null) queueReply?.({ sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: result.task.id, text: this.taskAcknowledgmentText(result.task) });
+      if (result.task.ackState === null) queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: result.task.id, text: this.taskAcknowledgmentText(result.task) }));
       if (result.created) this.input.wakeResearch();
       decisions?.add(args.sourceTs);
       return result;
@@ -580,7 +595,7 @@ export class SlackCoordinator {
             }
           }
           const updated = await getTask(next.task.id);
-          if (updated.ackState === null) queueReply?.({ sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) });
+          if (updated.ackState === null) queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) }));
           decisions?.add(params.sourceTs);
           return { content: [{ type: "text", text: JSON.stringify(await getTask(next.task.id)) }], details: {} };
         },

@@ -9,16 +9,22 @@ export async function runWorkspaceBuilder(input: {
   githubToken: string;
   buildWorkspace: TaskCustomization["buildWorkspace"];
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<CloneScriptResult> {
+  input.signal?.throwIfAborted();
   const agentWorkdir = resolve(input.workspaceDir, "agent");
   await rm(agentWorkdir, { recursive: true, force: true });
   await mkdir(agentWorkdir, { recursive: true });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error("Workspace builder timed out")), input.timeoutMs ?? WORKSPACE_BUILD_TIMEOUT_MS);
+  const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
   try {
     await Promise.race([
-      Promise.resolve(input.buildWorkspace({ workspacePath: agentWorkdir, signal: controller.signal })),
-      new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true })),
+      Promise.resolve(input.buildWorkspace({ workspacePath: agentWorkdir, signal })),
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
     ]);
     if ((await readdir(agentWorkdir)).length === 0) {
       throw new Error(`Workspace builder completed but workspacePath is empty: ${agentWorkdir}`);
@@ -31,6 +37,7 @@ export async function runWorkspaceBuilder(input: {
   }
   let netrcDir: string | undefined;
   try {
+    signal.throwIfAborted();
     netrcDir = await mkdtemp(resolve(tmpdir(), "bear-metal-git-"));
     await chmod(netrcDir, 0o700);
     await writeFile(resolve(netrcDir, ".netrc"), `machine github.com login x-access-token password ${input.githubToken}\n`, { mode: 0o600 });

@@ -56,12 +56,37 @@ describe("dispatch customization boundary", () => {
     expect(state.calls.indexOf("in-progress")).toBeLessThan(state.calls.indexOf("pi"));
   });
 
+  it("keeps simultaneous attempts for one ticket in separate checkouts", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const built: string[] = [];
+    const config = makeConfig();
+    const original = config.customizeTask;
+    config.customizeTask = async (task) => {
+      const customization = await original(task);
+      return { ...customization, buildWorkspace: async ({ workspacePath }) => {
+        built.push(workspacePath);
+        await writeFile(join(workspacePath, "README.md"), workspacePath);
+        await gate;
+      } };
+    };
+    const attempts = [dispatch(config), dispatch(config)];
+    try {
+      await vi.waitFor(() => expect(built).toHaveLength(2));
+      expect(new Set(built).size).toBe(2);
+    } finally {
+      release();
+      await Promise.all(attempts);
+    }
+    for (const path of built) await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("removes the entire owned task workspace on success and Pi failure", async () => {
     await dispatch(makeConfig());
-    await expect(stat(join(root, "ABC-1"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(state.piInputs[0].context.cloneScript.workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
     state.throwPi = true;
     await expect(dispatch(makeConfig())).rejects.toThrow("pi failed");
-    await expect(stat(join(root, "ABC-1"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(state.piInputs[1].context.cloneScript.workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("uses context attachments once, exposes all to customization, and downloads only Linear uploads", async () => {

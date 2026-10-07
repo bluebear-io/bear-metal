@@ -7,6 +7,37 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SqlDbClient, type BmStatus, type DispatchTaskInput, type TicketInput } from "./client.js";
 
 const dbPaths: string[] = [];
+describe("worker lease fencing", () => {
+  it("rejects a previous lease when the same worker reacquires the task", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      const first = await db.acquireNext("worker");
+      await db.markCrashed(task.id, "worker", 3);
+      const second = await db.acquireNext("worker");
+      expect(await db.heartbeat(task.id, "worker", first!.reclaimCount)).toBe(false);
+      await expect(db.complete(task.id, { status: "done", prs: [] }, "worker", first!.reclaimCount)).rejects.toThrow();
+      expect(await db.heartbeat(task.id, "worker", second!.reclaimCount)).toBe(true);
+      await db.complete(task.id, { status: "done", prs: [] }, "worker", second!.reclaimCount);
+    } finally {
+      await db.close();
+    }
+  });
+  it("rejects completion from the worker replaced after a reclaim", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("old-worker");
+      await db.markCrashed(task.id, "old-worker", 3);
+      const replacement = await db.acquireNext("new-worker");
+      expect(replacement?.id).toBe(task.id);
+      await expect(db.complete(task.id, { status: "done", prs: [] }, "old-worker")).rejects.toThrow("Cannot complete task");
+      await db.complete(task.id, { status: "pending", prs: [] }, "new-worker");
+    } finally {
+      await db.close();
+    }
+  });
+});
 type QueryFn = (sql: string, params?: unknown[]) => Promise<unknown[]>;
 
 async function makeDb(): Promise<SqlDbClient> {
