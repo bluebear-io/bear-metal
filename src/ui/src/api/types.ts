@@ -2,6 +2,86 @@ export interface Config {
   maxIterations: number;
 }
 
+export interface AgentRunSummary {
+  id: string;
+  type: "coding" | "coordinator" | "research";
+  status: string;
+  slackState: string | null;
+  slackQuote: string | null;
+  slackReplyTs: string | null;
+  attemptNumber: number;
+  workerId: string | null;
+  stopReason: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  contextJson: string | null;
+  inputJson: string | null;
+  ticketId: string | null;
+  ticketIdentifier: string | null;
+  ticketTitle: string | null;
+  ticketUrl: string | null;
+  slackWorkspaceId: string | null;
+  slackChannelId: string | null;
+  slackThreadTs: string | null;
+  slackSourceTs: string | null;
+  request: string | null;
+  resultJson: string | null;
+  error: string | null;
+  provider: string | null;
+  modelName: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  createdAt: string;
+}
+
+export interface AgentTraceEvent {
+  id: string;
+  runId: string;
+  kind: string;
+  contentJson: string;
+  createdAt: string;
+}
+
+export interface AgentRunDetail {
+  run: AgentRunSummary;
+  trace: AgentTraceEvent[];
+}
+
+export interface TaskListItem {
+  id: string;
+  type: "coding" | "research" | "coordinator";
+  ticketId: string | null;
+  identifier: string | null;
+  title: string;
+  ticketUrl: string | null;
+  status: string;
+  runStatus: string | null;
+  attemptCount: number;
+  workerId: string | null;
+  assigneeName: string | null;
+  updatedAt: string;
+  createdAt: string;
+  pullRequests: TicketListItem["pullRequests"];
+}
+
+export interface TaskListQuery {
+  q?: string;
+  type?: TaskListItem["type"];
+  statuses?: string[];
+  workerId?: string;
+  label?: string;
+  stopReason?: StopReason;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface TaskListResponse {
+  tasks: TaskListItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
@@ -25,7 +105,7 @@ export interface Ticket {
   assigneeName: string | null;
 }
 
-export type StopReason = "completed" | "timeout" | "crash" | "error";
+export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error";
 
 export interface LatestRunSummary {
   id: string;
@@ -136,7 +216,7 @@ export interface Run {
   contextJson: string | null;
   startedAt: string | null;
   endedAt: string | null;
-  stopReason: "completed" | "timeout" | "crash" | "error" | null;
+  stopReason: StopReason | null;
   error: string | null;
   promptTokens: number | null;
   completionTokens: number | null;

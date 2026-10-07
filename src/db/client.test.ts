@@ -176,3 +176,26 @@ describe("SqlDbClient listTickets", () => {
     }
   });
 });
+
+describe("SqlDbClient PR notification claims", () => {
+  it("lets only one owner claim a task/PR send until it is released, delivered, or its lease expires", async () => {
+    const db = await makeDb();
+    const first = await db.claimPrNotifications("task-1", ["acme/widgets#7", "acme/widgets#8"], 60_000);
+    expect(first.claimed).toEqual(["acme/widgets#7", "acme/widgets#8"]);
+    expect((await db.claimPrNotifications("task-1", ["acme/widgets#7"], 60_000)).claimed).toEqual([]);
+
+    await db.releasePrNotificationClaim("task-1", "acme/widgets#7", "someone-else");
+    expect((await db.claimPrNotifications("task-1", ["acme/widgets#7"], 60_000)).claimed).toEqual([]);
+    await db.releasePrNotificationClaim("task-1", "acme/widgets#7", first.claimToken);
+    const retry = await db.claimPrNotifications("task-1", ["acme/widgets#7"], 60_000);
+    expect(retry.claimed).toEqual(["acme/widgets#7"]);
+
+    expect((await db.claimPrNotifications("task-1", ["acme/widgets#8"], 0)).claimed).toEqual(["acme/widgets#8"]);
+
+    await db.markPrNotificationDelivered("task-1", "acme/widgets#7");
+    expect((await db.claimPrNotifications("task-1", ["acme/widgets#7"], 0)).claimed).toEqual([]);
+    expect(await db.listDeliveredPrNotifications("task-1")).toEqual(new Set(["acme/widgets#7"]));
+    expect((await db.claimPrNotifications("task-2", ["acme/widgets#7"], 60_000)).claimed).toEqual(["acme/widgets#7"]);
+    await db.close();
+  });
+});

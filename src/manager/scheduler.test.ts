@@ -15,6 +15,7 @@ import {
 import { SqlDbClient, type DbClient, type DispatchTaskInput } from "../db/client.js";
 import { Scheduler, type GitHubSource, type LinearSource, type TicketHandler } from "./scheduler.js";
 import { makeTicket } from "./test-helpers.js";
+import type { SlackIntegration } from "../shared/index.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 const dbs: DbClient[] = [];
@@ -46,10 +47,12 @@ function status(
   humanTookOver = false,
   hasMergeConflicts = false,
   hasActionableIssueComments = false,
+  checksInProgress = false,
 ): PullRequestStatus {
   return {
     pr,
     testsFailed,
+    checksInProgress,
     hasActionableUnresolvedComments,
     hasActionableIssueComments,
     hasMergeConflicts,
@@ -59,6 +62,7 @@ function status(
       headSha: "deadbeef",
       failedCheckRuns: [],
       failedStatuses: [],
+      checksInProgress,
       unresolvedReviewThreads: [],
       reviewThreads: [],
       issueComments: [],
@@ -92,6 +96,7 @@ afterEach(async () => {
 
 class FakeLinear implements LinearSource {
   handBackCalls: string[] = [];
+  getTicketCalls: string[] = [];
   constructor(
     private readonly todo: Ticket[],
     /** Override what getTicket returns per id or identifier. */
@@ -104,6 +109,7 @@ class FakeLinear implements LinearSource {
     return this.todo;
   }
   async getTicket(id: string): Promise<Ticket> {
+    this.getTicketCalls.push(id);
     return (
       this.refreshed[id] ??
       this.refreshed[id.toLowerCase()] ??
@@ -183,6 +189,9 @@ function buildScheduler(deps: {
   taskStaleAfterMs?: number;
   taskMaxReclaims?: number;
   maxIterations?: number;
+  slack?: SlackIntegration;
+  ciDeferralMaxMs?: number;
+  shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>;
 }): Scheduler {
   return new Scheduler({
     logger,
@@ -195,7 +204,38 @@ function buildScheduler(deps: {
     taskStaleAfterMs: deps.taskStaleAfterMs ?? 60_000,
     taskMaxReclaims: deps.taskMaxReclaims ?? 3,
     maxIterations: deps.maxIterations ?? 50,
+    slack: deps.slack,
+    ciDeferralMaxMs: deps.ciDeferralMaxMs,
+    shouldRetryCi: deps.shouldRetryCi,
   });
+}
+
+type MaxIterationsSpy = Parameters<SlackIntegration["notifyMaxIterationsReached"]>[0];
+
+class FakeSlack {
+  needsInputCalls: Array<Parameters<SlackIntegration["notifyNeedsInput"]>[0]> = [];
+  pullRequestCalls: Array<Parameters<SlackIntegration["notifyPullRequest"]>[0]> = [];
+  maxIterationsCalls: Array<MaxIterationsSpy> = [];
+  pullRequestError: Error | null = null;
+  pullRequestErrorForKind: Set<"opened" | "updated" | "validation_delayed"> = new Set();
+  maxIterationsError: Error | null = null;
+  async notifyPullRequest(n: Parameters<SlackIntegration["notifyPullRequest"]>[0]): Promise<void> {
+    this.pullRequestCalls.push(n);
+    if (this.pullRequestErrorForKind.has(n.kind)) {
+      throw new Error(`slack chat.postMessage failed for kind ${n.kind}`);
+    }
+    if (this.pullRequestError) throw this.pullRequestError;
+  }
+  async notifyNeedsInput(n: Parameters<SlackIntegration["notifyNeedsInput"]>[0]): Promise<void> {
+    this.needsInputCalls.push(n);
+  }
+  async notifyMaxIterationsReached(n: MaxIterationsSpy): Promise<void> {
+    this.maxIterationsCalls.push(n);
+    if (this.maxIterationsError) throw this.maxIterationsError;
+  }
+  asIntegration(): SlackIntegration {
+    return this as unknown as SlackIntegration;
+  }
 }
 
 describe("Scheduler.tick stale-task recovery", () => {
@@ -451,6 +491,32 @@ describe("Scheduler.tick", () => {
     expect(await db.countTracked()).toBe(1);
     expect(handler.handled.at(-1)?.ticket.id).toBe("a");
     expect(handler.handled.at(-1)?.prs[0]?.number).toBe(7);
+  });
+
+  it("lets a CI policy ignore a non-actionable check without suppressing other failures", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const ciStatus = status(openPr(7), true);
+    ciStatus.context.failedCheckRuns.push({ checkRun: { name: "manual-gate" }, annotations: [] });
+    const github = new FakeGitHub({ status: ciStatus });
+    const handler = new RecordingHandler(db);
+    const seen: string[] = [];
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }), github, db, handler, concurrency: 1,
+      shouldRetryCi: async (result) => {
+        seen.push(result.pr.url);
+        return result.context.failedStatuses.length > 0 || result.context.failedCheckRuns.some(({ checkRun }) => (checkRun as { name: string }).name !== "manual-gate");
+      },
+    });
+
+    await scheduler.tick();
+    expect(handler.handled).toHaveLength(0);
+    expect(seen).toEqual([ciStatus.pr.url]);
+
+    ciStatus.context.failedCheckRuns.push({ checkRun: { name: "unit-tests" }, annotations: [] });
+    await scheduler.tick();
+    await scheduler.stop();
+    expect(handler.triggers).toEqual(["ci_failure"]);
   });
 
   it("re-dispatches an iteration with actionable unresolved review comments", async () => {
@@ -736,7 +802,7 @@ describe("Scheduler.tick", () => {
   });
 });
 
-describe("Scheduler.tick stale waiting_for_human reconciliation", () => {
+describe("Scheduler.tick waiting_for_human admission", () => {
   async function seedStaleWaitingForHuman(
     db: DbClient,
     ticketId: string,
@@ -747,112 +813,6 @@ describe("Scheduler.tick stale waiting_for_human reconciliation", () => {
     await db.setTicketStatus(issueId, "waiting_for_human");
     await db.setSlotStatus(issueId, "released");
   }
-
-  it("marks Bear Metal status completed and keeps slot released when Linear ticket is Done", async () => {
-    const db = await makeDb();
-    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
-    const terminal = makeTicket("a", { status: { name: "Done", type: "completed" } });
-    const linear = new FakeLinear([], { a: terminal });
-    const github = new FakeGitHub();
-    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    expect(await db.readTicketStatus("a")).toEqual({ status: "completed", notify: 0 });
-    expect(await db.countTracked()).toBe(0);
-    // No GitHub call needed when Linear is already terminal.
-    expect(github.statusCalls).toHaveLength(0);
-    // Linear terminal path must not hand back.
-    expect(linear.handBackCalls).toEqual([]);
-  });
-
-  it("marks Bear Metal status completed when Linear ticket is Canceled", async () => {
-    const db = await makeDb();
-    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
-    const canceled = makeTicket("a", { status: { name: "Canceled", type: "canceled" } });
-    const linear = new FakeLinear([], { a: canceled });
-    const scheduler = buildScheduler({
-      linear,
-      github: new FakeGitHub(),
-      db,
-      handler: new RecordingHandler(db),
-      concurrency: 1,
-    });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    expect(await db.readTicketStatus("a")).toEqual({ status: "completed", notify: 0 });
-    expect(await db.countTracked()).toBe(0);
-    expect(linear.handBackCalls).toEqual([]);
-  });
-
-  it("completes and hands back when all known PRs are resolved and at least one was merged", async () => {
-    const db = await makeDb();
-    await seedStaleWaitingForHuman(db, "A", [prRef(7), prRef(8)]);
-    const linear = new FakeLinear([], { a: makeTicket("a") });
-    const github = new FakeGitHub({
-      statusByNumber: {
-        7: status(openPr(7, { merged: true, state: "closed" })),
-        8: status(openPr(8, { state: "closed" })),
-      },
-    });
-    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    expect(await db.readTicketStatus("a")).toEqual({ status: "completed", notify: 0 });
-    expect(linear.handBackCalls).toEqual(["a"]);
-  });
-
-  it("does not complete a multi-PR ticket while any PR is still open", async () => {
-    const db = await makeDb();
-    await seedStaleWaitingForHuman(db, "A", [prRef(7), prRef(8)]);
-    const linear = new FakeLinear([], { a: makeTicket("a") });
-    const github = new FakeGitHub({
-      statusByNumber: {
-        7: status(openPr(7, { merged: true, state: "closed" })),
-        8: status(openPr(8)),
-      },
-    });
-    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
-    expect(linear.handBackCalls).toEqual([]);
-  });
-
-  it("keeps waiting_for_human when the only known PR is closed-unmerged and Linear is non-terminal", async () => {
-    const db = await makeDb();
-    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
-    const linear = new FakeLinear([], { a: makeTicket("a") });
-    const github = new FakeGitHub({ status: status(openPr(7, { state: "closed" })) });
-    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
-    expect(linear.handBackCalls).toEqual([]);
-  });
-
-  it("keeps waiting_for_human when the known PR is clean and open and Linear is non-terminal", async () => {
-    const db = await makeDb();
-    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
-    const linear = new FakeLinear([], { a: makeTicket("a") });
-    const github = new FakeGitHub({ status: status(openPr(7)) });
-    const scheduler = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1 });
-
-    await scheduler.tick();
-    await scheduler.stop();
-
-    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
-    expect(linear.handBackCalls).toEqual([]);
-  });
 
   it("re-admits and dispatches a waiting_for_human ticket when re-delegated to bear-metal", async () => {
     const db = await makeDb();
@@ -872,16 +832,19 @@ describe("Scheduler.tick stale waiting_for_human reconciliation", () => {
 
   it("does not re-admit a waiting_for_human ticket that is not re-delegated", async () => {
     const db = await makeDb();
-    await seedStaleWaitingForHuman(db, "A", []);
+    await seedStaleWaitingForHuman(db, "A", [prRef(7)]);
     const ticket = makeTicket("a");
     const linear = new FakeLinear([], { a: ticket });
+    const github = new FakeGitHub({ status: status(openPr(7, { merged: true, state: "closed" })) });
     const handler = new RecordingHandler(db);
-    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), db, handler, concurrency: 1 });
+    const scheduler = buildScheduler({ linear, github, db, handler, concurrency: 1 });
 
     await scheduler.tick();
     await scheduler.stop();
 
     expect(handler.handled).toHaveLength(0);
+    expect(linear.getTicketCalls).toEqual([]);
+    expect(github.statusCalls).toEqual([]);
     expect(await db.countTracked()).toBe(0);
     expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
   });
@@ -901,5 +864,565 @@ describe("Scheduler.tick stale waiting_for_human reconciliation", () => {
     expect(handler.handled).toHaveLength(1);
     expect(await db.countTracked()).toBe(1);
     expect(await db.readTicketStatus("a")).toEqual({ status: "in_progress", notify: 0 });
+  });
+});
+
+describe("Scheduler.tick CI-in-progress deferral", () => {
+  async function seedValidatingSlot(db: DbClient, ticketId: string, pr: PullRequestRef): Promise<void> {
+    await seedCompletedTask(db, { state: "new", ticketId, prs: [] }, { status: "done", prs: [pr] });
+    // Simulate the worker having transitioned the ticket to `validating` with a pending notify.
+    await db.setTicketStatus(ticketId.toLowerCase(), "validating", true);
+  }
+
+  it("keeps the ticket in validating and skips the Slack DM while CI is still in progress", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    // testsFailed=false, checksInProgress=true — the PR has a check_run still queued/in_progress.
+    const github = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, true),
+    });
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github, db, handler, concurrency: 1, slack: slack.asIntegration() });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+    expect(await db.countTracked()).toBe(1);
+  });
+
+  it("clears the deferral timer on re-dispatch so the watchdog does not count worker execution time", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    // Mutable holder so we can flip the PR status across ticks against a single Scheduler instance.
+    let currentStatus: PullRequestStatus = status(openPr(7), false, false, false, false, false, true);
+    class MutableGitHub extends FakeGitHub {
+      override async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
+        this.statusCalls.push(ref.number);
+        return currentStatus;
+      }
+    }
+    const github = new MutableGitHub();
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    // Tiny watchdog: any stale timer surviving into the next deferral would fire the DM.
+    const scheduler = buildScheduler({
+      linear, github, db, handler, concurrency: 1, slack: slack.asIntegration(), ciDeferralMaxMs: 10,
+    });
+
+    // Tick 1: CI in progress → deferred, timer T0 recorded.
+    await scheduler.tick();
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+
+    // Simulate wall-clock elapsing past the watchdog window.
+    await new Promise((r) => setTimeout(r, 25));
+
+    // Tick 2: CI failed → scheduler re-dispatches the ticket. The deferral timer must be cleared here.
+    currentStatus = status(openPr(7), true, false, false, false, false, false);
+    await scheduler.tick();
+    expect(handler.handled).toHaveLength(1);
+    // Complete the re-dispatched worker run so the slot is done again with the same PR.
+    const inFlight = await db.listTracked();
+    const runId = inFlight[0]?.latestTask.id;
+    expect(runId).toBeDefined();
+    const acquired = await db.acquireNext("test-worker");
+    expect(acquired?.id).toBe(runId);
+    await db.complete(runId!, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", true);
+
+    // Tick 3: CI back in progress on the fresh commit. If the timer had not been cleared on
+    // tick 2, ageMs would exceed ciDeferralMaxMs and the watchdog would fire the Slack DM.
+    currentStatus = status(openPr(7), false, false, false, false, false, true);
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+  });
+
+  it("fires the Slack DM exactly once on the next tick after CI settles green", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, true),
+    });
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    const scheduler1 = buildScheduler({ linear, github, db, handler, concurrency: 1, slack: slack.asIntegration() });
+    await scheduler1.tick();
+    await scheduler1.stop();
+
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+
+    const githubSettled = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, false),
+    });
+    const scheduler2 = buildScheduler({ linear, github: githubSettled, db, handler, concurrency: 1, slack: slack.asIntegration() });
+    await scheduler2.tick();
+    await scheduler2.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("opened");
+    expect(slack.pullRequestCalls[0]?.ticketId).toBe("A");
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+
+  it("does not mark a PR as notified or record user_notified when notifyPullRequest throws", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    // Mark the slot as validating with a pending notify so refreshTrackedTickets attempts the DM.
+    await db.setTicketStatus("a", "validating", true);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    // CI is settled and no checks in progress — scheduler will attempt the "opened" DM.
+    const github = new FakeGitHub({ status: status(openPr(7), false, false, false, false, false, false) });
+    const slack = new FakeSlack();
+    slack.pullRequestError = new Error("slack chat.postMessage HTTP error 500");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("opened");
+    // Failure path: no PR notified_at, no user_notified event.
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).toBeNull();
+    const detail = await db.getTicketDetail("a");
+    expect(detail?.events.some((e) => e.type === "user_notified")).toBe(false);
+    // The transition to waiting_for_human still succeeded, but the failed send keeps the notification pending.
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 1 });
+  });
+
+  it('a Slack failure on "opened" does not skip "updated" notifications for other PRs on the same ticket', async () => {
+    const db = await makeDb();
+    // Seed a slot whose completed task produced two PRs: #7 and #8.
+    await seedCompletedTask(
+      db,
+      { state: "new", ticketId: "A", prs: [] },
+      { status: "done", prs: [prRef(7), prRef(8)] },
+    );
+    // #8 has already been notified previously → will be classified as "updated".
+    // #7 has never been notified → will be classified as "opened".
+    // markPrNotified is an UPDATE, so the pull_requests row must exist first.
+    for (const n of [7, 8]) {
+      await db.upsertPullRequest(`acme/widgets#${n}`, "a", {
+        number: n,
+        title: `PR #${n}`,
+        headRef: `feature/pr-${n}`,
+        state: "open",
+        draft: false,
+        merged: false,
+        url: `https://github.com/acme/widgets/pull/${n}`,
+        lastRunId: null,
+        reviewThreadsJson: "[]",
+      });
+    }
+    await db.markPrNotified("acme/widgets#8");
+    await db.setTicketStatus("a", "validating", true);
+
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      statusByNumber: {
+        7: status(openPr(7), false, false, false, false, false, false),
+        8: status(openPr(8), false, false, false, false, false, false),
+      },
+    });
+    const slack = new FakeSlack();
+    // Only the "opened" kind throws; "updated" must still be attempted and its side-effects must run.
+    slack.pullRequestErrorForKind.add("opened");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    // Both kinds must have been attempted despite "opened" throwing.
+    const kinds = slack.pullRequestCalls.map((c) => c.kind).sort();
+    expect(kinds).toEqual(["opened", "updated"]);
+    // #7 (opened kind, threw) must NOT be marked notified and must NOT record user_notified.
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).toBeNull();
+    // #8 (updated kind, succeeded) retains its existing notified_at timestamp.
+    expect(await db.getPrNotifiedAt("acme/widgets#8")).not.toBeNull();
+    const detail = await db.getTicketDetail("a");
+    const notifiedEvents = detail?.events.filter((e) => e.type === "user_notified") ?? [];
+    // Exactly one user_notified event — for the successful "updated" send on PR #8.
+    expect(notifiedEvents).toHaveLength(1);
+    expect(notifiedEvents[0]?.summary).toContain("#8");
+  });
+
+  it("sends a validation-delayed notification when the CI deferral threshold expires", async () => {
+    const db = await makeDb();
+    await seedValidatingSlot(db, "A", prRef(7));
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({
+      status: status(openPr(7), false, false, false, false, false, true),
+    });
+    const slack = new FakeSlack();
+    const scheduler = buildScheduler({
+      linear,
+      github,
+      db,
+      handler: new RecordingHandler(db),
+      concurrency: 1,
+      slack: slack.asIntegration(),
+      ciDeferralMaxMs: 10,
+    });
+
+    await scheduler.tick();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("validation_delayed");
+    expect(slack.pullRequestCalls[0]?.validationWaitMinutes).toBe(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+});
+
+describe("Scheduler.tick max-iteration notification", () => {
+  it("does not record a user_notified event when the max-iterations Slack post fails", async () => {
+    const db = await makeDb();
+    for (let i = 0; i < 5; i++) {
+      await seedCompletedTask(
+        db,
+        { state: "new", ticketId: "A", prs: [] },
+        { status: "done", prs: [prRef(7)] },
+      );
+    }
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7), true, false) });
+    const slack = new FakeSlack();
+    slack.maxIterationsError = new Error("slack chat.postMessage HTTP error 500");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, maxIterations: 5, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.maxIterationsCalls).toHaveLength(1);
+    // notifyMaxIterationsReached rejected — no user_notified event must exist for this ticket.
+    const detail = await db.getTicketDetail("a");
+    expect(detail?.events.some((e) => e.type === "user_notified")).toBe(false);
+    // Ticket status still moves to failed and slot still released — the failure is only about the notify side-effects.
+    expect(await db.readTicketStatus("a")).toEqual({ status: "failed", notify: 0 });
+  });
+
+  it("sends a Slack notification when a ticket hits the iteration cap", async () => {
+    const db = await makeDb();
+    for (let i = 0; i < 5; i++) {
+      await seedCompletedTask(
+        db,
+        { state: "new", ticketId: "A", prs: [] },
+        { status: "done", prs: [prRef(7)] },
+      );
+    }
+    const linear = new FakeLinear([], { A: makeTicket("a", { title: "Ticket A" }) });
+    const github = new FakeGitHub({ status: status(openPr(7), true, false) });
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({
+      linear, github, db, handler, concurrency: 1, maxIterations: 5, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(handler.handled).toHaveLength(0);
+    expect(linear.commentAndHandBackCalls).toHaveLength(1);
+    expect(slack.maxIterationsCalls).toHaveLength(1);
+    expect(slack.maxIterationsCalls[0]?.ticketId).toBe("A");
+    expect(slack.maxIterationsCalls[0]?.maxIterations).toBe(5);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "failed", notify: 0 });
+  });
+});
+
+describe("Scheduler.tick pending PR notification intent", () => {
+  async function seedPrRow(db: DbClient, ticketId: string, n: number): Promise<void> {
+    await db.upsertPullRequest(`acme/widgets#${n}`, ticketId, {
+      number: n,
+      title: `PR #${n}`,
+      headRef: `feature/pr-${n}`,
+      state: "open",
+      draft: false,
+      merged: false,
+      url: openPr(n).url,
+      lastRunId: null,
+      reviewThreadsJson: "[]",
+    });
+  }
+
+  async function userNotifiedSummaries(db: DbClient, ticketId: string): Promise<string[]> {
+    const detail = await db.getTicketDetail(ticketId);
+    return (detail?.events ?? []).filter((e) => e.type === "user_notified").map((e) => e.summary);
+  }
+
+  it("delivers the PR notification when the worker completes during the awaited Linear lookup", async () => {
+    const db = await makeDb();
+    const task = await db.enqueue({ state: "new", ticketId: "A", prs: [], trigger: "new", ticketIssueId: "a" });
+    expect((await db.acquireNext("worker-1"))?.id).toBe(task.id);
+    await db.setTicketStatus("a", "in_progress");
+
+    let completedDuringLookup = false;
+    class RacingLinear extends FakeLinear {
+      override async getTicket(id: string): Promise<Ticket> {
+        if (!completedDuringLookup) {
+          completedDuringLookup = true;
+          await db.complete(task.id, { status: "done", prs: [prRef(7)], notifyOnComplete: true });
+          await db.setTicketStatus("a", "validating", true);
+        }
+        return super.getTicket(id);
+      }
+    }
+    const linear = new RacingLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7)) });
+    const slack = new FakeSlack();
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+
+    expect(completedDuringLookup).toBe(true);
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("opened");
+    expect(slack.pullRequestCalls[0]?.prs.map((p) => p.pr.number)).toEqual([7]);
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).not.toBeNull();
+    expect(await userNotifiedSummaries(db, "a")).toHaveLength(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(await userNotifiedSummaries(db, "a")).toHaveLength(1);
+  });
+
+  it("does not transition or consume the intent while the latest task is still running", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", true);
+    // A newer iteration task was acquired, but its worker has not yet flipped the status.
+    const next = await db.enqueue({ state: "iteration", ticketId: "A", prs: [prRef(7)], trigger: "delegated_back", ticketIssueId: "a" });
+    expect((await db.acquireNext("worker-1"))?.id).toBe(next.id);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const slack = new FakeSlack();
+    const scheduler = buildScheduler({
+      linear, github: new FakeGitHub({ status: status(openPr(7)) }), db,
+      handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "validating", notify: 1 });
+  });
+
+  it("keeps the intent pending after a failed send and delivers it on a later poll", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", true);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ status: status(openPr(7)) });
+    const slack = new FakeSlack();
+    slack.pullRequestError = new Error("slack chat.postMessage HTTP error 500");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).toBeNull();
+    expect(await userNotifiedSummaries(db, "a")).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 1 });
+
+    slack.pullRequestError = null;
+    await scheduler.tick();
+    expect(slack.pullRequestCalls).toHaveLength(2);
+    expect(slack.pullRequestCalls[1]?.kind).toBe("opened");
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).not.toBeNull();
+    expect(await userNotifiedSummaries(db, "a")).toHaveLength(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+    expect(slack.pullRequestCalls).toHaveLength(2);
+  });
+
+  it("retries only the PR group that failed after a partial multi-PR send failure", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7), prRef(8)] });
+    for (const n of [7, 8]) await seedPrRow(db, "a", n);
+    await db.markPrNotified("acme/widgets#8");
+    await db.setTicketStatus("a", "validating", true);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ statusByNumber: { 7: status(openPr(7)), 8: status(openPr(8)) } });
+    const slack = new FakeSlack();
+    slack.pullRequestErrorForKind.add("opened");
+    const scheduler = buildScheduler({
+      linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    expect(slack.pullRequestCalls.map((c) => c.kind).sort()).toEqual(["opened", "updated"]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 1 });
+
+    slack.pullRequestErrorForKind.clear();
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(3);
+    expect(slack.pullRequestCalls[2]?.kind).toBe("opened");
+    expect(slack.pullRequestCalls[2]?.prs.map((p) => p.pr.number)).toEqual([7]);
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).not.toBeNull();
+    const summaries = await userNotifiedSummaries(db, "a");
+    expect(summaries).toHaveLength(2);
+    expect(summaries.filter((s) => s.includes("#7"))).toHaveLength(1);
+    expect(summaries.filter((s) => s.includes("#8"))).toHaveLength(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+
+  it("sends a pending notification once when a second poll overlaps a slow send", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", true);
+    let releaseFirstSend!: () => void;
+    const firstSendHeld = new Promise<void>((resolve) => { releaseFirstSend = resolve; });
+    let firstSendStarted!: () => void;
+    const firstSendEntered = new Promise<void>((resolve) => { firstSendStarted = resolve; });
+    class SlowSlack extends FakeSlack {
+      override async notifyPullRequest(n: Parameters<SlackIntegration["notifyPullRequest"]>[0]): Promise<void> {
+        await super.notifyPullRequest(n);
+        if (this.pullRequestCalls.length === 1) {
+          firstSendStarted();
+          await firstSendHeld;
+        }
+      }
+    }
+    const slack = new SlowSlack();
+    const scheduler = buildScheduler({
+      linear: new FakeLinear([], { A: makeTicket("a") }), github: new FakeGitHub({ status: status(openPr(7)) }), db,
+      handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    const firstTick = scheduler.tick();
+    await firstSendEntered;
+    await scheduler.tick();
+    releaseFirstSend();
+    await firstTick;
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(await userNotifiedSummaries(db, "a")).toHaveLength(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+
+  it("does not resend an accepted group after a restart following a partial multi-PR failure", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7), prRef(8)] });
+    for (const n of [7, 8]) await seedPrRow(db, "a", n);
+    await db.markPrNotified("acme/widgets#8");
+    await db.setTicketStatus("a", "validating", true);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const github = new FakeGitHub({ statusByNumber: { 7: status(openPr(7)), 8: status(openPr(8)) } });
+    const slack = new FakeSlack();
+    slack.pullRequestErrorForKind.add("opened");
+    const first = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration() });
+
+    await first.tick();
+    await first.stop();
+    expect(slack.pullRequestCalls.map((c) => c.kind).sort()).toEqual(["opened", "updated"]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 1 });
+
+    slack.pullRequestErrorForKind.clear();
+    const restarted = buildScheduler({ linear, github, db, handler: new RecordingHandler(db), concurrency: 1, slack: slack.asIntegration() });
+    await restarted.tick();
+    await restarted.tick();
+
+    expect(slack.pullRequestCalls).toHaveLength(3);
+    expect(slack.pullRequestCalls[2]?.kind).toBe("opened");
+    expect(slack.pullRequestCalls[2]?.prs.map((p) => p.pr.number)).toEqual([7]);
+    const summaries = await userNotifiedSummaries(db, "a");
+    expect(summaries.filter((s) => s.includes("#7"))).toHaveLength(1);
+    expect(summaries.filter((s) => s.includes("#8"))).toHaveLength(1);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+
+    const next = await db.enqueue({ state: "iteration", ticketId: "A", prs: [prRef(7), prRef(8)], trigger: "delegated_back", ticketIssueId: "a" });
+    expect((await db.acquireNext("worker-1"))?.id).toBe(next.id);
+    await db.complete(next.id, { status: "done", prs: [prRef(7), prRef(8)], notifyOnComplete: true });
+    await db.setTicketStatus("a", "validating", true);
+    await restarted.tick();
+    await restarted.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(4);
+    expect(slack.pullRequestCalls[3]?.kind).toBe("updated");
+    expect(slack.pullRequestCalls[3]?.prs.map((p) => p.pr.number).sort()).toEqual([7, 8]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
+  });
+
+  it("keeps the intent pending when Slack is not configured", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", true);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    const scheduler = buildScheduler({
+      linear, github: new FakeGitHub({ status: status(openPr(7)) }), db, handler: new RecordingHandler(db), concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.getPrNotifiedAt("acme/widgets#7")).toBeNull();
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 1 });
+  });
+
+  it("preserves the intent across a bot-review iteration and delivers it once the iteration completes", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", true);
+    const linear = new FakeLinear([], { A: makeTicket("a") });
+    let currentStatus = status(openPr(7), false, true);
+    class MutableGitHub extends FakeGitHub {
+      override async getPullRequestStatus(ref: PullRequestRef): Promise<PullRequestStatus> {
+        this.statusCalls.push(ref.number);
+        return currentStatus;
+      }
+    }
+    const slack = new FakeSlack();
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({
+      linear, github: new MutableGitHub(), db, handler, concurrency: 1, slack: slack.asIntegration(),
+    });
+
+    await scheduler.tick();
+    expect(handler.handled).toHaveLength(1);
+    expect(slack.pullRequestCalls).toEqual([]);
+    expect(await db.readTicketStatus("a")).toEqual({ status: "in_progress", notify: 1 });
+
+    const [slot] = await db.listTracked();
+    expect((await db.acquireNext("worker-1"))?.id).toBe(slot?.latestTask.id);
+    await db.complete(slot!.latestTask.id, { status: "done", prs: [prRef(7)] });
+    await db.setTicketStatus("a", "validating", false);
+
+    currentStatus = status(openPr(7));
+    await scheduler.tick();
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(slack.pullRequestCalls).toHaveLength(1);
+    expect(slack.pullRequestCalls[0]?.kind).toBe("opened");
+    expect(await db.readTicketStatus("a")).toEqual({ status: "waiting_for_human", notify: 0 });
   });
 });

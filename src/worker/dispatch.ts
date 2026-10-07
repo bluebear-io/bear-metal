@@ -1,6 +1,11 @@
 import { mkdir, rm } from "node:fs/promises";
+import { resolve } from "node:path";
+import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig } from "../customization/types.js";
+import { buildTask, customizeAndResolve } from "../customization/task.js";
+import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
+import { downloadTicketAttachments } from "./attachments.js";
 import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
@@ -22,15 +27,14 @@ const logger = createLogger({
 export interface DispatchInput {
   state: DispatchState;
   ticketId: string;
+  runId: string;
   prs: PullRequestRef[];
   integrations: WorkerIntegrations;
-  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
-  workspaceBuilderCommand?: string;
-  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
-  workspaceBuilderPath?: string;
-  /** Custom system prompt content injected into the agent prompt. */
-  systemPrompt?: string | null;
+  agentToolGateway?: AgentToolGatewayLike;
+  config: BearMetalConfig;
+  iteration: number;
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
+  onTraceEvent?: (kind: string, content: Record<string, unknown>) => void;
   onWorkspaceBuilding?: () => void;
   onWorkspaceBuilt?: (agentWorkdir: string) => void;
   onAgentStarted?: (payload: {
@@ -40,10 +44,6 @@ export interface DispatchInput {
     prs: PullRequestRef[];
     prompt: string;
   }) => void;
-  maxWorkerTimeMs: number;
-  maxWorkerTokens: number;
-  llmProvider: string;
-  llmApiKey: string;
 }
 
 export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
@@ -52,8 +52,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   const { github, linear, commentStore } = integrations;
   const workspaceDir = workspaceForTicket(ticketId);
-
-  await mkdir(workspaceDir, { recursive: true });
 
   logger.debug({ ticketId, state, prCount: prs.length, workspaceDir }, "dispatch starting");
 
@@ -77,34 +75,38 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     }),
   ]);
 
+  const pullRequests = commentStore
+    ? await Promise.all(rawPullRequests.map(async (ctx, idx) => {
+      if (ctx.issueComments.length === 0) return ctx;
+      const completedIds = await commentStore.getCompleted(prs[idx]!);
+      if (completedIds.size === 0) return ctx;
+      return { ...ctx, issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)), completedIssueComments: ctx.issueComments.filter((c) => completedIds.has(c.id)) };
+    }))
+    : rawPullRequests;
+  const ticketAttachments = ticket.attachments ?? [];
+  const task = buildTask({ state, iteration: input.iteration, ticket, attachments: ticketAttachments, prs, pullRequests });
+  const { customization, llm } = await customizeAndResolve(input.config, task);
+  logger.info({ ticketId, provider: llm.provider, model: llm.model }, "selected task LLM");
+
+  await mkdir(workspaceDir, { recursive: true });
   input.onWorkspaceBuilding?.();
   const cloneScript = await runWorkspaceBuilder({
     workspaceDir,
     githubToken,
-    ticket: ticket.issue,
-    builderCommand: input.workspaceBuilderCommand,
-    builderPath: input.workspaceBuilderPath,
+    buildWorkspace: customization.buildWorkspace,
   }).then((r) => {
     logger.debug({ workspaceDir, agentWorkdir: r.agentWorkdir }, "workspace builder completed");
     input.onWorkspaceBuilt?.(r.agentWorkdir);
     return r;
   });
 
-  const pullRequests = commentStore
-    ? await Promise.all(
-        rawPullRequests.map(async (ctx, idx) => {
-          const pr = prs[idx]!;
-          if (ctx.issueComments.length === 0) return ctx;
-          const completedIds = await commentStore.getCompleted(pr);
-          if (completedIds.size === 0) return ctx;
-          return {
-            ...ctx,
-            issueComments: ctx.issueComments.filter((c) => !completedIds.has(c.id)),
-            completedIssueComments: ctx.issueComments.filter((c) => completedIds.has(c.id)),
-          };
-        }),
-      )
-    : rawPullRequests;
+  try {
+  const linearAccessToken = await linear.getAccessToken();
+  const evidenceAttachments = await downloadTicketAttachments(
+    ticketAttachments.filter((attachment) => URL.canParse(attachment.url) && new URL(attachment.url).hostname === "uploads.linear.app"),
+    `${cloneScript.agentWorkdir}/.git/bear-metal-artifacts`,
+    linearAccessToken,
+  );
 
   const context: WorkerInputContext = {
     state,
@@ -113,6 +115,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     ticket,
     pullRequests,
     cloneScript,
+    evidenceAttachments,
   };
 
   await linear.moveTicketToInProgress(ticketId);
@@ -120,7 +123,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
 
   const botEmail = `${botIdentity.userNumericId}+${botIdentity.login}@users.noreply.github.com`;
   const gitEnv: NodeJS.ProcessEnv = {
-    HOME: cloneScript.netrcDir,
+    GIT_ASKPASS: resolve(cloneScript.netrcDir, "askpass.sh"),
+    GIT_TERMINAL_PROMPT: "0",
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
     GIT_CONFIG_VALUE_0: "git@github.com:",
@@ -130,18 +134,29 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     GIT_COMMITTER_EMAIL: botEmail,
   };
 
-  logger.debug({ ticketId, workspaceDir }, "starting pi worker session");
-  try {
-    const result = await runPiWorker({ context, github, linear, commentStore, gitEnv, systemPrompt: input.systemPrompt, onAgentStarted: input.onAgentStarted, onToolCallProgress: input.onToolCallProgress, maxWorkerTimeMs: input.maxWorkerTimeMs, maxWorkerTokens: input.maxWorkerTokens, llmProvider: input.llmProvider, llmApiKey: input.llmApiKey, prs });
+    const result = await runPiWorker({
+      context, github, linear, commentStore, gitEnv, agentToolGateway: input.agentToolGateway,
+      runId: input.runId,
+      systemPrompt: customization.additionalSystemPrompt,
+      onAgentStarted: input.onAgentStarted,
+      onToolCallProgress: input.onToolCallProgress,
+      onTraceEvent: input.onTraceEvent,
+      maxWorkerTimeMs: customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS,
+      maxWorkerTokens: customization.limits?.maxTokens ?? DEFAULT_MAX_TOKENS,
+      llmProvider: llm.provider,
+      llmApiKey: llm.apiKey,
+      llmModel: llm.model,
+      prs,
+    });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
     await rm(cloneScript.netrcDir, { recursive: true, force: true });
     try {
-      await rm(cloneScript.agentWorkdir, { recursive: true, force: true });
-      logger.info({ ticketId, agentWorkdir: cloneScript.agentWorkdir }, "removed agent workdir");
+      await rm(cloneScript.workspaceDir, { recursive: true, force: true });
+      logger.info({ ticketId, workspaceDir: cloneScript.workspaceDir }, "removed task workspace");
     } catch (error) {
-      logger.error({ ticketId, agentWorkdir: cloneScript.agentWorkdir, error }, "failed to remove agent workdir");
+      logger.error({ ticketId, workspaceDir: cloneScript.workspaceDir, error }, "failed to remove task workspace");
     }
   }
 }

@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import PQueue from "p-queue";
+import type { BearMetalConfig } from "../customization/types.js";
+import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 
 import type { Logger } from "../shared/index.js";
 import type { DbClient, TaskRecord } from "../db/client.js";
 import { dispatch, type DispatchInput, type DispatchResult } from "./dispatch.js";
 import type { WorkerIntegrations } from "./types.js";
 import { generateWorkerName } from "./worker-name.js";
+import { AgentTraceWriter } from "./trace.js";
 
 export type DispatchRunner = (input: DispatchInput) => Promise<DispatchResult>;
 
@@ -13,24 +16,16 @@ export interface TaskWorkerDeps {
   logger: Logger;
   db: DbClient;
   integrations: WorkerIntegrations;
+  agentToolGateway?: AgentToolGatewayLike;
   concurrency: number;
   pollIntervalMs: number;
   workerId?: string;
-  /** Inline bash script content for the workspace builder. Mutually exclusive with workspaceBuilderPath. */
-  workspaceBuilderCommand?: string;
-  /** Path to an executable workspace builder script. Mutually exclusive with workspaceBuilderCommand. */
-  workspaceBuilderPath?: string;
-  /** Custom system prompt content injected into the agent prompt. */
-  systemPrompt?: string | null;
+  config: BearMetalConfig;
   runDispatch?: DispatchRunner;
   heartbeatIntervalMs: number;
   maxReclaims: number;
   /** Linear user id the manager runs as; used to detect when a task hands the ticket back. */
   agentId: string | undefined;
-  maxWorkerTimeMs: number;
-  maxWorkerTokens: number;
-  llmProvider: string;
-  llmApiKey: string;
 }
 
 export class TaskWorker {
@@ -38,21 +33,16 @@ export class TaskWorker {
   private readonly logger: Logger;
   private readonly db: DbClient;
   private readonly integrations: WorkerIntegrations;
+  private readonly agentToolGateway?: AgentToolGatewayLike;
   private readonly queue: PQueue;
   private readonly concurrency: number;
   private readonly pollIntervalMs: number;
-  private readonly workspaceBuilderCommand: string | undefined;
-  private readonly workspaceBuilderPath: string | undefined;
-  private readonly systemPrompt: string | null | undefined;
+  private readonly config: BearMetalConfig;
   private readonly runDispatch: DispatchRunner;
   private readonly startedAtMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly maxReclaims: number;
   private readonly agentId: string | undefined;
-  private readonly maxWorkerTimeMs: number;
-  private readonly maxWorkerTokens: number;
-  private readonly llmProvider: string;
-  private readonly llmApiKey: string;
   private timer: NodeJS.Timeout | undefined;
 
   constructor(deps: TaskWorkerDeps) {
@@ -60,20 +50,15 @@ export class TaskWorker {
     this.logger = deps.logger;
     this.db = deps.db;
     this.integrations = deps.integrations;
+    this.agentToolGateway = deps.agentToolGateway;
     this.concurrency = deps.concurrency;
     this.pollIntervalMs = deps.pollIntervalMs;
-    this.workspaceBuilderCommand = deps.workspaceBuilderCommand;
-    this.workspaceBuilderPath = deps.workspaceBuilderPath;
-    this.systemPrompt = deps.systemPrompt;
+    this.config = deps.config;
     this.runDispatch = deps.runDispatch ?? dispatch;
     this.startedAtMs = Date.now();
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs;
     this.maxReclaims = deps.maxReclaims;
     this.agentId = deps.agentId;
-    this.maxWorkerTimeMs = deps.maxWorkerTimeMs;
-    this.maxWorkerTokens = deps.maxWorkerTokens;
-    this.llmProvider = deps.llmProvider;
-    this.llmApiKey = deps.llmApiKey;
     this.queue = new PQueue({ concurrency: deps.concurrency });
   }
 
@@ -166,21 +151,17 @@ export class TaskWorker {
         this.logger.error({ err, taskId: task.id, workerId: this.workerId }, "task heartbeat failed");
       });
     }, this.heartbeatIntervalMs);
+    const traceWriter = new AgentTraceWriter(this.db, task.id);
     let result: DispatchResult;
     try {
       result = await this.runDispatch({
         ...task.input!,
+        runId: task.id,
         integrations: this.integrations,
-        workspaceBuilderCommand: this.workspaceBuilderCommand,
-        workspaceBuilderPath: this.workspaceBuilderPath,
-        systemPrompt: this.systemPrompt,
-        maxWorkerTimeMs: this.maxWorkerTimeMs,
-        maxWorkerTokens: this.maxWorkerTokens,
-        llmProvider: this.llmProvider,
-        llmApiKey: this.llmApiKey,
-        onToolCallProgress: (calls) => {
-          void this.db.upsertToolCalls(task.id, JSON.stringify(calls));
-        },
+        agentToolGateway: this.agentToolGateway,
+        config: this.config,
+        iteration: task.iterationNumber,
+        onTraceEvent: (kind, content) => traceWriter.record(kind, content),
         onWorkspaceBuilding: () => {
           void this.db.recordEvent({
             id: randomUUID(),
@@ -239,6 +220,7 @@ export class TaskWorker {
       throw err;
     } finally {
       clearInterval(heartbeat);
+      await traceWriter.flush();
     }
     await this.db.complete(task.id, result);
 

@@ -1,7 +1,98 @@
-import { describe, expect, it } from "vitest";
-import { assertRepoRootInWorkspace, validateWorkspaceBashCommand } from "./workspace-guard.js";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { assertRepoRootInWorkspace, createWorkspaceGuardedTools, validateWorkspaceBashCommand } from "./workspace-guard.js";
 
 describe("workspace guard", () => {
+  it("reads files when the workspace root is a symlinked path", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "bear-metal-aliased-workspace-"));
+    const workspace = join(parent, "workspace");
+    const alias = join(parent, "alias");
+    try {
+      await mkdir(workspace);
+      await writeFile(join(workspace, "source.txt"), "source contents");
+      await symlink(workspace, alias, process.platform === "win32" ? "junction" : "dir");
+      const tools = createWorkspaceGuardedTools(alias);
+      const ls = tools.find((tool) => tool.name === "ls");
+      if (!ls) throw new Error("ls tool missing");
+      const list = ls.execute as unknown as (id: string, params: { path: string }) => Promise<{ content: Array<{ text: string }> }>;
+      expect((await list("root", { path: "." })).content[0]?.text).toContain("source.txt");
+      const read = tools.find((tool) => tool.name === "read");
+      if (!read) throw new Error("read tool missing");
+      const execute = read.execute as unknown as (id: string, params: { path: string }) => Promise<{ content: Array<{ text: string }> }>;
+      const result = await execute("canonical", { path: join(workspace, "source.txt") });
+      expect(result.content[0]?.text).toContain("source contents");
+      const write = tools.find((tool) => tool.name === "write");
+      if (!write) throw new Error("write tool missing");
+      await (write.execute as unknown as (id: string, params: { path: string; content: string }) => Promise<unknown>)(
+        "aliased-write",
+        { path: join(alias, "new.txt"), content: "written through alias" },
+      );
+      expect(await readFile(join(workspace, "new.txt"), "utf8")).toBe("written through alias");
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects research file reads outside the cloned workspace", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "bear-metal-research-workspace-"));
+    const outside = await mkdtemp(join(tmpdir(), "bear-metal-research-outside-"));
+    try {
+      const secret = join(outside, "secret.txt");
+      await writeFile(secret, "host secret");
+      await symlink(secret, join(workspace, "linked-secret.txt"));
+      const read = createWorkspaceGuardedTools(workspace).find((tool) => tool.name === "read");
+      if (!read) throw new Error("read tool missing");
+      const execute = read.execute as unknown as (id: string, params: { path: string }) => Promise<unknown>;
+      await expect(execute("absolute", { path: secret })).rejects.toThrow(/outside workspace/);
+      await expect(execute("symlink", { path: join(workspace, "linked-secret.txt") })).rejects.toThrow(/outside workspace/);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+  it("keeps language caches outside the disposable workspace", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bear-metal-home-test-"));
+    const workspace = await mkdtemp(join(tmpdir(), "bear-metal-workspace-test-"));
+    await mkdir(join(home, ".ssh"));
+    await writeFile(join(home, ".ssh", "id_rsa"), "private-key");
+    vi.stubEnv("HOME", home);
+    try {
+      const bash = createWorkspaceGuardedTools(workspace).find((tool) => tool.name === "bash");
+      expect(bash).toBeDefined();
+      await (bash!.execute as (id: string, params: { command: string }) => Promise<unknown>)("cache", { command: 'mkdir -p "$HOME/go/pkg/mod" "$HOME/.cache/pip" && printf go > "$HOME/go/pkg/mod/marker" && printf python > "$HOME/.cache/pip/marker"' });
+      const probe = await (bash!.execute as unknown as (id: string, params: { command: string }) => Promise<{ content: Array<{ text: string }> }>) ("probe", { command: 'test ! -e "$HOME/.ssh/id_rsa" && printf isolated' });
+      expect(probe.content[0]?.text).toContain("isolated");
+      await rm(workspace, { recursive: true, force: true });
+      expect(await readFile(join(home, ".bear-metal/cache-home/go/pkg/mod/marker"), "utf8")).toBe("go");
+      expect(await readFile(join(home, ".bear-metal/cache-home/.cache/pip/marker"), "utf8")).toBe("python");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(workspace, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+  it("recovers on a later shell command after cache home becomes creatable", async () => {
+    const home = await mkdtemp(join(tmpdir(), "bear-metal-home-recovery-test-"));
+    const workspace = await mkdtemp(join(tmpdir(), "bear-metal-workspace-recovery-test-"));
+    const blockedParent = join(home, ".bear-metal");
+    await writeFile(blockedParent, "blocked");
+    vi.stubEnv("HOME", home);
+    try {
+      const bash = createWorkspaceGuardedTools(workspace).find((tool) => tool.name === "bash");
+      expect(bash).toBeDefined();
+      const execute = bash!.execute as unknown as (id: string, params: { command: string }) => Promise<{ content: Array<{ text: string }> }>;
+      await expect(execute("blocked", { command: "printf ready" })).rejects.toThrow(/ENOTDIR|EEXIST/);
+      await rm(blockedParent);
+      const result = await execute("recovered", { command: "printf ready" });
+      expect(result.content[0]?.text).toContain("ready");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(workspace, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
   it("rejects repo roots outside the cloned workspace", () => {
     expect(() => assertRepoRootInWorkspace("/tmp/workspace/myrepo", "/tmp/workspace/myrepo/bear-metal")).not.toThrow();
     expect(() => assertRepoRootInWorkspace("/tmp/workspace/myrepo", "/Users/other/projects/bear-metal")).toThrow(

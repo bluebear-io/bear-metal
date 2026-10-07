@@ -10,8 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# BACKEND_PORT is needed by the shell to print the URL; DATABASE_URL is left to dotenv so
-# that the value in .env is respected without being shadowed by a shell export.
+# BACKEND_PORT is needed by the shell to print the URL.
 export BACKEND_PORT="${BACKEND_PORT:-3100}"
 
 # The UI is a separate npm package; install its deps on first run.

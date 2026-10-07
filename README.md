@@ -1,8 +1,6 @@
-<img src="logo.png" alt="Bear Metal" />
-
----
-
 # Bear Metal
+
+<img src="src/ui/public/logo-large.png" alt="Bear Metal" align="right" width="300" />
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml)
@@ -16,192 +14,223 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
 
 For a runtime overview — the scheduler loop, delegation model, and how bear-metal reacts to PR review — see [docs/how-it-works.md](docs/how-it-works.md).
 
-## Table of contents
+### Table of contents
 
 - [How to deploy](#how-to-deploy)
-- [Configuration](#configuration)
-  - [Environment variables](#environment-variables)
-  - [Workspace builder](#workspace-builder)
-  - [Worker environment builder](#worker-environment-builder)
-  - [Custom system prompt](#custom-system-prompt)
+- [Configuration module](#configuration-module)
+- [Task customization](#task-customization)
+- [Environment variables](#environment-variables)
+- [Custom runtime image](#custom-runtime-image)
 - [Quick guides](#quick-guides)
   - [GitHub App](#github-app)
   - [Linear](#linear)
   - [Anthropic](#anthropic)
   - [OpenAI](#openai)
   - [Google](#google)
+  - [Amazon Bedrock](#amazon-bedrock)
   - [Slack](#slack)
 - [Contributing & local dev](#contributing--local-dev)
 
+<div style="clear:both;">
+
 ## How to deploy
 
-1. Create a GitHub App and note your credentials — [GitHub App guide](#github-app)
-2. Create a Linear API token — [Linear guide](#linear)
-3. Get an API key from at least one LLM provider — [Anthropic](#anthropic) · [OpenAI](#openai) · [Google](#google)
-4. Define how bear-metal should clone your repository — [Workspace builder](#workspace-builder)
-5. *(optional)* Set up a persistent database — point `DATABASE_URL` at a PostgreSQL instance or a mounted SQLite file. Without this, bear-metal defaults to a local SQLite file that will be lost if the container restarts.
-6. *(optional)* Create a Slack app for PR notifications — [Slack guide](#slack)
-7. *(optional)* Write a custom system prompt to inject project-specific instructions — [Custom system prompt](#custom-system-prompt)
-8. Set up your environment variables — [full list](#environment-variables), example file at [`.env.example`](.env.example)
-9. Deploy via the [public image](https://ghcr.io/bluebear-io/bear-metal) (`ghcr.io/bluebear-io/bear-metal:latest`) or from source with `npm start`
+1. [Create GitHub Apps](#github-app).
+2. [Create Linear OAuth apps](#linear).
+3. Optionally [create Slack apps](#slack).
+4. Write a trusted [configuration module](#configuration-module) that supplies the required deterministic integrations, any optional agent integrations, enabled LLM providers, and task customization.
+5. Make that module available to the process and set `BEAR_METAL_CONFIG_FILE` to its path.
+6. Optionally configure persistent PostgreSQL in the module.
+7. Deploy the [public image](https://ghcr.io/bluebear-io/bear-metal) (`ghcr.io/bluebear-io/bear-metal:latest`) or run from source with `npm start`. Use a derived image or package-based configuration when the module needs third-party dependencies.
 
 ---
 
-## Configuration
+## Configuration module
 
-### Environment variables
+`BEAR_METAL_CONFIG_FILE` must point to an absolute or working-directory-relative `.js`, `.mjs`, `.ts`, or `.mts` ESM module. There is no default or discovery path. Bear Metal imports the module once at startup and validates its default export. Import and structural errors stop startup; task-hook, selected-provider, secret, and workspace errors fail the current attempt through the normal reclaim lifecycle.
 
-| Var | Required | Default | Purpose |
-|-----|----------|---------|---------|
-| `LINEAR_CLIENT_ID` | yes | — | Linear OAuth app client id; exchanged for an app-actor token via the `client_credentials` grant |
-| `LINEAR_CLIENT_SECRET` | yes | — | Linear OAuth app client secret (long-lived; the ~30-day app-actor token it mints is auto-refreshed) |
-| `LINEAR_OAUTH_SCOPES` | no | `read,write,app:assignable,app:mentionable` | Scopes for the app-actor token. Must stay stable — Linear revokes all app tokens when the scope set changes. `app:assignable` is required for Linear to allow delegating tickets to the agent |
-| `GITHUB_APP_ID` | yes | — | GitHub App ID (numeric) |
-| `GITHUB_APP_PRIVATE_KEY` | yes | — | App private key PEM (`\n` for newlines) |
-| `GITHUB_APP_INSTALLATION_ID` | yes | — | Installation ID (numeric) |
-| `WORKSPACE_BUILDER_COMMAND` | yes* | — | Inline bash to clone/setup workspace |
-| `WORKSPACE_BUILDER_PATH` | yes* | — | Path to workspace builder script |
-| `WORKER_ENVIRONMENT_BUILDER_COMMAND` | no*** | — | Inline bash run once at startup to prepare the worker environment |
-| `WORKER_ENVIRONMENT_BUILDER_PATH` | no*** | — | Path to a worker environment builder script |
-| `ANTHROPIC_API_KEY` | yes** | — | Anthropic API key |
-| `OPENAI_API_KEY` | yes** | — | OpenAI API key |
-| `GOOGLE_API_KEY` | yes** | — | Google API key |
-| `LLM_MODEL` | no | provider default | Override the model ID (e.g. `claude-sonnet-4-6`, `gpt-4o`) |
-| `SYSTEM_PROMPT_PATH` | no | — | Path to a custom system prompt file |
-| `SYSTEM_PROMPT` | no | — | Inline custom system prompt (mutually exclusive with `SYSTEM_PROMPT_PATH`) |
-| `DATABASE_URL` | no | `sqlite:./bear-metal.sqlite` | Task queue DB (`sqlite:<path>` or `postgres://…`) |
-| `WORKER_CONCURRENCY` | no | `5` | Max parallel tickets |
-| `POLL_INTERVAL_MS` | no | `60000` | Poll cadence (ms) |
-| `MAX_ITERATIONS` | no | `50` | Max agent cycles per ticket before handing back to human |
-| `MAX_WORKER_TIME_MS` | no | `7200000` | Max wall-clock time per session (2 h) |
-| `MAX_WORKER_TOKENS` | no | `20000000` | Max tokens per session (20 M) |
+The module is trusted deployment code. Bear Metal does not transpile it, install its dependencies, or sandbox it. Native TypeScript must use erasable syntax supported by Node.js 24.12+. A standalone file can use Node built-ins and global `fetch`; configurations that need packages should be deployed as an ordinary package or in a derived image so their imports resolve normally.
+
+[**Canonical configuration, task, and customization types →**](src/customization/types.ts)
+
+The default export supplies required Linear and GitHub settings, the key-based LLM provider registry, and `customizeTask`. Slack, database, `maxIterations`, `ciDeferralMaxMs`, `traceRetentionDays`, and `shouldRetryCi` are optional.
+
+`traceRetentionDays` is a positive integer and defaults to 14. Detailed prompts, assistant output, provider-visible thinking, and tool calls expire after that period; task and run metadata remain. The manager applies retention on startup and hourly. The Tasks dashboard includes coding tickets, research tasks, and coordinator executions.
+
+Secret getters are lazy and may read environment variables, files, workload APIs, or secret managers. Bear Metal owns the vendor clients and consumes each value only where the corresponding integration is used. `agentIntegrations` and each vendor inside it are optional and independent of the top-level deterministic integrations. Omitting an agent vendor means its tools are not shown to the coding agent. Omitting top-level `slack` disables notifications, while omitting database uses `sqlite:./data/bear-metal.sqlite`. `maxIterations` defaults to 50. `ciDeferralMaxMs` controls how long the manager waits for PR validation before sending a delayed-validation notification and defaults to 60 minutes.
+
+`shouldRetryCi(status)` receives each pull request's CI status and may return a boolean or a Promise of one: `true` dispatches another iteration for CI, `false` does not. If omitted, Bear Metal retries when any check run or commit status failed. Other dispatch reasons, such as review comments and merge conflicts, are unaffected. The status includes `context.failedCheckRuns` and `context.failedStatuses` for deployment-specific filtering.
+
+Example standalone JavaScript configuration:
+
+```js
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const exec = promisify(execFile);
+const requiredEnv = (name) => {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing ${name}`);
+  return value;
+};
+
+export default {
+  ciDeferralMaxMs: 60 * 60 * 1000,
+  linear: {
+    clientId: requiredEnv("LINEAR_CLIENT_ID"),
+    oauthScopes: "read,write,app:assignable,app:mentionable",
+    getClientSecret: () => requiredEnv("LINEAR_CLIENT_SECRET"),
+  },
+  github: {
+    appId: 12345,
+    installationId: 67890,
+    getPrivateKey: () => requiredEnv("GITHUB_APP_PRIVATE_KEY"),
+  },
+  agentIntegrations: {
+    github: {
+      appId: Number(requiredEnv("AGENT_GITHUB_APP_ID")),
+      installationId: Number(requiredEnv("AGENT_GITHUB_INSTALLATION_ID")),
+      getPrivateKey: () => requiredEnv("AGENT_GITHUB_APP_PRIVATE_KEY"),
+    },
+    linear: {
+      clientId: requiredEnv("AGENT_LINEAR_CLIENT_ID"),
+      oauthScopes: "read",
+      getClientSecret: () => requiredEnv("AGENT_LINEAR_CLIENT_SECRET"),
+    },
+    slack: {
+      getBotToken: () => requiredEnv("AGENT_SLACK_BOT_TOKEN"),
+    },
+    // HTTPS is the safe default. Opt in only when anonymous public HTTP is required.
+    web: { allowHttp: false },
+  },
+  llmProviders: {
+    anthropic: { getApiKey: () => requiredEnv("ANTHROPIC_API_KEY") },
+  },
+  async customizeTask(task) {
+    return {
+      llm: { provider: "anthropic", model: "claude-opus-4-6" },
+      async buildWorkspace({ workspacePath, signal }) {
+        await exec("git", ["clone", "https://github.com/example/repository", workspacePath], { signal });
+      },
+      additionalSystemPrompt: !("type" in task) && task.priority === "urgent"
+        ? "Prioritize the smallest safe change."
+        : undefined,
+      limits: { maxDurationMs: 7_200_000, maxTokens: 20_000_000 },
+    };
+  },
+};
+```
+
+The same module may be `.mts`; use the canonical source above as the typing reference and, in a user-managed package, apply `satisfies BearMetalConfig`. A package-based configuration may also import a secret-manager SDK. Bear Metal never logs or persists configuration objects, hook results, or resolved secrets.
+
+## Task customization
+
+`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, or a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
+
+The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt` and independent duration/token limits. See the canonical source for the exact nested DTO and return shapes.
+
+`llmProviders` is required and may be empty. It contains only key-based providers: Anthropic, OpenAI, and Google entries require lazy `getApiKey` functions. Only the key-based provider selected by `customizeTask` is resolved; selecting one without an entry fails that task with the exact configuration entry to add. Bedrock is not registered here because it uses the ambient AWS SDK credential chain.
+
+For coding and research runs, Bear Metal creates `workspacePath`, calls `buildWorkspace` with a ten-minute abort signal, requires a non-empty result, and removes its owned task workspace after success or failure. Coding workspaces use `BEAR_METAL_WORKSPACE_DIR/<ticket ID>/agent`; research workspaces use `BEAR_METAL_WORKSPACE_DIR/research/<task ID>/agent`. Coordinator runs share a checkout under `BEAR_METAL_WORKSPACE_DIR/coordinator`, built through their configured `buildWorkspace` hook and refreshed every 24 hours. An active run keeps its generation until it ends. Coordinator Pi receives the checkout's root `AGENTS.md` and read-only file tools; the checkout must contain a non-empty `AGENTS.md`. Builder code is responsible for cloning and authentication. The core Bear Metal system prompt is immutable; a truthy `additionalSystemPrompt` is appended. Limit fields independently default to 7,200,000 ms and 20,000,000 tokens.
+
+Agent shell commands use a dedicated cache-only `HOME` under `~/.bear-metal/cache-home`; it survives task workspace cleanup and is separate from the service user's normal home and temporary Git credentials. The workspace command guard is not an operating-system sandbox, so deployments must still isolate the worker process from host secrets.
+
+## Environment variables
+
+Bear Metal itself reads only these deployment and process settings:
+
+| Variable | Required | Default | Purpose |
+|---|---:|---|---|
+| `BEAR_METAL_CONFIG_FILE` | yes | — | Trusted configuration module path |
+| `WORKER_CONCURRENCY` | no | `5` | Maximum parallel tasks |
+| `POLL_INTERVAL_MS` | no | `60000` | Linear polling cadence |
 | `TASK_HEARTBEAT_INTERVAL_MS` | no | `30000` | Worker heartbeat cadence |
-| `TASK_STALE_AFTER_MS` | no | `300000` | Recover a task if no heartbeat for this long |
-| `TASK_MAX_RECLAIMS` | no | `3` | Abandon a task row after this many recoveries |
-| `BACKEND_PORT` | no | `3100` | API + dashboard server port |
-| `SLACK_BOT_TOKEN` | no | — | Slack bot OAuth token (`xoxb-…`) |
-| `SLACK_NOTIFICATION_CHANNEL` | no | — | Slack channel ID or `#channel-name` |
-| `LOG_LEVEL` | no | `info` | pino log level |
-| `LOG_PRETTY` | no | `false` | Human-readable logs for local dev |
+| `TASK_STALE_AFTER_MS` | no | `300000` | Reclaim threshold for a task without a heartbeat |
+| `TASK_MAX_RECLAIMS` | no | `3` | Maximum recoveries before abandoning a task row |
+| `BEAR_METAL_WORKSPACE_DIR` | no | `~/.bear-metal/workspace` | Parent directory for task workspaces |
+| `BACKEND_PORT` | no | `3100` | API and dashboard server port |
+| `API_ONLY` | no | `false` | Serve the dashboard API/UI without schedulers, workers, or Slack Events API |
+| `BEAR_METAL_RUN_MODE` | no | `normal` | `slack_only` keeps Slack coordination and research active without starting the Linear scheduler or coding worker; coordinator tools can still change Linear tickets |
+| `LOG_LEVEL` | no | `info` | Pino log level |
+| `LOG_PRETTY` | no | `false` | Human-readable local logs |
+| `TEST_TICKET_ID` | no | — | Restrict local polling to one ticket |
 
-*Exactly one of `WORKSPACE_BUILDER_COMMAND` or `WORKSPACE_BUILDER_PATH` must be set.
+`AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, and standard AWS credential-chain variables are inputs to the AWS SDK/embedded agent. `AWS_BEDROCK_FORCE_CACHE` controls embedded Bedrock prompt caching. Bear Metal does not reinterpret them. `APP_VERSION` is a UI build input; `BACKEND_URL` is the Vite development proxy target.
 
-**Exactly one LLM key must be set. The first set key in the order listed above determines the provider and its default model.
+Integration credentials, database URL, max iterations, provider/model selection, prompt additions, limits, and workspace behavior have no Bear Metal environment-variable fallback. Your configuration module may independently choose to read environment variables.
 
-***Both worker environment builder vars are optional. Set at most one; setting both fails startup.
+See [`.env.example`](.env.example) for the process-level variables.
 
-Example file at [`.env.example`](.env.example)
+---
 
-### Workspace builder
+## Custom runtime image
 
-Before invoking the coding agent, bear-metal runs a workspace builder to clone and prepare the target repository. You must provide one via env var. The builder must populate `AGENT_WORKDIR` and exit 0 on success — a non-zero exit aborts the task.
+Bear Metal ships a minimal base image (`ghcr.io/bluebear-io/bear-metal:latest`) that contains only the manager, the UI bundle, `git`, and CA certificates. If your `customizeTask.buildWorkspace` needs project toolchains — Go, Python, Rust, `uv`, `pnpm`, cloud CLIs, private registry certificates, etc. — bake them into a derived image at build time.
 
-Examples:
+Runtime package installation inside the running container is not supported:
 
-**Single repo:**
+- The removed worker environment builder is not coming back. `customizeTask.buildWorkspace` runs per task under a ten-minute abort signal, is scoped to `workspacePath`, and is meant to prepare the workspace, not to install system packages on the host.
+- Bear Metal deployments are expected to run with a read-only container filesystem (`docker run --read-only`, Kubernetes `readOnlyRootFilesystem: true`). `apt-get install`, `pip install --user`, `npm install -g`, and similar commands write to `/var`, `/etc`, `/usr`, or `$HOME` and will fail. Only Bear Metal's own writable paths (`BEAR_METAL_WORKSPACE_DIR`, the SQLite/Postgres data directory, and `~/.bear-metal/cache-home`) need to be writable, and they should be mounted as `tmpfs` or dedicated volumes.
+- Installing at task time also multiplies latency, network egress, and supply-chain risk by every worker run.
 
-```bash
-WORKSPACE_BUILDER_COMMAND=git clone git@github.com:your-user/your-repo "$AGENT_WORKDIR"
-```
-This works if your bear metal deployment always codes within this particular repository.
+Build once, run many times.
 
-**Umbrella repo with sub-repos:**
+### Example Dockerfile
 
-```bash
-WORKSPACE_BUILDER_COMMAND=<<'EOF'
-git clone git@github.com:your-user/umbrella "$AGENT_WORKDIR"
-cd "$AGENT_WORKDIR"
-# clone sub repositories inside
-EOF
-```
-This works if your bear metal deployment always codes within a repository that contains other repositories.
+```dockerfile
+# Pin to a released tag in production; :latest is used here for readability.
+FROM ghcr.io/bluebear-io/bear-metal:latest
 
-**Multi-repo routing by ticket tags:**
+# Extra toolchains needed by your customizeTask.buildWorkspace and by the
+# coding agent while it works inside the task workspace.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        golang-go \
+        python3 \
+        python3-venv \
+        python3-pip \
+        pipx \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/*
 
-For complex logic, write a script file and point to it:
+# Install uv into a system-wide location so it works under a read-only
+# rootfs at runtime. Use PIPX_HOME / PIPX_BIN_DIR rather than
+# `pipx install --global`, which the pipx shipped by Debian bookworm
+# (the base image OS) does not yet support.
+RUN PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install uv
 
-```bash
-WORKSPACE_BUILDER_PATH=/scripts/build-workspace.sh
-```
+# Copy your trusted configuration module into the image so its path is stable
+# and it ships with the same immutable artifact as the toolchains it depends on.
+COPY bear-metal.config.mts /config/bear-metal.config.mts
+ENV BEAR_METAL_CONFIG_FILE=/config/bear-metal.config.mts
 
-`/scripts/build-workspace.sh`:
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-if echo "$TICKET_TAGS" | grep -q "repo:frontend"; then
-  git clone git@github.com:your-user/frontend "$AGENT_WORKDIR/frontend"
-fi
-if echo "$TICKET_TAGS" | grep -q "repo:backend"; then
-  git clone git@github.com:your-user/backend "$AGENT_WORKDIR/backend"
-fi
-if echo "$TICKET_TAGS" | grep -q "repo:shared"; then
-  git clone git@github.com:your-user/shared "$AGENT_WORKDIR/shared"
-fi
-```
-This works when your bear metal deployment handles multiple repositories. Tag each ticket with the repos it touches and the agent wakes up with all of them as subdirectories of `AGENT_WORKDIR`.
-
-**Environment variables passed to the builder:**
-
-| Var | Example |
-|-----|---------|
-| `AGENT_WORKDIR` | `/tmp/bear-metal-workspace-ABC-123/agent` |
-| `TICKET_ID` | `ABC-123` |
-| `TICKET_TITLE` | `Fix the auth bug` |
-| `TICKET_URL` | `https://linear.app/...` |
-| `TICKET_TEAM` | `ABC` |
-| `TICKET_TAGS` | `repo:backend,priority:high` (comma-separated Linear labels) |
-| `TICKET_DESCRIPTION` | full ticket body |
-
-Bear-metal creates `AGENT_WORKDIR`, runs the builder, then runs the agent inside `AGENT_WORKDIR`.
-
-### Worker environment builder
-
-The **workspace builder** above runs **per ticket** and prepares the repository under `AGENT_WORKDIR`. The **worker environment builder** is different: it runs **once at process startup**, inside the already-running Bear Metal container/process, **before** the scheduler and task worker start. Use it to install language toolchains, package managers, OS libraries, or CLIs that your workspace builder or the coding agent needs.
-
-Bear Metal does not ship with Go, Rust, Python, pnpm, etc. baked in — it stays language-agnostic. If your tickets target a Go repo, install Go here; if they target a Rust repo, install Cargo here; and so on. This is a configuration hook, not a custom-image requirement.
-
-Both env vars are optional and mutually exclusive:
-
-- **`WORKER_ENVIRONMENT_BUILDER_COMMAND`** — inline bash. Bear Metal writes it to a temp file and executes it with `bash`.
-- **`WORKER_ENVIRONMENT_BUILDER_PATH`** — path to an executable script (mounted or baked into a custom image).
-
-If neither is set, Bear Metal starts normally with no environment preparation. If both are set, startup fails with a clear configuration error. If the builder exits non-zero, startup fails and the scheduler / task worker never start.
-
-The builder inherits the normal Bear Metal process environment (env vars, mounted credentials, etc.). It runs in the Bear Metal process, **not** inside `AGENT_WORKDIR` and **not** per ticket. It is operator-controlled startup code and is not exposed to the coding agent as a tool.
-
-**Example — install Go before working on Go repos:**
-
-```bash
-WORKER_ENVIRONMENT_BUILDER_COMMAND=<<'EOF'
-set -euo pipefail
-GO_VERSION=1.23.4
-curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
-tar -C /usr/local -xzf /tmp/go.tgz
-ln -sf /usr/local/go/bin/go /usr/local/bin/go
-go version
-EOF
+# WORKDIR, ENTRYPOINT, and CMD are inherited from the base image; do not
+# override them unless you know you need to.
 ```
 
-**Example — point at a maintained script:**
+### Build and run
 
 ```bash
-WORKER_ENVIRONMENT_BUILDER_PATH=/scripts/install-toolchains.sh
+docker build -t my-org/bear-metal:1.0.0 .
+
+docker run --rm \
+  --read-only \
+  --tmpfs /tmp \
+  --tmpfs /root/.bear-metal/cache-home \
+  -v bear-metal-data:/app/data \
+  -v bear-metal-workspace:/workspace \
+  -e BEAR_METAL_WORKSPACE_DIR=/workspace \
+  -e LINEAR_CLIENT_ID=... \
+  -e LINEAR_CLIENT_SECRET=... \
+  -e GITHUB_APP_PRIVATE_KEY="$(cat github-app.pem)" \
+  -e ANTHROPIC_API_KEY=... \
+  -p 3100:3100 \
+  my-org/bear-metal:1.0.0
 ```
 
-### Custom system prompt
+The process reads `BEAR_METAL_CONFIG_FILE` on startup and imports the module once; the toolchains you added are visible to `customizeTask.buildWorkspace` and to every shell the coding agent runs inside the workspace. See [Configuration module](#configuration-module) for how to wire the toolchain into `buildWorkspace` and secrets into lazy getters.
 
-Bear-metal injects a default system prompt with coding-agent instructions. You can extend it with project-specific context, conventions, or rules:
-
-```bash
-# File-based (system-prompt.md is gitignored by default)
-SYSTEM_PROMPT_PATH=./system-prompt.md
-
-# Or inline
-SYSTEM_PROMPT="Always write tests. Prefer small, focused PRs."
-```
-
-Set at most one. The custom prompt is appended to the built in prompt.
+If your configuration module itself needs third-party npm packages, either publish it as an ordinary package your derived image installs with `npm ci`, or `COPY` a `package.json` + `node_modules` alongside the module. Bear Metal does not install its dependencies.
 
 ---
 
@@ -209,53 +238,136 @@ Set at most one. The custom prompt is appended to the built in prompt.
 
 ### GitHub App
 
-Bear-metal authenticates as a GitHub App installation. Create one at **github.com → Settings → Developer settings → GitHub Apps → New GitHub App**:
+Create GitHub Apps from **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App**. See [Registering a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 
-- **Repository permissions**: Contents (R/W), Pull requests (R/W), Metadata (R), Checks (R)
-- Leave webhooks disabled — bear-metal polls, it does not receive events
+The first app is required. The Bear Metal harness uses it for trusted repository operations needed to submit code changes, including pushing branches, opening pull requests, and responding to reviews. Its credentials are never exposed to the coding agent. Configure it with the top-level `github` fields and grant access only to repositories Bear Metal should modify.
 
-After creating the app:
+1. Create the app, select **Only on this account**, and leave webhooks disabled because Bear Metal polls.
+2. Under **Repository permissions**, grant **Metadata: Read**, **Contents: Read and write**, **Pull requests: Read and write**, and **Checks: Read**.
+3. On the app settings page, copy **App ID** into `github.appId`.
+4. Under **Private keys**, select **Generate a private key** and make `github.getPrivateKey` return the downloaded PEM through your secret source. If storing it as one line, preserve newlines:
 
-1. Note the **App ID** on the app settings page → `GITHUB_APP_ID`
-2. Under **Private keys** → **Generate a private key** → download the `.pem` file
-3. Convert newlines for the env var:
    ```bash
    awk '{printf "%s\\n", $0}' your-key.pem
    ```
-   Paste the result into `GITHUB_APP_PRIVATE_KEY`
-4. **Install** the app on your org or specific repos (app settings → Install App)
-5. After install, the URL contains the installation ID:
-   `github.com/settings/installations/123456789` → `GITHUB_APP_INSTALLATION_ID`
+
+5. Open **Install App**, install it on the organization, and choose all or selected repositories.
+6. Copy the numeric installation ID from the installation URL, such as `github.com/settings/installations/123456789`, into `github.installationId`.
+
+The second app is optional. When configured as `agentIntegrations.github`, it gives the coding agent runtime GitHub tools while letting you fine-tune exactly which repositories and GitHub surfaces it can access. Omit it and the agent receives neither `github_read` nor `github_dispatch`; it can still work with the source already cloned into its workspace.
+
+1. Create and install a separate GitHub App using the same ID, key, and installation steps above.
+2. Grant **Metadata: Read** plus read permissions for every surface the agent should inspect, such as **Contents**, **Pull requests**, **Issues**, **Checks**, **Commit statuses**, and **Actions**.
+3. Grant **Actions: Read and write** only if the agent may dispatch workflows. GitHub groups dispatch with broader Actions-write permission; Bear Metal exposes only configured workflow dispatches.
+4. Configure its App ID, installation ID, and private-key getter under `agentIntegrations.github`.
+5. To expose `github_dispatch`, also configure its `repositories`, `workflows`, and `refs` policy. Without that policy, only `github_read` is exposed.
+
+Repository selection and app permissions jointly bound both agent GitHub tools. Bear Metal mints and refreshes the Agent GitHub App's installation token because GitHub installation tokens expire after one hour. `github_read` can only issue GET requests, while `github_dispatch` can only invoke configured workflow-dispatch targets.
 
 ### Linear
 
-Bear-metal authenticates as a Linear **app-actor** (the agent), minting its own token from the OAuth app's client credentials. Tickets delegated to the agent are picked up automatically.
+Create Linear apps under **Linear → Settings → API → OAuth applications**. See [Linear OAuth 2.0 authentication](https://linear.app/developers/oauth-2-0-authentication).
 
-In the Linear OAuth application settings: enable **client credentials**, enable **Assignable** (and preferably **Mentionable**), then copy **Client ID** → `LINEAR_CLIENT_ID` and **Client secret** → `LINEAR_CLIENT_SECRET`. Bear-metal exchanges these for a ~30-day app-actor token and auto-refreshes it, so no manual token rotation is needed. `LINEAR_OAUTH_SCOPES` defaults to `read,write,app:assignable,app:mentionable`; keep it stable, since requesting a different scope set revokes all existing app tokens.
+The first app is required. The Bear Metal harness uses it to find delegated work, read ticket context, update ticket state, post comments, and hand completed work back. Its credentials are never exposed to the coding agent. Configure it with the top-level `linear` fields.
 
-The agent must be a full Linear workspace member (not a guest) so it can be delegated tickets.
+1. Create a private OAuth application for the Bear Metal workspace.
+2. Enable **Client credentials tokens**, **Assignable**, and preferably **Mentionable**.
+3. Copy its client ID into `linear.clientId` and return its client secret from `linear.getClientSecret`.
+4. Configure `linear.oauthScopes` as `read,write,app:assignable,app:mentionable`.
+5. Generate the first client-credentials token by starting Bear Metal, then use the app details page to grant its app actor access to the teams it should manage.
 
-> **Delegation model:** bear-metal picks up tickets that are *delegated* to the bot user, not just assigned. In Linear, open a ticket → click the assignee → choose **Delegate** and select the bot account. The original assignee stays on the ticket; bear-metal works it on their behalf and hands it back when done.
+The second app is optional. When configured as `agentIntegrations.linear`, it exposes `linear_read` and lets you independently control which Linear data the coding agent can inspect. Omit it and the agent receives no Linear runtime tool; deterministic ticket orchestration continues normally.
+
+1. Create a separate private OAuth application and enable **Client credentials tokens**.
+2. Copy its client ID and secret into `agentIntegrations.linear`.
+3. Configure the stable scope `read`.
+4. Start Bear Metal once to generate the app actor, then grant that actor access only to teams the coding agent may read.
+
+Both profiles use independent token providers and caches. Bear Metal exchanges each profile's credentials for an app-actor token valid for roughly 30 days and re-mints it automatically, so operators do not rotate generated app tokens manually. Keep each profile's scope set stable because changing it revokes existing app tokens.
+
+The agent must be a full Linear workspace member, not a guest.
+
+> **Delegation model:** Bear Metal picks up tickets delegated to the bot user, not merely assigned. In Linear, open a ticket, choose **Delegate**, and select the bot account. The original assignee stays on the ticket; Bear Metal works on their behalf and hands it back when done.
 
 ### Anthropic
 
-Get an API key from the [Anthropic Console](https://console.anthropic.com) → **API Keys** → **Create Key** → `ANTHROPIC_API_KEY`
+Create a key in the [Anthropic Console](https://console.anthropic.com), register `llmProviders.anthropic.getApiKey`, and select `{ provider: "anthropic", model: "..." }` from `customizeTask`.
+
+For Claude Opus 5.5, select `{ provider: "anthropic", model: "claude-opus-5-5" }`.
 
 ### OpenAI
 
-Get an API key from the [OpenAI Platform](https://platform.openai.com) → **API keys** → **Create new secret key** → `OPENAI_API_KEY`
+Register `llmProviders.openai.getApiKey` and select `{ provider: "openai", model: "..." }` from `customizeTask`.
 
 ### Google
 
-Get an API key from [Google AI Studio](https://aistudio.google.com) → **Get API key** → `GOOGLE_API_KEY`
+Register `llmProviders.google.getApiKey` and select `{ provider: "google", model: "..." }` from `customizeTask`.
+
+### Amazon Bedrock
+
+Select `{ provider: "amazon-bedrock", model: "..." }` from `customizeTask`. Do not add Bedrock to `llmProviders`; authentication is ambient through the AWS credential chain, for example an ECS task role, IRSA, profile, IAM keys, or `AWS_BEARER_TOKEN_BEDROCK`.
+
+For example, route tasks carrying a `research` label to Bedrock:
+
+```js
+async customizeTask(task) {
+  const research = task.labels.some((label) => label.toLowerCase() === "research");
+  return {
+    llm: research
+      ? { provider: "amazon-bedrock", model: "your-bedrock-model-or-inference-profile" }
+      : { provider: "anthropic", model: "your-anthropic-model" },
+    async buildWorkspace({ workspacePath, signal }) {
+      // Clone or prepare the task workspace here.
+    },
+  };
+}
+```
+
+`AWS_REGION` selects the region. `AWS_BEDROCK_FORCE_CACHE=1` forces prompt-cache points for application inference-profile ARNs. The runtime identity needs the appropriate Bedrock invocation permissions for the selected model or inference profile; configure those permissions through your deployment IaC.
+
+The selected provider and model appear in the `selected task LLM` log entry and completed-run usage. Run the routing regression tests locally with:
+
+```bash
+npm test -- --run src/worker/dispatch.test.ts
+```
+
+For a deployed smoke test, delegate one task for each branch of your `customizeTask` routing. Confirm the provider/model log and dashboard run record match. For Bedrock, you can also verify the invocation in CloudTrail for the task's time window and runtime-role session.
 
 ### Slack
 
-Create a Slack app at **api.slack.com/apps → Create New App → From scratch**:
+Both Slack apps are optional and independent. Create them at [Slack App Management](https://api.slack.com/apps) using **Create New App → From scratch**.
 
-1. Under **OAuth & Permissions → Bot Token Scopes**: add `chat:write` and `chat:write.public`
-2. Install to your workspace → copy the **Bot User OAuth Token** (`xoxb-…`) → `SLACK_BOT_TOKEN`
-3. Get the channel ID: right-click the target channel → **View channel details** → copy the ID at the bottom (e.g. `C0123456789`) → `SLACK_NOTIFICATION_CHANNEL`
+The first app is used by the trusted harness for notifications and, when `slack.getSigningSecret` is configured, thread requests. Omit the top-level `slack` configuration to disable both.
+Incoming events must belong to the workspace reported by that app's bot token. The Slack Events endpoint runs in the manager process when `API_ONLY` is false.
+
+1. Under **OAuth & Permissions → Bot Token Scopes**, add `app_mentions:read`, `chat:write`, `chat:write.public`, `reactions:write`, `channels:history`, `groups:history`, `im:history`, `files:read`, `users:read`, and `users:read.email`. The user scopes let Bear Metal assign new Linear tickets to the Slack requester by email.
+2. Select **Install to Workspace**, approve the installation, and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
+3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
+4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow.
+5. Under **App Home → Show Tabs**, enable **Messages Tab** and check **Allow users to send Slash commands and messages from the messages tab**. Without this setting, Slack disables the DM composer even if the event subscriptions and scopes are correct. In an [app manifest](https://docs.slack.dev/reference/app-manifest/), these settings are `features.app_home.messages_tab_enabled: true` and `features.app_home.messages_tab_read_only_enabled: false`. The [Messages tab guide](https://docs.slack.dev/surfaces/app-home/#using-the-messages-tab) describes the required `chat:write` and `im:history` scopes.
+
+Every human DM, including a threaded reply, behaves like an explicit channel mention and receives a response or action. A top-level DM starts its own thread; a threaded DM follows its existing thread. In channels, an `@Bear Metal` mention starts following the thread. Ordinary messages in followed channel threads can be silently ignored when they need no Bear Metal action, including conversation addressed to others. Explicit mentions and DMs cannot be ignored. The coordinator can answer simple questions and casual messages directly, without a task or added reply wrapper, and asks for clarification when needed.
+
+Before supplying team, project, or cycle IDs, the coordinator must call `list_ticket_destinations` and use only IDs returned there. The lookup includes teams, projects and paginated cycles with their owning teams and dates. IDs must never be inferred from memory or unrelated entities. Unrecovered task-tool failures are reported through `direct_answer`; successful creation, work, or delegation must be confirmed by tool results.
+
+Slack ticket requests require an explicit work decision. Ask Bear Metal to implement or fix something to create a Linear ticket and delegate it to Bear Metal. Ask for a ticket for yourself, for later, or without starting work to create the ticket assigned to you without delegation. An unqualified “open a ticket” prompts clarification about whether Bear Metal should start working or only create the ticket. Replies distinguish creation-only from delegation. The decision is stored with the task and retained across retries and replacements unless explicitly changed. Coding replacements are created and attached before the original task or ticket is canceled. Failed creation leaves the original unchanged; retries resume the replacement operation and reuse an already-attached replacement ticket. Replacement tasks retain the original task ID, so retrying with either ID cancels only the original.
+
+Every coordinator reply group, including clarifications and task acknowledgments, has persisted content and delivery state. A later reply failure or manager restart does not repost successfully delivered groups. Confirmed Slack rejection permits a retry. Network failures, server errors, unreadable responses, and missing reply timestamps leave delivery unresolved and block automatic reposting. Unresolved deliveries require reconciliation before retrying. Slack also documents that [`internal_error` and `fatal_error` may follow partial success](https://docs.slack.dev/reference/methods/chat.postMessage/#errors), so those responses are treated as uncertain.
+
+Ask Bear Metal to stop bothering or following a thread to unsubscribe. The harness adds a 👍 reaction to the source message only after successful unsubscription, with no text acknowledgment. Reaction delivery is persisted with unsubscription. Transient failures remain pending for retry even while the thread is unfollowed, including after a restart. Permanent rejections are stored as failed with their error and logged visibly. Reaction failures never block resumed conversations. Stops sent as message edits react to the original Slack message. This requires [`reactions:write`](https://docs.slack.dev/reference/methods/reactions.add/). Following is stored durably; no further task messages or late research results from that subscription are posted. Work already started continues. A later channel mention or DM resumes following from the first such message after the stop request, skipping intervening ordinary messages and old task results. Automatic unsubscribe after ignored messages is deferred.
+
+The Tasks dashboard links research and coordinator labels to their task pages. Those pages show the processed message or research request and the output immediately below the execution summary, before the event log.
+
+The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
+
+1. Create a separate Slack app.
+2. Under **OAuth & Permissions → Bot Token Scopes**, add only the needed read scopes: `channels:read`, `channels:history`, `groups:read`, `groups:history`, `im:read`, `im:history`, `mpim:read`, `mpim:history`, `users:read`, `users:read.email`, and `files:read`.
+3. Select **Install to Workspace** or **Reinstall to Workspace**, approve it, and return the resulting `xoxb-…` token from `agentIntegrations.slack.getBotToken`.
+4. Invite the bot to every public or private conversation it should read. Scopes do not bypass conversation membership or workspace policy.
+
+Slack's global message search is not available to ordinary bot tokens. It requires a separate user-token and privacy decision; channel discovery and history work with the bot configuration above.
+
+Configure `agentIntegrations.web` to expose `web_get`; omit it to hide the tool. It is anonymous and sends no provider credentials, cookies, client certificates, or ambient proxy authentication. Provider and web responses are untrusted input to the coding agent.
 
 ---
 
@@ -264,27 +376,32 @@ Create a Slack app at **api.slack.com/apps → Create New App → From scratch**
 ```bash
 git clone https://github.com/bluebear-io/bear-metal
 cd bear-metal
-npm install
-cp .env.example .env   # fill in credentials
+npm ci
+cp .env.example .env
 ```
 
-Run the full stack (manager + UI dev server):
+Create a local configuration module and set `BEAR_METAL_CONFIG_FILE` in `.env`. Run the full stack (manager and UI dev server):
 
 ```bash
 npm run dev:all   # manager on :3100, UI on :5273
 ```
 
-Run just the manager (no UI):
+Run only the manager with `npm run dev`. Build and test with:
 
 ```bash
-npm run dev
+npm run build
+npm test
 ```
 
-Build and test:
+Validate the manager and UI independently with:
 
 ```bash
-npm run build   # type-check + compile
-npm test        # run tests
+npm run typecheck
+
+cd src/ui
+npm ci
+npm run typecheck
+npm run build
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions and pull request guidelines.

@@ -2,10 +2,10 @@ import { createAppAuth } from "@octokit/auth-app";
 import { Octokit, type RestEndpointMethodTypes } from "@octokit/rest";
 
 import type { JsonValue } from "../../json.js";
+import { redactCredentials } from "../../redaction.js";
 import type { CommentCapable, Integration } from "../base.js";
 import type {
   CheckRun,
-  FailedCheckRun,
   FailedStatus,
   IssueComment,
   PRState,
@@ -35,11 +35,19 @@ export interface GitHubIntegrationOptions {
   appId: number;
   privateKey: string;
   installationId: number;
+  auth?: (options: GitHubInstallationTokenOptions & { type: "installation" }) => Promise<{ token: string }>;
+}
+
+export interface GitHubInstallationTokenOptions {
+  repositoryIds?: number[];
+  repositoryNames?: string[];
+  permissions?: Record<string, "read" | "write">;
 }
 
 export class GitHubIntegration implements Integration, CommentCapable<PullRequestRef> {
   readonly name = "github";
   private readonly octokit: Octokit;
+  private readonly installationAuth: (options: GitHubInstallationTokenOptions & { type: "installation" }) => Promise<{ token: string }>;
   private cachedBotIdentity: BotIdentity | null = null;
 
   constructor(options: GitHubIntegrationOptions) {
@@ -51,11 +59,17 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
         installationId: options.installationId,
       },
     });
+    this.installationAuth = options.auth ?? ((authOptions) => this.octokit.auth(authOptions) as Promise<{ token: string }>);
   }
 
-  async getInstallationToken(): Promise<string> {
-    const auth = (await this.octokit.auth({ type: "installation" })) as { token: string };
-    return auth.token;
+  async getInstallationToken(options: GitHubInstallationTokenOptions = {}): Promise<string> {
+    try {
+      const auth = await this.installationAuth({ type: "installation", ...options });
+      return auth.token;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`GitHub installation token request failed: ${redactCredentials(message)}`);
+    }
   }
 
   async getBotLogin(): Promise<string> {
@@ -102,6 +116,7 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return {
       pr,
       testsFailed: context.failedCheckRuns.length > 0 || context.failedStatuses.length > 0,
+      checksInProgress: context.checksInProgress,
       hasActionableUnresolvedComments: context.unresolvedReviewThreads.some((thread) =>
         isActionableReviewThread(thread, bearMetalIdentity),
       ),
@@ -152,18 +167,26 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     });
     const headSha = pullRequest.head.sha;
 
-    const [failedCheckRuns, failedStatuses, reviewThreads, issueComments] = await Promise.all([
-      this.getFailedCheckRuns(ref, headSha),
+    const [checkRuns, failedStatuses, reviewThreads, issueComments] = await Promise.all([
+      this.listCheckRunsForRefRaw(ref.owner, ref.repo, headSha),
       this.getFailedStatuses(ref, headSha),
       this.getReviewThreads(ref),
       this.getActionableIssueComments(ref),
     ]);
+
+    const failedCheckRuns = await Promise.all(
+      checkRuns.filter(isFailedCheckRun).map(async (checkRun) => ({
+        checkRun: checkRun as JsonValue,
+        annotations: await this.getCheckRunAnnotations(ref, checkRun.id),
+      })),
+    );
 
     return {
       pullRequest: pullRequest as JsonValue,
       headSha,
       failedCheckRuns,
       failedStatuses,
+      checksInProgress: computeChecksInProgress(checkRuns),
       unresolvedReviewThreads: reviewThreads.filter((thread) => !thread.isResolved),
       reviewThreads,
       issueComments,
@@ -171,6 +194,28 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       // pullRequest.mergeable is typed `boolean | null | undefined`; normalize to boolean|null.
       mergeable: pullRequest.mergeable ?? null,
     };
+  }
+
+  /**
+   * Paginated fetch of every check run on `sha`. Returns the raw Octokit rows because callers need
+   * both failure classification (`isFailedCheckRun`) and in-progress detection
+   * (`computeChecksInProgress`) and we must not fire two separate `checks.listForRef` requests.
+   */
+  private async listCheckRunsForRefRaw(owner: string, repo: string, sha: string): Promise<OctokitCheckRun[]> {
+    const runs: OctokitCheckRun[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.octokit.checks.listForRef({
+        owner,
+        repo,
+        ref: sha,
+        per_page: 100,
+        page,
+      });
+      runs.push(...data.check_runs);
+      if (data.check_runs.length < 100) return runs;
+      page += 1;
+    }
   }
 
   async leaveComment(ref: PullRequestRef, body: string): Promise<void> {
@@ -331,22 +376,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
       }));
   }
 
-  private async getFailedCheckRuns(ref: PullRequestRef, sha: string): Promise<FailedCheckRun[]> {
-    const { data } = await this.octokit.checks.listForRef({
-      owner: ref.owner,
-      repo: ref.repo,
-      ref: sha,
-      per_page: 100,
-    });
-    const failed = data.check_runs.filter(isFailedCheckRun);
-    return Promise.all(
-      failed.map(async (checkRun) => ({
-        checkRun: checkRun as JsonValue,
-        annotations: await this.getCheckRunAnnotations(ref, checkRun.id),
-      })),
-    );
-  }
-
   private async getCheckRunAnnotations(ref: PullRequestRef, checkRunId: number): Promise<JsonValue[]> {
     const { data } = await this.octokit.checks.listAnnotations({
       owner: ref.owner,
@@ -467,6 +496,14 @@ function toCheckRun(run: OctokitCheckRun): CheckRun {
     startedAt: run.started_at ?? null,
     completedAt: run.completed_at ?? null,
   };
+}
+
+/**
+ * Pure helper: true if any check run in the list has `status !== "completed"` (i.e. `queued` or
+ * `in_progress`). Exported for unit tests that don't want to mock Octokit pagination.
+ */
+export function computeChecksInProgress(runs: Array<{ status: string }>): boolean {
+  return runs.some((run) => run.status !== "completed");
 }
 
 function isFailedCheckRun(checkRun: OctokitCheckRun): boolean {

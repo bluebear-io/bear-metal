@@ -14,112 +14,115 @@ runtime.
 Bear-metal runs a single scheduler loop on a fixed cadence
 (`POLL_INTERVAL_MS`, default 60s). Each tick:
 
-1. **Find work.** Query Linear for every ticket currently *delegated* to the
-   bear-metal app-actor (see below), plus any tickets bear-metal was already
+1. **Find work.** Query Linear for tickets currently *delegated* to the
+   bear-metal app actor (see below), plus the tickets bear-metal is already
    tracking.
-2. **Reconcile state.** For each tracked ticket, check the status of the PRs
-   bear-metal has already opened for it (merged, closed, review comments,
-   failing checks, merge conflicts, human commits on the branch, etc.).
+2. **Reconcile state.** For each tracked ticket, check the Linear status and
+   the PRs bear-metal has already opened for it (merged, closed, review
+   comments, failing checks, merge conflicts, human commits on the branch).
 3. **Decide.** Based on the ticket status and PR signals, decide whether to:
-   - dispatch a fresh worker run,
-   - keep waiting,
-   - release the slot back to the human, or
-   - mark the ticket completed.
+   - dispatch a worker run,
+   - keep waiting (for example while CI is still running),
+   - park the ticket,
+   - hand the ticket back to the human, or
+   - release it as completed.
 4. **Dispatch.** If a worker run is warranted and a concurrency slot is free
-   (`WORKER_CONCURRENCY`, default 5), spawn a worker for that ticket.
+   (`WORKER_CONCURRENCY`, default 5), start a worker for that ticket.
 
 The scheduler never runs the coding agent itself — it only decides *when* a
-worker should run and *why*. Every actual code change happens inside a
-worker.
+worker should run and *why*. Every code change happens inside a worker.
 
 ## Delegation, not assignment
 
-Bear-metal picks up tickets that are **delegated** to its Linear app-actor,
+Bear-metal picks up tickets that are **delegated** to its Linear app actor,
 not tickets that are merely assigned to it. In Linear, a human opens a
-ticket, clicks the assignee, and chooses **Delegate → bear-metal**. The
-original assignee stays on the ticket; bear-metal works it on their behalf.
+ticket, chooses **Delegate**, and selects bear-metal. The original assignee
+stays on the ticket; bear-metal works it on their behalf.
 
-If the human revokes the delegation mid-flight, the scheduler notices on the
-next tick and *parks* the ticket — the running worker (if any) is allowed to
-finish its current step, and no new work is dispatched until the ticket is
-re-delegated.
-
-Bear-metal will also hand a ticket back on its own when it detects the human
-has taken over the PR (for example, by pushing their own commits to the
-branch). This is deliberate — it avoids two actors editing the same PR.
+If the human removes the delegation, the scheduler *parks* the ticket on the
+next tick: it keeps its slot but no new work is dispatched. When the ticket
+is delegated back, bear-metal resumes and dispatches a new run.
 
 ## A worker run
 
 When the scheduler dispatches a worker, bear-metal:
 
-1. **Builds the workspace.** Runs the configured
-   [workspace builder](../README.md#workspace-builder) with ticket metadata
-   in the environment (`TICKET_ID`, `TICKET_TITLE`, `TICKET_TAGS`,
-   `TICKET_DESCRIPTION`, …). The builder is responsible for cloning the
-   target repo(s) into `AGENT_WORKDIR`.
-2. **Starts the coding agent.** Spawns the LLM-driven coding loop
-   (Anthropic / OpenAI / Google, depending on which key is configured)
-   inside `AGENT_WORKDIR`. The agent has the ticket description, any prior
-   PR review context, and the repository's own AGENTS.md / skills to work
-   from.
-3. **Iterates.** The agent reads files, runs commands, edits code, and
-   commits. Each iteration counts against `MAX_ITERATIONS` (default 50);
-   the whole run is bounded by `MAX_WORKER_TIME_MS` (default 2h) and
-   `MAX_WORKER_TOKENS` (default 20M).
-4. **Opens or updates a PR.** When the agent decides it is done, it pushes a
-   branch and opens a pull request against the configured base branch. If a
-   PR already exists for the ticket (a follow-up run addressing review
-   comments, failing tests, or merge conflicts), bear-metal updates that PR
-   in place instead of opening a new one.
+1. **Customizes the task.** Calls the deployment's `customizeTask` hook from
+   the [configuration module](../README.md#configuration-module). The hook
+   selects the LLM provider and model (Anthropic, OpenAI, Google, or Amazon
+   Bedrock), returns a `buildWorkspace` function, and may add a system-prompt
+   suffix and duration/token limits.
+2. **Builds the workspace.** Creates
+   `BEAR_METAL_WORKSPACE_DIR/<ticket ID>/agent` and calls `buildWorkspace`
+   with a ten-minute abort signal. The builder is responsible for cloning the
+   target repositories. The workspace is removed after the run.
+3. **Runs the coding agent.** The agent works inside the workspace with the
+   ticket description, any prior PR review context, and the repository's own
+   instructions. It reads files, runs commands, edits code, and commits. The
+   run is bounded by the task limits (default 2h and 20M tokens).
+4. **Opens or updates a PR.** The harness pushes the branch and opens a pull
+   request. If a PR already exists for the ticket (a follow-up run addressing
+   review comments, failing checks, or merge conflicts), it updates that PR
+   instead of opening a new one.
 5. **Heartbeats.** The worker emits a heartbeat every
-   `TASK_HEARTBEAT_INTERVAL_MS` (default 30s). If a worker goes silent for
-   longer than `TASK_STALE_AFTER_MS` (default 5m), the scheduler reclaims
-   the task on a later tick, up to `TASK_MAX_RECLAIMS` (default 3) before
-   giving up.
+   `TASK_HEARTBEAT_INTERVAL_MS` (default 30s). If a task goes silent for
+   longer than `TASK_STALE_AFTER_MS` (default 5m), the scheduler reclaims it,
+   up to `TASK_MAX_RECLAIMS` (default 3) times before abandoning it.
+
+Each worker run counts as one iteration for the ticket. When a ticket reaches
+`maxIterations` (default 50), bear-metal stops and hands it back.
 
 ## Reacting to review
 
 Bear-metal treats the PR itself as the conversation with the human. On each
-scheduler tick, for every open PR it has produced, it looks at:
+scheduler tick, for every PR it has opened, it looks at:
 
-- **Merge / close state** — merged means the ticket is done; closed without
-  merge means the human abandoned it.
-- **Unresolved review comments** — new actionable comments on the PR or the
-  associated issue trigger a follow-up worker run.
-- **Failing checks** — CI failures trigger a follow-up worker run to fix
-  them.
-- **Merge conflicts** — trigger a rebase / fix run.
-- **Human commits on the branch** — cause bear-metal to step aside and hand
-  the ticket back, to avoid conflicting with in-progress human work.
+- **Merge / close state** — once every PR is merged or closed, the ticket is
+  released.
+- **Unresolved review comments** — new actionable review threads or PR
+  comments trigger a follow-up run.
+- **Failing checks** — CI failures trigger a follow-up run. Deployments can
+  narrow this with the `shouldRetryCi` hook.
+- **Merge conflicts** — trigger a run to rebase and resolve them.
+- **Human commits on the branch** — bear-metal steps aside and hands the
+  ticket back, to avoid two actors editing the same PR.
 
-The follow-up worker inherits the ticket context plus a summary of the PR
-signals (review threads, failing checks, conflict state) so it can address
-them directly rather than starting from scratch.
+The follow-up run receives the ticket context plus the PR signals (review
+threads, failing checks, conflict state) so it can address them directly.
 
 ## Handing back
 
-Bear-metal will return a ticket to its human assignee in any of these cases:
+Bear-metal returns a ticket to its human assignee when:
 
-- The PR was merged (success).
-- The PR was closed without merge, or the human is committing to the branch
-  themselves (human took over).
-- The ticket hit `MAX_ITERATIONS` or another resource limit without
-  producing a mergeable PR (bear-metal is stuck; needs human review).
-- The human revoked the delegation.
-- The Linear ticket moved to a terminal state (Done / Canceled / Merged).
+- The PR was merged.
+- A human pushed commits to the PR branch (human took over).
+- The ticket reached `maxIterations`.
+- The worker decided it needs human input and handed the ticket back with a
+  comment.
 
-In every case the ticket returns to its human assignee, and — where
-configured — a Slack notification is posted so the human knows a PR is
-waiting or a task needs their attention.
+When the Linear ticket moves to a terminal state (Done, Canceled, or
+Merged), bear-metal stops tracking it.
+
+If Slack is configured, bear-metal notifies the assignee when a PR is ready
+(after CI settles), when it needs input, or when it hits the iteration limit.
+
+## Slack threads
+
+When the optional Slack app is configured with a signing secret, bear-metal
+also listens on a Slack Events endpoint. Mentioning bear-metal in a channel
+thread, or sending it a DM, lets it answer questions, run research tasks, or
+create a Linear ticket — either delegated to bear-metal or just assigned to
+the requester. See the [Slack guide](../README.md#slack) for details.
 
 ## What bear-metal is *not*
 
-- **Not a webhook consumer.** It polls Linear and GitHub on a fixed cadence.
-  There is no webhook endpoint to expose.
+- **Not a Linear or GitHub webhook consumer.** It polls Linear and GitHub on
+  a fixed cadence. The only inbound endpoint is the optional Slack Events
+  endpoint.
 - **Not a CI system.** It reads CI status from GitHub but does not run or
   gate merges itself.
-- **Not language-specific.** It ships language-agnostic. Toolchains (Go,
-  Rust, Python, pnpm, …) are installed via the
-  [worker environment builder](../README.md#worker-environment-builder).
+- **Not language-specific.** The base image ships without project
+  toolchains; add them in a
+  [custom runtime image](../README.md#custom-runtime-image).
 - **Not a merge bot.** Bear-metal opens PRs; humans (or their existing merge
   automation) merge them.

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
-import { useConfig, useTicketFilterOptions, useTickets } from "../api/queries.js";
-import type { BmStatus, StopReason, TicketListItem, TicketListQuery } from "../api/types.js";
+import { useConfig, useTaskFilterOptions, useTasks } from "../api/queries.js";
+import type { StopReason, TaskListItem, TaskListQuery } from "../api/types.js";
 import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
@@ -11,26 +11,20 @@ import { formatDateTime } from "../lib/format.js";
 
 const Dash = () => <span className="text-text-muted">-</span>;
 
-const TicketLink = ({ ticket }: { ticket: TicketListItem }) => (
-  <a
-    href={ticket.url}
-    className="font-medium text-primary transition hover:underline"
-    target="_blank"
-    rel="noreferrer"
-    onClick={(e) => e.stopPropagation()}
-  >
-    {ticket.identifier}
+const TaskLabel = ({ task }: { task: TaskListItem }) => task.ticketUrl ? (
+  <a href={task.ticketUrl} className="font-medium text-primary transition hover:underline" target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+    {task.identifier}
   </a>
-);
+) : <Link to={`/tasks/${task.type === "coding" ? "run" : task.type}/${task.id}`} className="font-medium text-primary capitalize hover:underline" onClick={(event) => event.stopPropagation()}>{task.type}</Link>;
 
-const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
-  if (ticket.pullRequests.length === 0) {
+const PrLink = ({ task }: { task: TaskListItem }) => {
+  if (task.pullRequests.length === 0) {
     return <Dash />;
   }
 
   return (
     <div className="flex flex-wrap gap-x-2 gap-y-1">
-      {ticket.pullRequests.map((pr) => (
+      {task.pullRequests.map((pr) => (
         <a
           key={pr.id}
           href={pr.url}
@@ -48,12 +42,12 @@ const PrLink = ({ ticket }: { ticket: TicketListItem }) => {
 
 type FilterKey = "all" | "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
-const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<BmStatus>> = {
-  in_progress: ["in_progress"],
+const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<string>> = {
+  in_progress: ["in_progress", "queued", "running", "awaiting_coordination", "approved", "posting", "dispatched"],
   validating: ["validating"],
   waiting_for_human: ["waiting_for_human"],
-  failed: ["failed"],
-  completed: ["completed"],
+  failed: ["failed", "timed_out", "crashed"],
+  completed: ["completed", "coordinated", "succeeded"],
 };
 
 const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
@@ -71,64 +65,60 @@ const selectClasses =
   "rounded-md border border-border-default bg-bg-card px-2 py-1 text-sm text-text-primary " +
   "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary";
 
-export default function TicketsListPage() {
+export default function TasksListPage() {
   const navigate = useNavigate();
   const [filter, setFilter] = useState<FilterKey>("all");
   const [searchInput, setSearchInput] = useState<string>("");
   const [appliedSearch, setAppliedSearch] = useState<string>("");
   const [workerId, setWorkerId] = useState<string>("");
+  const [taskType, setTaskType] = useState<TaskListItem["type"] | "">("");
   const [label, setLabel] = useState<string>("");
-  const [statusFilter, setStatusFilter] = useState<BmStatus | "">("");
+  const [statusFilter, setStatusFilter] = useState<string>("");
   const [stopReason, setStopReason] = useState<StopReason | "">("");
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
-  const query = useMemo<TicketListQuery>(() => {
-    const q: TicketListQuery = { pageSize: PAGE_SIZE };
+  const query = useMemo<TaskListQuery>(() => {
+    const q: TaskListQuery = { pageSize: PAGE_SIZE };
     if (appliedSearch.trim()) q.q = appliedSearch.trim();
-    if (workerId) q.workerIds = [workerId];
-    if (label) q.labels = [label];
-    if (stopReason) q.stopReasons = [stopReason];
-    // The State dropdown is the most specific status filter; when set, it wins over the category
-    // pill. Otherwise the active category pill is mapped into bmStatuses so pagination + counts
-    // reflect the full filtered result set instead of just the current page.
+    if (taskType) q.type = taskType;
+    if (workerId) q.workerId = workerId;
+    if (label) q.label = label;
+    if (stopReason) q.stopReason = stopReason;
     if (statusFilter) {
-      q.bmStatuses = [statusFilter];
+      q.statuses = [statusFilter];
     } else if (filter !== "all") {
-      q.bmStatuses = [...FILTER_STATUSES[filter]];
+      q.statuses = [...FILTER_STATUSES[filter]];
     }
     return q;
-  }, [appliedSearch, workerId, label, statusFilter, stopReason, filter]);
+  }, [appliedSearch, taskType, workerId, label, statusFilter, stopReason, filter]);
 
-  const ticketsQuery = useTickets(query);
-  const filtersQuery = useTicketFilterOptions();
+  const tasksQuery = useTasks(query);
+  const filtersQuery = useTaskFilterOptions();
   const configQuery = useConfig();
 
-  const pages = ticketsQuery.data?.pages ?? [];
-  const tickets = pages.flatMap((page) => page.tickets);
+  const pages = tasksQuery.data?.pages ?? [];
+  const tasks = pages.flatMap((page) => page.tasks);
   const total = pages[0]?.total ?? 0;
   const filterOptions = filtersQuery.data;
 
-  // Category filtering is done on the server (see `query` above), so loaded pages are already
-  // filtered. Per-category badge counts would need a dedicated summary endpoint to be
-  // accurate across pages — we intentionally don't show stale per-page counts here.
-  const visibleTickets = tickets;
+  const visibleTasks = tasks;
 
   const hasActiveServerFilter =
-    Boolean(appliedSearch.trim()) || Boolean(workerId) || Boolean(label) || Boolean(statusFilter) || Boolean(stopReason);
+    Boolean(appliedSearch.trim()) || Boolean(taskType) || Boolean(workerId) || Boolean(label) || Boolean(statusFilter) || Boolean(stopReason);
 
   useEffect(() => {
     const target = loadMoreRef.current;
-    if (!target || !ticketsQuery.hasNextPage || typeof IntersectionObserver === "undefined") return;
+    if (!target || !tasksQuery.hasNextPage || typeof IntersectionObserver === "undefined") return;
 
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && ticketsQuery.hasNextPage && !ticketsQuery.isFetchingNextPage) {
-        void ticketsQuery.fetchNextPage();
+      if (entries.some((entry) => entry.isIntersecting) && tasksQuery.hasNextPage && !tasksQuery.isFetchingNextPage) {
+        void tasksQuery.fetchNextPage();
       }
     });
 
     observer.observe(target);
     return () => observer.disconnect();
-  }, [ticketsQuery.fetchNextPage, ticketsQuery.hasNextPage, ticketsQuery.isFetchingNextPage]);
+  }, [tasksQuery.fetchNextPage, tasksQuery.hasNextPage, tasksQuery.isFetchingNextPage]);
 
   const submitSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -139,6 +129,7 @@ export default function TicketsListPage() {
     setSearchInput("");
     setAppliedSearch("");
     setWorkerId("");
+    setTaskType("");
     setLabel("");
     setStatusFilter("");
     setStopReason("");
@@ -150,17 +141,17 @@ export default function TicketsListPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-6 py-6 sm:px-8">
-      <PageHeader title="Tickets">
-        <RefreshButton busy={ticketsQuery.isFetching} onClick={() => void ticketsQuery.refetch()} />
+      <PageHeader title="Tasks">
+        <RefreshButton busy={tasksQuery.isFetching} onClick={() => void tasksQuery.refetch()} />
       </PageHeader>
 
-      <section aria-label="Ticket search" className="flex flex-col gap-3 rounded-md border border-border-default bg-bg-card p-3">
+      <section aria-label="Task search" className="flex flex-col gap-3 rounded-md border border-border-default bg-bg-card p-3">
         <form role="search" onSubmit={submitSearch} className="flex flex-wrap gap-2">
-          <label className="sr-only" htmlFor="ticket-search">Search tickets</label>
+          <label className="sr-only" htmlFor="task-search">Search tasks</label>
           <input
-            id="ticket-search"
+            id="task-search"
             type="search"
-            placeholder="Search tickets (identifier, title, description, branch)"
+            placeholder="Search tasks (ticket, request, description)"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             className={`${selectClasses} min-w-[20rem] flex-1`}
@@ -182,7 +173,16 @@ export default function TicketsListPage() {
           ) : null}
         </form>
 
-        <div className="flex flex-wrap gap-2" aria-label="Ticket filters">
+        <div className="flex flex-wrap gap-2" aria-label="Task filters">
+          <label className="flex items-center gap-1 text-xs text-text-secondary">
+            Type
+            <select aria-label="Filter by type" value={taskType} onChange={(e) => setTaskType(e.target.value as TaskListItem["type"] | "")} className={selectClasses}>
+              <option value="">Any type</option>
+              <option value="coding">Coding</option>
+              <option value="research">Research</option>
+              <option value="coordinator">Coordination</option>
+            </select>
+          </label>
           <label className="flex items-center gap-1 text-xs text-text-secondary">
             Worker
             <select
@@ -218,11 +218,11 @@ export default function TicketsListPage() {
             <select
               aria-label="Filter by state"
               value={statusFilter}
-              onChange={(e) => { setStatusFilter(e.target.value as BmStatus | ""); }}
+              onChange={(e) => { setStatusFilter(e.target.value); }}
               className={selectClasses}
             >
               <option value="">Any state</option>
-              {(filterOptions?.bmStatuses ?? []).map((s) => (
+              {(filterOptions?.statuses ?? []).map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </select>
@@ -245,12 +245,9 @@ export default function TicketsListPage() {
         </div>
       </section>
 
-      <nav aria-label="Ticket categories" className="flex flex-wrap gap-2">
+      <nav aria-label="Task categories" className="flex flex-wrap gap-2">
         {FILTERS.map(({ key, label: btnLabel }) => {
           const isActive = filter === key;
-          const count = key === "all"
-            ? Object.values(filterOptions?.statusCounts ?? {}).reduce((s, n) => s + (n ?? 0), 0)
-            : FILTER_STATUSES[key].reduce((s, status) => s + (filterOptions?.statusCounts?.[status] ?? 0), 0);
           return (
             <button
               key={key}
@@ -265,24 +262,23 @@ export default function TicketsListPage() {
               }
             >
               {btnLabel}
-              {count !== undefined && <span className="ml-2 text-xs text-text-muted">{count}</span>}
             </button>
           );
         })}
       </nav>
 
       <QueryBoundary
-        isLoading={ticketsQuery.isLoading}
-        error={ticketsQuery.error}
-        isEmpty={visibleTickets.length === 0}
-        emptyLabel={hasActiveServerFilter || filter !== "all" ? "No tickets match these filters." : "No tickets yet."}
+        isLoading={tasksQuery.isLoading}
+        error={tasksQuery.error}
+        isEmpty={visibleTasks.length === 0}
+        emptyLabel={hasActiveServerFilter || filter !== "all" ? "No tasks match these filters." : "No tasks yet."}
       >
-        <section aria-label="Tickets list" className="flex flex-col gap-3">
+        <section aria-label="Tasks list" className="flex flex-col gap-3">
           <div className="overflow-x-auto rounded-md border border-border-default bg-bg-card">
             <table className="min-w-full divide-y divide-border-default text-left text-sm">
               <thead className="bg-bg-page text-xs uppercase text-text-muted">
                 <tr>
-                  <th scope="col" className="px-4 py-3 font-medium">Ticket</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Task</th>
                   <th scope="col" className="px-4 py-3 font-medium">Title</th>
                   <th scope="col" className="px-4 py-3 font-medium">Status</th>
                   <th scope="col" className="px-4 py-3 font-medium">Latest run</th>
@@ -293,33 +289,33 @@ export default function TicketsListPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-default">
-                {visibleTickets.map((ticket) => (
+                {visibleTasks.map((task) => (
                   <tr
-                    key={ticket.id}
+                    key={task.id}
                     className="align-middle cursor-pointer hover:bg-bg-page"
-                    onClick={() => navigate(`/tickets/${ticket.id}`)}
+                    onClick={() => navigate(`/tasks/${task.type === "coding" && !task.ticketId ? "run" : task.type}/${task.id}`)}
                   >
                     <td className="whitespace-nowrap px-4 py-3">
-                      <TicketLink ticket={ticket} />
+                      <TaskLabel task={task} />
                     </td>
-                    <td className="max-w-xs truncate px-4 py-3 text-text-primary">{ticket.title}</td>
+                    <td className="max-w-xs truncate px-4 py-3 text-text-primary">{task.title}</td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      <StatusBadge status={ticket.bmStatus} />
+                      <StatusBadge status={task.status} />
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      {ticket.latestRun === null ? <Dash /> : <StatusBadge status={ticket.latestRun.status} />}
+                      {task.runStatus === null ? <Dash /> : <StatusBadge status={task.runStatus} />}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text-primary">
-                      {ticket.attemptCount}/{configQuery.data?.maxIterations ?? "?"}
+                      {task.type === "coding" ? `${task.attemptCount}/${configQuery.data?.maxIterations ?? "?"}` : <Dash />}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text-secondary">
-                      {ticket.assigneeName ?? <Dash />}
+                      {task.assigneeName ?? <Dash />}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
-                      <PrLink ticket={ticket} />
+                      <PrLink task={task} />
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-text-secondary">
-                      {formatDateTime(ticket.updatedAt)}
+                      {formatDateTime(task.updatedAt)}
                     </td>
                   </tr>
                 ))}
@@ -327,9 +323,9 @@ export default function TicketsListPage() {
             </table>
           </div>
 
-          <div ref={loadMoreRef} data-testid="tickets-scroll-sentinel" className="h-2" />
+          <div ref={loadMoreRef} data-testid="tasks-scroll-sentinel" className="h-2" />
           <div className="text-sm text-text-secondary" aria-live="polite">
-            {ticketsQuery.isFetchingNextPage ? "Loading more tickets..." : `Showing ${visibleTickets.length} of ${total} tickets`}
+            {tasksQuery.isFetchingNextPage ? "Loading more tasks..." : `Showing ${visibleTasks.length} of ${total} tasks`}
           </div>
         </section>
       </QueryBoundary>

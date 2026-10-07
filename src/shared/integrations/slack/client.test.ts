@@ -1,9 +1,96 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createLogger } from "../../logger.js";
-import { formatNeedsInputText, formatNotificationText, SlackIntegration } from "./client.js";
+import { createLogger, type Logger } from "../../logger.js";
+import { SlackThreadApi } from "../../../manager/slack-thread-api.js";
+import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackPostMessageError, SlackReactionError, SlackReadClient } from "./client.js";
+import { pino } from "pino";
 
 const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
+
+type LogRecord = Record<string, unknown> & { level: number; stage?: string };
+
+function captureLogger(): { logger: Logger; records: LogRecord[] } {
+  const records: LogRecord[] = [];
+  const logger = pino(
+    { level: "debug" },
+    {
+      write(chunk: string): void {
+        for (const line of chunk.split("\n")) {
+          if (!line) continue;
+          records.push(JSON.parse(line) as LogRecord);
+        }
+      },
+    } as unknown as NodeJS.WritableStream,
+  ) as unknown as Logger;
+  return { logger, records };
+}
+
+describe("Slack unsubscribe reaction", () => {
+  it.each([{ ok: true }, { ok: false, error: "already_reacted" }])("reacts on the source message with the harness token and accepts %j", async (body) => {
+    const fetchImpl = vi.fn(async () => Response.json(body));
+    const writer = new SlackIntegration({ token: "harness-token", channel: "C1", logger: SILENT_LOGGER, fetchImpl });
+    const api = new SlackThreadApi({} as SlackReadClient, writer);
+    await api.react({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "100.2", "thumbsup");
+    expect(fetchImpl).toHaveBeenCalledWith("https://slack.com/api/reactions.add", {
+      method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", Authorization: "Bearer harness-token" },
+      body: JSON.stringify({ channel: "C1", timestamp: "100.2", name: "thumbsup" }),
+    });
+  });
+
+  it.each(["missing_scope", "message_not_found"])("reports reaction rejection: %s", async (error) => {
+    const writer = new SlackIntegration({ token: "harness-token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => Response.json({ ok: false, error }) });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toMatchObject({ name: "SlackReactionError", permanent: true, message: expect.stringContaining(error) });
+  });
+  it.each(["internal_error", "service_unavailable", "ratelimited", "unknown_error"])("keeps Slack error %s retryable", async (error) => {
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => Response.json({ ok: false, error }) });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toMatchObject({ permanent: false });
+  });
+
+  it.each([[403, true], [408, false], [429, false], [503, false]])("classifies HTTP %i reaction failures (permanent=%s)", async (status, permanent) => {
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => new Response(null, { status }) });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toMatchObject({ name: SlackReactionError.name, permanent });
+  });
+
+  it("leaves a lost connection retryable", async () => {
+    const error = new TypeError("Connection lost");
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => { throw error; } });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toBe(error);
+  });
+
+});
+
+describe("SlackReadClient", () => {
+  it("authenticates read requests with the agent bot token", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, channels: [] }), { status: 200 }));
+    const client = new SlackReadClient({ token: "agent-token", fetchImpl });
+    await expect(client.call("conversations.list", { limit: 10 })).resolves.toMatchObject({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://slack.com/api/conversations.list?limit=10",
+      { headers: { Authorization: "Bearer agent-token" } },
+    );
+  });
+
+  it("does not include provider response bodies in HTTP errors", async () => {
+    const fetchImpl = vi.fn(async () => new Response("authorization: Bearer leaked-token", { status: 500, statusText: "Failure" }));
+    const client = new SlackReadClient({ token: "agent-token", fetchImpl });
+    await expect(client.call("conversations.list")).rejects.toThrow("Slack API request failed: 500 Failure");
+    await expect(client.call("conversations.list")).rejects.not.toThrow("leaked-token");
+  });
+
+  it("follows only bounded Slack HTTPS file redirects and strips auth across origins", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://downloads.slack.com/file" } }))
+      .mockResolvedValueOnce(new Response("file", { status: 200 }));
+    const client = new SlackReadClient({ token: "agent-token", fetchImpl });
+
+    await expect(client.downloadFile("https://files.slack.com/file", { maxRedirects: 1 })).resolves.toMatchObject({ status: 200 });
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, new URL("https://files.slack.com/file"), expect.objectContaining({ headers: { Authorization: "Bearer agent-token" }, redirect: "manual" }));
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, new URL("https://downloads.slack.com/file"), expect.objectContaining({ headers: {}, redirect: "manual" }));
+
+    fetchImpl.mockReset().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://evil.example/file" } }));
+    await expect(client.downloadFile("https://files.slack.com/file")).rejects.toThrow(/untrusted host/);
+  });
+});
 
 describe("formatNotificationText", () => {
   it("formats an 'opened' message", () => {
@@ -109,6 +196,32 @@ describe("formatNotificationText", () => {
       "Updated PR <https://github.com/acme/repo/pull/7|acme/repo#7> for ticket <https://linear.app/x/ABC-9|ABC-9> — Fix flakes",
     );
   });
+
+  it("formats a validation-delayed message with the PR link and elapsed threshold", () => {
+    const text = formatNotificationText({
+      kind: "validation_delayed",
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 7 }, url: "https://github.com/acme/repo/pull/7" }],
+      title: "Fix flakes",
+      ticketId: "ABC-9",
+      ticketUrl: "https://linear.app/x/ABC-9",
+      validationWaitMinutes: 60,
+    });
+    expect(text).toBe(
+      ":hourglass_flowing_sand: PR <https://github.com/acme/repo/pull/7|acme/repo#7> for ticket <https://linear.app/x/ABC-9|ABC-9> — Fix flakes has been waiting for CI validation for over 60 minutes. CI is still running; feel free to take a look in the meantime.",
+    );
+  });
+
+  it("uses singular minute in a validation-delayed message", () => {
+    const text = formatNotificationText({
+      kind: "validation_delayed",
+      prs: [{ pr: { owner: "acme", repo: "repo", number: 7 }, url: "https://github.com/acme/repo/pull/7" }],
+      title: "Fix flakes",
+      ticketId: "ABC-9",
+      ticketUrl: "https://linear.app/x/ABC-9",
+      validationWaitMinutes: 1,
+    });
+    expect(text).toContain("for over 1 minute. CI is still running");
+  });
 });
 
 describe("formatNeedsInputText", () => {
@@ -133,7 +246,86 @@ describe("formatNeedsInputText", () => {
   });
 });
 
+describe("formatMaxIterationsReachedText", () => {
+  it("formats a max-iterations message with no_entry icon and ticket link", () => {
+    const text = formatMaxIterationsReachedText({
+      ticketId: "PROJ-9",
+      ticketUrl: "https://linear.app/x/PROJ-9",
+      title: "stuck ticket",
+      maxIterations: 42,
+    });
+    expect(text).toBe(
+      ":no_entry: Gave up on ticket <https://linear.app/x/PROJ-9|PROJ-9> after 42 iterations \u2014 stuck ticket. Handed back for human review.",
+    );
+  });
+
+  it("throws on invalid maxIterations", () => {
+    expect(() =>
+      formatMaxIterationsReachedText({
+        ticketId: "P-1",
+        ticketUrl: "https://linear.app/x/P-1",
+        title: "x",
+        maxIterations: 0,
+      }),
+    ).toThrow();
+  });
+});
+
 describe("SlackIntegration", () => {
+  it("posts a research answer as a Slack Markdown block with a text fallback", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, ts: "200.1" }), { status: 200 }));
+    const slack = new SlackIntegration({ token: "xoxb-test", channel: "C1", fetchImpl: fetchImpl as unknown as typeof fetch, logger: SILENT_LOGGER });
+    const answer = "**Slow path**\n```go\nfunc main() {}\n```";
+    const api = new SlackThreadApi({} as SlackReadClient, slack);
+    await expect(api.replyResearch({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "U1", "why B is slow", answer)).resolves.toBe("200.1");
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.blocks).toEqual([
+      { type: "section", text: { type: "mrkdwn", text: 'Replying to <@U1>\'s "why B is slow"' } },
+      { type: "markdown", text: answer },
+    ]);
+    expect(body.text).toBe(`Replying to <@U1>'s "why B is slow"\n\n${answer}`);
+  });
+
+  it("posts a research TL;DR with its full answer attached as Markdown in the thread", async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/files.getUploadURLExternal")) return new Response(JSON.stringify({ ok: true, upload_url: "https://files.slack.com/upload/v1/test", file_id: "F1" }), { status: 200 });
+      if (url === "https://files.slack.com/upload/v1/test") return new Response("OK", { status: 200 });
+      if (url.endsWith("/files.completeUploadExternal")) return new Response(JSON.stringify({ ok: true, files: [{ id: "F1", title: "full-research-result.md" }] }), { status: 200 });
+      throw new Error(`Unexpected request: ${url} ${init?.method}`);
+    });
+    const slack = new SlackIntegration({ token: "xoxb-test", channel: "C1", fetchImpl: fetchImpl as unknown as typeof fetch, logger: SILENT_LOGGER });
+    const api = new SlackThreadApi({} as SlackReadClient, slack);
+    const answer = `**Finding**\n${"detail ".repeat(600)}`;
+    await expect(api.replyResearch({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "U1", "why B is slow", answer, "The slow path retries too often.")).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const request = new URLSearchParams((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+    expect(Object.fromEntries(request)).toEqual({ filename: "full-research-result.md", length: String(Buffer.byteLength(answer)) });
+    const upload = (fetchImpl.mock.calls[1] as unknown as [string, RequestInit])[1];
+    expect(upload.headers).not.toMatchObject({ Authorization: expect.anything() });
+    expect(Buffer.from(upload.body as Uint8Array).toString()).toBe(answer);
+    const complete = JSON.parse((fetchImpl.mock.calls[2] as unknown as [string, RequestInit])[1].body as string);
+    expect(complete).toEqual({
+      files: [{ id: "F1", title: "full-research-result.md" }],
+      channel_id: "C1", thread_ts: "100.0",
+      initial_comment: 'Replying to <@U1>\'s "why B is slow"\n\n*TL;DR* - The slow path retries too often.',
+    });
+  });
+
+  it.each([499, 500])("posts a %i-character research answer directly without uploading a file", async (length) => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, ts: "200.3" }), { status: 200 }));
+    const slack = new SlackIntegration({ token: "xoxb-test", channel: "C1", fetchImpl: fetchImpl as unknown as typeof fetch, logger: SILENT_LOGGER });
+    const api = new SlackThreadApi({} as SlackReadClient, slack);
+    const answer = "A".repeat(length);
+    await expect(api.replyResearch({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "U1", "why B is slow", answer, "Short summary.")).resolves.toBe("200.3");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe("https://slack.com/api/chat.postMessage");
+    const body = JSON.parse(call[1].body as string);
+    expect(body.text).toBe(`Replying to <@U1>'s "why B is slow"\n\n${answer}`);
+    expect(body.text).not.toContain("TL;DR");
+  });
   it("posts to chat.postMessage with bearer token and channel", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -165,15 +357,16 @@ describe("SlackIntegration", () => {
     expect(body.text).toContain("PR opened");
   });
 
-  it("logs errors but does not throw when Slack returns ok=false", async () => {
+  it("throws SlackPostMessageError with ticketId + kind + slack error when Slack returns ok=false", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ ok: false, error: "channel_not_found" }), { status: 200 }),
     );
+    const { logger, records } = captureLogger();
     const slack = new SlackIntegration({
       token: "xoxb-test",
       channel: "C12345",
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      logger: SILENT_LOGGER,
+      logger,
     });
 
     await expect(
@@ -184,16 +377,30 @@ describe("SlackIntegration", () => {
         ticketId: "ABC-2",
         ticketUrl: "https://linear.app/x/ABC-2",
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(SlackPostMessageError);
+
+    const failed = records.find((r) => r.stage === "failed");
+    expect(failed).toMatchObject({
+      level: 50,
+      ticketId: "ABC-2",
+      notificationKind: "updated",
+      slackError: "channel_not_found",
+      stage: "failed",
+    });
+    // Never log the message body or the bot token.
+    const serialized = JSON.stringify(records);
+    expect(serialized).not.toContain("xoxb-test");
+    expect(serialized).not.toContain("Updated PR");
   });
 
-  it("logs errors but does not throw on HTTP error", async () => {
-    const fetchImpl = vi.fn(async () => new Response("nope", { status: 500 }));
+  it("throws SlackPostMessageError with httpStatus on chat.postMessage HTTP error", async () => {
+    const fetchImpl = vi.fn(async () => new Response("nope", { status: 500, statusText: "boom" }));
+    const { logger, records } = captureLogger();
     const slack = new SlackIntegration({
       token: "xoxb-test",
       channel: "C12345",
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      logger: SILENT_LOGGER,
+      logger,
     });
 
     await expect(
@@ -204,18 +411,29 @@ describe("SlackIntegration", () => {
         ticketId: "ABC-3",
         ticketUrl: "https://linear.app/x/ABC-3",
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(SlackPostMessageError);
+
+    const failed = records.find((r) => r.stage === "failed");
+    expect(failed).toMatchObject({
+      level: 50,
+      ticketId: "ABC-3",
+      notificationKind: "opened",
+      httpStatus: 500,
+      stage: "failed",
+    });
+    expect(failed?.prRefs).toEqual([{ owner: "acme", repo: "repo", number: 3 }]);
   });
 
-  it("logs errors but does not throw when fetch rejects", async () => {
+  it("throws SlackPostMessageError when fetch rejects (network / timeout)", async () => {
     const fetchImpl = vi.fn(async () => {
-      throw new Error("network");
+      throw new Error("ETIMEDOUT");
     });
+    const { logger, records } = captureLogger();
     const slack = new SlackIntegration({
       token: "xoxb-test",
       channel: "C12345",
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      logger: SILENT_LOGGER,
+      logger,
     });
 
     await expect(
@@ -226,7 +444,16 @@ describe("SlackIntegration", () => {
         ticketId: "ABC-4",
         ticketUrl: "https://linear.app/x/ABC-4",
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(SlackPostMessageError);
+
+    const failed = records.find((r) => r.stage === "failed");
+    expect(failed).toMatchObject({
+      level: 50,
+      ticketId: "ABC-4",
+      notificationKind: "opened",
+      stage: "failed",
+    });
+    expect(failed?.err ?? failed?.error).toBeDefined();
   });
 
   it("throws when constructed without a token or channel", () => {
@@ -345,6 +572,37 @@ describe("SlackIntegration", () => {
     expect(body.channel).toBe("C12345");
     expect(body.text).toContain(":raising_hand:");
     expect(body.text).toContain("PROJ-5");
+  });
+
+  it("notifyMaxIterationsReached DMs the assignee when recipientEmail resolves", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, user: { id: "UMAX" } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      );
+    const slack = new SlackIntegration({
+      token: "xoxb-test",
+      channel: "C12345",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      logger: SILENT_LOGGER,
+    });
+
+    await slack.notifyMaxIterationsReached({
+      ticketId: "PROJ-9",
+      ticketUrl: "https://linear.app/x/PROJ-9",
+      title: "stuck ticket",
+      maxIterations: 42,
+      recipientEmail: "user@example.com",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const [, postInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    const body = JSON.parse(postInit?.body as string);
+    expect(body.channel).toBe("UMAX");
+    expect(body.text).toContain(":no_entry:");
+    expect(body.text).toContain("42 iterations");
   });
 
   it("notifyNeedsInput DMs the assignee when recipientEmail resolves", async () => {
