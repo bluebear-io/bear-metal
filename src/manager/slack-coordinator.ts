@@ -164,7 +164,8 @@ export class SlackCoordinator {
             && (!task.delegateToBearMetal || task.ackState !== null || task.coordinatedAt !== null
               || persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))));
         const savedReplies = persistedReplies.filter((reply) =>
-          !reply.taskId || completedActions.some((task) => task.id === reply.taskId));
+          !reply.taskId || completedActions.some((task) => task.id === reply.taskId)
+            || reply.kind === "task_cancel" && tasks.some((task) => task.id === reply.taskId && task.state === "canceled"));
         // Restore saved actions without bypassing the agent: the same message may contain unfinished requests.
         const decisions = new Set([...completedActions.map((task) => task.sourceTs), ...savedReplies.map((reply) => reply.sourceTs)]);
         let unsubscribeTs: string | undefined;

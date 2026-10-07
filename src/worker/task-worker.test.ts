@@ -146,6 +146,7 @@ describe("TaskWorker", () => {
     // upsertRunCrashed fires from both runTask's catch and tick()'s outer catch.
     expect(db.upsertRunCrashedCalls.length).toBeGreaterThanOrEqual(1);
     expect(db.upsertRunCrashedCalls[0]).toEqual(expect.objectContaining({ taskId: "task-1" }));
+    expect(db.upsertRunCrashedCalls[0]).toEqual(expect.objectContaining({ lease: { workerId: "worker-1", reclaimCount: 0 } }));
     expect(db.markCrashedCalls).toEqual([{ taskId: "task-1", workerId: "worker-1", maxReclaims: 5 }]);
   });
 
@@ -278,8 +279,9 @@ class FakeDb {
     this.upsertRunSucceededCalls.push({ taskId, usage: usage ?? null });
   }
 
-  async upsertRunCrashed(taskId: string, error: string): Promise<void> {
-    this.upsertRunCrashedCalls.push({ taskId, error });
+  async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number }): Promise<boolean> {
+    this.upsertRunCrashedCalls.push({ taskId, error, lease });
+    return true;
   }
 
   async upsertToolCalls(): Promise<void> {}

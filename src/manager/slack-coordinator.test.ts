@@ -57,6 +57,28 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it.each([false, true])("restores a cancellation reply for a task from an earlier message (posted=%s)", async (posted) => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    const old = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Research A", quote: "A" })).task;
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> cancel A" }]);
+    if (posted) vi.spyOn(db, "markSlackMessagesProcessed").mockRejectedValueOnce(new Error("Database unavailable after posting"));
+    else vi.mocked(api.reply).mockRejectedValueOnce(new SlackThreadReplyRejectedError("Rate limited"));
+    try {
+      await makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+        await tools.find((tool) => tool.name === "cancel_task")!.execute("cancel", { id: old.id, sourceTs: "100.2" }, undefined, undefined, {} as never);
+      } }).wake(key);
+      expect((await db.getSlackTask(old.id))?.state).toBe("canceled");
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
+      await makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+        await tools.find((tool) => tool.name === "get_thread_task")!.execute("read", { id: old.id }, undefined, undefined, {} as never);
+      } }).wake(key);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(replies).toEqual(["Canceled A"]);
+    } finally { await db.close(); }
+  });
   it("finishes remaining requests after a partial run without recreating saved research", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");

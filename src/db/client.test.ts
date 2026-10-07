@@ -8,6 +8,35 @@ import { SqlDbClient, type BmStatus, type DispatchTaskInput, type TicketInput } 
 
 const dbPaths: string[] = [];
 describe("worker lease fencing", () => {
+  it("fences a delayed manager crash write after a replacement claims the recovered task", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("old-worker");
+      const recovered = await db.markCrashed(task.id, "old-worker", 3);
+      const lease = { workerId: recovered!.task.workerId, reclaimCount: recovered!.task.reclaimCount };
+      expect(await db.upsertRunCrashed(task.id, "manager recovery", lease)).toBe(true);
+      await db.acquireNext("replacement-worker");
+      await db.upsertRunStarted(task.id, "replacement-worker", new Date().toISOString());
+      expect(await db.upsertRunCrashed(task.id, "delayed manager recovery", lease)).toBe(false);
+      expect((await db.getAgentRunDetail(task.id))?.run.status).toBe("running");
+    } finally { await db.close(); }
+  });
+  it.each(["old-worker", "replacement-worker"])("fences a crash write after reclaim to %s", async (replacementWorker) => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      const old = await db.acquireNext("old-worker");
+      expect(await db.heartbeat(task.id, "old-worker", old!.reclaimCount)).toBe(true);
+      await db.markCrashed(task.id, "old-worker", 3);
+      const replacement = await db.acquireNext(replacementWorker);
+      await db.upsertRunStarted(task.id, replacementWorker, new Date().toISOString());
+      await db.upsertRunCrashed(task.id, "stale failure", { workerId: "old-worker", reclaimCount: old!.reclaimCount });
+      expect((await db.getAgentRunDetail(task.id))?.run.status).toBe("running");
+      await db.upsertRunCrashed(task.id, "current failure", { workerId: replacementWorker, reclaimCount: replacement!.reclaimCount });
+      expect((await db.getAgentRunDetail(task.id))?.run.status).toBe("crashed");
+    } finally { await db.close(); }
+  });
   it("rejects a previous lease when the same worker reacquires the task", async () => {
     const db = await makeDb();
     try {
@@ -81,7 +110,7 @@ async function addRun(db: SqlDbClient, ticketIssueId: string, ticketId: string, 
     await db.upsertRunSucceeded(task.id, null);
     await db.complete(task.id, { status: "done", prs: [] });
   } else if (stopReason === "crash") {
-    await db.upsertRunCrashed(task.id, "worker crashed");
+    await db.upsertRunCrashed(task.id, "worker crashed", { workerId, reclaimCount: 0 });
     await db.complete(task.id, { status: "pending", prs: [] });
   }
 }

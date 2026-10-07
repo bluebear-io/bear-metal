@@ -84,7 +84,7 @@ export class TaskWorker {
       void this.queue.add(() => this.runTask(task)).catch(async (err) => {
         if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
         this.logger.error({ err, taskId: task.id, ticketId: task.ticketId, workerId: this.workerId }, "SQL task failed");
-        void this.db.upsertRunCrashed(task.id, String(err));
+        if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount })) return;
         void this.db.recordEvent({
           id: randomUUID(),
           ticketId: task.ticketId,
@@ -212,7 +212,7 @@ export class TaskWorker {
     } catch (err) {
       if (controller.signal.aborted) return;
       if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
-      void this.db.upsertRunCrashed(task.id, String(err));
+      if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount })) return;
       void this.db.recordEvent({
         id: randomUUID(),
         ticketId: task.ticketId,
