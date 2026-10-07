@@ -156,8 +156,8 @@ const ExecutionDetail = () => {
     <PageHeader title={title}><RefreshButton busy={query.isFetching} onClick={() => { void query.refetch(); }} /></PageHeader>
     <QueryBoundary isLoading={query.isLoading} error={query.error} isEmpty={!run} emptyLabel="Task detail not found">
       {run && detail && <div className="flex flex-col gap-6">
-        {run.type !== "coding" && <TaskInputOutput run={run} trace={detail.trace} />}
         <TaskSummary run={run} />
+        {run.type !== "coding" && <TaskInputOutput run={run} trace={detail.trace} />}
         {run.request && run.type !== "coordinator" && <Section title="Request"><CopyableBlock content={run.request} tall /></Section>}
         {run.inputJson && <Section title="Task input"><CopyableBlock content={showJson(run.inputJson)} tall /></Section>}
         {run.resultJson && <Section title="Result"><CopyableBlock content={showJson(run.resultJson)} tall /></Section>}

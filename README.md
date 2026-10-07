@@ -352,7 +352,7 @@ Every coordinator reply group, including clarifications and task acknowledgments
 
 Ask Bear Metal to stop bothering or following a thread to unsubscribe. Following is stored durably; no further task messages or late research results from that subscription are posted. Work already started continues. A later channel mention or DM resumes following from the first such message after the stop request, skipping intervening ordinary messages and old task results. Automatic unsubscribe after ignored messages is deferred.
 
-The Tasks dashboard links research and coordinator labels to their task pages. Those pages show the processed message or research request and the output above the execution summary and event log.
+The Tasks dashboard links research and coordinator labels to their task pages. Those pages show the processed message or research request and the output immediately below the execution summary, before the event log.
 
 The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
 

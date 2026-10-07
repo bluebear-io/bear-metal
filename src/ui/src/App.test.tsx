@@ -66,6 +66,7 @@ describe("App", () => {
     renderWithProviders(<App />, "/tasks/research/research-1");
     expect(await screen.findByRole("heading", { name: "Summary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Input / output" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Summary" }).compareDocumentPosition(screen.getByRole("heading", { name: "Input / output" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Runs" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Event log" })).toBeInTheDocument();
@@ -73,7 +74,7 @@ describe("App", () => {
     expect(screen.getByText("answer_research")).toBeInTheDocument();
   });
 
-  it("shows processed coordinator messages and its persisted output above the summary", async () => {
+  it("shows processed coordinator messages and its persisted output below the summary", async () => {
     const detail = await fetchAgentRunDetail("coord-1");
     vi.mocked(fetchAgentRunDetail).mockResolvedValueOnce({ ...detail, run: {
       ...detail.run,
@@ -86,7 +87,7 @@ describe("App", () => {
     if (!section) throw new Error("Input/output section missing");
     expect(within(section).getByText("<@UBOT> how are you?")).toBeVisible();
     expect(within(section).getByText("I'm all good, my friend")).toBeVisible();
-    expect(heading.compareDocumentPosition(screen.getByRole("heading", { name: "Summary" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Summary" }).compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("toggles the document theme class", async () => {
