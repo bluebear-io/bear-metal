@@ -118,23 +118,34 @@ const TaskSummary = ({ run }: { run: AgentRunSummary }) => {
 };
 
 const TaskInputOutput = ({ run, trace }: { run: AgentRunSummary; trace: AgentTraceEvent[] }) => {
+  const errors: string[] = [];
   let input = run.type === "coordinator" ? run.inputJson : run.request;
   if (run.type === "coordinator" && run.inputJson) {
-    const payload = JSON.parse(run.inputJson) as { messages?: Array<{ text: string }>; resultTaskId?: string; request?: string; answer?: string };
-    if (payload.messages) input = payload.messages.map((message) => message.text).join("\n\n");
-    else if (payload.resultTaskId) input = payload.request && payload.answer
-      ? `${payload.request}\n\n${payload.answer}` : `Review research result for task ${payload.resultTaskId}`;
+    try {
+      const payload = JSON.parse(run.inputJson) as { messages?: Array<{ text: string }>; resultTaskId?: string; request?: string; answer?: string };
+      if (payload.messages) input = payload.messages.map((message) => message.text).join("\n\n");
+      else if (payload.resultTaskId) input = payload.request && payload.answer
+        ? `${payload.request}\n\n${payload.answer}` : `Review research result for task ${payload.resultTaskId}`;
+    } catch (error) {
+      errors.push(`Unable to read task input: ${String(error)}`);
+    }
   }
   let output: string | null = null;
   if (run.resultJson) {
-    const result = JSON.parse(run.resultJson) as { answer?: string; replies?: string[]; decision?: string };
-    output = run.type === "research" ? result.answer ?? null
-      : result.replies?.join("\n\n") || result.decision || showJson(run.resultJson);
+    try {
+      const result = JSON.parse(run.resultJson) as { answer?: string; replies?: string[]; decision?: string };
+      output = run.type === "research" ? result.answer ?? null
+        : result.replies?.join("\n\n") || result.decision || showJson(run.resultJson);
+    } catch (error) {
+      errors.push(`Unable to read task output: ${String(error)}`);
+      output = run.resultJson;
+    }
   } else {
     const assistant = trace.filter((event) => event.kind === "assistant_text");
     if (assistant.length > 0) output = assistant.map((event) => traceContent(event.contentJson)).join("\n\n");
   }
   return <Section title="Input / output">
+    {errors.map((error) => <p key={error} role="alert" className="text-sm text-status-red">{error}</p>)}
     <div className="grid gap-4 lg:grid-cols-2">
       <div><h3 className="text-sm font-medium text-text-secondary">Input</h3>
         {input ? <CopyableBlock content={input} tall /> : <p className="text-sm text-text-muted">No input recorded.</p>}</div>

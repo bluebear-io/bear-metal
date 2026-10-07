@@ -90,6 +90,22 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Summary" }).compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it.each([
+    ["inputJson", "{broken input", "input"],
+    ["resultJson", "{broken output", "output"],
+  ] as const)("keeps task details visible when %s is malformed", async (field, raw, label) => {
+    const detail = await fetchAgentRunDetail("coord-1");
+    vi.mocked(fetchAgentRunDetail).mockResolvedValueOnce({ ...detail, run: { ...detail.run, [field]: raw } });
+    renderWithProviders(<App />, "/tasks/coordinator/coord-1");
+    const heading = await screen.findByRole("heading", { name: "Input / output" });
+    const section = heading.closest("section");
+    if (!section) throw new Error("Input/output section missing");
+    expect(within(section).getByRole("alert")).toHaveTextContent(`Unable to read task ${label}`);
+    expect(within(section).getByText(raw)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Summary" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Event log" })).toBeVisible();
+  });
+
   it("toggles the document theme class", async () => {
     renderWithProviders(<App />, "/");
 
