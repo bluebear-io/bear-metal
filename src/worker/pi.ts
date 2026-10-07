@@ -454,10 +454,16 @@ export async function runPiWorker(input: {
       const stats = session.getSessionStats();
       const model = session.model;
       if (model && (stats.tokens.input > 0 || stats.tokens.output > 0)) {
+        let costUsd: number | null = null;
+        try {
+          costUsd = sessionCostUsd(model, stats);
+        } catch (costError) {
+          logger.warn({ costError, ticketId: input.context.ticketId }, "failed to compute session cost; storing run without cost");
+        }
         usage = {
           promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
           completionTokens: stats.tokens.output,
-          costUsd: sessionCostUsd(model, stats),
+          costUsd,
           modelName: model.name,
           provider: model.provider,
         };
