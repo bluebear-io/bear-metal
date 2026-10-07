@@ -7,6 +7,89 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SqlDbClient, type BmStatus, type DispatchTaskInput, type TicketInput } from "./client.js";
 
 const dbPaths: string[] = [];
+describe("worker lease fencing", () => {
+  it("finalizes an abandoned run without changing its released pending result", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("worker");
+      await db.upsertRunStarted(task.id, "worker", new Date().toISOString());
+      const recovered = await db.markCrashed(task.id, "worker", 1);
+      expect(recovered?.action).toBe("abandoned");
+      expect(recovered?.task.resultStatus).toBe("pending");
+      expect(recovered?.task.slotStatus).toBe("released");
+      expect(await db.upsertRunCrashed(task.id, "stale worker failure", {
+        workerId: recovered!.task.workerId, reclaimCount: recovered!.task.reclaimCount,
+      })).toBe(false);
+      expect(await db.upsertRunCrashed(task.id, recovered!.reason, {
+        workerId: recovered!.task.workerId, reclaimCount: recovered!.task.reclaimCount, abandoned: true,
+      })).toBe(true);
+      const detail = await db.getAgentRunDetail(task.id);
+      expect(detail?.run.status).toBe("crashed");
+      expect(detail?.run.stopReason).toBe("crash");
+      expect(detail?.run.error).toBe(recovered!.reason);
+      expect(detail?.run.endedAt).not.toBeNull();
+    } finally { await db.close(); }
+  });
+  it("fences a delayed manager crash write after a replacement claims the recovered task", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("old-worker");
+      const recovered = await db.markCrashed(task.id, "old-worker", 3);
+      const lease = { workerId: recovered!.task.workerId, reclaimCount: recovered!.task.reclaimCount };
+      expect(await db.upsertRunCrashed(task.id, "manager recovery", lease)).toBe(true);
+      await db.acquireNext("replacement-worker");
+      await db.upsertRunStarted(task.id, "replacement-worker", new Date().toISOString());
+      expect(await db.upsertRunCrashed(task.id, "delayed manager recovery", lease)).toBe(false);
+      expect((await db.getAgentRunDetail(task.id))?.run.status).toBe("running");
+    } finally { await db.close(); }
+  });
+  it.each(["old-worker", "replacement-worker"])("fences a crash write after reclaim to %s", async (replacementWorker) => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      const old = await db.acquireNext("old-worker");
+      expect(await db.heartbeat(task.id, "old-worker", old!.reclaimCount)).toBe(true);
+      await db.markCrashed(task.id, "old-worker", 3);
+      const replacement = await db.acquireNext(replacementWorker);
+      await db.upsertRunStarted(task.id, replacementWorker, new Date().toISOString());
+      await db.upsertRunCrashed(task.id, "stale failure", { workerId: "old-worker", reclaimCount: old!.reclaimCount });
+      expect((await db.getAgentRunDetail(task.id))?.run.status).toBe("running");
+      await db.upsertRunCrashed(task.id, "current failure", { workerId: replacementWorker, reclaimCount: replacement!.reclaimCount });
+      expect((await db.getAgentRunDetail(task.id))?.run.status).toBe("crashed");
+    } finally { await db.close(); }
+  });
+  it("rejects a previous lease when the same worker reacquires the task", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      const first = await db.acquireNext("worker");
+      await db.markCrashed(task.id, "worker", 3);
+      const second = await db.acquireNext("worker");
+      expect(await db.heartbeat(task.id, "worker", first!.reclaimCount)).toBe(false);
+      await expect(db.complete(task.id, { status: "done", prs: [] }, "worker", first!.reclaimCount)).rejects.toThrow();
+      expect(await db.heartbeat(task.id, "worker", second!.reclaimCount)).toBe(true);
+      await db.complete(task.id, { status: "done", prs: [] }, "worker", second!.reclaimCount);
+    } finally {
+      await db.close();
+    }
+  });
+  it("rejects completion from the worker replaced after a reclaim", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("old-worker");
+      await db.markCrashed(task.id, "old-worker", 3);
+      const replacement = await db.acquireNext("new-worker");
+      expect(replacement?.id).toBe(task.id);
+      await expect(db.complete(task.id, { status: "done", prs: [] }, "old-worker")).rejects.toThrow("Cannot complete task");
+      await db.complete(task.id, { status: "pending", prs: [] }, "new-worker");
+    } finally {
+      await db.close();
+    }
+  });
+});
 type QueryFn = (sql: string, params?: unknown[]) => Promise<unknown[]>;
 
 async function makeDb(): Promise<SqlDbClient> {
@@ -50,7 +133,7 @@ async function addRun(db: SqlDbClient, ticketIssueId: string, ticketId: string, 
     await db.upsertRunSucceeded(task.id, null);
     await db.complete(task.id, { status: "done", prs: [] });
   } else if (stopReason === "crash") {
-    await db.upsertRunCrashed(task.id, "worker crashed");
+    await db.upsertRunCrashed(task.id, "worker crashed", { workerId, reclaimCount: 0 });
     await db.complete(task.id, { status: "pending", prs: [] });
   }
 }

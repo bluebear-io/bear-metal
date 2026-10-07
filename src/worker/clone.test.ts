@@ -1,14 +1,33 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWorkspaceBuilder } from "./clone.js";
 
 const paths: string[] = [];
 afterEach(async () => { await Promise.all(paths.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 describe("runWorkspaceBuilder", () => {
+  it("cancels a real builder subprocess when the worker lease is lost", async () => {
+    const workspaceDir = await mkdtemp(join(tmpdir(), "bear-metal-workspace-test-"));
+    paths.push(workspaceDir);
+    const controller = new AbortController();
+    let childPid = 0;
+    const build = runWorkspaceBuilder({
+      workspaceDir, githubToken: "token", signal: controller.signal,
+      buildWorkspace: async ({ signal }) => {
+        const run = promisify(execFile)(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { signal });
+        childPid = run.child.pid!;
+        await run;
+      },
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(childPid).toBeGreaterThan(0));
+    controller.abort(new Error("Task lease lost"));
+    expect(await build).toMatchObject({ message: "Task lease lost" });
+    await vi.waitFor(() => expect(() => process.kill(childPid, 0)).toThrow());
+  });
   it("creates the target, passes an abort signal, and accepts a non-empty workspace", async () => {
     const workspaceDir = await mkdtemp(join(tmpdir(), "bear-metal-workspace-test-"));
     paths.push(workspaceDir);

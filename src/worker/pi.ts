@@ -44,6 +44,7 @@ const logger = createLogger({
 const MAX_TOOL_CALL_RESULT_CHARS = 8_000;
 
 export async function runPiWorker(input: {
+  signal?: AbortSignal;
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
@@ -69,6 +70,7 @@ export async function runPiWorker(input: {
   llmApiKey: string | null;
   llmModel: string;
 }): Promise<DispatchResult> {
+  input.signal?.throwIfAborted();
   let decision: DispatchResult | undefined;
   const workspaceRoot = input.context.cloneScript.agentWorkdir;
 
@@ -117,6 +119,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact comment body to post to Linear." }),
     }),
     execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
       if (decision?.status === "pending") {
         return {
           content: [{ type: "text", text: "Already pending — duplicate respond_to_ticket_reporter call was ignored. No comment was posted." }],
@@ -142,12 +145,14 @@ export async function runPiWorker(input: {
       id: Type.String({ description: "The id of the open comment to act on (from openComments)." }),
     }),
     execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
       const entry = commentIndex.get(params.id);
       if (!entry) throw new Error(`Unknown comment id: ${params.id}`);
       const { kind, pr } = entry;
       if (kind === "thread") {
         logger.debug({ threadId: params.id }, "pi tool: agree_with_github_message (thread)");
         await input.github.replyToReviewThread(pr, params.id, "Fixed.", unresolvedThreadsFor(input.context, pr));
+        input.signal?.throwIfAborted();
         await input.github.resolveReviewThread(params.id);
         return {
           content: [{ type: "text", text: `Replied "Fixed." and resolved review thread ${params.id}.` }],
@@ -155,6 +160,7 @@ export async function runPiWorker(input: {
         };
       } else {
         logger.debug({ issueCommentId: params.id }, "pi tool: agree_with_github_message (issue comment)");
+        input.signal?.throwIfAborted();
         await input.commentStore?.markCompleted(pr, params.id);
         return {
           content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
@@ -173,6 +179,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact reply or response body." }),
     }),
     execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
       const entry = commentIndex.get(params.id);
       if (!entry) throw new Error(`Unknown comment id: ${params.id}`);
       const { kind, pr } = entry;
@@ -186,6 +193,7 @@ export async function runPiWorker(input: {
       } else {
         logger.debug({ issueCommentId: params.id }, "pi tool: disagree_with_github_message (issue comment)");
         await input.github.leaveComment(pr, params.text);
+        input.signal?.throwIfAborted();
         await input.commentStore?.markCompleted(pr, params.id);
         return {
           content: [{ type: "text", text: `Posted PR comment and recorded issue comment ${params.id} as completed.` }],
@@ -203,11 +211,13 @@ export async function runPiWorker(input: {
       id: Type.String({ description: "The id of the open comment to mark completed (from openComments)." }),
     }),
     execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
       const entry = commentIndex.get(params.id);
       if (!entry) throw new Error(`Unknown comment id: ${params.id}`);
       const { kind, pr } = entry;
       if (kind === "thread") {
         logger.debug({ threadId: params.id }, "pi tool: mark_github_message_completed (thread)");
+        input.signal?.throwIfAborted();
         await input.github.resolveReviewThread(params.id);
         return {
           content: [{ type: "text", text: `Resolved review thread ${params.id}.` }],
@@ -215,6 +225,7 @@ export async function runPiWorker(input: {
         };
       } else {
         logger.debug({ issueCommentId: params.id }, "pi tool: mark_github_message_completed (issue comment)");
+        input.signal?.throwIfAborted();
         await input.commentStore?.markCompleted(pr, params.id);
         return {
           content: [{ type: "text", text: `Recorded issue comment ${params.id} as completed.` }],
@@ -233,6 +244,7 @@ export async function runPiWorker(input: {
       text: Type.String({ description: "The exact reply body to post to the review thread." }),
     }),
     execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
       logger.debug({ threadId: params.threadId }, "pi tool: respond_to_comment_writer");
       const entry = commentIndex.get(params.threadId);
       if (!entry) throw new Error(`Unknown comment id: ${params.threadId}`);
@@ -262,15 +274,18 @@ export async function runPiWorker(input: {
       baseBranch: Type.Optional(Type.String({ description: "Base branch for a new PR. Defaults to repository default branch." })),
     }),
     execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
       logger.debug({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
       const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
       // Installation tokens expire after 1 hour; refresh before pushing.
       const freshToken = await input.github.getInstallationToken();
+      input.signal?.throwIfAborted();
       await writeFile(
         resolve(input.context.cloneScript.netrcDir, ".netrc"),
         `machine github.com login x-access-token password ${freshToken}\n`,
         { mode: 0o600 },
       );
+      input.signal?.throwIfAborted();
       await push(repoRoot, input.gitEnv);
       const remote = await getRemoteRef(repoRoot);
       // At most one PR per (owner, repo) per dispatch: a second push_for_review against the same repo
@@ -280,7 +295,9 @@ export async function runPiWorker(input: {
         input.context.prs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
         null;
       const isNewPr = existingPr === null;
-      const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote }));
+      input.signal?.throwIfAborted();
+      const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote, signal: input.signal }));
+      input.signal?.throwIfAborted();
       setDecision({ status: "done", prs: [pr], notifyOnComplete: true });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
@@ -336,7 +353,7 @@ export async function runPiWorker(input: {
         taskId: input.context.ticketId,
         runId: input.runId ?? input.context.ticketId,
         workspaceRoot,
-      })
+      }, input.signal)
     : [];
 
   let usage: DispatchUsage | null = null;
@@ -447,8 +464,16 @@ export async function runPiWorker(input: {
     }
   }, input.maxWorkerTimeMs);
 
+  let leaseAbort: Promise<void> | undefined;
+  const onLeaseAbort = () => {
+    leaseAbort = session.abort();
+    void leaseAbort.catch((error) => logger.error({ error, ticketId: input.context.ticketId }, "lease-loss session abort failed"));
+  };
+  input.signal?.addEventListener("abort", onLeaseAbort, { once: true });
   try {
+    input.signal?.throwIfAborted();
     await session.prompt(prompt);
+    input.signal?.throwIfAborted();
     try {
       const stats = session.getSessionStats();
       const model = session.model;
@@ -471,6 +496,7 @@ export async function runPiWorker(input: {
     }
     logger.debug({ error, ticketId: input.context.ticketId }, "session.prompt() threw after limit abort (expected)");
   } finally {
+    input.signal?.removeEventListener("abort", onLeaseAbort);
     clearTimeout(timeoutHandle);
     unsubscribeLimits();
     const transcriptPath = resolve(workspaceDir, "session.jsonl");
@@ -483,8 +509,10 @@ export async function runPiWorker(input: {
     unsubscribe();
     session.dispose();
     logger.debug({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
+    if (leaseAbort) await leaseAbort;
   }
 
+  input.signal?.throwIfAborted();
   if (limitHitReason && !decision) {
     logger.info({ ticketId: input.context.ticketId, reason: limitHitReason }, "limit hit without prior decision; handing back");
     await input.linear.commentAndHandBack(
@@ -654,11 +682,13 @@ async function createPullRequestForRepo(
     prBody: string;
     baseBranch?: string;
     remote: { owner: string; repo: string };
+    signal?: AbortSignal;
   },
 ): Promise<PullRequestRef> {
   const { remote } = params;
   const branch = await getCurrentBranch(params.repoRoot);
   const base = params.baseBranch ?? (await github.getDefaultBranch(remote.owner, remote.repo));
+  params.signal?.throwIfAborted();
   return github.createPullRequest({
     owner: remote.owner,
     repo: remote.repo,
@@ -686,8 +716,10 @@ const AGENT_TOOL_NAMES = new Set<AgentToolName>(["github_read", "linear_read", "
 export function createAgentGatewayTools(
   gateway: AgentToolGatewayLike,
   context: { taskId: string; runId: string; workspaceRoot: string },
+  signal?: AbortSignal,
 ) {
   const execute = async (tool: AgentToolName, args: Record<string, unknown>) => {
+    signal?.throwIfAborted();
     const response = await gateway.execute({ tool, arguments: args }, context);
     const serialized = JSON.stringify(response);
     const text = serialized.length > MAX_AGENT_TOOL_RESULT_CHARS
