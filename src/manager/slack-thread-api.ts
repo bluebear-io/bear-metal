@@ -63,6 +63,10 @@ export class SlackThreadApi {
     return messages;
   }
 
+  async react(key: SlackThreadKey, sourceTs: string, name: string): Promise<void> {
+    await this.writer.addReaction(key.channelId, sourceTs, name);
+  }
+
   async reply(key: SlackThreadKey, text: string): Promise<string> {
     return this.writer.postThreadMessage(key.channelId, key.threadTs, text);
   }

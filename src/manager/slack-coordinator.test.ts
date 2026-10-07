@@ -23,6 +23,7 @@ function makeApi(messages: Array<{ ts: string; user: string; text: string }>) {
   const api = {
     readThread: vi.fn(async () => messages),
     getUserEmail: vi.fn(async () => "user@example.com"),
+    react: vi.fn(async () => {}),
     reply: vi.fn(async (_key: SlackThreadKey, text: string) => {
       replies.push(text);
       return `reply-${replies.length}`;
@@ -41,6 +42,7 @@ function makeCoordinator(input: {
   runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>;
   linear?: Partial<LinearIntegration>;
   wakeResearch?: () => void;
+  logger?: ReturnType<typeof createLogger>;
 }) {
   return new SlackCoordinator({
     db: input.db, api: input.api,
@@ -48,12 +50,200 @@ function makeCoordinator(input: {
     linear: { findUserIdByEmail: async () => "linear-user-1", ...input.linear } as LinearIntegration,
     github: { getInstallationToken: async () => "token" } as ConstructorParameters<typeof SlackCoordinator>[0]["github"],
     config: {} as ConstructorParameters<typeof SlackCoordinator>[0]["config"],
-    logger: createLogger({ name: "test", level: "silent" }),
+    logger: input.logger ?? createLogger({ name: "test", level: "silent" }),
     pollIntervalMs: 60_000, wakeResearch: input.wakeResearch ?? (() => {}), runAgent: input.runAgent,
   });
 }
 
 describe("Slack coordinator", () => {
+  it("requires destination lookup consistently in the prompt and ticket tools", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> open a ticket for later" }]);
+    const destinations = { teams: [{ id: "team-new", key: "DEN", name: "Engineering" }], projects: [{ id: "project-new", name: "Project", teamIds: ["team-new"] }], cycles: [{ id: "cycle-new", teamId: "team-new", name: "Cycle", number: 1, startsAt: "2026-10-01", endsAt: "2026-10-15" }] };
+    const lookup = vi.fn(async () => destinations);
+    const create = vi.fn(async () => ({ id: "new-ticket", url: "https://linear.app/new", identifier: "DEN-2" }));
+    let actualPrompt = "";
+    const descriptions: string[] = [];
+    const coordinator = makeCoordinator({ db, api, linear: { listSlackTicketDestinations: lookup, createSlackCodingTicket: create }, runAgent: async ({ tools, prompt }) => {
+      actualPrompt = prompt;
+      for (const name of ["create_ticket", "update_task"]) {
+        const tool = tools.find((entry) => entry.name === name)!;
+        descriptions.push(tool.description);
+        const properties = (tool.parameters as { properties: Record<string, { description: string }> }).properties;
+        for (const field of ["teamId", "projectId", "cycleId"]) descriptions.push(properties[field]!.description);
+      }
+      const result = await tools.find((tool) => tool.name === "list_ticket_destinations")!.execute("lookup", {}, undefined, undefined, {} as never);
+      const returned = JSON.parse((result.content[0] as { text: string }).text) as typeof destinations;
+      await tools.find((tool) => tool.name === "create_ticket")!.execute("create", {
+        sourceTs: "100.1", requestIndex: 1, request: "Fix A later", title: "A", slackTitle: "fix A", description: "Fix A", delegateToBearMetal: false,
+        teamId: returned.teams[0]!.id, projectId: returned.projects[0]!.id, cycleId: returned.cycles[0]!.id,
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(actualPrompt).toContain("Before supplying teamId, projectId, or cycleId to any task tool, call list_ticket_destinations");
+      expect(actualPrompt).toContain("Never infer destination IDs from memory or unrelated entities");
+      expect(descriptions).toHaveLength(8);
+      for (const description of descriptions) expect(description).toContain("list_ticket_destinations");
+      expect(lookup).toHaveBeenCalledOnce();
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ teamId: "team-new", projectId: "project-new", cycleId: "cycle-new" }));
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|fix A>."]);
+    } finally { await db.close(); }
+  });
+
+  it.each([false, true])("reacts only after successful unsubscription (failure=%s)", async (failure) => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> stop following" }]);
+    if (failure) vi.spyOn(db, "unsubscribeSlackThread").mockRejectedValueOnce(new Error("Unsubscription failed"));
+    let followingWhenReacted: boolean | undefined;
+    vi.mocked(api.react).mockImplementation(async (thread) => { followingWhenReacted = await db.isSlackThreadFollowing(thread); });
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "unsubscribe_thread")!.execute("stop", { sourceTs: "100.1" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(api.react).toHaveBeenCalledTimes(failure ? 0 : 1);
+      if (!failure) {
+        expect(api.react).toHaveBeenCalledWith(key, "100.1", "thumbsup");
+        expect(followingWhenReacted).toBe(false);
+      }
+      expect(replies).toEqual([]);
+      expect(await db.isSlackThreadFollowing(key)).toBe(failure);
+    } finally { await db.close(); }
+  });
+
+  it.each([false, true])("retries an unsubscribe reaction after restart while unfollowed (edit=%s)", async (edit) => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-reaction-recovery-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    await db.recordSlackMessage(key, "100.1");
+    const sourceTs = edit ? "100.2" : "100.1";
+    if (edit) await db.recordSlackEdit(key, sourceTs, "100.1", "U1", "<@UBOT> stop following");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> stop following" }]);
+    vi.mocked(api.react).mockRejectedValueOnce(new Error("Slack HTTP 503"));
+    const runAgent = vi.fn(async ({ tools }: Parameters<NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>>[0]) => {
+      await tools.find((tool) => tool.name === "unsubscribe_thread")!.execute("stop", { sourceTs }, undefined, undefined, {} as never);
+    });
+    try {
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+      expect(await db.listSlackPendingThreads()).toEqual([key]);
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      const coordinator = makeCoordinator({ db, api, runAgent });
+      await coordinator.poll();
+      await coordinator.wake(key);
+      expect(api.react).toHaveBeenCalledTimes(2);
+      expect(api.react).toHaveBeenLastCalledWith(key, "100.1", "thumbsup");
+      expect(runAgent).toHaveBeenCalledOnce();
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+      await coordinator.wake(key);
+      expect(api.react).toHaveBeenCalledTimes(2);
+      expect(replies).toEqual([]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(["message_not_found", "missing_scope", "service_unavailable"])("continues resumed DMs independently of reaction failure %s", async (error) => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-reaction-failure-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    await db.recordSlackMessage(key, "100.1");
+    const messages = [{ ts: "100.1", user: "U1", text: "<@UBOT> stop following" }];
+    const { api, replies } = makeApi(messages);
+    const fetchImpl = vi.fn(async () => Response.json({ ok: false, error }));
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: createLogger({ name: "test", level: "silent" }), fetchImpl });
+    vi.mocked(api.react).mockImplementation(async (_thread, ts, name) => writer.addReaction("C1", ts, name));
+    const runAgent = vi.fn(async ({ tools }: Parameters<NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>>[0]) => {
+      if (runAgent.mock.calls.length === 1) {
+        await tools.find((tool) => tool.name === "unsubscribe_thread")!.execute("stop", { sourceTs: "100.1" }, undefined, undefined, {} as never);
+      } else {
+        await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.2", requestIndex: 1, answer: "Hello again" }, undefined, undefined, {} as never);
+      }
+    });
+    const logger = createLogger({ name: "test", level: "silent" });
+    const logError = vi.spyOn(logger, "error");
+    let coordinator = makeCoordinator({ db, api, runAgent, logger });
+    try {
+      await coordinator.wake(key);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      const state = error === "service_unavailable" ? "queued" : "failed";
+      const expectedFailure = { sourceTs: "100.1", messageTs: "100.1", state, error: `SlackReactionError: Slack reactions.add failed: ${error}` };
+      expect(await db.listSlackUnsubscribeReactions(key, true)).toEqual([expectedFailure]);
+      expect(logError).toHaveBeenCalledWith(expect.objectContaining({ state, sourceTs: "100.1" }), "Slack unsubscribe reaction delivery failed");
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      expect(await db.listSlackUnsubscribeReactions(key, true)).toEqual([expectedFailure]);
+      coordinator = makeCoordinator({ db, api, runAgent, logger });
+      await db.followSlackThread(key, "100.2", true);
+      await db.recordSlackMessage(key, "100.2");
+      messages.push({ ts: "100.2", user: "U1", text: "Hello" });
+      await coordinator.wake(key);
+      expect(runAgent).toHaveBeenCalledTimes(2);
+      expect(replies).toEqual(["Hello again"]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(fetchImpl).toHaveBeenCalledTimes(error === "service_unavailable" ? 2 : 1);
+      expect(await db.listSlackUnsubscribeReactions(key, true)).toEqual([expectedFailure]);
+      if (error === "service_unavailable") {
+        vi.mocked(api.react).mockResolvedValueOnce();
+        await coordinator.wake(key);
+        expect(await db.listSlackUnsubscribeReactions(key, true)).toEqual([expect.objectContaining({ state: "posted", error: null })]);
+      }
+      expect(runAgent).toHaveBeenCalledTimes(2);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it("reacts to the original Slack message when an edit unsubscribes", async () => {
+    const db = await makeDb();
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "<@UBOT> stop following");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> stop following" }]);
+    try {
+      await makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+        await tools.find((tool) => tool.name === "unsubscribe_thread")!.execute("stop", { sourceTs: "100.2" }, undefined, undefined, {} as never);
+      } }).wake(key);
+      expect(api.react).toHaveBeenCalledWith(key, "100.1", "thumbsup");
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+      expect(replies).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("reports unrecovered task failures through direct_answer without claiming success", async () => {
+    const db = await makeDb();
+    const original = (await db.createSlackTask({ type: "coding", delegateToBearMetal: false, thread: key, sourceTs: "100.1", requestIndex: 1, request: "Fix A later" })).task;
+    await db.attachSlackTicket(original.id, "old-ticket", "https://linear.app/old");
+    await db.beginSlackBatchAcknowledgment([original.id]);
+    await db.markSlackTaskCoordinated(original.id, "old-reply");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> update the ticket to B" }]);
+    const create = vi.fn(async () => { throw new Error("Linear unavailable"); });
+    const delegate = vi.fn();
+    let actualPrompt = "";
+    const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent: async ({ tools, prompt }) => {
+      actualPrompt = prompt;
+      const update = tools.find((tool) => tool.name === "update_task")!;
+      for (const call of ["first", "retry"]) await expect(update.execute(call, {
+        id: original.id, sourceTs: "100.2", requestIndex: 1, type: "coding", request: "Fix B", teamId: "team", title: "B", description: "Fix B", slackTitle: "fix B",
+      }, undefined, undefined, {} as never)).rejects.toThrow("Linear unavailable");
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("failure", { sourceTs: "100.2", requestIndex: 2, answer: "I couldn't create the replacement ticket. The original is unchanged." }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(actualPrompt).toContain("If task tool calls fail and subsequent attempts do not recover, use direct_answer to report the failure.");
+      expect(actualPrompt).toContain("Never claim a ticket was created, work started, or delegation succeeded without a tool result confirming it.");
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(delegate).not.toHaveBeenCalled();
+      expect(replies).toEqual(["I couldn't create the replacement ticket. The original is unchanged."]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
   it.each([false, true])("creates a ticket with explicit delegation=%s", async (delegateToBearMetal) => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
@@ -980,14 +1170,98 @@ describe("Slack coordinator", () => {
     }
   });
 
-  it("cancels an old ticket before creating its replacement without a cancellation reply", async () => {
+  it.each([false, true])("preserves the original on replacement failure and retries after restart (replacement ID=%s)", async (retryReplacement) => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-replacement-recovery-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    const original = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "100.1", requestIndex: 1, request: "Implement A" })).task;
+    await db.attachSlackTicket(original.id, "old-ticket", "https://linear.app/old");
+    await db.beginSlackBatchAcknowledgment([original.id]);
+    await db.markSlackTaskCoordinated(original.id, "original-reply");
+    const before = await db.getSlackTask(original.id);
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> implement B instead" }]);
+    const create = vi.fn().mockRejectedValueOnce(new Error("Replacement creation failed")).mockResolvedValue({ id: "new-ticket", url: "https://linear.app/new", identifier: "DEN-2" });
+    const cancel = vi.fn();
+    const delegate = vi.fn();
+    let retryId = original.id;
+    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools }) => {
+      await tools.find((tool) => tool.name === "update_task")!.execute("update", {
+        id: retryId, sourceTs: "100.2", requestIndex: 1, type: "coding", request: "Implement B", teamId: "team", title: "B", slackTitle: "implement B", description: "Implement B",
+      }, undefined, undefined, {} as never);
+    };
+    try {
+      await makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, cancelSlackCodingTicket: cancel, delegateSlackCodingTicket: delegate }, runAgent }).wake(key);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(await db.getSlackTask(original.id)).toEqual(before);
+      expect(cancel).not.toHaveBeenCalled();
+      expect(delegate).not.toHaveBeenCalled();
+      expect(replies).toEqual([]);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
+      const failed = (await db.listSlackThreadTasks(key)).find((task) => task.id !== original.id)!;
+      expect(failed.state).toBe("failed");
+      expect(failed.replacesTaskId).toBe(original.id);
+      if (retryReplacement) retryId = failed.id;
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      await makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, cancelSlackCodingTicket: cancel, delegateSlackCodingTicket: delegate }, runAgent }).wake(key);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(cancel).toHaveBeenCalledWith("old-ticket");
+      expect(delegate).toHaveBeenCalledWith("new-ticket");
+      expect((await db.getSlackTask(original.id))).toMatchObject({ state: "canceled", supersededBy: failed.id });
+      expect((await db.getSlackTask(failed.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(["cancellation", "delegation"])("resumes an attached replacement after %s fails without creating another ticket", async (failure) => {
+    const db = await makeDb();
+    const old = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "100.1", requestIndex: 1, request: "Implement A" })).task;
+    await db.attachSlackTicket(old.id, "old-ticket", "https://linear.app/old");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> implement B instead" }]);
+    const create = vi.fn(async () => ({ id: "new-ticket", url: "https://linear.app/new", identifier: "DEN-2" }));
+    let failed = false;
+    const cancel = vi.fn(async () => { if (failure === "cancellation" && !failed) { failed = true; throw new Error("Cancellation rejected"); } });
+    const delegate = vi.fn(async () => { if (failure === "delegation" && !failed) { failed = true; throw new Error("Delegation rejected"); } });
+    const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, cancelSlackCodingTicket: cancel, delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "update_task")!.execute("update", {
+        id: old.id, sourceTs: "100.2", requestIndex: 1, type: "coding", request: "Implement B", teamId: "team", title: "B", slackTitle: "implement B", description: "Implement B",
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(create).toHaveBeenCalledOnce();
+      const replacement = (await db.listSlackThreadTasks(key)).find((task) => task.id !== old.id)!;
+      expect(replacement).toMatchObject({ state: "failed", ticketId: "new-ticket" });
+      expect(replies).toEqual([]);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
+      await coordinator.wake(key);
+      expect(create).toHaveBeenCalledOnce();
+      expect((await db.getSlackTask(replacement.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
+      expect((await db.getSlackTask(old.id))).toMatchObject({ state: "canceled", supersededBy: replacement.id });
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("creates and attaches a replacement before canceling the old ticket", async () => {
     const db = await makeDb();
     const old = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "100.1", requestIndex: 1, request: "Implement A" })).task;
     await db.attachSlackTicket(old.id, "old-ticket", "https://linear.app/old");
     await db.recordSlackMessage(key, "100.2");
     const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "Implement B instead" }]);
     const order: string[] = [];
-    const cancel = vi.fn(async (id: string) => { order.push(`cancel ${id}`); });
+    const cancel = vi.fn(async (id: string) => {
+      const replacement = (await db.listSlackThreadTasks(key)).find((task) => task.ticketId === "new-ticket");
+      expect(replacement?.state).toBe("awaiting_coordination");
+      order.push(`cancel ${id}`);
+    });
     const create = vi.fn(async () => { order.push("create new"); return { id: "new-ticket", url: "https://linear.app/new", identifier: "DEN-2" }; });
     const delegate = vi.fn(async () => { order.push("delegate new"); });
     const coordinator = makeCoordinator({ db, api, linear: { cancelSlackCodingTicket: cancel, createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
@@ -1000,7 +1274,7 @@ describe("Slack coordinator", () => {
     } });
     try {
       await coordinator.wake(key);
-      expect(order).toEqual(["cancel old-ticket", "create new", "delegate new"]);
+      expect(order).toEqual(["create new", "cancel old-ticket", "delegate new"]);
       expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
       expect((await db.getSlackTask(old.id))?.state).toBe("canceled");
       expect(await db.listSlackPendingThreads()).toEqual([]);

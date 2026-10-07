@@ -63,6 +63,7 @@ export interface TaskRow {
   slack_ack_state: string | null;
   coordinated_at: string | null;
   superseded_by: string | null;
+  slack_replaces_task_id: string | null;
   iteration_number: number;
   worker_heartbeat_at: string | null;
   reclaim_count: number;
@@ -197,6 +198,13 @@ function rowToAgentRun(row: TaskRow): AgentRunSummary {
   };
 }
 
+export interface SlackUnsubscribeReaction {
+  sourceTs: string;
+  messageTs: string;
+  state: "queued" | "posted" | "failed";
+  error: string | null;
+}
+
 export interface SlackMessageEdit {
   ts: string;
   originalTs: string;
@@ -223,9 +231,11 @@ export interface SlackTaskRecord {
   ackState: "posting" | "posted" | "failed" | null;
   coordinatedAt: string | null;
   supersededBy: string | null;
+  replacesTaskId: string | null;
 }
 
 export interface NewSlackTask {
+  replacesTaskId?: string;
   type: SlackTaskRecord["type"];
   thread: SlackThreadKey;
   sourceTs: string;
@@ -275,6 +285,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     ackState: row.slack_ack_state,
     coordinatedAt: row.coordinated_at,
     supersededBy: row.superseded_by,
+    replacesTaskId: row.slack_replaces_task_id,
   };
 }
 
@@ -672,6 +683,9 @@ export interface DbClient {
   beginSlackReplyGroup(key: SlackThreadKey, replies: SlackCoordinationReply[]): Promise<string>;
   finishSlackReplyGroup(key: SlackThreadKey, groupKey: string, outcome: "posted" | "rejected" | "uncertain", replyTs: string | null, error: string | null): Promise<void>;
   unsubscribeSlackThread(key: SlackThreadKey, sourceTs: string): Promise<void>;
+  listSlackUnsubscribeReactions(key: SlackThreadKey, includeCompleted?: boolean): Promise<SlackUnsubscribeReaction[]>;
+  markSlackUnsubscribeReactionPosted(key: SlackThreadKey, sourceTs: string): Promise<void>;
+  failSlackUnsubscribeReaction(key: SlackThreadKey, sourceTs: string, error: string, permanent: boolean): Promise<void>;
   isSlackThreadFollowing(key: SlackThreadKey, sourceTs?: string): Promise<boolean>;
   hasSlackThread(key: SlackThreadKey): Promise<boolean>;
   recordSlackMessage(key: SlackThreadKey, messageTs: string): Promise<boolean>;
@@ -690,6 +704,7 @@ export interface DbClient {
   approveSlackResearchResult(id: string): Promise<void>;
   failSlackTask(id: string, error: string): Promise<void>;
   attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void>;
+  resumeSlackTicketReplacement(id: string): Promise<void>;
   cancelSlackTask(id: string, supersededBy?: string): Promise<void>;
   beginSlackTaskReply(id: string): Promise<void>;
   beginSlackBatchAcknowledgment(ids: string[]): Promise<void>;
@@ -1543,14 +1558,57 @@ export class SqlDbClient implements DbClient {
   async unsubscribeSlackThread(key: SlackThreadKey, sourceTs: string): Promise<void> {
     const nextMention = `(SELECT MIN(message_ts) FROM slack_thread_mentions mention WHERE mention.workspace_id = slack_threads.workspace_id
       AND mention.channel_id = slack_threads.channel_id AND mention.thread_ts = slack_threads.thread_ts AND mention.message_ts > ?)`;
-    const result = await this.run(
-      `UPDATE slack_threads SET following = CASE WHEN ${nextMention} IS NULL THEN 0 ELSE 1 END,
-         first_message_ts = COALESCE(${nextMention}, first_message_ts),
-         unsubscribed_message_ts = ?
-       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?`,
-      [sourceTs, sourceTs, sourceTs, key.workspaceId, key.channelId, key.threadTs],
+    const update = `UPDATE slack_threads SET following = CASE WHEN ${nextMention} IS NULL THEN 0 ELSE 1 END,
+         first_message_ts = COALESCE(${nextMention}, first_message_ts), unsubscribed_message_ts = ?
+         WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?`;
+    const params = [sourceTs, sourceTs, sourceTs, key.workspaceId, key.channelId, key.threadTs];
+    const insert = `INSERT INTO slack_unsubscribe_reactions (workspace_id, channel_id, thread_ts, source_ts, message_ts)
+      SELECT workspace_id, channel_id, thread_ts, message_ts, COALESCE(original_message_ts, message_ts)
+      FROM slack_processed_messages WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND message_ts = ?
+      ON CONFLICT (workspace_id, channel_id, thread_ts, source_ts) DO NOTHING`;
+    const reactionParams = [key.workspaceId, key.channelId, key.threadTs, sourceTs];
+    // Persist the acknowledgement atomically with unsubscription, even when following ends.
+    if (this.dialect === "sqlite") {
+      const db = this.requireSqlite();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (db.prepare(update).run(...params).changes !== 1) throw new Error("Cannot unsubscribe unknown Slack thread");
+        db.prepare(insert).run(...reactionParams);
+        db.exec("COMMIT");
+      } catch (err) { db.exec("ROLLBACK"); throw err; }
+      return;
+    }
+    const client = await this.requirePg().connect();
+    try {
+      await client.query("BEGIN");
+      if ((await client.query(this.sql(update), params)).rowCount !== 1) throw new Error("Cannot unsubscribe unknown Slack thread");
+      await client.query(this.sql(insert), reactionParams);
+      await client.query("COMMIT");
+    } catch (err) { await client.query("ROLLBACK"); throw err; }
+    finally { client.release(); }
+  }
+
+  async listSlackUnsubscribeReactions(key: SlackThreadKey, includeCompleted = false): Promise<SlackUnsubscribeReaction[]> {
+    const rows = await this.query<{ source_ts: string; message_ts: string; state: SlackUnsubscribeReaction["state"]; error: string | null }>(
+      `SELECT source_ts, message_ts, state, error FROM slack_unsubscribe_reactions WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND (state = 'queued' OR ? = 1) ORDER BY source_ts`,
+      [key.workspaceId, key.channelId, key.threadTs, Number(includeCompleted)],
     );
-    if (result.changes !== 1) throw new Error(`Cannot unsubscribe unknown Slack thread ${key.channelId}/${key.threadTs}`);
+    return rows.map((row) => ({ sourceTs: row.source_ts, messageTs: row.message_ts, state: row.state, error: row.error }));
+  }
+
+  async markSlackUnsubscribeReactionPosted(key: SlackThreadKey, sourceTs: string): Promise<void> {
+    const result = await this.run(`UPDATE slack_unsubscribe_reactions SET posted = 1, state = 'posted', error = NULL WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND source_ts = ? AND state = 'queued'`,
+      [key.workspaceId, key.channelId, key.threadTs, sourceTs]);
+    if (result.changes !== 1) throw new Error("Cannot finish unsubscribe reaction delivery");
+  }
+
+  async failSlackUnsubscribeReaction(key: SlackThreadKey, sourceTs: string, error: string, permanent: boolean): Promise<void> {
+    if (!error.trim()) throw new Error("Reaction delivery failure requires an error");
+    const result = await this.run(
+      `UPDATE slack_unsubscribe_reactions SET state = ?, error = ? WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND source_ts = ? AND state = 'queued'`,
+      [permanent ? "failed" : "queued", error, key.workspaceId, key.channelId, key.threadTs, sourceTs],
+    );
+    if (result.changes !== 1) throw new Error("Cannot record unsubscribe reaction failure");
   }
 
   async isSlackThreadFollowing(key: SlackThreadKey, sourceTs?: string): Promise<boolean> {
@@ -1650,7 +1708,8 @@ export class SqlDbClient implements DbClient {
          (slack_ack_state IS NULL AND slack_state = 'awaiting_coordination' AND task_type = 'coding') OR
          (slack_ack_state IS NULL AND task_type = 'research' AND slack_state IN ('queued', 'running')) OR
          (slack_ack_state IS NULL AND slack_state = 'canceled' AND coordinated_at IS NULL AND superseded_by IS NULL)
-       )`,
+       )
+       UNION SELECT workspace_id, channel_id, thread_ts FROM slack_unsubscribe_reactions WHERE state = 'queued'`,
     );
     return rows.map((row) => {
       if (!row.workspace_id || !row.channel_id || !row.thread_ts) throw new Error("Pending Slack thread has missing identity");
@@ -1693,17 +1752,19 @@ export class SqlDbClient implements DbClient {
     const now = this.clock.nowIso();
     const result = await this.run(
       `INSERT INTO tasks (id, task_type, slack_workspace_id, slack_channel_id, slack_thread_ts,
-       slack_source_ts, slack_source_user_id, slack_request_index, slack_request, slack_quote, slack_delegate_to_bear_metal, slack_state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+       slack_source_ts, slack_source_user_id, slack_request_index, slack_request, slack_quote, slack_delegate_to_bear_metal, slack_replaces_task_id, slack_state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
        ON CONFLICT (slack_workspace_id, slack_channel_id, slack_source_ts, slack_request_index) DO NOTHING`,
       [id, input.type, input.thread.workspaceId, input.thread.channelId, input.thread.threadTs,
-        input.sourceTs, input.sourceUserId ?? null, input.requestIndex, input.request, input.quote ?? null, input.type === "coding" ? Number(input.delegateToBearMetal) : null, now, now],
+        input.sourceTs, input.sourceUserId ?? null, input.requestIndex, input.request, input.quote ?? null, input.type === "coding" ? Number(input.delegateToBearMetal) : null, input.replacesTaskId ?? null, now, now],
     );
     const rows = await this.query<TaskRow>(
       `SELECT * FROM tasks WHERE slack_workspace_id = ? AND slack_channel_id = ? AND slack_source_ts = ? AND slack_request_index = ?`,
       [input.thread.workspaceId, input.thread.channelId, input.sourceTs, input.requestIndex],
     );
     if (!rows[0]) throw new Error("Slack task disappeared after insertion");
+    if (input.replacesTaskId !== undefined && rows[0].slack_replaces_task_id !== input.replacesTaskId) throw new Error("Conflicting replacement original task");
+    if (rows[0].id === rows[0].slack_replaces_task_id) throw new Error("Cannot replace a task with itself");
     return { task: rowToSlackTask(rows[0]), created: result.changes === 1 };
   }
 
@@ -1793,6 +1854,16 @@ export class SqlDbClient implements DbClient {
     if (result.changes !== 1) throw new Error(`Cannot fail Slack task: ${id}`);
   }
 
+  async resumeSlackTicketReplacement(id: string): Promise<void> {
+    const result = await this.run(
+      `UPDATE tasks SET slack_state = CASE WHEN ticket_id IS NULL THEN 'queued' ELSE 'awaiting_coordination' END,
+       error = NULL, updated_at = ? WHERE id = ? AND task_type = 'coding' AND slack_state = 'failed'
+       AND slack_ack_state IS NULL`,
+      [this.clock.nowIso(), id],
+    );
+    if (result.changes !== 1) throw new Error(`Cannot resume Slack ticket replacement: ${id}`);
+  }
+
   async attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void> {
     const result = await this.run(
       `UPDATE tasks SET ticket_id = ?, ticket_url = ?, slack_state = 'awaiting_coordination', updated_at = ?
@@ -1803,6 +1874,7 @@ export class SqlDbClient implements DbClient {
   }
 
   async cancelSlackTask(id: string, supersededBy?: string): Promise<void> {
+    if (id === supersededBy) throw new Error("Cannot replace a task with itself");
     const result = await this.run(
       `UPDATE tasks SET slack_state = 'canceled', slack_ack_state = NULL, superseded_by = ?, coordinated_at = NULL, updated_at = ?
        WHERE id = ? AND task_type IN ('coding', 'research') AND slack_state NOT IN ('failed', 'canceled')`,

@@ -353,3 +353,18 @@ CREATE INDEX IF NOT EXISTS slack_messages_pending ON slack_processed_messages
   (workspace_id, channel_id, thread_ts, processed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS slack_task_request ON tasks
   (slack_workspace_id, slack_channel_id, slack_source_ts, slack_request_index);
+
+ALTER TABLE tasks ADD COLUMN slack_replaces_task_id TEXT;
+CREATE TABLE IF NOT EXISTS slack_unsubscribe_reactions (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  source_ts TEXT NOT NULL,
+  message_ts TEXT NOT NULL,
+  posted INTEGER NOT NULL DEFAULT 0 CHECK (posted IN (0, 1)),
+  PRIMARY KEY (workspace_id, channel_id, thread_ts, source_ts)
+);
+
+ALTER TABLE slack_unsubscribe_reactions ADD COLUMN state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'posted', 'failed'));
+ALTER TABLE slack_unsubscribe_reactions ADD COLUMN error TEXT;
+UPDATE slack_unsubscribe_reactions SET state = 'posted' WHERE posted = 1 AND state = 'queued';

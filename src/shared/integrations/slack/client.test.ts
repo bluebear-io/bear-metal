@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createLogger, type Logger } from "../../logger.js";
 import { SlackThreadApi } from "../../../manager/slack-thread-api.js";
-import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackPostMessageError, SlackReadClient } from "./client.js";
+import { formatMaxIterationsReachedText, formatNeedsInputText, formatNotificationText, SlackIntegration, SlackPostMessageError, SlackReactionError, SlackReadClient } from "./client.js";
 import { pino } from "pino";
 
 const SILENT_LOGGER = createLogger({ name: "slack-test", level: "silent" });
@@ -24,6 +24,40 @@ function captureLogger(): { logger: Logger; records: LogRecord[] } {
   ) as unknown as Logger;
   return { logger, records };
 }
+
+describe("Slack unsubscribe reaction", () => {
+  it.each([{ ok: true }, { ok: false, error: "already_reacted" }])("reacts on the source message with the harness token and accepts %j", async (body) => {
+    const fetchImpl = vi.fn(async () => Response.json(body));
+    const writer = new SlackIntegration({ token: "harness-token", channel: "C1", logger: SILENT_LOGGER, fetchImpl });
+    const api = new SlackThreadApi({} as SlackReadClient, writer);
+    await api.react({ workspaceId: "T1", channelId: "C1", threadTs: "100.0" }, "100.2", "thumbsup");
+    expect(fetchImpl).toHaveBeenCalledWith("https://slack.com/api/reactions.add", {
+      method: "POST", headers: { "Content-Type": "application/json; charset=utf-8", Authorization: "Bearer harness-token" },
+      body: JSON.stringify({ channel: "C1", timestamp: "100.2", name: "thumbsup" }),
+    });
+  });
+
+  it.each(["missing_scope", "message_not_found"])("reports reaction rejection: %s", async (error) => {
+    const writer = new SlackIntegration({ token: "harness-token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => Response.json({ ok: false, error }) });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toMatchObject({ name: "SlackReactionError", permanent: true, message: expect.stringContaining(error) });
+  });
+  it.each(["internal_error", "service_unavailable", "ratelimited", "unknown_error"])("keeps Slack error %s retryable", async (error) => {
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => Response.json({ ok: false, error }) });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toMatchObject({ permanent: false });
+  });
+
+  it.each([[403, true], [408, false], [429, false], [503, false]])("classifies HTTP %i reaction failures (permanent=%s)", async (status, permanent) => {
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => new Response(null, { status }) });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toMatchObject({ name: SlackReactionError.name, permanent });
+  });
+
+  it("leaves a lost connection retryable", async () => {
+    const error = new TypeError("Connection lost");
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: SILENT_LOGGER, fetchImpl: async () => { throw error; } });
+    await expect(writer.addReaction("C1", "100.2", "thumbsup")).rejects.toBe(error);
+  });
+
+});
 
 describe("SlackReadClient", () => {
   it("authenticates read requests with the agent bot token", async () => {

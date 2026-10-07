@@ -70,6 +70,23 @@ const CONFIRMED_REPLY_REJECTIONS = new Set([
   "messages_tab_disabled", "ekm_access_denied", "cannot_reply_to_message",
 ]);
 
+const PERMANENT_REACTION_ERRORS = new Set([
+  "access_denied", "accesslimited", "account_inactive", "bad_timestamp", "channel_not_found",
+  "deprecated_endpoint", "ekm_access_denied", "enterprise_is_restricted", "invalid_arg_name",
+  "invalid_arguments", "invalid_array_arg", "invalid_auth", "invalid_charset", "invalid_form_data",
+  "invalid_name", "invalid_post_type", "is_archived", "message_not_found", "method_deprecated",
+  "missing_post_type", "missing_scope", "no_access", "no_item_specified", "no_permission",
+  "not_allowed_token_type", "not_authed", "not_reactable", "team_access_not_granted", "thread_locked",
+  "token_expired", "token_revoked", "too_many_emoji", "too_many_reactions", "two_factor_setup_required",
+]);
+
+export class SlackReactionError extends Error {
+  constructor(message: string, readonly permanent: boolean) {
+    super(message);
+    this.name = "SlackReactionError";
+  }
+}
+
 export class SlackThreadReplyRejectedError extends Error {
   constructor(message: string) {
     super(message);
@@ -202,6 +219,20 @@ export class SlackIntegration implements Integration {
       notificationKind: "max_iterations_reached",
       destinationType,
     });
+  }
+
+  async addReaction(channel: string, sourceTs: string, name: string): Promise<void> {
+    if (!channel || !sourceTs || !name) throw new Error("Slack reaction requires channel, source timestamp, and emoji name");
+    const response = await this.fetchImpl(`${this.apiBaseUrl}/reactions.add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${this.token}` },
+      body: JSON.stringify({ channel, timestamp: sourceTs, name }),
+    });
+    if (!response.ok) throw new SlackReactionError(`Slack reactions.add HTTP ${response.status}`, response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429);
+    const body = await response.json() as { ok?: boolean; error?: string };
+    if (body.ok !== true && !(body.ok === false && body.error === "already_reacted")) {
+      throw new SlackReactionError(`Slack reactions.add failed: ${body.error ?? "missing ok"}`, body.ok === false && typeof body.error === "string" && PERMANENT_REACTION_ERRORS.has(body.error));
+    }
   }
 
   async postThreadMessage(channel: string, threadTs: string, text: string, blocks?: Array<Record<string, unknown>>): Promise<string> {
