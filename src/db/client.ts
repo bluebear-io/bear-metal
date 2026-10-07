@@ -696,6 +696,7 @@ export interface DbClient {
   beginSlackReplyGroup(key: SlackThreadKey, replies: SlackCoordinationReply[]): Promise<string>;
   finishSlackReplyGroup(key: SlackThreadKey, groupKey: string, outcome: "posted" | "rejected" | "uncertain", replyTs: string | null, error: string | null): Promise<void>;
   unsubscribeSlackThread(key: SlackThreadKey, sourceTs: string): Promise<void>;
+  suspendSlackChannel(workspaceId: string, channelId: string): Promise<void>;
   listSlackUnsubscribeReactions(key: SlackThreadKey, includeCompleted?: boolean): Promise<SlackUnsubscribeReaction[]>;
   markSlackUnsubscribeReactionPosted(key: SlackThreadKey, sourceTs: string): Promise<void>;
   failSlackUnsubscribeReaction(key: SlackThreadKey, sourceTs: string, error: string, permanent: boolean): Promise<void>;
@@ -1758,6 +1759,11 @@ export class SqlDbClient implements DbClient {
       if (!row.edited_user || row.edited_text === null) throw new Error(`Slack edit ${row.message_ts} is missing user or text`);
       return { ts: row.message_ts, originalTs: row.original_message_ts, user: row.edited_user, text: row.edited_text };
     });
+  }
+
+  async suspendSlackChannel(workspaceId: string, channelId: string): Promise<void> {
+    if (!workspaceId || !channelId) throw new Error("Slack channel suspension requires workspace and channel IDs");
+    await this.run(`UPDATE slack_threads SET following = 0 WHERE workspace_id = ? AND channel_id = ?`, [workspaceId, channelId]);
   }
 
   async listSlackPendingThreads(): Promise<SlackThreadKey[]> {
