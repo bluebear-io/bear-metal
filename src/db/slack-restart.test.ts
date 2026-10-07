@@ -8,6 +8,30 @@ import { SqlDbClient, type SlackThreadKey } from "./client.js";
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "1.0" };
 
 describe("Slack restart recovery", () => {
+  it("migrates legacy coding delegation and preserves explicit creation-only choices on restart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-delegation-migration-"));
+    const path = join(dir, "db.sqlite");
+    const url = `sqlite:${path}`;
+    let db = new SqlDbClient(url, 5);
+    try {
+      await db.initSchema();
+      await db.followSlackThread(key, "1.1");
+      const legacyTask = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "1.1", requestIndex: 1, request: "Fix A" })).task;
+      await db.close();
+      const legacy = new DatabaseSync(path);
+      try { legacy.exec("ALTER TABLE tasks DROP COLUMN slack_delegate_to_bear_metal"); } finally { legacy.close(); }
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      expect((await db.getSlackTask(legacyTask.id))?.delegateToBearMetal).toBe(true);
+      const later = (await db.createSlackTask({ type: "coding", delegateToBearMetal: false, thread: key, sourceTs: "1.2", requestIndex: 1, request: "Fix B later" })).task;
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      expect((await db.getSlackTask(legacyTask.id))?.delegateToBearMetal).toBe(true);
+      expect((await db.getSlackTask(later.id))?.delegateToBearMetal).toBe(false);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it("migrates cancellation receipts to stable task identities without resetting delivery state", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-cancellation-identity-"));
     const path = join(dir, "db.sqlite");
@@ -192,7 +216,7 @@ describe("Slack restart recovery", () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     try {
-      const slackTask = (await db.createSlackTask({ type: "coding", thread: key, sourceTs: "2.1", requestIndex: 1, request: "Implement the change" })).task;
+      const slackTask = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "2.1", requestIndex: 1, request: "Implement the change" })).task;
       await db.attachSlackTicket(slackTask.id, "ticket-1", "https://linear.app/ticket-1");
       expect(await db.listTracked()).toEqual([]);
       expect(await db.countTracked()).toBe(0);

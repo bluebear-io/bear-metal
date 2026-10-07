@@ -54,6 +54,116 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it.each([false, true])("creates a ticket with explicit delegation=%s", async (delegateToBearMetal) => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> open a ticket" }]);
+    const create = vi.fn(async () => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" }));
+    const delegate = vi.fn();
+    const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "create_ticket")!.execute("create", {
+        sourceTs: "100.1", requestIndex: 1, request: "Fix A", teamId: "team", title: "A", slackTitle: "fix A", description: "Fix A", delegateToBearMetal,
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ assigneeId: "linear-user-1" }));
+      expect(delegate).toHaveBeenCalledTimes(delegateToBearMetal ? 1 : 0);
+      expect(replies).toEqual([delegateToBearMetal ? "Created a ticket for <https://linear.app/new|fix A> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix A>."]);
+      expect((await db.listSlackThreadTasks(key))[0]).toMatchObject({ delegateToBearMetal, state: "coordinated" });
+      expect(await db.listTracked()).toEqual([]);
+      expect(await db.acquireNext("worker-1")).toBeNull();
+    } finally { await db.close(); }
+  });
+
+  it("requires an explicit delegation choice before creating a ticket", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> open a ticket for A" }]);
+    const create = vi.fn(async () => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" }));
+    let actualPrompt = "";
+    let delegationRequired = false;
+    const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn() }, runAgent: async ({ tools, prompt }) => {
+      actualPrompt = prompt;
+      const ticket = tools.find((tool) => tool.name === "create_ticket")!;
+      delegationRequired = (ticket.parameters as { required?: string[] }).required?.includes("delegateToBearMetal") ?? false;
+      await expect(ticket.execute("missing", { sourceTs: "100.1", requestIndex: 1, request: "Fix A", teamId: "team", title: "A", slackTitle: "fix A", description: "Fix A" }, undefined, undefined, {} as never)).rejects.toThrow("delegation choice");
+      await tools.find((tool) => tool.name === "clarify_request")!.execute("clarify", { sourceTs: "100.1", requestIndex: 1, question: "Should I start working on it, or just create the ticket?" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(delegationRequired).toBe(true);
+      expect(actualPrompt).toContain("delegateToBearMetal=false");
+      expect(actualPrompt).toContain("delegateToBearMetal=true");
+      expect(actualPrompt).toContain("clarify_request before creating the ticket");
+      expect(create).not.toHaveBeenCalled();
+      expect(replies).toEqual(["<@U1>, Should I start working on it, or just create the ticket?"]);
+      expect(await db.listSlackThreadTasks(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
+  it("preserves creation-only intent after a rejected reply and restart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-ticket-choice-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> open a ticket for later" }]);
+    const create = vi.fn(async () => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" }));
+    const delegate = vi.fn();
+    let rejected = false;
+    vi.mocked(api.reply).mockImplementation(async (_key, text) => {
+      if (!rejected) { rejected = true; throw new SlackThreadReplyRejectedError("channel_not_found"); }
+      replies.push(text);
+      return "reply-1";
+    });
+    let runs = 0;
+    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools }) => {
+      await tools.find((tool) => tool.name === "create_ticket")!.execute("create", {
+        sourceTs: "100.1", requestIndex: 1, request: "Fix A", teamId: "team", title: "A", slackTitle: "fix A", description: "Fix A", delegateToBearMetal: ++runs > 1,
+      }, undefined, undefined, {} as never);
+    };
+    try {
+      await makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent }).wake(key);
+      expect(replies).toEqual([]);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      await makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent }).wake(key);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(delegate).not.toHaveBeenCalled();
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|fix A>."]);
+      expect((await db.listSlackThreadTasks(key))[0]?.delegateToBearMetal).toBe(false);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([undefined, false, true])("preserves creation-only replacements unless delegation explicitly changes (%s)", async (choice) => {
+    const db = await makeDb();
+    const old = (await db.createSlackTask({ type: "coding", delegateToBearMetal: false, thread: key, sourceTs: "100.1", requestIndex: 1, request: "Fix A later" })).task;
+    await db.attachSlackTicket(old.id, "old-ticket", "https://linear.app/old");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> change the ticket to B" }]);
+    const delegate = vi.fn();
+    const cancel = vi.fn();
+    const coordinator = makeCoordinator({ db, api, linear: { cancelSlackCodingTicket: cancel, createSlackCodingTicket: vi.fn(async () => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" })), delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "update_task")!.execute("update", {
+        id: old.id, sourceTs: "100.2", requestIndex: 1, type: "coding", request: "Fix B", teamId: "team", title: "B", slackTitle: "fix B", description: "Fix B",
+        ...(choice === undefined ? {} : { delegateToBearMetal: choice }),
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(cancel).toHaveBeenCalledWith("old-ticket");
+      expect(delegate).toHaveBeenCalledTimes(choice === true ? 1 : 0);
+      expect(replies).toEqual([choice === true ? "Created a ticket for <https://linear.app/new|fix B> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix B>."]);
+      expect((await db.listSlackThreadTasks(key)).find((task) => task.ticketId === "ticket-new")?.delegateToBearMetal).toBe(choice === true);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
   it("preserves the first reply when the same cancellation action repeats", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
@@ -237,14 +347,14 @@ describe("Slack coordinator", () => {
     });
     const create = vi.fn(async () => ({ id: "A", url: "https://linear.app/ticket/A", identifier: "A" }));
     const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: vi.fn() }, runAgent: async ({ tools }) => {
-      await tools.find((tool) => tool.name === "create_ticket")!.execute("ticket", { sourceTs: "100.1", requestIndex: 1, request: "Change A", teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
+      await tools.find((tool) => tool.name === "create_ticket")!.execute("ticket", { sourceTs: "100.1", requestIndex: 1, request: "Change A", delegateToBearMetal: true, teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
       await tools.find((tool) => tool.name === "clarify_request")!.execute("clarify", { sourceTs: "100.1", requestIndex: 2, question: rejected ? "Regenerated question" : "Which project?" }, undefined, undefined, {} as never);
       await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 3, answer: "Answer" }, undefined, undefined, {} as never);
     } });
     try {
       await coordinator.wake(key);
       await coordinator.wake(key);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\n<@U1>, Which project?", "Answer"]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A> and assigned it to Bear Metal.\n\n<@U1>, Which project?", "Answer"]);
       expect(create).toHaveBeenCalledTimes(1);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); }
@@ -730,7 +840,7 @@ describe("Slack coordinator", () => {
         const ticket = tools.find((tool) => tool.name === "create_ticket");
         const research = tools.find((tool) => tool.name === "start_research");
         if (!ticket || !research) throw new Error("Task tools missing");
-        await ticket.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Change A", teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
+        await ticket.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Change A", delegateToBearMetal: true, teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
         await research.execute("b", { sourceTs: "100.1", requestIndex: 2, request: "Explain B", quote: "why B is slow" }, undefined, undefined, {} as never);
       },
     });
@@ -738,7 +848,7 @@ describe("Slack coordinator", () => {
       await coordinator.wake(key);
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
       await coordinator.wake(key);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nLooking into why B is slow."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A> and assigned it to Bear Metal.\n\nLooking into why B is slow."]);
       expect(create).toHaveBeenCalledTimes(1);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally {
@@ -760,7 +870,7 @@ describe("Slack coordinator", () => {
         for (const [index, title] of ["A", "B"].entries()) {
           await ticket.execute(`ticket-${index}`, {
             sourceTs: "100.1", requestIndex: index + 1, request: `Change ${title}`,
-            teamId: "team", title, slackTitle: `change ${title}`, description: `Change ${title}`,
+            delegateToBearMetal: true, teamId: "team", title, slackTitle: `change ${title}`, description: `Change ${title}`,
           }, undefined, undefined, {} as never);
         }
         await clarify.execute("clarify", {
@@ -772,7 +882,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledTimes(2);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nCreated a ticket for <https://linear.app/ticket/B|change B>.\n\n<@U1>, What change do you want Bear Metal to make?"]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A> and assigned it to Bear Metal.\n\nCreated a ticket for <https://linear.app/ticket/B|change B> and assigned it to Bear Metal.\n\n<@U1>, What change do you want Bear Metal to make?"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect((await db.listSlackThreadTasks(key)).map((task) => task.type)).toEqual(["coding", "coding"]);
     } finally {
@@ -830,7 +940,7 @@ describe("Slack coordinator", () => {
         for (const [index, title] of ["A", "B"].entries()) {
           await tool.execute(`call-${index}`, {
             sourceTs: "100.1", requestIndex: index + 1, request: title,
-            teamId: "team", projectId: "project", title, slackTitle: title, description: title,
+            delegateToBearMetal: true, teamId: "team", projectId: "project", title, slackTitle: title, description: title,
           }, undefined, undefined, {} as never);
         }
       },
@@ -840,7 +950,7 @@ describe("Slack coordinator", () => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project", assigneeId: "linear-user-1" }));
       expect(delegate).toHaveBeenCalledTimes(2);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|A>.\n\nCreated a ticket for <https://linear.app/ticket/B|B>."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|A> and assigned it to Bear Metal.\n\nCreated a ticket for <https://linear.app/ticket/B|B> and assigned it to Bear Metal."]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect((await db.listSlackThreadTasks(key)).map((task) => task.state)).toEqual(["coordinated", "coordinated"]);
     } finally {
@@ -858,7 +968,7 @@ describe("Slack coordinator", () => {
       runAgent: async ({ tools }) => {
         const tool = tools.find((candidate) => candidate.name === "create_ticket");
         if (!tool) throw new Error("create_ticket missing");
-        await tool.execute("ticket", { sourceTs: "100.1", requestIndex: 1, request: "Create a ticket", teamId: "team", title: "Ticket", slackTitle: "create a ticket", description: "Task" }, undefined, undefined, {} as never);
+        await tool.execute("ticket", { sourceTs: "100.1", requestIndex: 1, request: "Create a ticket", delegateToBearMetal: true, teamId: "team", title: "Ticket", slackTitle: "create a ticket", description: "Task" }, undefined, undefined, {} as never);
       },
     });
     try {
@@ -872,7 +982,7 @@ describe("Slack coordinator", () => {
 
   it("cancels an old ticket before creating its replacement without a cancellation reply", async () => {
     const db = await makeDb();
-    const old = (await db.createSlackTask({ type: "coding", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Implement A" })).task;
+    const old = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "100.1", requestIndex: 1, request: "Implement A" })).task;
     await db.attachSlackTicket(old.id, "old-ticket", "https://linear.app/old");
     await db.recordSlackMessage(key, "100.2");
     const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "Implement B instead" }]);
@@ -885,13 +995,13 @@ describe("Slack coordinator", () => {
       if (!update) throw new Error("update_task missing");
       await update.execute("update", {
         id: old.id, sourceTs: "100.2", requestIndex: 1, type: "coding", request: "Implement B",
-        teamId: "team", title: "B", slackTitle: "implement B", description: "Implement B",
+        delegateToBearMetal: true, teamId: "team", title: "B", slackTitle: "implement B", description: "Implement B",
       }, undefined, undefined, {} as never);
     } });
     try {
       await coordinator.wake(key);
       expect(order).toEqual(["cancel old-ticket", "create new", "delegate new"]);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B>."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
       expect((await db.getSlackTask(old.id))?.state).toBe("canceled");
       expect(await db.listSlackPendingThreads()).toEqual([]);
     } finally {
@@ -928,17 +1038,17 @@ describe("Slack coordinator", () => {
         const ticket = tools.find((tool) => tool.name === "create_ticket");
         const research = tools.find((tool) => tool.name === "start_research");
         if (!ticket || !research) throw new Error("Task tools missing");
-        await ticket.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Change A", teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
+        await ticket.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Change A", delegateToBearMetal: true, teamId: "team", title: "A", slackTitle: "change A", description: "Change A" }, undefined, undefined, {} as never);
         expect(replies).toEqual([]);
         await research.execute("b", { sourceTs: "100.1", requestIndex: 2, request: "Explain B", quote: "why B is slow" }, undefined, undefined, {} as never);
         expect(replies).toEqual([]);
-        await ticket.execute("c", { sourceTs: "100.1", requestIndex: 3, request: "Change C", teamId: "team", title: "C", slackTitle: "change C", description: "Change C" }, undefined, undefined, {} as never);
+        await ticket.execute("c", { sourceTs: "100.1", requestIndex: 3, request: "Change C", delegateToBearMetal: true, teamId: "team", title: "C", slackTitle: "change C", description: "Change C" }, undefined, undefined, {} as never);
         expect(replies).toEqual([]);
       },
     });
     try {
       await coordinator.wake(key);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A>.\n\nLooking into why B is slow.\n\nCreated a ticket for <https://linear.app/ticket/C|change C>."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/A|change A> and assigned it to Bear Metal.\n\nLooking into why B is slow.\n\nCreated a ticket for <https://linear.app/ticket/C|change C> and assigned it to Bear Metal."]);
       expect((await db.listSlackThreadTasks(key))[1]?.sourceUserId).toBe("U1");
     } finally {
       await db.close();
@@ -1061,7 +1171,7 @@ describe("Slack coordinator", () => {
 
   it("posts a persisted ticket link after a missed wake without creating another ticket", async () => {
     const db = await makeDb();
-    const task = (await db.createSlackTask({ type: "coding", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Create ticket" })).task;
+    const task = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "100.1", requestIndex: 1, request: "Create ticket" })).task;
     await db.attachSlackTicket(task.id, "linear-1", "https://linear.app/ticket/1");
     const { api, replies } = makeApi([]);
     const create = vi.fn();
@@ -1069,7 +1179,7 @@ describe("Slack coordinator", () => {
     const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create }, runAgent });
     try {
       await coordinator.wake(key);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/1|Create ticket>."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/ticket/1|Create ticket> and assigned it to Bear Metal."]);
       expect(create).not.toHaveBeenCalled();
       expect(runAgent).not.toHaveBeenCalled();
       expect((await db.getSlackTask(task.id))?.state).toBe("coordinated");
@@ -1088,7 +1198,7 @@ describe("Slack coordinator", () => {
       runAgent: async ({ tools }) => {
         const tool = tools.find((candidate) => candidate.name === "create_ticket");
         if (!tool) throw new Error("create_ticket missing");
-        const args = { sourceTs: "100.1", requestIndex: 1, request: "Create ticket", teamId: "team", projectId: "project", title: "Ticket", slackTitle: "create ticket", description: "Task" };
+        const args = { sourceTs: "100.1", requestIndex: 1, request: "Create ticket", delegateToBearMetal: true, teamId: "team", projectId: "project", title: "Ticket", slackTitle: "create ticket", description: "Task" };
         await expect(tool.execute("first", args, undefined, undefined, {} as never)).rejects.toThrow("Linear response lost");
         await tool.execute("replay", args, undefined, undefined, {} as never);
       },
@@ -1114,7 +1224,7 @@ describe("Slack coordinator", () => {
       runAgent: async ({ tools }) => {
         const ticket = tools.find((tool) => tool.name === "create_ticket");
         if (!ticket) throw new Error("create_ticket missing");
-        const args = { sourceTs: "100.1", requestIndex: 1, request: "Create ticket", teamId: "team", title: "Ticket", slackTitle: "create ticket", description: "Task" };
+        const args = { sourceTs: "100.1", requestIndex: 1, request: "Create ticket", delegateToBearMetal: true, teamId: "team", title: "Ticket", slackTitle: "create ticket", description: "Task" };
         await expect(ticket.execute("first", args, undefined, undefined, {} as never)).rejects.toThrow("Delegation failed");
         await ticket.execute("replay", args, undefined, undefined, {} as never);
       },

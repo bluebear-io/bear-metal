@@ -57,6 +57,7 @@ export interface TaskRow {
   slack_request_index: number | null;
   slack_request: string | null;
   slack_quote: string | null;
+  slack_delegate_to_bear_metal: number | null;
   slack_state: string | null;
   slack_reply_ts: string | null;
   slack_ack_state: string | null;
@@ -212,6 +213,7 @@ export interface SlackTaskRecord {
   requestIndex: number;
   request: string;
   quote: string | null;
+  delegateToBearMetal: boolean | null;
   state: "queued" | "running" | "awaiting_coordination" | "approved" | "posting" | "coordinated" | "canceled" | "failed";
   result: string | null;
   summary: string | null;
@@ -231,6 +233,7 @@ export interface NewSlackTask {
   requestIndex: number;
   request: string;
   quote?: string;
+  delegateToBearMetal?: boolean;
 }
 
 function rowToSlackTask(row: TaskRow): SlackTaskRecord {
@@ -242,6 +245,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     throw new Error(`Invalid Slack task state for ${row.id}: ${row.slack_state}`);
   }
   if (row.slack_ack_state !== null && row.slack_ack_state !== "posting" && row.slack_ack_state !== "posted" && row.slack_ack_state !== "failed") throw new Error(`Invalid Slack acknowledgment state for ${row.id}: ${row.slack_ack_state}`);
+  if (row.task_type === "coding" && row.slack_delegate_to_bear_metal !== 0 && row.slack_delegate_to_bear_metal !== 1) throw new Error(`Coding task ${row.id} has no valid delegation choice`);
   let result: string | null = null;
   let summary: string | null = null;
   if (row.result_json !== null) {
@@ -261,6 +265,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     requestIndex: row.slack_request_index,
     request: row.slack_request,
     quote: row.slack_quote,
+    delegateToBearMetal: row.slack_delegate_to_bear_metal === null ? null : row.slack_delegate_to_bear_metal === 1,
     state: row.slack_state,
     result,
     summary,
@@ -1681,16 +1686,18 @@ export class SqlDbClient implements DbClient {
     if (!input.request.trim() || !Number.isInteger(input.requestIndex) || input.requestIndex < 1) {
       throw new Error("Slack task requires a request and positive request index");
     }
+    if (input.type === "coding" && typeof input.delegateToBearMetal !== "boolean") throw new Error("Coding task requires an explicit delegation choice");
+    if (input.type === "research" && input.delegateToBearMetal !== undefined) throw new Error("Research tasks cannot specify coding delegation");
     if (input.type === "research" && !input.quote?.trim()) throw new Error("Research task requires an identifying question quote");
     const id = randomUUID();
     const now = this.clock.nowIso();
     const result = await this.run(
       `INSERT INTO tasks (id, task_type, slack_workspace_id, slack_channel_id, slack_thread_ts,
-       slack_source_ts, slack_source_user_id, slack_request_index, slack_request, slack_quote, slack_state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+       slack_source_ts, slack_source_user_id, slack_request_index, slack_request, slack_quote, slack_delegate_to_bear_metal, slack_state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
        ON CONFLICT (slack_workspace_id, slack_channel_id, slack_source_ts, slack_request_index) DO NOTHING`,
       [id, input.type, input.thread.workspaceId, input.thread.channelId, input.thread.threadTs,
-        input.sourceTs, input.sourceUserId ?? null, input.requestIndex, input.request, input.quote ?? null, now, now],
+        input.sourceTs, input.sourceUserId ?? null, input.requestIndex, input.request, input.quote ?? null, input.type === "coding" ? Number(input.delegateToBearMetal) : null, now, now],
     );
     const rows = await this.query<TaskRow>(
       `SELECT * FROM tasks WHERE slack_workspace_id = ? AND slack_channel_id = ? AND slack_source_ts = ? AND slack_request_index = ?`,

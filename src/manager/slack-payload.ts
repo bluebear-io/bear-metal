@@ -45,6 +45,7 @@ export function buildCoordinatorPayload(key: SlackThreadKey, pendingTs: string[]
     tasks: tasks.map((task) => ({
       id: task.id,
       type: task.type,
+      delegateToBearMetal: task.delegateToBearMetal,
       state: task.state,
       sourceTs: task.sourceTs,
       supersededBy: task.supersededBy,

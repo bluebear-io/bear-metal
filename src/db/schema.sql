@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   slack_request_index INTEGER,
   slack_request TEXT,
   slack_quote TEXT,
+  slack_delegate_to_bear_metal INTEGER CHECK (slack_delegate_to_bear_metal IN (0, 1)),
   slack_state TEXT,
   slack_reply_ts TEXT,
   slack_ack_state TEXT,
@@ -102,6 +103,10 @@ ALTER TABLE tasks ADD COLUMN slack_source_user_id TEXT;
 ALTER TABLE tasks ADD COLUMN slack_request_index INTEGER;
 ALTER TABLE tasks ADD COLUMN slack_request TEXT;
 ALTER TABLE tasks ADD COLUMN slack_quote TEXT;
+ALTER TABLE tasks ADD COLUMN slack_delegate_to_bear_metal INTEGER CHECK (slack_delegate_to_bear_metal IN (0, 1));
+
+UPDATE tasks SET slack_delegate_to_bear_metal = 1
+WHERE task_type = 'coding' AND slack_workspace_id IS NOT NULL AND slack_delegate_to_bear_metal IS NULL;
 ALTER TABLE tasks ADD COLUMN slack_state TEXT;
 ALTER TABLE tasks ADD COLUMN slack_reply_ts TEXT;
 ALTER TABLE tasks ADD COLUMN slack_ack_state TEXT;
