@@ -48,6 +48,30 @@ describe("run USD cost", () => {
     }
   });
 
+  it("clears a stored cost when a later succeeded write reports an unpriced run", async () => {
+    const db = await makeDb();
+    try {
+      await db.upsertTicketDiscovered({
+        id: "lin_2", identifier: "ABC-2", title: "Ticket", description: null, url: "https://linear.app/x/issue/ABC-2",
+        branchName: "feature/abc-2", linearStatusName: "In Progress", linearStatusType: "started", labels: [],
+      });
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-2", prs: [], trigger: "new", ticketIssueId: "lin_2" });
+      await db.upsertRunStarted(task.id, "worker-1", "2026-10-07T10:00:00.000Z");
+      await db.upsertRunSucceeded(task.id, {
+        promptTokens: 100, completionTokens: 10, costUsd: 0.5, modelName: "Claude Opus", provider: "anthropic",
+      });
+      await db.upsertRunSucceeded(task.id, {
+        promptTokens: 200, completionTokens: 20, costUsd: null, modelName: "Custom", provider: "custom",
+      });
+      expect((await db.getAgentRunDetail(task.id))?.run).toMatchObject({ promptTokens: 200, costUsd: null });
+
+      await db.upsertRunSucceeded(task.id, null);
+      expect((await db.getAgentRunDetail(task.id))?.run).toMatchObject({ promptTokens: 200, costUsd: null });
+    } finally {
+      await db.close();
+    }
+  });
+
   it("persists coordinator and research run cost", async () => {
     const db = await makeDb();
     try {

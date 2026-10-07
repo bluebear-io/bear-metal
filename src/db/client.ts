@@ -2156,12 +2156,14 @@ export class SqlDbClient implements DbClient {
       `UPDATE tasks SET run_status = 'succeeded', stop_reason = 'completed',
          ended_at = ?, prompt_tokens = COALESCE(?, prompt_tokens),
          completion_tokens = COALESCE(?, completion_tokens),
-         cost_usd = COALESCE(?, cost_usd),
+         cost_usd = CASE WHEN ? = 1 THEN ? ELSE cost_usd END,
          model_name = COALESCE(?, model_name),
          provider = COALESCE(?, provider),
          updated_at = ?
        WHERE id = ?`,
-      [now, usage?.promptTokens ?? null, usage?.completionTokens ?? null, usage?.costUsd ?? null,
+      [now, usage?.promptTokens ?? null, usage?.completionTokens ?? null,
+       // With usage present, a null cost means the model is unpriced and must replace any stored cost.
+       usage ? 1 : 0, usage?.costUsd ?? null,
        usage?.modelName ?? null, usage?.provider ?? null, now, taskId],
     );
   }
