@@ -28,6 +28,7 @@ export async function runSlackAgent(input: {
   db: DbClient;
   tools: ToolDefinition[];
   validateOutcome?: () => Promise<void>;
+  output?: () => unknown;
   stopRequested?: () => boolean;
   gateway?: AgentToolGatewayLike;
   githubToken?: string;
@@ -43,6 +44,7 @@ export async function runSlackAgent(input: {
   let agentWorkdir = workspaceDir ?? "";
   let runError: string | null = null;
   let runStarted = false;
+  let outputJson: string | undefined;
   try {
     await input.db.startAgentRun(input.task, null, null);
     runStarted = true;
@@ -132,6 +134,7 @@ export async function runSlackAgent(input: {
       await input.db.setAgentRunUsage(input.task.id, stats.tokens.input, stats.tokens.output);
       if (limitError) throw limitError;
       await input.validateOutcome?.();
+      if (input.task.type === "coordinator" && input.output) outputJson = JSON.stringify(await input.output());
     } finally {
       clearTimeout(timeout);
       unsubscribe();
@@ -148,7 +151,7 @@ export async function runSlackAgent(input: {
       throw err;
     } finally {
       try {
-        if (runStarted) await input.db.finishAgentRun(input.task.id, runError, runError === null && input.stopRequested?.() ? "deferred" : undefined);
+        if (runStarted) await input.db.finishAgentRun(input.task.id, runError, runError === null && input.stopRequested?.() ? "deferred" : undefined, outputJson);
       } finally {
         if (netrcDir) await rm(netrcDir, { recursive: true, force: true });
         if (coordinatorLease) await coordinatorLease.release();

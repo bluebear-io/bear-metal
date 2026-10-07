@@ -21,7 +21,7 @@ async function withFileDb(run: (db: SqlDbClient, path: string) => Promise<void>)
 }
 
 async function dispatchSlackCodingTask(db: SqlDbClient): Promise<string> {
-  const slackTask = (await db.createSlackTask({ type: "coding", thread: key, sourceTs: "2.1", requestIndex: 1, request: "Implement the change" })).task;
+  const slackTask = (await db.createSlackTask({ type: "coding", delegateToBearMetal: true, thread: key, sourceTs: "2.1", requestIndex: 1, request: "Implement the change" })).task;
   await db.attachSlackTicket(slackTask.id, "ticket-1", "https://linear.app/ticket-1");
   await db.upsertTicketDiscovered({
     id: "ticket-1", identifier: "DEN-1", title: "Implement the change", description: "Details",

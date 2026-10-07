@@ -415,6 +415,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
   async listSlackTicketDestinations(): Promise<{
     teams: Array<{ id: string; key: string; name: string }>;
     projects: Array<{ id: string; name: string; teamIds: string[] }>;
+    cycles: Array<{ id: string; name: string | null; number: number; teamId: string; startsAt: string; endsAt: string }>;
   }> {
     return this.withClient(async (client) => {
       const teams: Array<{ id: string; key: string; name: string }> = [];
@@ -439,7 +440,17 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
         }
         after = page.pageInfo.hasNextPage ? this.requireNextCursor(page.pageInfo.endCursor ?? null, "projects", "projects") : undefined;
       } while (after);
-      return { teams, projects };
+      const cycles: Array<{ id: string; name: string | null; number: number; teamId: string; startsAt: string; endsAt: string }> = [];
+      do {
+        const page = await client.cycles({ first: 100, after });
+        for (const cycle of page.nodes) {
+          const team = await cycle.team;
+          if (!team) throw new Error(`Linear cycle ${cycle.id} has no team`);
+          cycles.push({ id: cycle.id, name: cycle.name ?? null, number: cycle.number, teamId: team.id, startsAt: cycle.startsAt.toISOString(), endsAt: cycle.endsAt.toISOString() });
+        }
+        after = page.pageInfo.hasNextPage ? this.requireNextCursor(page.pageInfo.endCursor ?? null, "cycles", "cycles") : undefined;
+      } while (after);
+      return { teams, projects, cycles };
     });
   }
 

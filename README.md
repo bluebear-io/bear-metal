@@ -1,6 +1,6 @@
-<img src="src/ui/public/logo-large.png" alt="Bear Metal" align="right" width="300" />
-
 # Bear Metal
+
+<img src="src/ui/public/logo-large.png" alt="Bear Metal" align="right" width="300" />
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/bluebear-io/bear-metal/actions/workflows/build-and-deploy.yml)
@@ -12,7 +12,7 @@
 
 Autonomous coding agent. Picks up tasks from Linear, implements them, and opens pull requests ready to merge. Runs continuously in the background.
 
-## Table of contents
+### Table of contents
 
 - [How to deploy](#how-to-deploy)
 - [Configuration module](#configuration-module)
@@ -28,6 +28,8 @@ Autonomous coding agent. Picks up tasks from Linear, implements them, and opens 
   - [Amazon Bedrock](#amazon-bedrock)
   - [Slack](#slack)
 - [Contributing & local dev](#contributing--local-dev)
+
+<div style="clear:both;">
 
 ## How to deploy
 
@@ -336,10 +338,23 @@ Both Slack apps are optional and independent. Create them at [Slack App Manageme
 The first app is used by the trusted harness for notifications and, when `slack.getSigningSecret` is configured, thread requests. Omit the top-level `slack` configuration to disable both.
 Incoming events must belong to the workspace reported by that app's bot token. The Slack Events endpoint runs in the manager process when `API_ONLY` is false.
 
-1. Under **OAuth & Permissions → Bot Token Scopes**, add `chat:write`, `chat:write.public`, `channels:history`, `groups:history`, `im:history`, `files:read`, `users:read`, and `users:read.email`. The user scopes let Bear Metal assign new Linear tickets to the Slack requester by email.
+1. Under **OAuth & Permissions → Bot Token Scopes**, add `app_mentions:read`, `chat:write`, `chat:write.public`, `reactions:write`, `channels:history`, `groups:history`, `im:history`, `files:read`, `users:read`, and `users:read.email`. The user scopes let Bear Metal assign new Linear tickets to the Slack requester by email.
 2. Select **Install to Workspace**, approve the installation, and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
 3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
-4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow. Every new top-level DM to the app starts a thread; in channels, an `@Bear Metal` mention starts one.
+4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow.
+5. Under **App Home → Show Tabs**, enable **Messages Tab** and check **Allow users to send Slash commands and messages from the messages tab**. Without this setting, Slack disables the DM composer even if the event subscriptions and scopes are correct. In an [app manifest](https://docs.slack.dev/reference/app-manifest/), these settings are `features.app_home.messages_tab_enabled: true` and `features.app_home.messages_tab_read_only_enabled: false`. The [Messages tab guide](https://docs.slack.dev/surfaces/app-home/#using-the-messages-tab) describes the required `chat:write` and `im:history` scopes.
+
+Every human DM, including a threaded reply, behaves like an explicit channel mention and receives a response or action. A top-level DM starts its own thread; a threaded DM follows its existing thread. In channels, an `@Bear Metal` mention starts following the thread. Ordinary messages in followed channel threads can be silently ignored when they need no Bear Metal action, including conversation addressed to others. Explicit mentions and DMs cannot be ignored. The coordinator can answer simple questions and casual messages directly, without a task or added reply wrapper, and asks for clarification when needed.
+
+Before supplying team, project, or cycle IDs, the coordinator must call `list_ticket_destinations` and use only IDs returned there. The lookup includes teams, projects and paginated cycles with their owning teams and dates. IDs must never be inferred from memory or unrelated entities. Unrecovered task-tool failures are reported through `direct_answer`; successful creation, work, or delegation must be confirmed by tool results.
+
+Slack ticket requests require an explicit work decision. Ask Bear Metal to implement or fix something to create a Linear ticket and delegate it to Bear Metal. Ask for a ticket for yourself, for later, or without starting work to create the ticket assigned to you without delegation. An unqualified “open a ticket” prompts clarification about whether Bear Metal should start working or only create the ticket. Replies distinguish creation-only from delegation. The decision is stored with the task and retained across retries and replacements unless explicitly changed. Coding replacements are created and attached before the original task or ticket is canceled. Failed creation leaves the original unchanged; retries resume the replacement operation and reuse an already-attached replacement ticket. Replacement tasks retain the original task ID, so retrying with either ID cancels only the original.
+
+Every coordinator reply group, including clarifications and task acknowledgments, has persisted content and delivery state. A later reply failure or manager restart does not repost successfully delivered groups. Confirmed Slack rejection permits a retry. Network failures, server errors, unreadable responses, and missing reply timestamps leave delivery unresolved and block automatic reposting. Unresolved deliveries require reconciliation before retrying. Slack also documents that [`internal_error` and `fatal_error` may follow partial success](https://docs.slack.dev/reference/methods/chat.postMessage/#errors), so those responses are treated as uncertain.
+
+Ask Bear Metal to stop bothering or following a thread to unsubscribe. The harness adds a 👍 reaction to the source message only after successful unsubscription, with no text acknowledgment. Reaction delivery is persisted with unsubscription. Transient failures remain pending for retry even while the thread is unfollowed, including after a restart. Permanent rejections are stored as failed with their error and logged visibly. Reaction failures never block resumed conversations. Stops sent as message edits react to the original Slack message. This requires [`reactions:write`](https://docs.slack.dev/reference/methods/reactions.add/). Following is stored durably; no further task messages or late research results from that subscription are posted. Work already started continues. A later channel mention or DM resumes following from the first such message after the stop request, skipping intervening ordinary messages and old task results. Automatic unsubscribe after ignored messages is deferred.
+
+The Tasks dashboard links research and coordinator labels to their task pages. Those pages show the processed message or research request and the output immediately below the execution summary, before the event log.
 
 The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
 

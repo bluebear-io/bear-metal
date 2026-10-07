@@ -63,6 +63,10 @@ export class SlackThreadApi {
     return messages;
   }
 
+  async react(key: SlackThreadKey, sourceTs: string, name: string): Promise<void> {
+    await this.writer.addReaction(key.channelId, sourceTs, name);
+  }
+
   async readThreadMessage(key: SlackThreadKey, ts: string): Promise<SlackThreadMessage | null> {
     const messages = await this.readThread(key, ts, ts);
     // conversations.replies returns the thread parent first even when oldest/latest exclude it.

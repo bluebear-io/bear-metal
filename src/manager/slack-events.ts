@@ -107,12 +107,12 @@ export function createSlackEventsRouter(input: {
         channelId: event.channel,
         threadTs: event.thread_ts ?? event.ts,
       };
-      const activates = event.type === "app_mention" || (event.type === "message" && event.channel_type === "im" && !event.thread_ts);
+      const activates = event.type === "app_mention" || (event.type === "message" && event.channel_type === "im");
       if (!activates && !event.thread_ts && !await input.db.hasSlackThread(key)) {
         res.sendStatus(200);
         return;
       }
-      if (activates) await input.db.followSlackThread(key, event.ts);
+      if (activates) await input.db.followSlackThread(key, event.ts, event.channel_type === "im");
       const inserted = await input.db.recordSlackMessage(key, event.ts);
       res.sendStatus(200);
       if (inserted && await input.db.hasSlackThread(key)) void input.wake(key).catch((err) => input.logger.error({ err, key }, "Slack thread wake failed"));

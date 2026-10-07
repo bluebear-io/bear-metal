@@ -9,6 +9,9 @@ const h = vi.hoisted(() => ({
   issueFn: vi.fn(),
   createIssueFn: vi.fn(),
   usersFn: vi.fn(),
+  teamsFn: vi.fn(),
+  projectsFn: vi.fn(),
+  cyclesFn: vi.fn(),
   workflowStatesFn: vi.fn(),
   rawRequestFn: vi.fn(),
   AuthErr: class AuthenticationLinearError extends Error {},
@@ -37,6 +40,9 @@ vi.mock("@linear/sdk", () => {
     users(input: Record<string, unknown>) {
       return h.usersFn(this.accessToken, input);
     }
+    teams(input: Record<string, unknown>) { return h.teamsFn(this.accessToken, input); }
+    projects(input: Record<string, unknown>) { return h.projectsFn(this.accessToken, input); }
+    cycles(input: Record<string, unknown>) { return h.cyclesFn(this.accessToken, input); }
     workflowStates(input: Record<string, unknown>) {
       return h.workflowStatesFn(this.accessToken, input);
     }
@@ -105,11 +111,29 @@ beforeEach(() => {
   h.issueFn.mockReset();
   h.createIssueFn.mockReset();
   h.usersFn.mockReset();
+  h.teamsFn.mockReset();
+  h.projectsFn.mockReset();
+  h.cyclesFn.mockReset();
   h.workflowStatesFn.mockReset();
   h.rawRequestFn.mockReset();
 });
 
 describe("LinearIntegration Slack ticket creation", () => {
+  it("returns paginated cycles with their owning teams for destination lookup", async () => {
+    h.teamsFn.mockResolvedValue({ nodes: [{ id: "team-1", key: "DEN", name: "Engineering" }], pageInfo: { hasNextPage: false } });
+    h.projectsFn.mockResolvedValue({ nodes: [], pageInfo: { hasNextPage: false } });
+    const cycle = (id: string, number: number) => ({ id, number, name: null, startsAt: new Date("2026-10-01T00:00:00Z"), endsAt: new Date("2026-10-15T00:00:00Z"), team: Promise.resolve({ id: "team-1" }) });
+    h.cyclesFn.mockResolvedValueOnce({ nodes: [cycle("cycle-1", 1)], pageInfo: { hasNextPage: true, endCursor: "cycles-next" } })
+      .mockResolvedValueOnce({ nodes: [cycle("cycle-2", 2)], pageInfo: { hasNextPage: false } });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    const result = await linear.listSlackTicketDestinations();
+    expect(result).toMatchObject({ cycles: [
+      { id: "cycle-1", teamId: "team-1", name: null, number: 1, startsAt: "2026-10-01T00:00:00.000Z", endsAt: "2026-10-15T00:00:00.000Z" },
+      { id: "cycle-2", teamId: "team-1", name: null, number: 2 },
+    ] });
+    expect(h.cyclesFn).toHaveBeenLastCalledWith("tok", { first: 100, after: "cycles-next" });
+  });
+
   it("finds the exact Linear assignee by Slack email", async () => {
     h.usersFn.mockResolvedValue({ nodes: [{ id: "user-1", email: "user@example.com" }], pageInfo: { hasNextPage: false } });
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });

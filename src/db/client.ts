@@ -57,11 +57,13 @@ export interface TaskRow {
   slack_request_index: number | null;
   slack_request: string | null;
   slack_quote: string | null;
+  slack_delegate_to_bear_metal: number | null;
   slack_state: string | null;
   slack_reply_ts: string | null;
   slack_ack_state: string | null;
   coordinated_at: string | null;
   superseded_by: string | null;
+  slack_replaces_task_id: string | null;
   iteration_number: number;
   worker_heartbeat_at: string | null;
   reclaim_count: number;
@@ -89,6 +91,26 @@ export interface SlackThreadKey {
   workspaceId: string;
   channelId: string;
   threadTs: string;
+}
+
+export interface SlackCoordinationReply {
+  sourceTs: string;
+  requestIndex: number;
+  text: string;
+  taskId?: string;
+  direct?: boolean;
+  kind?: "answer" | "clarification" | "task_ack" | "task_cancel";
+}
+
+export type SlackReplyDelivery = SlackCoordinationReply & { state: "queued" | "posting" | "posted" };
+
+export function slackReplyKey(reply: SlackCoordinationReply): string {
+  const kind = reply.kind ?? (reply.direct ? "answer" : reply.taskId ? "task_ack" : "clarification");
+  if (kind === "task_cancel") {
+    if (!reply.taskId) throw new Error("Cancellation reply requires a task ID");
+    return `${reply.sourceTs}/task_cancel/${reply.taskId}`;
+  }
+  return `${reply.sourceTs}/${kind}/${reply.requestIndex}`;
 }
 
 export interface AgentRunSummary {
@@ -176,6 +198,13 @@ function rowToAgentRun(row: TaskRow): AgentRunSummary {
   };
 }
 
+export interface SlackUnsubscribeReaction {
+  sourceTs: string;
+  messageTs: string;
+  state: "queued" | "posted" | "failed";
+  error: string | null;
+}
+
 export interface SlackMessageEdit {
   ts: string;
   originalTs: string;
@@ -192,6 +221,7 @@ export interface SlackTaskRecord {
   requestIndex: number;
   request: string;
   quote: string | null;
+  delegateToBearMetal: boolean | null;
   state: "queued" | "running" | "awaiting_coordination" | "approved" | "posting" | "coordinated" | "canceled" | "failed";
   result: string | null;
   summary: string | null;
@@ -201,9 +231,11 @@ export interface SlackTaskRecord {
   ackState: "posting" | "posted" | "failed" | null;
   coordinatedAt: string | null;
   supersededBy: string | null;
+  replacesTaskId: string | null;
 }
 
 export interface NewSlackTask {
+  replacesTaskId?: string;
   type: SlackTaskRecord["type"];
   thread: SlackThreadKey;
   sourceTs: string;
@@ -211,6 +243,7 @@ export interface NewSlackTask {
   requestIndex: number;
   request: string;
   quote?: string;
+  delegateToBearMetal?: boolean;
 }
 
 function rowToSlackTask(row: TaskRow): SlackTaskRecord {
@@ -222,6 +255,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     throw new Error(`Invalid Slack task state for ${row.id}: ${row.slack_state}`);
   }
   if (row.slack_ack_state !== null && row.slack_ack_state !== "posting" && row.slack_ack_state !== "posted" && row.slack_ack_state !== "failed") throw new Error(`Invalid Slack acknowledgment state for ${row.id}: ${row.slack_ack_state}`);
+  if (row.task_type === "coding" && row.slack_delegate_to_bear_metal !== 0 && row.slack_delegate_to_bear_metal !== 1) throw new Error(`Coding task ${row.id} has no valid delegation choice`);
   let result: string | null = null;
   let summary: string | null = null;
   if (row.result_json !== null && row.task_type === "coding") {
@@ -253,6 +287,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     requestIndex: row.slack_request_index,
     request: row.slack_request,
     quote: row.slack_quote,
+    delegateToBearMetal: row.slack_delegate_to_bear_metal === null ? null : row.slack_delegate_to_bear_metal === 1,
     state: row.slack_state,
     result,
     summary,
@@ -262,6 +297,7 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
     ackState: row.slack_ack_state,
     coordinatedAt: row.coordinated_at,
     supersededBy: row.superseded_by,
+    replacesTaskId: row.slack_replaces_task_id,
   };
 }
 
@@ -647,13 +683,22 @@ export interface DbClient {
   startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
   setAgentRunModel(id: string, provider: string, model: string): Promise<void>;
   setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void>;
-  finishAgentRun(id: string, error: string | null, stopReason?: "deferred"): Promise<void>;
+  finishAgentRun(id: string, error: string | null, stopReason?: "deferred", outputJson?: string): Promise<void>;
   recordAgentTrace(runId: string, kind: string, contentJson: string, createdAt?: string): Promise<void>;
   purgeAgentTraces(retentionDays: number, now?: Date): Promise<void>;
   listAgentRuns(page: number, pageSize: number): Promise<{ items: AgentRunSummary[]; total: number; page: number; pageSize: number }>;
   listTasks(options: TaskListOptions): Promise<{ items: TaskListItem[]; total: number; page: number; pageSize: number }>;
   getAgentRunDetail(id: string): Promise<{ run: AgentRunSummary; trace: AgentTraceEvent[] } | null>;
-  followSlackThread(key: SlackThreadKey, firstMessageTs: string): Promise<void>;
+  followSlackThread(key: SlackThreadKey, firstMessageTs: string, directMessage?: boolean): Promise<void>;
+  getSlackThreadActivation(key: SlackThreadKey): Promise<{ directMessage: boolean; mentionTimestamps: string[] }>;
+  queueSlackCoordinationReply(key: SlackThreadKey, reply: SlackCoordinationReply): Promise<SlackReplyDelivery>;
+  beginSlackReplyGroup(key: SlackThreadKey, replies: SlackCoordinationReply[]): Promise<string>;
+  finishSlackReplyGroup(key: SlackThreadKey, groupKey: string, outcome: "posted" | "rejected" | "uncertain", replyTs: string | null, error: string | null): Promise<void>;
+  unsubscribeSlackThread(key: SlackThreadKey, sourceTs: string): Promise<void>;
+  listSlackUnsubscribeReactions(key: SlackThreadKey, includeCompleted?: boolean): Promise<SlackUnsubscribeReaction[]>;
+  markSlackUnsubscribeReactionPosted(key: SlackThreadKey, sourceTs: string): Promise<void>;
+  failSlackUnsubscribeReaction(key: SlackThreadKey, sourceTs: string, error: string, permanent: boolean): Promise<void>;
+  isSlackThreadFollowing(key: SlackThreadKey, sourceTs?: string): Promise<boolean>;
   hasSlackThread(key: SlackThreadKey): Promise<boolean>;
   recordSlackMessage(key: SlackThreadKey, messageTs: string): Promise<boolean>;
   recordSlackEdit(key: SlackThreadKey, eventTs: string, originalTs: string, user: string, text: string): Promise<boolean>;
@@ -671,6 +716,7 @@ export interface DbClient {
   approveSlackResearchResult(id: string): Promise<void>;
   failSlackTask(id: string, error: string): Promise<void>;
   attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void>;
+  resumeSlackTicketReplacement(id: string): Promise<void>;
   cancelSlackTask(id: string, supersededBy?: string): Promise<void>;
   beginSlackTaskReply(id: string): Promise<void>;
   beginSlackBatchAcknowledgment(ids: string[]): Promise<void>;
@@ -1311,10 +1357,10 @@ export class SqlDbClient implements DbClient {
       if (!task.slack) throw new Error("Coordinator run requires Slack source");
       await this.run(
         `INSERT INTO tasks (id, task_type, slack_workspace_id, slack_channel_id, slack_thread_ts,
-         slack_source_ts, slack_request, run_status, trigger, started_at, provider, model_name, created_at, updated_at)
-         VALUES (?, 'coordinator', ?, ?, ?, ?, ?, 'running', 'new', ?, ?, ?, ?, ?)`,
+         slack_source_ts, slack_request, input_json, run_status, trigger, started_at, provider, model_name, created_at, updated_at)
+         VALUES (?, 'coordinator', ?, ?, ?, ?, ?, ?, 'running', 'new', ?, ?, ?, ?, ?)`,
         [task.id, task.slack.workspaceId, task.slack.channelId, task.slack.threadTs,
-          task.slack.sourceTs, "Slack thread coordination", now, provider, model, now, now],
+          task.slack.sourceTs, "Slack thread coordination", task.request ?? null, now, provider, model, now, now],
       );
       return;
     }
@@ -1344,12 +1390,13 @@ export class SqlDbClient implements DbClient {
     if (result.changes !== 1) throw new Error(`Cannot record usage for agent run ${id}`);
   }
 
-  async finishAgentRun(id: string, error: string | null, stopReason?: "deferred"): Promise<void> {
+  async finishAgentRun(id: string, error: string | null, stopReason?: "deferred", outputJson?: string): Promise<void> {
     const now = this.clock.nowIso();
     const result = await this.run(
-      `UPDATE tasks SET run_status = ?, stop_reason = ?, error = ?, ended_at = ?, updated_at = ?
+      `UPDATE tasks SET run_status = ?, stop_reason = ?, error = ?, ended_at = ?, updated_at = ?,
+         result_json = CASE WHEN task_type = 'coordinator' THEN ? ELSE result_json END
        WHERE id = ? AND task_type IN ('coordinator', 'research')`,
-      [error === null ? "succeeded" : "failed", error === null ? stopReason ?? "completed" : "error", error, now, now, id],
+      [error === null ? "succeeded" : "failed", error === null ? stopReason ?? "completed" : "error", error, now, now, outputJson ?? null, id],
     );
     if (result.changes !== 1) throw new Error(`Agent run ${id} does not exist`);
   }
@@ -1484,12 +1531,153 @@ export class SqlDbClient implements DbClient {
     return { run: rowToAgentRun(rows[0]), trace: events };
   }
 
-  async followSlackThread(key: SlackThreadKey, firstMessageTs: string): Promise<void> {
+  async followSlackThread(key: SlackThreadKey, firstMessageTs: string, directMessage = false): Promise<void> {
     await this.run(
-      `INSERT INTO slack_threads (workspace_id, channel_id, thread_ts, first_message_ts, created_at)
-       VALUES (?, ?, ?, ?, ?) ON CONFLICT (workspace_id, channel_id, thread_ts) DO NOTHING`,
-      [key.workspaceId, key.channelId, key.threadTs, firstMessageTs, this.clock.nowIso()],
+      `INSERT INTO slack_thread_mentions (workspace_id, channel_id, thread_ts, message_ts) VALUES (?, ?, ?, ?)
+       ON CONFLICT (workspace_id, channel_id, thread_ts, message_ts) DO NOTHING`,
+      [key.workspaceId, key.channelId, key.threadTs, firstMessageTs],
     );
+    await this.run(
+      `INSERT INTO slack_threads (workspace_id, channel_id, thread_ts, first_message_ts, created_at, latest_mention_ts, direct_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace_id, channel_id, thread_ts) DO UPDATE
+       SET following = 1, first_message_ts = CASE WHEN slack_threads.following = 0 OR excluded.first_message_ts < slack_threads.first_message_ts
+         THEN excluded.first_message_ts ELSE slack_threads.first_message_ts END,
+         direct_message = CASE WHEN excluded.direct_message = 1 THEN 1 ELSE slack_threads.direct_message END,
+         latest_mention_ts = CASE WHEN excluded.latest_mention_ts > slack_threads.latest_mention_ts
+           THEN excluded.latest_mention_ts ELSE slack_threads.latest_mention_ts END
+       WHERE slack_threads.unsubscribed_message_ts IS NULL
+         OR excluded.first_message_ts > slack_threads.unsubscribed_message_ts`,
+      [key.workspaceId, key.channelId, key.threadTs, firstMessageTs, this.clock.nowIso(), firstMessageTs, directMessage ? 1 : 0],
+    );
+  }
+
+  async getSlackThreadActivation(key: SlackThreadKey): Promise<{ directMessage: boolean; mentionTimestamps: string[] }> {
+    const threads = await this.query<{ direct_message: number }>(
+      `SELECT direct_message FROM slack_threads WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?`,
+      [key.workspaceId, key.channelId, key.threadTs],
+    );
+    if (!threads[0] || ![0, 1].includes(threads[0].direct_message)) throw new Error(`Invalid Slack thread activation ${key.channelId}/${key.threadTs}`);
+    const mentions = await this.query<{ message_ts: string }>(
+      `SELECT message_ts FROM slack_thread_mentions WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? ORDER BY message_ts`,
+      [key.workspaceId, key.channelId, key.threadTs],
+    );
+    return { directMessage: threads[0].direct_message === 1, mentionTimestamps: mentions.map((mention) => mention.message_ts) };
+  }
+
+  async queueSlackCoordinationReply(key: SlackThreadKey, reply: SlackCoordinationReply): Promise<SlackReplyDelivery> {
+    if (!reply.sourceTs || !Number.isInteger(reply.requestIndex) || reply.requestIndex < 1 || !reply.text.trim()) throw new Error("Invalid Slack coordination reply");
+    const now = this.clock.nowIso();
+    const kind = reply.kind ?? (reply.direct ? "answer" : reply.taskId ? "task_ack" : "clarification");
+    const replyKey = slackReplyKey(reply);
+    await this.run(
+      `INSERT INTO slack_reply_deliveries (workspace_id, channel_id, thread_ts, reply_key, source_ts, request_index, reply_text, reply_kind, task_id, direct, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM slack_threads
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?
+       ON CONFLICT (workspace_id, channel_id, thread_ts, reply_key) DO NOTHING`,
+      [key.workspaceId, key.channelId, key.threadTs, replyKey, reply.sourceTs, reply.requestIndex, reply.text, kind, reply.taskId ?? null, reply.direct ? 1 : 0, now, now, key.workspaceId, key.channelId, key.threadTs],
+    );
+    const rows = await this.query<{ request_index: number; reply_text: string; task_id: string | null; direct: number; state: "queued" | "posting" | "posted" }>(
+      `SELECT request_index, reply_text, task_id, direct, state FROM slack_reply_deliveries WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND reply_key = ?`,
+      [key.workspaceId, key.channelId, key.threadTs, replyKey],
+    );
+    const saved = rows[0];
+    if (!saved) throw new Error(`Cannot queue reply for unknown Slack thread ${key.channelId}/${key.threadTs}`);
+    if (saved.task_id !== (reply.taskId ?? null) || saved.direct !== (reply.direct ? 1 : 0)) throw new Error(`Conflicting reply kind ${reply.sourceTs}/${reply.requestIndex}`);
+    return { sourceTs: reply.sourceTs, requestIndex: saved.request_index, text: saved.reply_text, kind, ...(saved.task_id ? { taskId: saved.task_id } : {}), direct: saved.direct === 1, state: saved.state };
+  }
+
+  async beginSlackReplyGroup(key: SlackThreadKey, replies: SlackCoordinationReply[]): Promise<string> {
+    const members = replies.map(slackReplyKey).sort();
+    if (members.length === 0 || new Set(members).size !== members.length) throw new Error("Reply group requires distinct members");
+    const groupKey = JSON.stringify(members);
+    const predicate = `reply_key IN (${members.map(() => "?").join(",")})`;
+    const params = [key.workspaceId, key.channelId, key.threadTs, ...members];
+    const result = await this.run(
+      `UPDATE slack_reply_deliveries SET state = 'posting', group_key = ?, error = NULL, updated_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND (${predicate}) AND state = 'queued'
+       AND (SELECT COUNT(*) FROM slack_reply_deliveries WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND (${predicate}) AND state = 'queued') = ?`,
+      [groupKey, this.clock.nowIso(), ...params, ...params, members.length],
+    );
+    if (result.changes !== members.length) throw new Error(`Cannot begin Slack reply group ${groupKey}`);
+    return groupKey;
+  }
+
+  async finishSlackReplyGroup(key: SlackThreadKey, groupKey: string, outcome: "posted" | "rejected" | "uncertain", replyTs: string | null, error: string | null): Promise<void> {
+    if (outcome === "posted" ? !replyTs || error !== null : replyTs !== null || !error) throw new Error("Invalid reply group outcome");
+    const result = await this.run(
+      `UPDATE slack_reply_deliveries SET state = ?, reply_ts = ?, error = ?, updated_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND group_key = ? AND state = 'posting'`,
+      [outcome === "posted" ? "posted" : outcome === "rejected" ? "queued" : "posting", replyTs, error, this.clock.nowIso(), key.workspaceId, key.channelId, key.threadTs, groupKey],
+    );
+    if (result.changes === 0) throw new Error(`Cannot finish Slack reply group ${groupKey}`);
+  }
+
+  async unsubscribeSlackThread(key: SlackThreadKey, sourceTs: string): Promise<void> {
+    const nextMention = `(SELECT MIN(message_ts) FROM slack_thread_mentions mention WHERE mention.workspace_id = slack_threads.workspace_id
+      AND mention.channel_id = slack_threads.channel_id AND mention.thread_ts = slack_threads.thread_ts AND mention.message_ts > ?)`;
+    const update = `UPDATE slack_threads SET following = CASE WHEN ${nextMention} IS NULL THEN 0 ELSE 1 END,
+         first_message_ts = COALESCE(${nextMention}, first_message_ts), unsubscribed_message_ts = ?
+         WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?`;
+    const params = [sourceTs, sourceTs, sourceTs, key.workspaceId, key.channelId, key.threadTs];
+    const insert = `INSERT INTO slack_unsubscribe_reactions (workspace_id, channel_id, thread_ts, source_ts, message_ts)
+      SELECT workspace_id, channel_id, thread_ts, message_ts, COALESCE(original_message_ts, message_ts)
+      FROM slack_processed_messages WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND message_ts = ?
+      ON CONFLICT (workspace_id, channel_id, thread_ts, source_ts) DO NOTHING`;
+    const reactionParams = [key.workspaceId, key.channelId, key.threadTs, sourceTs];
+    // Persist the acknowledgement atomically with unsubscription, even when following ends.
+    if (this.dialect === "sqlite") {
+      const db = this.requireSqlite();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        if (db.prepare(update).run(...params).changes !== 1) throw new Error("Cannot unsubscribe unknown Slack thread");
+        db.prepare(insert).run(...reactionParams);
+        db.exec("COMMIT");
+      } catch (err) { db.exec("ROLLBACK"); throw err; }
+      return;
+    }
+    const client = await this.requirePg().connect();
+    try {
+      await client.query("BEGIN");
+      if ((await client.query(this.sql(update), params)).rowCount !== 1) throw new Error("Cannot unsubscribe unknown Slack thread");
+      await client.query(this.sql(insert), reactionParams);
+      await client.query("COMMIT");
+    } catch (err) { await client.query("ROLLBACK"); throw err; }
+    finally { client.release(); }
+  }
+
+  async listSlackUnsubscribeReactions(key: SlackThreadKey, includeCompleted = false): Promise<SlackUnsubscribeReaction[]> {
+    const rows = await this.query<{ source_ts: string; message_ts: string; state: SlackUnsubscribeReaction["state"]; error: string | null }>(
+      `SELECT source_ts, message_ts, state, error FROM slack_unsubscribe_reactions WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND (state = 'queued' OR ? = 1) ORDER BY source_ts`,
+      [key.workspaceId, key.channelId, key.threadTs, Number(includeCompleted)],
+    );
+    return rows.map((row) => ({ sourceTs: row.source_ts, messageTs: row.message_ts, state: row.state, error: row.error }));
+  }
+
+  async markSlackUnsubscribeReactionPosted(key: SlackThreadKey, sourceTs: string): Promise<void> {
+    const result = await this.run(`UPDATE slack_unsubscribe_reactions SET posted = 1, state = 'posted', error = NULL WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND source_ts = ? AND state = 'queued'`,
+      [key.workspaceId, key.channelId, key.threadTs, sourceTs]);
+    if (result.changes !== 1) throw new Error("Cannot finish unsubscribe reaction delivery");
+  }
+
+  async failSlackUnsubscribeReaction(key: SlackThreadKey, sourceTs: string, error: string, permanent: boolean): Promise<void> {
+    if (!error.trim()) throw new Error("Reaction delivery failure requires an error");
+    const result = await this.run(
+      `UPDATE slack_unsubscribe_reactions SET state = ?, error = ? WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND source_ts = ? AND state = 'queued'`,
+      [permanent ? "failed" : "queued", error, key.workspaceId, key.channelId, key.threadTs, sourceTs],
+    );
+    if (result.changes !== 1) throw new Error("Cannot record unsubscribe reaction failure");
+  }
+
+  async isSlackThreadFollowing(key: SlackThreadKey, sourceTs?: string): Promise<boolean> {
+    const rows = await this.query<{ following: number; first_message_ts: string; unsubscribed_message_ts: string | null }>(
+      `SELECT following, first_message_ts, unsubscribed_message_ts FROM slack_threads WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ?`,
+      [key.workspaceId, key.channelId, key.threadTs],
+    );
+    const thread = rows[0];
+    if (!thread || thread.following === 0) return false;
+    if (thread.following !== 1) throw new Error(`Invalid following state for Slack thread ${key.channelId}/${key.threadTs}`);
+    if (sourceTs === undefined) return true;
+    return sourceTs >= thread.first_message_ts && (thread.unsubscribed_message_ts === null || sourceTs > thread.unsubscribed_message_ts);
   }
 
   async hasSlackThread(key: SlackThreadKey): Promise<boolean> {
@@ -1498,7 +1686,7 @@ export class SqlDbClient implements DbClient {
        JOIN slack_processed_messages activation ON activation.workspace_id = thread.workspace_id
          AND activation.channel_id = thread.channel_id AND activation.thread_ts = thread.thread_ts
          AND activation.message_ts = thread.first_message_ts
-       WHERE thread.workspace_id = ? AND thread.channel_id = ? AND thread.thread_ts = ?`,
+       WHERE thread.workspace_id = ? AND thread.channel_id = ? AND thread.thread_ts = ? AND thread.following = 1`,
       [key.workspaceId, key.channelId, key.threadTs],
     );
     return rows.length > 0;
@@ -1508,7 +1696,7 @@ export class SqlDbClient implements DbClient {
     const result = await this.run(
       `INSERT INTO slack_processed_messages (workspace_id, channel_id, message_ts, thread_ts, created_at)
        SELECT ?, ?, ?, ?, ? FROM slack_threads
-       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND first_message_ts <= ?
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND following = 1 AND first_message_ts <= ?
        ON CONFLICT (workspace_id, channel_id, message_ts) DO NOTHING`,
       [key.workspaceId, key.channelId, messageTs, key.threadTs, this.clock.nowIso(),
         key.workspaceId, key.channelId, key.threadTs, messageTs],
@@ -1520,7 +1708,7 @@ export class SqlDbClient implements DbClient {
     const result = await this.run(
       `INSERT INTO slack_processed_messages (workspace_id, channel_id, message_ts, thread_ts, original_message_ts, edited_user, edited_text, created_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ? FROM slack_threads
-       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND first_message_ts <= ?
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND following = 1 AND first_message_ts <= ?
        ON CONFLICT (workspace_id, channel_id, message_ts) DO NOTHING`,
       [key.workspaceId, key.channelId, eventTs, key.threadTs, originalTs, user, text, this.clock.nowIso(),
         key.workspaceId, key.channelId, key.threadTs, originalTs],
@@ -1565,15 +1753,20 @@ export class SqlDbClient implements DbClient {
        JOIN slack_processed_messages activation ON activation.workspace_id = thread.workspace_id
          AND activation.channel_id = thread.channel_id AND activation.thread_ts = thread.thread_ts
          AND activation.message_ts = thread.first_message_ts
-       WHERE message.processed_at IS NULL AND message.message_ts >= thread.first_message_ts
+       WHERE thread.following = 1 AND message.processed_at IS NULL AND message.message_ts >= thread.first_message_ts
+         AND (thread.unsubscribed_message_ts IS NULL OR message.message_ts > thread.unsubscribed_message_ts)
        UNION SELECT DISTINCT slack_workspace_id AS workspace_id, slack_channel_id AS channel_id, slack_thread_ts AS thread_ts
-       FROM tasks WHERE task_type IN ('coding', 'research') AND (
+       FROM tasks JOIN slack_threads thread ON thread.workspace_id = tasks.slack_workspace_id
+         AND thread.channel_id = tasks.slack_channel_id AND thread.thread_ts = tasks.slack_thread_ts
+       WHERE thread.following = 1 AND tasks.slack_source_ts >= thread.first_message_ts
+         AND (thread.unsubscribed_message_ts IS NULL OR tasks.slack_source_ts > thread.unsubscribed_message_ts) AND task_type IN ('coding', 'research') AND (
          (slack_state = 'awaiting_coordination' AND task_type = 'research') OR
          slack_state = 'approved' OR
          (slack_ack_state IS NULL AND slack_state = 'awaiting_coordination' AND task_type = 'coding') OR
          (slack_ack_state IS NULL AND task_type = 'research' AND slack_state IN ('queued', 'running')) OR
          (slack_ack_state IS NULL AND slack_state = 'canceled' AND coordinated_at IS NULL AND superseded_by IS NULL)
-       )`,
+       )
+       UNION SELECT workspace_id, channel_id, thread_ts FROM slack_unsubscribe_reactions WHERE state = 'queued'`,
     );
     return rows.map((row) => {
       if (!row.workspace_id || !row.channel_id || !row.thread_ts) throw new Error("Pending Slack thread has missing identity");
@@ -1587,7 +1780,8 @@ export class SqlDbClient implements DbClient {
        JOIN slack_threads thread ON thread.workspace_id = message.workspace_id
          AND thread.channel_id = message.channel_id AND thread.thread_ts = message.thread_ts
        WHERE message.workspace_id = ? AND message.channel_id = ? AND message.thread_ts = ?
-         AND message.processed_at IS NULL AND message.message_ts >= thread.first_message_ts
+         AND thread.following = 1 AND message.processed_at IS NULL AND message.message_ts >= thread.first_message_ts
+         AND (thread.unsubscribed_message_ts IS NULL OR message.message_ts > thread.unsubscribed_message_ts)
        ORDER BY message.message_ts ASC`,
       [key.workspaceId, key.channelId, key.threadTs],
     );
@@ -1608,22 +1802,26 @@ export class SqlDbClient implements DbClient {
     if (!input.request.trim() || !Number.isInteger(input.requestIndex) || input.requestIndex < 1) {
       throw new Error("Slack task requires a request and positive request index");
     }
+    if (input.type === "coding" && typeof input.delegateToBearMetal !== "boolean") throw new Error("Coding task requires an explicit delegation choice");
+    if (input.type === "research" && input.delegateToBearMetal !== undefined) throw new Error("Research tasks cannot specify coding delegation");
     if (input.type === "research" && !input.quote?.trim()) throw new Error("Research task requires an identifying question quote");
     const id = randomUUID();
     const now = this.clock.nowIso();
     const result = await this.run(
       `INSERT INTO tasks (id, task_type, slack_workspace_id, slack_channel_id, slack_thread_ts,
-       slack_source_ts, slack_source_user_id, slack_request_index, slack_request, slack_quote, slack_state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+       slack_source_ts, slack_source_user_id, slack_request_index, slack_request, slack_quote, slack_delegate_to_bear_metal, slack_replaces_task_id, slack_state, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
        ON CONFLICT (slack_workspace_id, slack_channel_id, slack_source_ts, slack_request_index) DO NOTHING`,
       [id, input.type, input.thread.workspaceId, input.thread.channelId, input.thread.threadTs,
-        input.sourceTs, input.sourceUserId ?? null, input.requestIndex, input.request, input.quote ?? null, now, now],
+        input.sourceTs, input.sourceUserId ?? null, input.requestIndex, input.request, input.quote ?? null, input.type === "coding" ? Number(input.delegateToBearMetal) : null, input.replacesTaskId ?? null, now, now],
     );
     const rows = await this.query<TaskRow>(
       `SELECT * FROM tasks WHERE slack_workspace_id = ? AND slack_channel_id = ? AND slack_source_ts = ? AND slack_request_index = ?`,
       [input.thread.workspaceId, input.thread.channelId, input.sourceTs, input.requestIndex],
     );
     if (!rows[0]) throw new Error("Slack task disappeared after insertion");
+    if (input.replacesTaskId !== undefined && rows[0].slack_replaces_task_id !== input.replacesTaskId) throw new Error("Conflicting replacement original task");
+    if (rows[0].id === rows[0].slack_replaces_task_id) throw new Error("Cannot replace a task with itself");
     return { task: rowToSlackTask(rows[0]), created: result.changes === 1 };
   }
 
@@ -1713,6 +1911,16 @@ export class SqlDbClient implements DbClient {
     if (result.changes !== 1) throw new Error(`Cannot fail Slack task: ${id}`);
   }
 
+  async resumeSlackTicketReplacement(id: string): Promise<void> {
+    const result = await this.run(
+      `UPDATE tasks SET slack_state = CASE WHEN ticket_id IS NULL THEN 'queued' ELSE 'awaiting_coordination' END,
+       error = NULL, updated_at = ? WHERE id = ? AND task_type = 'coding' AND slack_state = 'failed'
+       AND slack_ack_state IS NULL`,
+      [this.clock.nowIso(), id],
+    );
+    if (result.changes !== 1) throw new Error(`Cannot resume Slack ticket replacement: ${id}`);
+  }
+
   async attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void> {
     const result = await this.run(
       `UPDATE tasks SET ticket_id = ?, ticket_url = ?, slack_state = 'awaiting_coordination', updated_at = ?
@@ -1723,6 +1931,7 @@ export class SqlDbClient implements DbClient {
   }
 
   async cancelSlackTask(id: string, supersededBy?: string): Promise<void> {
+    if (id === supersededBy) throw new Error("Cannot replace a task with itself");
     const result = await this.run(
       `UPDATE tasks SET slack_state = 'canceled', slack_ack_state = NULL, superseded_by = ?, coordinated_at = NULL, updated_at = ?
        WHERE id = ? AND task_type IN ('coding', 'research') AND slack_state NOT IN ('failed', 'canceled')`,

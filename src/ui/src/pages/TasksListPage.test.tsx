@@ -43,6 +43,8 @@ describe("TasksListPage", () => {
     const list = screen.getByRole("region", { name: "Tasks list" });
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeVisible();
     expect(within(list).getByRole("link", { name: "DEN-1" })).toHaveAttribute("href", coding.ticketUrl);
+    expect(within(list).getByRole("link", { name: "research" })).toHaveAttribute("href", "/tasks/research/research-1");
+    expect(within(list).getByRole("link", { name: "coordinator" })).toHaveAttribute("href", "/tasks/coordinator/coord-1");
     expect(within(list).getByText("What is 2 + 2?")).toBeVisible();
     expect(within(list).getByText("Slack thread coordination")).toBeVisible();
     expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute("href", coding.pullRequests[0]?.url);

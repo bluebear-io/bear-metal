@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   slack_request_index INTEGER,
   slack_request TEXT,
   slack_quote TEXT,
+  slack_delegate_to_bear_metal INTEGER CHECK (slack_delegate_to_bear_metal IN (0, 1)),
   slack_state TEXT,
   slack_reply_ts TEXT,
   slack_ack_state TEXT,
@@ -102,6 +103,10 @@ ALTER TABLE tasks ADD COLUMN slack_source_user_id TEXT;
 ALTER TABLE tasks ADD COLUMN slack_request_index INTEGER;
 ALTER TABLE tasks ADD COLUMN slack_request TEXT;
 ALTER TABLE tasks ADD COLUMN slack_quote TEXT;
+ALTER TABLE tasks ADD COLUMN slack_delegate_to_bear_metal INTEGER CHECK (slack_delegate_to_bear_metal IN (0, 1));
+
+UPDATE tasks SET slack_delegate_to_bear_metal = 1
+WHERE task_type = 'coding' AND slack_workspace_id IS NOT NULL AND slack_delegate_to_bear_metal IS NULL;
 ALTER TABLE tasks ADD COLUMN slack_state TEXT;
 ALTER TABLE tasks ADD COLUMN slack_reply_ts TEXT;
 ALTER TABLE tasks ADD COLUMN slack_ack_state TEXT;
@@ -255,6 +260,98 @@ CREATE TABLE IF NOT EXISTS slack_threads (
   created_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, channel_id, thread_ts)
 );
+ALTER TABLE slack_threads ADD COLUMN following INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE slack_threads ADD COLUMN unsubscribed_message_ts TEXT;
+ALTER TABLE slack_threads ADD COLUMN latest_mention_ts TEXT;
+UPDATE slack_threads SET latest_mention_ts = first_message_ts WHERE latest_mention_ts IS NULL;
+ALTER TABLE slack_threads ADD COLUMN direct_message INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS slack_thread_mentions (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  message_ts TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, channel_id, thread_ts, message_ts)
+);
+INSERT INTO slack_thread_mentions (workspace_id, channel_id, thread_ts, message_ts)
+  SELECT workspace_id, channel_id, thread_ts, first_message_ts FROM slack_threads WHERE 1 = 1
+  ON CONFLICT (workspace_id, channel_id, thread_ts, message_ts) DO NOTHING;
+INSERT INTO slack_thread_mentions (workspace_id, channel_id, thread_ts, message_ts)
+  SELECT workspace_id, channel_id, thread_ts, latest_mention_ts FROM slack_threads WHERE latest_mention_ts IS NOT NULL
+  ON CONFLICT (workspace_id, channel_id, thread_ts, message_ts) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS slack_direct_answers (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  source_ts TEXT NOT NULL,
+  request_index INTEGER NOT NULL,
+  answer TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'posting', 'posted')),
+  reply_ts TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, channel_id, thread_ts, source_ts, request_index)
+);
+
+CREATE TABLE IF NOT EXISTS slack_coordination_replies (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  source_ts TEXT NOT NULL,
+  request_index INTEGER NOT NULL,
+  reply_text TEXT NOT NULL,
+  reply_kind TEXT NOT NULL,
+  task_id TEXT,
+  direct INTEGER NOT NULL,
+  group_key TEXT,
+  state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'posting', 'posted')),
+  reply_ts TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, channel_id, thread_ts, source_ts, request_index, reply_kind)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS slack_reply_action ON slack_coordination_replies
+  (workspace_id, channel_id, thread_ts, source_ts, request_index) WHERE reply_kind != 'task_cancel';
+INSERT INTO slack_coordination_replies
+  (workspace_id, channel_id, thread_ts, source_ts, request_index, reply_text, reply_kind, direct, state, reply_ts, error, created_at, updated_at)
+  SELECT workspace_id, channel_id, thread_ts, source_ts, request_index, answer, 'answer', 1, state, reply_ts, error, created_at, updated_at
+  FROM slack_direct_answers WHERE 1 = 1
+  ON CONFLICT (workspace_id, channel_id, thread_ts, source_ts, request_index, reply_kind) DO NOTHING;
+DROP TABLE slack_direct_answers;
+
+CREATE TABLE IF NOT EXISTS slack_reply_deliveries (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  reply_key TEXT NOT NULL,
+  source_ts TEXT NOT NULL,
+  request_index INTEGER NOT NULL,
+  reply_text TEXT NOT NULL,
+  reply_kind TEXT NOT NULL,
+  task_id TEXT,
+  direct INTEGER NOT NULL,
+  group_key TEXT,
+  state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'posting', 'posted')),
+  reply_ts TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, channel_id, thread_ts, reply_key)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS slack_delivery_action ON slack_reply_deliveries
+  (workspace_id, channel_id, thread_ts, source_ts, request_index) WHERE reply_kind != 'task_cancel';
+INSERT INTO slack_reply_deliveries
+  (workspace_id, channel_id, thread_ts, reply_key, source_ts, request_index, reply_text, reply_kind, task_id, direct, group_key, state, reply_ts, error, created_at, updated_at)
+  SELECT workspace_id, channel_id, thread_ts,
+    CASE WHEN reply_kind = 'task_cancel' THEN source_ts || '/task_cancel/' || task_id
+      ELSE source_ts || '/' || reply_kind || '/' || request_index END,
+    source_ts, request_index, reply_text, reply_kind, task_id, direct, group_key, state, reply_ts, error, created_at, updated_at
+  FROM slack_coordination_replies WHERE 1 = 1
+  ON CONFLICT (workspace_id, channel_id, thread_ts, reply_key) DO NOTHING;
+DROP TABLE slack_coordination_replies;
 
 CREATE TABLE IF NOT EXISTS slack_processed_messages (
   workspace_id TEXT NOT NULL,
@@ -273,3 +370,18 @@ CREATE INDEX IF NOT EXISTS slack_messages_pending ON slack_processed_messages
   (workspace_id, channel_id, thread_ts, processed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS slack_task_request ON tasks
   (slack_workspace_id, slack_channel_id, slack_source_ts, slack_request_index);
+
+ALTER TABLE tasks ADD COLUMN slack_replaces_task_id TEXT;
+CREATE TABLE IF NOT EXISTS slack_unsubscribe_reactions (
+  workspace_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  thread_ts TEXT NOT NULL,
+  source_ts TEXT NOT NULL,
+  message_ts TEXT NOT NULL,
+  posted INTEGER NOT NULL DEFAULT 0 CHECK (posted IN (0, 1)),
+  PRIMARY KEY (workspace_id, channel_id, thread_ts, source_ts)
+);
+
+ALTER TABLE slack_unsubscribe_reactions ADD COLUMN state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'posted', 'failed'));
+ALTER TABLE slack_unsubscribe_reactions ADD COLUMN error TEXT;
+UPDATE slack_unsubscribe_reactions SET state = 'posted' WHERE posted = 1 AND state = 'queued';
