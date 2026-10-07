@@ -30,6 +30,7 @@ import type {
 import { SLACK_READ_OPERATIONS } from "../agent-tools/slack-read.js";
 import { redactCredentials, redactSensitiveText } from "../agent-tools/transport.js";
 import { redactTraceText, traceText } from "./trace.js";
+import { sessionCostUsd } from "./cost.js";
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -456,6 +457,7 @@ export async function runPiWorker(input: {
         usage = {
           promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
           completionTokens: stats.tokens.output,
+          costUsd: sessionCostUsd(model, stats),
           modelName: model.name,
           provider: model.provider,
         };

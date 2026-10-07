@@ -52,6 +52,8 @@ export interface RunPayload {
   // and for runs that crashed before any model call.
   promptTokens: number | null;
   completionTokens: number | null;
+  // USD; also null when the model has no known pricing.
+  costUsd: number | null;
   modelName: string | null;
   provider: string | null;
   createdAt: number;

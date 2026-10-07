@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import type { AgentRunSummary, Run } from "../api/types.js";
 import { StatusBadge } from "./StatusBadge.js";
-import { formatDuration, formatTokens } from "../lib/format.js";
+import { formatCostUsd, formatDuration, formatTokens } from "../lib/format.js";
 
 export const Field = ({ label, value }: { label: string; value: string }) => (
   <div className="min-w-0">
@@ -36,6 +36,7 @@ export const RunsSection = ({ runs }: { runs: Array<Run | AgentRunSummary> }) =>
               <th className="px-3 py-2 font-medium">Model</th>
               <th className="px-3 py-2 font-medium">Prompt</th>
               <th className="px-3 py-2 font-medium">Completion</th>
+              <th className="px-3 py-2 font-medium">Cost</th>
               <th className="px-3 py-2 font-medium">Stop / error</th>
             </tr>
           </thead>
@@ -58,6 +59,7 @@ export const RunsSection = ({ runs }: { runs: Array<Run | AgentRunSummary> }) =>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.promptTokens)}</td>
                 <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatTokens(run.completionTokens)}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-text-secondary">{formatCostUsd(run.costUsd)}</td>
                 <td className="min-w-48 px-3 py-2 text-text-secondary">{[run.stopReason, run.error].filter(Boolean).join(": ") || "—"}</td>
               </tr>
             ))}

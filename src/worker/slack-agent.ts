@@ -6,6 +6,7 @@ import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig, type
 import type { DbClient } from "../db/client.js";
 import { runWorkspaceBuilder, workspaceForResearchTask } from "./clone.js";
 import { CoordinatorWorkspaceCache } from "./coordinator-workspace.js";
+import { sessionCostUsd } from "./cost.js";
 import { createAgentGatewayTools } from "./pi.js";
 import { AgentTraceWriter, redactTraceText, traceJson } from "./trace.js";
 import { createWorkspaceGuardedTools } from "./workspace-guard.js";
@@ -131,7 +132,7 @@ export async function runSlackAgent(input: {
       await stopPromise;
       if (stopError) throw stopError;
       const stats = session.getSessionStats();
-      await input.db.setAgentRunUsage(input.task.id, stats.tokens.input, stats.tokens.output);
+      await input.db.setAgentRunUsage(input.task.id, stats.tokens.input, stats.tokens.output, sessionCostUsd(model, stats));
       if (limitError) throw limitError;
       await input.validateOutcome?.();
       if (input.task.type === "coordinator" && input.output) outputJson = JSON.stringify(await input.output());
