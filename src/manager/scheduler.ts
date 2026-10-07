@@ -157,7 +157,9 @@ export class Scheduler {
           },
           "recovered stale in-flight task",
         );
-        if (!await db.upsertRunCrashed(r.task.id, r.reason, { workerId: r.task.workerId, reclaimCount: r.task.reclaimCount })) continue;
+        if (!await db.upsertRunCrashed(r.task.id, r.reason, {
+          workerId: r.task.workerId, reclaimCount: r.task.reclaimCount, abandoned: r.action === "abandoned",
+        })) continue;
         void db.recordEvent({
           id: randomUUID(),
           ticketId: r.task.ticketId,

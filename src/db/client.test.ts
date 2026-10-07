@@ -8,6 +8,29 @@ import { SqlDbClient, type BmStatus, type DispatchTaskInput, type TicketInput } 
 
 const dbPaths: string[] = [];
 describe("worker lease fencing", () => {
+  it("finalizes an abandoned run without changing its released pending result", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("worker");
+      await db.upsertRunStarted(task.id, "worker", new Date().toISOString());
+      const recovered = await db.markCrashed(task.id, "worker", 1);
+      expect(recovered?.action).toBe("abandoned");
+      expect(recovered?.task.resultStatus).toBe("pending");
+      expect(recovered?.task.slotStatus).toBe("released");
+      expect(await db.upsertRunCrashed(task.id, "stale worker failure", {
+        workerId: recovered!.task.workerId, reclaimCount: recovered!.task.reclaimCount,
+      })).toBe(false);
+      expect(await db.upsertRunCrashed(task.id, recovered!.reason, {
+        workerId: recovered!.task.workerId, reclaimCount: recovered!.task.reclaimCount, abandoned: true,
+      })).toBe(true);
+      const detail = await db.getAgentRunDetail(task.id);
+      expect(detail?.run.status).toBe("crashed");
+      expect(detail?.run.stopReason).toBe("crash");
+      expect(detail?.run.error).toBe(recovered!.reason);
+      expect(detail?.run.endedAt).not.toBeNull();
+    } finally { await db.close(); }
+  });
   it("fences a delayed manager crash write after a replacement claims the recovered task", async () => {
     const db = await makeDb();
     try {

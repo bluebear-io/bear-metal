@@ -747,7 +747,7 @@ export interface DbClient {
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
-  upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number }): Promise<boolean>;
+  upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
   upsertPullRequest(id: string, ticketId: string, data: PullRequestInputData): Promise<void>;
@@ -2176,12 +2176,13 @@ export class SqlDbClient implements DbClient {
     );
   }
 
-  async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number }): Promise<boolean> {
+  async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean> {
     const now = this.clock.nowIso();
     const result = await this.run(
       `UPDATE tasks SET run_status = 'crashed', stop_reason = 'crash',
          error = ?, ended_at = ?, updated_at = ?
-       WHERE id = ? AND reclaim_count = ? AND ${lease.workerId === null ? "worker_id IS NULL" : "worker_id = ? AND result_status IS NULL"}`,
+       WHERE id = ? AND reclaim_count = ? AND ${lease.workerId === null ? "worker_id IS NULL" : "worker_id = ?"}
+         AND ${lease.abandoned ? "result_status = 'pending' AND slot_status = 'released'" : "result_status IS NULL"}`,
       [error, now, now, taskId, lease.reclaimCount, ...(lease.workerId === null ? [] : [lease.workerId])],
     );
     return result.changes === 1;
