@@ -28,6 +28,12 @@ interface DispatchItem {
   trigger: RunTrigger;
 }
 
+/**
+ * How long a PR notification send claim excludes other pollers. Longer than any Slack send; a claim older
+ * than this belongs to a manager that died mid-send, so the notification is retried.
+ */
+const PR_NOTIFICATION_CLAIM_LEASE_MS = 10 * 60_000;
+
 export interface LinearSource {
   getAgentId(): Promise<string>;
   findDelegatedTickets(agentId: string): Promise<Ticket[]>;
@@ -415,9 +421,16 @@ async function refreshTrackedTickets(
   shouldRetryCi?: (status: Readonly<PullRequestStatus>) => boolean | Promise<boolean>,
 ): Promise<DispatchItem[]> {
   const toDispatch: DispatchItem[] = [];
-  for (const slot of await db.listTracked()) {
+  for (const snapshot of await db.listTracked()) {
     try {
-      const ticket = await linear.getTicket(slot.ticketId!);
+      const ticket = await linear.getTicket(snapshot.ticketId!);
+      // The worker may have completed (or a new task may have been enqueued) while Linear was awaited;
+      // decisions below must see the task/result as it is now, not the listTracked() snapshot.
+      const slot = await db.getTrackedSlot(snapshot.ticketId!);
+      if (!slot) {
+        logger.debug({ ticket: ticket.identifier }, "slot released during refresh; skipping");
+        continue;
+      }
       // A "pending" worker result means the worker stopped without finishing the ticket. The worker
       // returns "pending" both when it hands the ticket back to its human owner (via
       // commentAndHandBack — drops delegation) and when it pauses mid-run while still owning the
@@ -582,17 +595,26 @@ async function refreshTrackedTickets(
         } else {
           ciDeferralStartedAt.delete(ticket.id);
         }
+        const completedTask = slot.latestTask;
+        if (completedTask.resultStatus === null) {
+          logger.debug(
+            { ticket: ticket.identifier, taskId: completedTask.id },
+            "latest task still running; not transitioning to waiting_for_human",
+          );
+          continue;
+        }
         const preTransition = await db.readTicketStatus(ticket.id);
         logger.debug(
           { ticket: ticket.identifier, dbStatus: preTransition?.status, dbNotify: preTransition?.notify },
           "ticket_statuses before tryTransitionToWaitingForHuman",
         );
-        const shouldDm = await db.tryTransitionToWaitingForHuman(ticket.id);
+        const notifyPending = await db.tryTransitionToWaitingForHuman(ticket.id, completedTask.id);
+        const prs = completedTask.result?.prs ?? [];
         logger.debug(
-          { ticket: ticket.identifier, shouldDm, hasSlack: !!slack, prCount: decision.context.prs.length },
+          { ticket: ticket.identifier, taskId: completedTask.id, notifyPending, hasSlack: !!slack, prCount: prs.length },
           "tryTransitionToWaitingForHuman result",
         );
-        if (shouldDm) {
+        if (notifyPending) {
           if (!slack) {
             logger.info(
               {
@@ -600,27 +622,28 @@ async function refreshTrackedTickets(
                 ticketIdentifier: ticket.identifier,
                 notificationKind: "pull_request",
               },
-              "slack integration not configured; skipping PR notification",
+              "slack integration not configured; PR notification stays pending",
             );
-          } else if (decision.context.prs.length === 0) {
-            logger.info(
+          } else if (prs.length === 0) {
+            logger.warn(
               {
                 ticketId: ticket.id,
                 ticketIdentifier: ticket.identifier,
+                taskId: completedTask.id,
                 notificationKind: "pull_request",
               },
-              "no PRs in ticket context; skipping PR notification",
+              "completed task has no PRs; PR notification stays pending",
             );
           } else {
-            await sendPullRequestNotifications(
+            await deliverPendingPrNotification(
               slack,
               db,
               github,
               linear,
               logger,
               ticket,
-              decision.context.prs,
-              slot.latestTask.id,
+              prs,
+              completedTask.id,
               validationTimedOut,
               ciDeferralMaxMs,
             );
@@ -629,7 +652,7 @@ async function refreshTrackedTickets(
       }
     } catch (err) {
       logger.error(
-        { err, ticketId: slot.ticketId, taskId: slot.latestTask.id },
+        { err, ticketId: snapshot.ticketId, taskId: snapshot.latestTask.id },
         "tracked slot refresh failed; leaving slot tracked",
       );
     }
@@ -856,7 +879,8 @@ type PrNotificationKind = "opened" | "updated" | "validation_delayed";
  * `validation_delayed` still get attempted. Success side-effects
  * (`db.markPrNotified`, `user_notified` event) run only for the kinds that
  * Slack accepted — SlackIntegration throws on HTTP / ok=false / network so a
- * silent failure cannot record a fake "notified" outcome (DEN-4167).
+ * silent failure cannot record a fake "notified" outcome. Returns the PR db ids
+ * whose group Slack accepted.
  */
 async function sendPullRequestNotifications(
   slack: SlackIntegration,
@@ -869,7 +893,8 @@ async function sendPullRequestNotifications(
   runId: string,
   validationTimedOut: boolean,
   ciDeferralMaxMs: number,
-): Promise<void> {
+): Promise<Set<string>> {
+  const delivered = new Set<string>();
   const recipientEmail = ticket.assignee
     ? await linear.getUserEmail(ticket.assignee.id).catch((emailErr) => {
         logger.warn(
@@ -881,7 +906,7 @@ async function sendPullRequestNotifications(
     : null;
   const perPr = await Promise.all(
     prs.map(async (prRef) => {
-      const prDbId = `${prRef.owner}/${prRef.repo}#${prRef.number}`;
+      const prDbId = prDbIdOf(prRef);
       const [prStatus, prNotifiedAt] = await Promise.all([
         github.getPullRequestStatus(prRef),
         db.getPrNotifiedAt(prDbId),
@@ -930,6 +955,15 @@ async function sendPullRequestNotifications(
       continue;
     }
     for (const p of items) {
+      delivered.add(p.prDbId);
+      try {
+        await db.markPrNotificationDelivered(runId, p.prDbId);
+      } catch (markErr) {
+        logger.error(
+          { err: markErr, ticketId: ticket.id, taskId: runId, prDbId: p.prDbId, notificationKind: kind },
+          "failed to record PR notification delivery; it will be resent after the claim lease expires",
+        );
+      }
       try {
         await db.markPrNotified(p.prDbId);
       } catch (markErr) {
@@ -951,4 +985,69 @@ async function sendPullRequestNotifications(
       });
     }
   }
+  return delivered;
+}
+
+/**
+ * Sends the pending PR notification for `taskId`, claiming each PR in the DB first so overlapping polls,
+ * restarts, and other manager instances never send the same task/PR twice. Clears the ticket's notify
+ * intent only once every PR of the task is recorded as delivered; failed sends release their claim so a
+ * later poll retries just those PRs.
+ */
+async function deliverPendingPrNotification(
+  slack: SlackIntegration,
+  db: DbClient,
+  github: GitHubSource,
+  linear: LinearSource,
+  logger: Logger,
+  ticket: Ticket,
+  prs: PullRequestRef[],
+  taskId: string,
+  validationTimedOut: boolean,
+  ciDeferralMaxMs: number,
+): Promise<void> {
+  const { claimToken, claimed } = await db.claimPrNotifications(taskId, prs.map(prDbIdOf), PR_NOTIFICATION_CLAIM_LEASE_MS);
+  if (claimed.length > 0) {
+    const claimedSet = new Set(claimed);
+    let delivered = new Set<string>();
+    try {
+      delivered = await sendPullRequestNotifications(
+        slack,
+        db,
+        github,
+        linear,
+        logger,
+        ticket,
+        prs.filter((pr) => claimedSet.has(prDbIdOf(pr))),
+        taskId,
+        validationTimedOut,
+        ciDeferralMaxMs,
+      );
+    } finally {
+      for (const prDbId of claimed) {
+        if (!delivered.has(prDbId)) await db.releasePrNotificationClaim(taskId, prDbId, claimToken);
+      }
+    }
+  }
+  const deliveredForTask = await db.listDeliveredPrNotifications(taskId);
+  const undelivered = prs.map(prDbIdOf).filter((id) => !deliveredForTask.has(id));
+  if (undelivered.length === 0) {
+    await db.clearPendingNotification(ticket.id, taskId);
+    return;
+  }
+  logger.warn(
+    {
+      ticketId: ticket.id,
+      ticketIdentifier: ticket.identifier,
+      taskId,
+      notificationKind: "pull_request",
+      pendingPrDbIds: undelivered,
+      claimedPrDbIds: claimed,
+    },
+    "PR notification not fully delivered; keeping it pending for the next poll",
+  );
+}
+
+function prDbIdOf(pr: PullRequestRef): string {
+  return `${pr.owner}/${pr.repo}#${pr.number}`;
 }

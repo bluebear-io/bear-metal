@@ -221,13 +221,30 @@ ALTER TABLE completed_issue_comments ADD COLUMN completed_at TEXT NOT NULL DEFAU
 -- ticket_statuses
 -- One row per ticket, tracking the 4-state lifecycle separate from tasks.
 -- status: in_progress | validating | waiting_for_human | failed | completed
--- notify: 1 = fire Slack DM when status transitions to waiting_for_human
+-- notify: 1 = PR Slack notification pending, cleared only after Slack accepts it
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ticket_statuses (
   ticket_id  TEXT PRIMARY KEY,
   status     TEXT NOT NULL,
   notify     INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- pr_notification_deliveries
+-- Per completed task and PR: the Slack PR notification is being sent (state
+-- 'sending', owned by claim_token until claimed_at + lease) or was accepted
+-- ('delivered'). Lets overlapping polls, restarts, and other manager instances
+-- send each task's PR notification at most once per successful delivery.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pr_notification_deliveries (
+  task_id      TEXT NOT NULL,
+  pr_id        TEXT NOT NULL,
+  state        TEXT NOT NULL,
+  claim_token  TEXT NOT NULL,
+  claimed_at   TEXT NOT NULL,
+  delivered_at TEXT,
+  PRIMARY KEY (task_id, pr_id)
 );
 
 CREATE TABLE IF NOT EXISTS slack_threads (
