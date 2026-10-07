@@ -670,9 +670,13 @@ export interface DbClient {
   setTicketStatus(ticketId: string, status: BmStatus, notify?: boolean): Promise<void>;
   /** Returns the current status and notify flag for a ticket, or null if no row exists. For diagnostics only. */
   readTicketStatus(ticketId: string): Promise<{ status: string; notify: number } | null>;
-  /** Atomically transitions a validating ticket to waiting_for_human and resets the notify flag.
-   *  Returns true if the notify flag was consumed (Slack DM should fire). */
-  tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean>;
+  /** Transitions a validating ticket to waiting_for_human, but only while `completedTaskId` is still the
+   *  ticket's latest tracked task and is completed. Does not clear the notify flag: returns true while a
+   *  PR notification is pending for that task, including after an earlier send failed or was skipped. */
+  tryTransitionToWaitingForHuman(ticketId: string, completedTaskId: string): Promise<boolean>;
+  /** Clears the pending notify flag after Slack accepted the notification for `completedTaskId`. Leaves it
+   *  set when a newer task for the ticket has already completed, so that task's intent survives. */
+  clearPendingNotification(ticketId: string, completedTaskId: string): Promise<void>;
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
@@ -692,6 +696,8 @@ export interface DbClient {
   acquireNext(workerId: string): Promise<TaskRecord | null>;
   complete(taskId: string, result: DispatchResult): Promise<void>;
   listTracked(): Promise<TaskSlot[]>;
+  /** Current latest tracked task for one ticket, or null if its slot is released. */
+  getTrackedSlot(ticketId: string): Promise<TaskSlot | null>;
   /** Latest task row per ticket where ticket_statuses.status = 'waiting_for_human' AND slot_status = 'released'.
    *  These rows are invisible to listTracked() and so never get terminal-state reconciliation through the normal refresh loop. */
   listStaleWaitingForHuman(): Promise<StaleWaitingForHumanRow[]>;
@@ -1781,22 +1787,39 @@ export class SqlDbClient implements DbClient {
     return rows[0] ?? null;
   }
 
-  async tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean> {
+  async tryTransitionToWaitingForHuman(ticketId: string, completedTaskId: string): Promise<boolean> {
     const now = this.clock.nowIso();
-    const res = await this.run(
-      `UPDATE ticket_statuses SET status = 'waiting_for_human', notify = 0, updated_at = ?
-       WHERE ticket_id = ? AND status = 'validating' AND notify = 1`,
-      [now, ticketId],
-    );
-    if (res.changes === 1) {
-      return true;
-    }
+    const latestCompletedGuard = `
+      (SELECT id FROM tasks WHERE ticket_id = ? AND dispatch_state IS NOT NULL
+        ORDER BY created_at DESC, id DESC LIMIT 1) = ?
+      AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND result_status IS NOT NULL)`;
+    const guardParams = [ticketId, completedTaskId, completedTaskId];
     await this.run(
       `UPDATE ticket_statuses SET status = 'waiting_for_human', updated_at = ?
-       WHERE ticket_id = ? AND status = 'validating'`,
-      [now, ticketId],
+       WHERE ticket_id = ? AND status = 'validating' AND ${latestCompletedGuard}`,
+      [now, ticketId, ...guardParams],
     );
-    return false;
+    const pending = await this.query<{ notify: number }>(
+      `SELECT notify FROM ticket_statuses
+       WHERE ticket_id = ? AND status = 'waiting_for_human' AND notify = 1 AND ${latestCompletedGuard}`,
+      [ticketId, ...guardParams],
+    );
+    return pending.length === 1;
+  }
+
+  async clearPendingNotification(ticketId: string, completedTaskId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE ticket_statuses SET notify = 0, updated_at = ?
+       WHERE ticket_id = ? AND notify = 1
+         AND NOT EXISTS (
+           SELECT 1 FROM tasks newer
+           WHERE newer.ticket_id = ? AND newer.dispatch_state IS NOT NULL AND newer.id <> ?
+             AND newer.result_status IS NOT NULL
+             AND newer.created_at > (SELECT created_at FROM tasks WHERE id = ?)
+         )`,
+      [now, ticketId, ticketId, completedTaskId, completedTaskId],
+    );
   }
 
   async upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void> {
@@ -2046,6 +2069,17 @@ export class SqlDbClient implements DbClient {
       ORDER BY created_at ASC, id ASC
     `);
     return rows.map(rowToSlot);
+  }
+
+  async getTrackedSlot(ticketId: string): Promise<TaskSlot | null> {
+    const rows = await this.query<TaskRow>(
+      `SELECT * FROM tasks WHERE ticket_id = ? AND dispatch_state IS NOT NULL
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [ticketId],
+    );
+    const row = rows[0];
+    if (!row || row.slot_status === "released") return null;
+    return rowToSlot(row);
   }
 
   async listStaleWaitingForHuman(): Promise<StaleWaitingForHumanRow[]> {

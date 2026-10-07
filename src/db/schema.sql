@@ -221,7 +221,7 @@ ALTER TABLE completed_issue_comments ADD COLUMN completed_at TEXT NOT NULL DEFAU
 -- ticket_statuses
 -- One row per ticket, tracking the 4-state lifecycle separate from tasks.
 -- status: in_progress | validating | waiting_for_human | failed | completed
--- notify: 1 = fire Slack DM when status transitions to waiting_for_human
+-- notify: 1 = PR Slack notification pending, cleared only after Slack accepts it
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ticket_statuses (
   ticket_id  TEXT PRIMARY KEY,
