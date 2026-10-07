@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { SqlDbClient, type SlackThreadKey } from "../db/client.js";
 import { createLogger } from "../shared/logger.js";
 import type { LinearIntegration } from "../shared/integrations/linear/client.js";
-import type { SlackThreadApi } from "./slack-thread-api.js";
-import { SlackIntegration, SlackThreadReplyRejectedError } from "../shared/integrations/slack/client.js";
+import { SlackIntegration, SlackThreadReplyRejectedError, type SlackReadClient } from "../shared/integrations/slack/client.js";
+import { SlackThreadApi } from "./slack-thread-api.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
@@ -22,6 +22,7 @@ function makeApi(messages: Array<{ ts: string; user: string; text: string }>) {
   const replies: string[] = [];
   const api = {
     readThread: vi.fn(async () => messages),
+    readThreadMessage: vi.fn(async (_key: SlackThreadKey, ts: string) => messages.find((message) => message.ts === ts) ?? null),
     getUserEmail: vi.fn(async () => "user@example.com"),
     react: vi.fn(async () => {}),
     reply: vi.fn(async (_key: SlackThreadKey, text: string) => {
@@ -751,6 +752,59 @@ describe("Slack coordinator", () => {
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); }
   });
+  it("processes a pending edit when Slack returns the thread parent before the edited reply", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "Edited request");
+    await db.recordSlackMessage(key, "100.3");
+    const parent = { ts: "100.0", user: "U0", text: "Thread parent" };
+    const call = vi.fn(async (_method: string, params: { oldest: string; latest?: string }) => {
+      if (params.oldest === "100.3" && params.latest === undefined) return { ok: true, has_more: false, messages: [parent, { ts: "100.3", user: "U1", text: "New request" }] };
+      if (params.oldest === "100.1" && params.latest === "100.1") return { ok: true, has_more: false, messages: [parent, { ts: "100.1", user: "U1", text: "Edited request" }] };
+      throw new Error(`Unexpected Slack read ${params.oldest}/${params.latest}`);
+    });
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    vi.spyOn(api, "reply").mockResolvedValue("reply-1");
+    const batches: string[][] = [];
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, task }) => {
+      if (!task.request) throw new Error("Coordinator request missing");
+      const messages = (JSON.parse(task.request) as { messages: Array<{ ts: string }> }).messages;
+      batches.push(messages.map((message) => message.ts));
+      const answer = tools.find((tool) => tool.name === "direct_answer");
+      if (!answer) throw new Error("direct_answer missing");
+      for (const message of messages) await answer.execute(`answer-${message.ts}`, { sourceTs: message.ts, requestIndex: 1, answer: "Acknowledged" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(batches).toEqual([["100.2", "100.3"]]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(await db.listSlackPendingEdits(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+  it("abandons a pending edit when Slack returns only the thread parent for its deleted reply", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.markSlackMessagesProcessed(key, ["100.1"]);
+    await db.recordSlackEdit(key, "100.2", "100.1", "U1", "Edited, then deleted");
+    const call = vi.fn(async (_method: string, params: { oldest: string; latest?: string }) => {
+      if (params.oldest === "100.1" && params.latest === "100.1") return { ok: true, has_more: false, messages: [{ ts: "100.0", user: "U0", text: "Thread parent" }] };
+      throw new Error(`Unexpected Slack read ${params.oldest}/${params.latest}`);
+    });
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    const runAgent = vi.fn(async () => { throw new Error("Coordinator must not run for a deleted edit"); });
+    const coordinator = makeCoordinator({ db, api, runAgent });
+    try {
+      await coordinator.wake(key);
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(await db.listSlackPendingEdits(key)).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
   it("abandons a pending edit whose original message was deleted and continues with later replies", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
@@ -760,8 +814,11 @@ describe("Slack coordinator", () => {
     const api = {
       readThread: vi.fn(async (_key: SlackThreadKey, oldest: string, latest?: string) => {
         if (oldest === "100.3" && latest === undefined) return [{ ts: "100.3", user: "U1", text: "New request" }];
-        if (oldest === "100.1" && latest === "100.1") return [];
         throw new Error(`Unexpected Slack read ${oldest}/${latest}`);
+      }),
+      readThreadMessage: vi.fn(async (_key: SlackThreadKey, ts: string) => {
+        if (ts === "100.1") return null;
+        throw new Error(`Unexpected Slack message read ${ts}`);
       }),
       reply: vi.fn().mockResolvedValue("reply-1"),
     } as unknown as SlackThreadApi;
@@ -786,12 +843,15 @@ describe("Slack coordinator", () => {
     await db.recordSlackMessage(key, "100.8");
     const api = {
       readThread: vi.fn(async (_key: SlackThreadKey, oldest: string, latest?: string) => {
-        if (oldest === "100.1" && latest === "100.1") return [{ ts: "100.1", user: "U1", text: "Edited request" }];
         if (oldest === "100.8" && latest === undefined) return [
           { ts: "100.8", user: "U1", text: "Pending" },
           { ts: "100.9", user: "U1", text: "Gap reply" },
         ];
         throw new Error(`Unexpected Slack read ${oldest}/${latest}`);
+      }),
+      readThreadMessage: vi.fn(async (_key: SlackThreadKey, ts: string) => {
+        if (ts === "100.1") return { ts: "100.1", user: "U1", text: "Edited request" };
+        throw new Error(`Unexpected Slack message read ${ts}`);
       }),
       reply: vi.fn().mockResolvedValue("reply-1"),
     } as unknown as SlackThreadApi;
@@ -806,8 +866,8 @@ describe("Slack coordinator", () => {
     } });
     try {
       await coordinator.wake(key);
-      expect(vi.mocked(api.readThread)).toHaveBeenNthCalledWith(1, key, "100.8");
-      expect(vi.mocked(api.readThread)).toHaveBeenNthCalledWith(2, key, "100.1", "100.1");
+      expect(vi.mocked(api.readThread)).toHaveBeenCalledExactlyOnceWith(key, "100.8");
+      expect(vi.mocked(api.readThreadMessage)).toHaveBeenCalledExactlyOnceWith(key, "100.1");
       expect(batches).toEqual([["100.2", "100.8", "100.9"]]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally {
@@ -834,8 +894,8 @@ describe("Slack coordinator", () => {
     } });
     try {
       await coordinator.wake(key);
-      expect(vi.mocked(api.readThread)).toHaveBeenCalledWith(key, "100.1", "100.1");
-      expect(vi.mocked(api.readThread)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.readThreadMessage)).toHaveBeenCalledExactlyOnceWith(key, "100.1");
+      expect(vi.mocked(api.readThread)).not.toHaveBeenCalled();
       expect((await db.getSlackTask(oldTask.id))?.state).toBe("canceled");
       expect((await db.listSlackThreadTasks(key)).find((task) => task.sourceTs === "100.2")?.request).toBe("Find new answer");
       expect(await db.listSlackPendingMessages(key)).toEqual([]);

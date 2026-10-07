@@ -258,9 +258,21 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
   if (row.task_type === "coding" && row.slack_delegate_to_bear_metal !== 0 && row.slack_delegate_to_bear_metal !== 1) throw new Error(`Coding task ${row.id} has no valid delegation choice`);
   let result: string | null = null;
   let summary: string | null = null;
-  if (row.result_json !== null) {
-    if (row.task_type !== "research") throw new Error(`Coding task ${row.id} has a research result`);
-    const parsed = JSON.parse(row.result_json) as { answer?: unknown; summary?: unknown };
+  if (row.result_json !== null && row.task_type === "coding") {
+    try {
+      validateStoredDispatchResult(row.result_json);
+    } catch (err) {
+      throw new Error(`Coding task ${row.id} has an invalid result: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+  }
+  if (row.result_json !== null && row.task_type === "research") {
+    let parsed: { answer?: unknown; summary?: unknown };
+    try {
+      parsed = JSON.parse(row.result_json) as { answer?: unknown; summary?: unknown };
+    } catch (err) {
+      throw new Error(`Research task ${row.id} has an invalid result: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error(`Research task ${row.id} has an invalid result`);
     if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error(`Research task ${row.id} has an invalid result`);
     if (parsed.summary !== undefined && (typeof parsed.summary !== "string" || !parsed.summary.trim())) throw new Error(`Research task ${row.id} has an invalid summary`);
     result = parsed.answer;
@@ -716,9 +728,21 @@ export interface DbClient {
   setTicketStatus(ticketId: string, status: BmStatus, notify?: boolean): Promise<void>;
   /** Returns the current status and notify flag for a ticket, or null if no row exists. For diagnostics only. */
   readTicketStatus(ticketId: string): Promise<{ status: string; notify: number } | null>;
-  /** Atomically transitions a validating ticket to waiting_for_human and resets the notify flag.
-   *  Returns true if the notify flag was consumed (Slack DM should fire). */
-  tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean>;
+  /** Transitions a validating ticket to waiting_for_human, but only while `completedTaskId` is still the
+   *  ticket's latest tracked task and is completed. Does not clear the notify flag: returns true while a
+   *  PR notification is pending for that task, including after an earlier send failed or was skipped. */
+  tryTransitionToWaitingForHuman(ticketId: string, completedTaskId: string): Promise<boolean>;
+  /** Clears the pending notify flag after Slack accepted the notification for `completedTaskId`. Leaves it
+   *  set when a newer task for the ticket has already completed, so that task's intent survives. */
+  clearPendingNotification(ticketId: string, completedTaskId: string): Promise<void>;
+  /** Atomically claims the PR notification sends for `taskId`. A PR is claimable when no claim exists or the
+   *  previous claim is still `sending` and older than `leaseMs` (its owner crashed). Returns the claimed PR ids
+   *  and the token that owns them; PRs already delivered or being sent by another owner are not claimed. */
+  claimPrNotifications(taskId: string, prIds: string[], leaseMs: number): Promise<{ claimToken: string; claimed: string[] }>;
+  markPrNotificationDelivered(taskId: string, prId: string): Promise<void>;
+  /** Drops a `sending` claim still owned by `claimToken` so a later poll can retry the send. */
+  releasePrNotificationClaim(taskId: string, prId: string, claimToken: string): Promise<void>;
+  listDeliveredPrNotifications(taskId: string): Promise<Set<string>>;
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
@@ -738,6 +762,8 @@ export interface DbClient {
   acquireNext(workerId: string): Promise<TaskRecord | null>;
   complete(taskId: string, result: DispatchResult): Promise<void>;
   listTracked(): Promise<TaskSlot[]>;
+  /** Current latest tracked task for one ticket, or null if its slot is released. */
+  getTrackedSlot(ticketId: string): Promise<TaskSlot | null>;
   /** Latest task row per ticket where ticket_statuses.status = 'waiting_for_human' AND slot_status = 'released'.
    *  These rows are invisible to listTracked() and so never get terminal-state reconciliation through the normal refresh loop. */
   listStaleWaitingForHuman(): Promise<StaleWaitingForHumanRow[]>;
@@ -823,6 +849,37 @@ function parseDispatchResult(value: string | null): DispatchResult | null {
       ? [parsePullRequestRef(parsed.pr)]
       : [];
   return { status, prs };
+}
+
+// Stricter than parseDispatchResult: a stored coding outcome must be a complete payload as written by
+// complete() or crash recovery. Legacy single `pr` payloads (object or null) are still accepted when `prs` is absent.
+function validateStoredDispatchResult(value: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (err) {
+    throw new Error(`result_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("result_json must be an object");
+  const result = parsed as Record<string, unknown>;
+  if (result.status !== "pending" && result.status !== "done") throw new Error(`Invalid dispatch result status: ${String(result.status)}`);
+  if (result.notifyOnComplete !== undefined && typeof result.notifyOnComplete !== "boolean") throw new Error("notifyOnComplete must be a boolean");
+  if (result.prs !== undefined) {
+    if (!Array.isArray(result.prs)) throw new Error("prs must be an array");
+    result.prs.forEach((item) => validateStoredPullRequestRef(item));
+  } else if (result.pr !== undefined) {
+    if (result.pr !== null) validateStoredPullRequestRef(result.pr);
+  } else {
+    throw new Error("result_json is missing prs");
+  }
+}
+
+function validateStoredPullRequestRef(value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("PullRequestRef must be an object");
+  const ref = value as Record<string, unknown>;
+  if (typeof ref.owner !== "string" || !ref.owner.trim()) throw new Error("PullRequestRef owner must be a non-empty string");
+  if (typeof ref.repo !== "string" || !ref.repo.trim()) throw new Error("PullRequestRef repo must be a non-empty string");
+  if (typeof ref.number !== "number" || !Number.isInteger(ref.number) || ref.number <= 0) throw new Error("PullRequestRef number must be a positive integer");
 }
 
 function parsePullRequestRef(value: unknown): PullRequestRef {
@@ -1990,22 +2047,92 @@ export class SqlDbClient implements DbClient {
     return rows[0] ?? null;
   }
 
-  async tryTransitionToWaitingForHuman(ticketId: string): Promise<boolean> {
+  async tryTransitionToWaitingForHuman(ticketId: string, completedTaskId: string): Promise<boolean> {
     const now = this.clock.nowIso();
-    const res = await this.run(
-      `UPDATE ticket_statuses SET status = 'waiting_for_human', notify = 0, updated_at = ?
-       WHERE ticket_id = ? AND status = 'validating' AND notify = 1`,
-      [now, ticketId],
-    );
-    if (res.changes === 1) {
-      return true;
-    }
+    const latestCompletedGuard = `
+      (SELECT id FROM tasks WHERE ticket_id = ? AND dispatch_state IS NOT NULL
+        ORDER BY created_at DESC, id DESC LIMIT 1) = ?
+      AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND result_status IS NOT NULL)`;
+    const guardParams = [ticketId, completedTaskId, completedTaskId];
     await this.run(
       `UPDATE ticket_statuses SET status = 'waiting_for_human', updated_at = ?
-       WHERE ticket_id = ? AND status = 'validating'`,
-      [now, ticketId],
+       WHERE ticket_id = ? AND status = 'validating' AND ${latestCompletedGuard}`,
+      [now, ticketId, ...guardParams],
     );
-    return false;
+    const pending = await this.query<{ notify: number }>(
+      `SELECT notify FROM ticket_statuses
+       WHERE ticket_id = ? AND status = 'waiting_for_human' AND notify = 1 AND ${latestCompletedGuard}`,
+      [ticketId, ...guardParams],
+    );
+    return pending.length === 1;
+  }
+
+  async clearPendingNotification(ticketId: string, completedTaskId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE ticket_statuses SET notify = 0, updated_at = ?
+       WHERE ticket_id = ? AND notify = 1
+         AND NOT EXISTS (
+           SELECT 1 FROM tasks newer
+           WHERE newer.ticket_id = ? AND newer.dispatch_state IS NOT NULL AND newer.id <> ?
+             AND newer.result_status IS NOT NULL
+             AND newer.created_at > (SELECT created_at FROM tasks WHERE id = ?)
+         )`,
+      [now, ticketId, ticketId, completedTaskId, completedTaskId],
+    );
+  }
+
+  async claimPrNotifications(
+    taskId: string,
+    prIds: string[],
+    leaseMs: number,
+  ): Promise<{ claimToken: string; claimed: string[] }> {
+    const claimToken = randomUUID();
+    const claimed: string[] = [];
+    for (const prId of prIds) {
+      const now = this.clock.nowIso();
+      const inserted = await this.run(
+        `INSERT INTO pr_notification_deliveries (task_id, pr_id, state, claim_token, claimed_at)
+         VALUES (?, ?, 'sending', ?, ?) ON CONFLICT (task_id, pr_id) DO NOTHING`,
+        [taskId, prId, claimToken, now],
+      );
+      if (inserted.changes === 1) {
+        claimed.push(prId);
+        continue;
+      }
+      const leaseExpiredBefore = new Date(Date.parse(now) - leaseMs).toISOString();
+      const taken = await this.run(
+        `UPDATE pr_notification_deliveries SET claim_token = ?, claimed_at = ?
+         WHERE task_id = ? AND pr_id = ? AND state = 'sending' AND claimed_at < ?`,
+        [claimToken, now, taskId, prId, leaseExpiredBefore],
+      );
+      if (taken.changes === 1) claimed.push(prId);
+    }
+    return { claimToken, claimed };
+  }
+
+  async markPrNotificationDelivered(taskId: string, prId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE pr_notification_deliveries SET state = 'delivered', delivered_at = ? WHERE task_id = ? AND pr_id = ?`,
+      [now, taskId, prId],
+    );
+  }
+
+  async releasePrNotificationClaim(taskId: string, prId: string, claimToken: string): Promise<void> {
+    await this.run(
+      `DELETE FROM pr_notification_deliveries
+       WHERE task_id = ? AND pr_id = ? AND state = 'sending' AND claim_token = ?`,
+      [taskId, prId, claimToken],
+    );
+  }
+
+  async listDeliveredPrNotifications(taskId: string): Promise<Set<string>> {
+    const rows = await this.query<{ pr_id: string }>(
+      `SELECT pr_id FROM pr_notification_deliveries WHERE task_id = ? AND state = 'delivered'`,
+      [taskId],
+    );
+    return new Set(rows.map((r) => r.pr_id));
   }
 
   async upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void> {
@@ -2255,6 +2382,17 @@ export class SqlDbClient implements DbClient {
       ORDER BY created_at ASC, id ASC
     `);
     return rows.map(rowToSlot);
+  }
+
+  async getTrackedSlot(ticketId: string): Promise<TaskSlot | null> {
+    const rows = await this.query<TaskRow>(
+      `SELECT * FROM tasks WHERE ticket_id = ? AND dispatch_state IS NOT NULL
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [ticketId],
+    );
+    const row = rows[0];
+    if (!row || row.slot_status === "released") return null;
+    return rowToSlot(row);
   }
 
   async listStaleWaitingForHuman(): Promise<StaleWaitingForHumanRow[]> {
