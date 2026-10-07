@@ -230,6 +230,23 @@ CREATE TABLE IF NOT EXISTS ticket_statuses (
   updated_at TEXT NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- pr_notification_deliveries
+-- Per completed task and PR: the Slack PR notification is being sent (state
+-- 'sending', owned by claim_token until claimed_at + lease) or was accepted
+-- ('delivered'). Lets overlapping polls, restarts, and other manager instances
+-- send each task's PR notification at most once per successful delivery.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pr_notification_deliveries (
+  task_id      TEXT NOT NULL,
+  pr_id        TEXT NOT NULL,
+  state        TEXT NOT NULL,
+  claim_token  TEXT NOT NULL,
+  claimed_at   TEXT NOT NULL,
+  delivered_at TEXT,
+  PRIMARY KEY (task_id, pr_id)
+);
+
 CREATE TABLE IF NOT EXISTS slack_threads (
   workspace_id TEXT NOT NULL,
   channel_id TEXT NOT NULL,

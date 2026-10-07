@@ -677,6 +677,14 @@ export interface DbClient {
   /** Clears the pending notify flag after Slack accepted the notification for `completedTaskId`. Leaves it
    *  set when a newer task for the ticket has already completed, so that task's intent survives. */
   clearPendingNotification(ticketId: string, completedTaskId: string): Promise<void>;
+  /** Atomically claims the PR notification sends for `taskId`. A PR is claimable when no claim exists or the
+   *  previous claim is still `sending` and older than `leaseMs` (its owner crashed). Returns the claimed PR ids
+   *  and the token that owns them; PRs already delivered or being sent by another owner are not claimed. */
+  claimPrNotifications(taskId: string, prIds: string[], leaseMs: number): Promise<{ claimToken: string; claimed: string[] }>;
+  markPrNotificationDelivered(taskId: string, prId: string): Promise<void>;
+  /** Drops a `sending` claim still owned by `claimToken` so a later poll can retry the send. */
+  releasePrNotificationClaim(taskId: string, prId: string, claimToken: string): Promise<void>;
+  listDeliveredPrNotifications(taskId: string): Promise<Set<string>>;
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
@@ -1820,6 +1828,59 @@ export class SqlDbClient implements DbClient {
          )`,
       [now, ticketId, ticketId, completedTaskId, completedTaskId],
     );
+  }
+
+  async claimPrNotifications(
+    taskId: string,
+    prIds: string[],
+    leaseMs: number,
+  ): Promise<{ claimToken: string; claimed: string[] }> {
+    const claimToken = randomUUID();
+    const claimed: string[] = [];
+    for (const prId of prIds) {
+      const now = this.clock.nowIso();
+      const inserted = await this.run(
+        `INSERT INTO pr_notification_deliveries (task_id, pr_id, state, claim_token, claimed_at)
+         VALUES (?, ?, 'sending', ?, ?) ON CONFLICT (task_id, pr_id) DO NOTHING`,
+        [taskId, prId, claimToken, now],
+      );
+      if (inserted.changes === 1) {
+        claimed.push(prId);
+        continue;
+      }
+      const leaseExpiredBefore = new Date(Date.parse(now) - leaseMs).toISOString();
+      const taken = await this.run(
+        `UPDATE pr_notification_deliveries SET claim_token = ?, claimed_at = ?
+         WHERE task_id = ? AND pr_id = ? AND state = 'sending' AND claimed_at < ?`,
+        [claimToken, now, taskId, prId, leaseExpiredBefore],
+      );
+      if (taken.changes === 1) claimed.push(prId);
+    }
+    return { claimToken, claimed };
+  }
+
+  async markPrNotificationDelivered(taskId: string, prId: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE pr_notification_deliveries SET state = 'delivered', delivered_at = ? WHERE task_id = ? AND pr_id = ?`,
+      [now, taskId, prId],
+    );
+  }
+
+  async releasePrNotificationClaim(taskId: string, prId: string, claimToken: string): Promise<void> {
+    await this.run(
+      `DELETE FROM pr_notification_deliveries
+       WHERE task_id = ? AND pr_id = ? AND state = 'sending' AND claim_token = ?`,
+      [taskId, prId, claimToken],
+    );
+  }
+
+  async listDeliveredPrNotifications(taskId: string): Promise<Set<string>> {
+    const rows = await this.query<{ pr_id: string }>(
+      `SELECT pr_id FROM pr_notification_deliveries WHERE task_id = ? AND state = 'delivered'`,
+      [taskId],
+    );
+    return new Set(rows.map((r) => r.pr_id));
   }
 
   async upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void> {
