@@ -63,6 +63,17 @@ export class SlackThreadApi {
     return messages;
   }
 
+  async readThreadMessage(key: SlackThreadKey, ts: string): Promise<SlackThreadMessage | null> {
+    const messages = await this.readThread(key, ts, ts);
+    // conversations.replies returns the thread parent first even when oldest/latest exclude it.
+    const candidates = ts === key.threadTs ? messages : messages.filter((message) => message.ts !== key.threadTs);
+    if (candidates.length === 0) return null;
+    if (candidates.length !== 1 || candidates[0]!.ts !== ts) {
+      throw new Error(`Slack thread ${key.channelId}/${key.threadTs} returned unexpected messages for ${ts}: ${candidates.map((message) => message.ts).join(", ")}`);
+    }
+    return candidates[0]!;
+  }
+
   async reply(key: SlackThreadKey, text: string): Promise<string> {
     return this.writer.postThreadMessage(key.channelId, key.threadTs, text);
   }

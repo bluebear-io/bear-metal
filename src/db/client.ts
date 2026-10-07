@@ -224,9 +224,21 @@ function rowToSlackTask(row: TaskRow): SlackTaskRecord {
   if (row.slack_ack_state !== null && row.slack_ack_state !== "posting" && row.slack_ack_state !== "posted" && row.slack_ack_state !== "failed") throw new Error(`Invalid Slack acknowledgment state for ${row.id}: ${row.slack_ack_state}`);
   let result: string | null = null;
   let summary: string | null = null;
-  if (row.result_json !== null) {
-    if (row.task_type !== "research") throw new Error(`Coding task ${row.id} has a research result`);
-    const parsed = JSON.parse(row.result_json) as { answer?: unknown; summary?: unknown };
+  if (row.result_json !== null && row.task_type === "coding") {
+    try {
+      validateStoredDispatchResult(row.result_json);
+    } catch (err) {
+      throw new Error(`Coding task ${row.id} has an invalid result: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+  }
+  if (row.result_json !== null && row.task_type === "research") {
+    let parsed: { answer?: unknown; summary?: unknown };
+    try {
+      parsed = JSON.parse(row.result_json) as { answer?: unknown; summary?: unknown };
+    } catch (err) {
+      throw new Error(`Research task ${row.id} has an invalid result: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error(`Research task ${row.id} has an invalid result`);
     if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error(`Research task ${row.id} has an invalid result`);
     if (parsed.summary !== undefined && (typeof parsed.summary !== "string" || !parsed.summary.trim())) throw new Error(`Research task ${row.id} has an invalid summary`);
     result = parsed.answer;
@@ -777,6 +789,37 @@ function parseDispatchResult(value: string | null): DispatchResult | null {
       ? [parsePullRequestRef(parsed.pr)]
       : [];
   return { status, prs };
+}
+
+// Stricter than parseDispatchResult: a stored coding outcome must be a complete payload as written by
+// complete() or crash recovery. Legacy single `pr` payloads (object or null) are still accepted when `prs` is absent.
+function validateStoredDispatchResult(value: string): void {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (err) {
+    throw new Error(`result_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("result_json must be an object");
+  const result = parsed as Record<string, unknown>;
+  if (result.status !== "pending" && result.status !== "done") throw new Error(`Invalid dispatch result status: ${String(result.status)}`);
+  if (result.notifyOnComplete !== undefined && typeof result.notifyOnComplete !== "boolean") throw new Error("notifyOnComplete must be a boolean");
+  if (result.prs !== undefined) {
+    if (!Array.isArray(result.prs)) throw new Error("prs must be an array");
+    result.prs.forEach((item) => validateStoredPullRequestRef(item));
+  } else if (result.pr !== undefined) {
+    if (result.pr !== null) validateStoredPullRequestRef(result.pr);
+  } else {
+    throw new Error("result_json is missing prs");
+  }
+}
+
+function validateStoredPullRequestRef(value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("PullRequestRef must be an object");
+  const ref = value as Record<string, unknown>;
+  if (typeof ref.owner !== "string" || !ref.owner.trim()) throw new Error("PullRequestRef owner must be a non-empty string");
+  if (typeof ref.repo !== "string" || !ref.repo.trim()) throw new Error("PullRequestRef repo must be a non-empty string");
+  if (typeof ref.number !== "number" || !Number.isInteger(ref.number) || ref.number <= 0) throw new Error("PullRequestRef number must be a positive integer");
 }
 
 function parsePullRequestRef(value: unknown): PullRequestRef {
