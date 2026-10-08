@@ -409,6 +409,8 @@ Workers retain every PR associated with a ticket across iterations, including PR
 
 The Tasks dashboard links research and coordinator labels to their task pages. Those pages show the processed message or research request and the output immediately below the execution summary, before the event log.
 
+PR opened, PR updated, validation-delayed, needs-input, and max-iteration notifications are one attempt each. `SlackIntegration` throws when Slack returns a non-success response or the request fails, and it does not log the bot token or message body. The scheduler records `user_notified` and marks a pull request notified only after that send succeeds. A failure on one pull-request notification kind does not skip the other kinds.
+
 The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
 
 1. Create a separate Slack app.
