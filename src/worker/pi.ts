@@ -106,7 +106,7 @@ export async function runPiWorker(input: {
       if (decision?.status === "pending") {
         decision = { status: "pending", prs: mergePrs(decision.prs, next.prs), notifyOnComplete: decision.notifyOnComplete };
       } else {
-        decision = { status: "done", prs: [...collectedPrs], notifyOnComplete: next.notifyOnComplete };
+        decision = { status: "done", prs: mergePrs(input.context.prs, collectedPrs), notifyOnComplete: next.notifyOnComplete };
       }
     }
   };

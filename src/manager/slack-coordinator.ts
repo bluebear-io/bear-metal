@@ -83,7 +83,17 @@ export class SlackCoordinator {
     const run = this.runThread(key).then(async () => {
       // Pending reactions retry on the next scheduled poll, not in a busy loop.
       succeeded = (await this.input.db.listSlackUnsubscribeReactions(key)).length === 0;
-    }).catch((err) => {
+    }).catch(async (err) => {
+      if (err instanceof SlackThreadReplyRejectedError && err.code === "is_archived") {
+        try {
+          await this.input.db.suspendSlackChannel(key.workspaceId, key.channelId);
+        } catch (suspendErr) {
+          this.input.logger.error({ err: suspendErr, originalErr: err, key }, "Failed to suspend archived Slack channel");
+          return;
+        }
+        this.input.logger.error({ err, key }, "Slack channel archived; coordination suspended until a new mention");
+        return;
+      }
       this.input.logger.error({ err, key }, "Slack thread coordination failed");
     }).finally(() => {
       this.active.delete(id);

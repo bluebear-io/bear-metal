@@ -57,6 +57,65 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it("logs a failed archived-channel suspension and retries it without rejecting wake", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> hello" }]);
+    const archived = new SlackThreadReplyRejectedError("Slack chat.postMessage rejected: is_archived", "is_archived");
+    vi.mocked(api.reply).mockRejectedValue(archived);
+    const failure = new Error("Database connection dropped");
+    vi.spyOn(db, "suspendSlackChannel").mockRejectedValueOnce(failure);
+    const logger = createLogger({ name: "test", level: "silent" });
+    const logError = vi.spyOn(logger, "error");
+    const coordinator = makeCoordinator({ db, api, logger, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 1, answer: "Hello" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await expect(coordinator.wake(key)).resolves.toBeUndefined();
+      expect(logError).toHaveBeenCalledWith({ err: failure, originalErr: archived, key }, "Failed to suspend archived Slack channel");
+      expect(await db.listSlackPendingThreads()).toEqual([key]);
+      await coordinator.wake(key);
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+    } finally { await coordinator.stop(); await db.close(); }
+  });
+  it("stops polling an archived channel without deleting work and resumes on a new mention", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const other = { ...key, threadTs: "99.0" };
+    await db.followSlackThread(other, "99.1");
+    await db.recordSlackMessage(other, "99.1");
+    const research = (await db.createSlackTask({ type: "research", thread: other, sourceTs: "99.1", requestIndex: 1, request: "Research A", quote: "A" })).task;
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> hello" }]);
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger: createLogger({ name: "test", level: "silent" }),
+      fetchImpl: async () => Response.json({ ok: false, error: "is_archived" }) });
+    vi.mocked(api.reply).mockImplementationOnce((thread, text) => writer.postThreadMessage(thread.channelId, thread.threadTs, text));
+    const runAgent = vi.fn<NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>>(async ({ tools }) => {
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 1, answer: "Hello" }, undefined, undefined, {} as never);
+    });
+    const coordinator = makeCoordinator({ db, api, runAgent });
+    try {
+      await coordinator.wake(key);
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+      expect(await db.isSlackThreadFollowing(other)).toBe(false);
+      expect((await db.getSlackTask(research.id))?.state).toBe("queued");
+      expect(await db.listSlackUnsubscribeReactions(key)).toEqual([]);
+      await coordinator.poll();
+      await coordinator.wake(key);
+      expect(runAgent).toHaveBeenCalledTimes(1);
+      await db.followSlackThread(key, "100.2");
+      await db.recordSlackMessage(key, "100.2");
+      vi.mocked(api.readThread).mockResolvedValue([{ ts: "100.2", user: "U1", text: "<@UBOT> hello again" }]);
+      runAgent.mockImplementationOnce(async ({ tools }) => {
+        await tools.find((tool) => tool.name === "direct_answer")!.execute("answer2", { sourceTs: "100.2", requestIndex: 1, answer: "Welcome back" }, undefined, undefined, {} as never);
+      });
+      await coordinator.wake(key);
+      expect(runAgent).toHaveBeenCalledTimes(2);
+      expect(await db.isSlackThreadFollowing(key)).toBe(true);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await coordinator.stop(); await db.close(); }
+  });
   it.each([false, true])("restores a cancellation reply for a task from an earlier message (posted=%s)", async (posted) => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");

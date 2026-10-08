@@ -88,7 +88,7 @@ export class SlackReactionError extends Error {
 }
 
 export class SlackThreadReplyRejectedError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly code?: string) {
     super(message);
     this.name = "SlackThreadReplyRejectedError";
   }
@@ -249,7 +249,7 @@ export class SlackIntegration implements Integration {
     if (!response.ok) throw new Error(`Slack chat.postMessage HTTP ${response.status}; delivery is uncertain`);
     const body = (await response.json()) as { ok?: boolean; ts?: string; error?: string };
     if (body.ok === false && body.error && CONFIRMED_REPLY_REJECTIONS.has(body.error)) {
-      throw new SlackThreadReplyRejectedError(`Slack chat.postMessage rejected: ${body.error}`);
+      throw new SlackThreadReplyRejectedError(`Slack chat.postMessage rejected: ${body.error}`, body.error);
     }
     if (body.ok !== true || typeof body.ts !== "string" || !body.ts) throw new Error(`Slack chat.postMessage failed: ${body.error ?? "missing ts"}; delivery is uncertain`);
     return body.ts;

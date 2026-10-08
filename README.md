@@ -333,16 +333,63 @@ For a deployed smoke test, delegate one task for each branch of your `customizeT
 
 ### Slack
 
-Both Slack apps are optional and independent. Create them at [Slack App Management](https://api.slack.com/apps) using **Create New App → From scratch**.
+Slack integration is entirely optional. Choose the features you need; the two apps below are optional and independent. A permission or event subscription is required only for the feature that uses it. Create apps at [Slack App Management](https://api.slack.com/apps) using **Create New App → From scratch**.
 
-The first app is used by the trusted harness for notifications and, when `slack.getSigningSecret` is configured, thread requests. Omit the top-level `slack` configuration to disable both.
-Incoming events must belong to the workspace reported by that app's bot token. The Slack Events endpoint runs in the manager process when `API_ONLY` is false.
+| Mode | Configuration | Slack setup |
+| --- | --- | --- |
+| No Slack | Omit `slack` and `agentIntegrations.slack` | No apps, tokens, scopes or event subscriptions |
+| Ticket and coding-status notifications only | Set `slack.getBotToken` and `slack.notificationChannel`; omit `slack.getSigningSecret` | Main app with `chat:write`; email lookup scopes for requester DMs, and `chat:write.public` only for public channels the bot has not joined. No Events API or incoming-message setup |
+| Interactive Slack bot | Add `slack.getSigningSecret` to the main app configuration | Notification setup plus the scopes and events for mentions, followed threads, DMs and research below |
+| Slack reads during coding | Set `agentIntegrations.slack.getBotToken` for a separate read-only app | Only the read scopes needed by the coding agent; no Events API, write scopes or signing secret |
 
-1. Under **OAuth & Permissions → Bot Token Scopes**, add `app_mentions:read`, `chat:write`, `chat:write.public`, `reactions:write`, `channels:history`, `groups:history`, `im:history`, `files:read`, `users:read`, and `users:read.email`. The user scopes let Bear Metal assign new Linear tickets to the Slack requester by email.
-2. Select **Install to Workspace**, approve the installation, and make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
-3. Right-click the target channel, choose **View channel details**, and copy the channel ID shown at the bottom (for example `C0123456789`) into `slack.notificationChannel`.
-4. For thread requests, set `slack.getSigningSecret` to return the app's Signing Secret. Set the Events API request URL to `https://<manager-host>/slack/events`. Subscribe to `app_mention`, `message.channels`, `message.groups`, and `message.im`. Enable **Delayed Events** under Event Subscriptions, reinstall the app after adding scopes, and invite it to channels it should follow.
-5. Under **App Home → Show Tabs**, enable **Messages Tab** and check **Allow users to send Slash commands and messages from the messages tab**. Without this setting, Slack disables the DM composer even if the event subscriptions and scopes are correct. In an [app manifest](https://docs.slack.dev/reference/app-manifest/), these settings are `features.app_home.messages_tab_enabled: true` and `features.app_home.messages_tab_read_only_enabled: false`. The [Messages tab guide](https://docs.slack.dev/surfaces/app-home/#using-the-messages-tab) describes the required `chat:write` and `im:history` scopes.
+The main app is used by the trusted harness for notifications and interactive requests. The coordinator and Slack research workers also use its token for Slack read tools. The separate coding-agent app does not provide those permissions to the main app. Incoming events must belong to the workspace reported by the main app's bot token. The Slack Events endpoint runs in the manager process when `API_ONLY` is false.
+
+#### Bot token scopes
+
+The table lists the complete scope set for the main app with all supported Slack read/write features. Add them under **OAuth & Permissions → Bot Token Scopes**. For a smaller setup, select scopes according to the enabled features and conversation types. All entries are bot-token scopes, including `users:read` and `users:read.email`.
+
+| Scope | When needed |
+| --- | --- |
+| `app_mentions:read` | Receive mentions that start following a channel thread |
+| `chat:write` | Send ticket/coding notifications or interactive replies, including DMs |
+| `chat:write.public` | Send notifications to public channels the bot has not joined; omit when it joins every destination |
+| `channels:history` | Read public-channel messages and threads; receive `message.channels` |
+| `channels:read` | Discover public channels and read their basic information through Slack read tools |
+| `groups:history` | Read private-channel messages and threads; receive `message.groups` |
+| `groups:read` | Discover private channels and read their basic information through Slack read tools |
+| `im:history` | Read one-to-one DMs and their threads; receive `message.im` |
+| `im:read` | Discover one-to-one DM conversations and read their basic information |
+| `mpim:history` | Read group-DM messages and threads; receive `message.mpim` |
+| `mpim:read` | Discover group-DM conversations and read their basic information |
+| `files:read` | Search and download Slack files for coordinator/research context |
+| `files:write` | Upload full research results as Markdown attachments when a summary is provided for an answer longer than 500 characters; [Slack upload APIs require this scope](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/) |
+| `reactions:write` | Add the 👍 acknowledgment after unsubscribe; [required by `reactions.add`](https://docs.slack.dev/reference/methods/reactions.add/) |
+| `users:read` | Read user profiles/lists and resolve a Slack requester's identity for ticket creation |
+| `users:read.email` | Read requester email for Slack-to-Linear ticket assignment and look up a ticket requester's Slack user for DM notifications |
+
+Read scopes do not bypass conversation membership or workspace policy. Invite the bot to the public/private conversations it should read; `chat:write.public` grants posting access only. Interactive features that use uploads, reactions or requester identity require their respective scopes even when simple replies work without them.
+
+#### Main app installation
+
+1. Add the selected bot token scopes, select **Install to Workspace**, and approve installation. Make `slack.getBotToken` return the **Bot User OAuth Token** (`xoxb-…`) from your secret source.
+2. Right-click the notification channel, choose **View channel details**, and copy its channel ID (for example `C0123456789`) into `slack.notificationChannel`. Invite the bot unless this is a public notification destination covered by `chat:write.public`.
+3. For notifications only, stop here. For interactive requests, make `slack.getSigningSecret` return the app's Signing Secret, enable **Event Subscriptions**, and set the Request URL to `https://<manager-host>/slack/events`. The manager must be reachable by Slack and running with `API_ONLY=false`. Subscribe to the bot events below for the conversations you want it to receive, and enable **Delayed Events** under Event Subscriptions.
+4. For one-to-one DM requests, under **App Home → Show Tabs**, enable **Messages Tab** and check **Allow users to send Slash commands and messages from the messages tab**. Without this setting, Slack disables the DM composer even if scopes/events are correct. In an [app manifest](https://docs.slack.dev/reference/app-manifest/), set `features.app_home.messages_tab_enabled: true` and `features.app_home.messages_tab_read_only_enabled: false`. See the [Messages tab guide](https://docs.slack.dev/surfaces/app-home/#using-the-messages-tab).
+5. After any scope change, select **Reinstall to Workspace** and approve the new permissions. Ensure your secret source returns the installed token, and restart Bear Metal if the configured token changed. Adding a scope in the app settings alone does not grant it to the installed token. A `missing_scope` rejection means the token lacks the permission; a permanently failed unsubscribe reaction is not replayed automatically, so test with a new unsubscribe request after correcting access.
+
+#### Interactive bot events
+
+Notifications and the coding-agent read-only app require none of these subscriptions. For the full interactive setup, subscribe to all five under **Event Subscriptions → Subscribe to bot events**; for a narrower setup, select the conversation types you use. Slack may add a required scope when you subscribe; approve it by reinstalling.
+
+| Bot event | Required scope | When needed |
+| --- | --- | --- |
+| `app_mention` | `app_mentions:read` | Start following threads when the bot is mentioned |
+| `message.channels` | `channels:history` | Receive subsequent public-channel messages, edits and deletions in followed threads |
+| `message.groups` | `groups:history` | Receive subsequent private-channel messages, edits and deletions in followed threads |
+| `message.im` | `im:history` | Receive one-to-one DM requests, threaded replies, edits and deletions |
+| `message.mpim` | `mpim:history` | Receive group-DM message events; [Slack's event reference](https://docs.slack.dev/reference/events/message.mpim/) describes this separate conversation type |
+
+Group DMs are not treated as one-to-one DMs: `message.mpim` alone does not activate an unfollowed conversation. Only `app_mention` events and one-to-one `message.im` events activate following; ordinary messages are processed only in already-followed threads.
 
 Every human DM, including a threaded reply, behaves like an explicit channel mention and receives a response or action. A top-level DM starts its own thread; a threaded DM follows its existing thread. In channels, an `@Bear Metal` mention starts following the thread. Ordinary messages in followed channel threads can be silently ignored when they need no Bear Metal action, including conversation addressed to others. Explicit mentions and DMs cannot be ignored. The coordinator can answer simple questions and casual messages directly, without a task or added reply wrapper, and asks for clarification when needed.
 
@@ -356,12 +403,16 @@ Every coordinator reply group, including clarifications and task acknowledgments
 
 Ask Bear Metal to stop bothering or following a thread to unsubscribe. The harness adds a 👍 reaction to the source message only after successful unsubscription, with no text acknowledgment. Reaction delivery is persisted with unsubscription. Transient failures remain pending for retry even while the thread is unfollowed, including after a restart. Permanent rejections are stored as failed with their error and logged visibly. Reaction failures never block resumed conversations. Stops sent as message edits react to the original Slack message. This requires [`reactions:write`](https://docs.slack.dev/reference/methods/reactions.add/). Following is stored durably; no further task messages or late research results from that subscription are posted. Work already started continues. A later channel mention or DM resumes following from the first such message after the stop request, skipping intervening ordinary messages and old task results. Automatic unsubscribe after ignored messages is deferred.
 
+When Slack rejects a reply with `is_archived`, coordination stops durably for all followed threads in that workspace's channel. The rejection is logged; tasks and research are retained, no reply is marked delivered, and no unsubscribe reaction is generated. If saving the suspension fails, the database error is logged and a later poll retries the pending reply. After unarchiving, a new mention resumes its thread from the new message. Other reply failures retain their existing retry or uncertain-delivery handling.
+
+Workers retain every PR associated with a ticket across iterations, including PRs in repositories that were not pushed again. Slack notifications list every PR in each opened, updated, or validation-delayed group.
+
 The Tasks dashboard links research and coordinator labels to their task pages. Those pages show the processed message or research request and the output immediately below the execution summary, before the event log.
 
 The second app is used only by the coding agent for Slack reads. Omit `agentIntegrations.slack` and the agent receives no Slack tool.
 
 1. Create a separate Slack app.
-2. Under **OAuth & Permissions → Bot Token Scopes**, add only the needed read scopes: `channels:read`, `channels:history`, `groups:read`, `groups:history`, `im:read`, `im:history`, `mpim:read`, `mpim:history`, `users:read`, `users:read.email`, and `files:read`.
+2. Under **OAuth & Permissions → Bot Token Scopes**, choose the read scopes from the table above for the conversation types and tools the coding agent needs: `channels:read`, `channels:history`, `groups:read`, `groups:history`, `im:read`, `im:history`, `mpim:read`, `mpim:history`, `users:read`, `users:read.email`, and `files:read`. Do not add `app_mentions:read`, `chat:write`, `chat:write.public`, `files:write` or `reactions:write` to this read-only app.
 3. Select **Install to Workspace** or **Reinstall to Workspace**, approve it, and return the resulting `xoxb-…` token from `agentIntegrations.slack.getBotToken`.
 4. Invite the bot to every public or private conversation it should read. Scopes do not bypass conversation membership or workspace policy.
 

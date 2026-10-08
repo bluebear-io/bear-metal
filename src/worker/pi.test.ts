@@ -607,6 +607,61 @@ describe("runPiWorker", () => {
     expect(result).toMatchObject({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
   });
 
+  it("retains every existing PR when an iteration pushes only one repository", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const prs = [
+      { owner: "acme", repo: "widgets", number: 7 },
+      { owner: "acme", repo: "api", number: 8 },
+    ];
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: workspaceRoot,
+        prTitle: "fix",
+        prBody: "fix",
+      });
+    });
+
+    const result = await runPiWorker({
+      context: makeContext({ state: "iteration", prs }),
+      github: makeGithub(),
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
+    });
+
+    expect(result).toMatchObject({ status: "done", notifyOnComplete: true, prs });
+  });
+
+  it("returns every newly opened PR once after repeated pushes across repositories", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const prs = [
+      { owner: "acme", repo: "widgets", number: 7 },
+      { owner: "acme", repo: "api", number: 8 },
+    ];
+    gitMock.getRemoteRef.mockResolvedValueOnce({ owner: "acme", repo: "widgets" })
+      .mockResolvedValueOnce({ owner: "acme", repo: "api" })
+      .mockResolvedValueOnce({ owner: "acme", repo: "widgets" });
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValueOnce(prs[0]).mockResolvedValueOnce(prs[1]);
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      for (let i = 0; i < 3; i++) {
+        await executeTool(customTools, "push_for_review", {
+          repoRoot: workspaceRoot,
+          prTitle: "fix",
+          prBody: "fix",
+        });
+      }
+    });
+
+    const result = await runPiWorker({
+      context: makeContext(), github, linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
+    });
+
+    expect(github.createPullRequest).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ status: "done", notifyOnComplete: true, prs });
+  });
+
   it("sets notifyOnComplete=true on result for a new PR after push_for_review", async () => {
     const { runPiWorker } = await import("./pi.js");
     const github = makeGithub();
