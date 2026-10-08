@@ -14,6 +14,8 @@ export type DispatchState = "new" | "iteration";
 export interface DispatchUsage {
   promptTokens: number;
   completionTokens: number;
+  /** USD; null when the model has no known pricing. */
+  costUsd: number | null;
   modelName: string;
   provider: string;
 }

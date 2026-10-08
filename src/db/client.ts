@@ -76,6 +76,7 @@ export interface TaskRow {
   error: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
+  cost_usd: number | null;
   model_name: string | null;
   provider: string | null;
   context_json: string | null;
@@ -125,6 +126,7 @@ export interface AgentRunSummary {
   stopReason: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  costUsd: number | null;
   contextJson: string | null;
   inputJson: string | null;
   ticketId: string | null;
@@ -187,7 +189,7 @@ function rowToAgentRun(row: TaskRow): AgentRunSummary {
     slackState: row.slack_state,
     slackQuote: row.slack_quote, slackReplyTs: row.slack_reply_ts,
     attemptNumber: row.attempt_number, workerId: row.worker_id, stopReason: row.stop_reason,
-    promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens,
+    promptTokens: row.prompt_tokens, completionTokens: row.completion_tokens, costUsd: row.cost_usd,
     contextJson: row.context_json, inputJson: row.input_json,
     ticketId: row.ticket_id, ticketIdentifier: row.ticket_identifier, ticketTitle: row.ticket_title,
     ticketUrl: row.ticket_url, slackWorkspaceId: row.slack_workspace_id,
@@ -506,6 +508,7 @@ export interface RunWithUsage {
   error: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  costUsd: number | null;
   modelName: string | null;
   provider: string | null;
   createdAt: Date;
@@ -650,6 +653,8 @@ export interface TicketInput {
 export interface RunUsage {
   promptTokens: number;
   completionTokens: number;
+  /** USD; null when the model has no known pricing. */
+  costUsd: number | null;
   modelName: string;
   provider: string;
 }
@@ -682,7 +687,7 @@ export interface DbClient {
   initSchema(): Promise<void>;
   startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
   setAgentRunModel(id: string, provider: string, model: string): Promise<void>;
-  setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void>;
+  setAgentRunUsage(id: string, promptTokens: number, completionTokens: number, costUsd: number | null): Promise<void>;
   finishAgentRun(id: string, error: string | null, stopReason?: "deferred", outputJson?: string): Promise<void>;
   recordAgentTrace(runId: string, kind: string, contentJson: string, createdAt?: string): Promise<void>;
   purgeAgentTraces(retentionDays: number, now?: Date): Promise<void>;
@@ -1383,11 +1388,11 @@ export class SqlDbClient implements DbClient {
     if (result.changes !== 1) throw new Error(`Cannot set model for agent run ${id}`);
   }
 
-  async setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void> {
+  async setAgentRunUsage(id: string, promptTokens: number, completionTokens: number, costUsd: number | null): Promise<void> {
     const result = await this.run(
-      `UPDATE tasks SET prompt_tokens = ?, completion_tokens = ?, updated_at = ?
+      `UPDATE tasks SET prompt_tokens = ?, completion_tokens = ?, cost_usd = ?, updated_at = ?
        WHERE id = ? AND task_type IN ('coordinator', 'research') AND run_status = 'running'`,
-      [promptTokens, completionTokens, this.clock.nowIso(), id],
+      [promptTokens, completionTokens, costUsd, this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot record usage for agent run ${id}`);
   }
@@ -2173,11 +2178,14 @@ export class SqlDbClient implements DbClient {
       `UPDATE tasks SET run_status = 'succeeded', stop_reason = 'completed',
          ended_at = ?, prompt_tokens = COALESCE(?, prompt_tokens),
          completion_tokens = COALESCE(?, completion_tokens),
+         cost_usd = CASE WHEN ? = 1 THEN ? ELSE cost_usd END,
          model_name = COALESCE(?, model_name),
          provider = COALESCE(?, provider),
          updated_at = ?
        WHERE id = ?`,
       [now, usage?.promptTokens ?? null, usage?.completionTokens ?? null,
+       // With usage present, a null cost means the model is unpriced and must replace any stored cost.
+       usage ? 1 : 0, usage?.costUsd ?? null,
        usage?.modelName ?? null, usage?.provider ?? null, now, taskId],
     );
   }
@@ -2941,6 +2949,7 @@ export class SqlDbClient implements DbClient {
           error: r.error,
           promptTokens: r.prompt_tokens,
           completionTokens: r.completion_tokens,
+          costUsd: r.cost_usd,
           modelName: r.model_name,
           provider: r.provider,
           createdAt: parseTimestampRequired(r.created_at, "created_at"),

@@ -7,7 +7,7 @@ import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
-import { formatDateTime } from "../lib/format.js";
+import { formatDateTime, formatRunsCost } from "../lib/format.js";
 import CodingTaskDetail from "../components/CodingTaskDetail.js";
 import { CopyableBlock, Field, RunsSection, Section } from "../components/TaskDetailSections.js";
 
@@ -107,6 +107,7 @@ const TaskSummary = ({ run }: { run: AgentRunSummary }) => {
       <Field label="Completed" value={formatDateTime(run.endedAt)} />
       <Field label="Model" value={run.modelName ?? "—"} />
       <Field label="Provider" value={run.provider ?? "—"} />
+      <Field label="Cost" value={formatRunsCost([run])} />
       {run.ticketUrl && <div><dt className="text-xs font-medium uppercase text-text-muted">Ticket</dt>
         <dd className="mt-1"><a href={run.ticketUrl} className="text-sm font-medium text-primary hover:underline">{run.ticketIdentifier ?? run.ticketUrl}</a></dd></div>}
       {run.ticketId && <div><dt className="text-xs font-medium uppercase text-text-muted">Coding task</dt>

@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   error TEXT,
   prompt_tokens INTEGER,
   completion_tokens INTEGER,
+  cost_usd DOUBLE PRECISION,
   model_name TEXT,
   provider TEXT,
   context_json TEXT,
@@ -124,6 +125,7 @@ ALTER TABLE tasks ADD COLUMN stop_reason TEXT;
 ALTER TABLE tasks ADD COLUMN error TEXT;
 ALTER TABLE tasks ADD COLUMN prompt_tokens INTEGER;
 ALTER TABLE tasks ADD COLUMN completion_tokens INTEGER;
+ALTER TABLE tasks ADD COLUMN cost_usd DOUBLE PRECISION;
 ALTER TABLE tasks ADD COLUMN model_name TEXT;
 ALTER TABLE tasks ADD COLUMN provider TEXT;
 ALTER TABLE tasks ADD COLUMN context_json TEXT;

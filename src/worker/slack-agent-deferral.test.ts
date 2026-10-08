@@ -41,7 +41,7 @@ describe("Slack agent review deferral", () => {
         await aborted;
       },
       abort,
-      getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }),
+      getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, cost: 0.001 }),
       dispose: vi.fn(),
     } });
     const config: BearMetalConfig = {
