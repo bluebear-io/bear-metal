@@ -239,6 +239,30 @@ class FakeSlack {
 }
 
 describe("Scheduler.tick stale-task recovery", () => {
+  it("finalizes a stale abandoned run and records its crash", async () => {
+    const db = await makeDb();
+    const ticket = makeTicket("a");
+    const task = await db.enqueue({ state: "new", ticketId: ticket.identifier, prs: [], trigger: "new", ticketIssueId: ticket.id });
+    await db.acquireNext("dead-worker");
+    await db.upsertRunStarted(task.id, "dead-worker", new Date().toISOString());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const scheduler = buildScheduler({
+      db, linear: new FakeLinear([], { [ticket.id]: ticket }), github: new FakeGitHub(), handler: new RecordingHandler(db),
+      concurrency: 1, taskStaleAfterMs: 1, taskMaxReclaims: 1,
+    });
+    await scheduler.tick();
+    await scheduler.stop();
+    await new Promise((resolve) => setImmediate(resolve));
+    const detail = await db.getAgentRunDetail(task.id);
+    expect(detail?.run.status).toBe("crashed");
+    expect(detail?.run.endedAt).not.toBeNull();
+    expect(detail?.run.error).toContain("dead-worker heartbeat stale");
+    expect((await db.getTicketDetail(ticket.id))?.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runId: task.id, workerId: "dead-worker", source: "manager", type: "worker_crashed" }),
+    ]));
+    expect(await db.countTracked()).toBe(0);
+  });
+
   it("reclaims an acquired task whose worker stopped heartbeating so the slot doesn't stay stuck", async () => {
     const db = await makeDb();
     // Simulate a worker that crashed mid-run: row has worker_id IS NOT NULL, result_status IS NULL,

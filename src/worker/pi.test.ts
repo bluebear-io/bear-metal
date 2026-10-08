@@ -8,6 +8,7 @@ import type { WorkerInputContext } from "./types.js";
 type TestTool = { name: string; parameters?: unknown; execute: (id: string, params: unknown) => Promise<unknown> };
 
 const piMock = vi.hoisted(() => ({
+  sessionAbort: vi.fn(async () => {}),
   sessionDispose: vi.fn(),
   runTools: vi.fn(async (customTools: TestTool[]) => {
     const tool = customTools.find((candidate) => candidate.name === "respond_to_ticket_reporter");
@@ -70,11 +71,55 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
       exportToJsonl: vi.fn(),
       prompt: async () => piMock.runTools(input.customTools),
       dispose: piMock.sessionDispose,
+      abort: piMock.sessionAbort,
     },
   }),
 }));
 
 describe("runPiWorker", () => {
+  it("does not push after losing the lease while refreshing credentials", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const controller = new AbortController();
+    const github = makeGithub();
+    const linear = makeLinear();
+    github.getInstallationToken.mockImplementationOnce(async () => {
+      controller.abort(new Error("Task lease lost"));
+      return "fresh-token";
+    });
+    gitMock.push.mockClear();
+    piMock.runTools.mockImplementationOnce(async (tools: TestTool[]) => {
+      await executeTool(tools, "push_for_review", { repoRoot: workspaceRoot, prTitle: "fix", prBody: "fix" });
+    });
+    const result = await runPiWorker({
+      context: makeContext(), github, linear, signal: controller.signal, gitEnv: {},
+      maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
+      llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
+    }).catch((error: unknown) => error);
+    expect(gitMock.push).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ message: "Task lease lost" });
+    expect(github.createPullRequest).not.toHaveBeenCalled();
+    expect(linear.moveTicketToInReview).not.toHaveBeenCalled();
+  });
+  it("aborts the active session on lease loss without handing back the ticket", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const controller = new AbortController();
+    const linear = makeLinear();
+    let finish!: () => void;
+    const running = new Promise<void>((resolve) => { finish = resolve; });
+    let started = false;
+    piMock.runTools.mockImplementationOnce(async () => { started = true; await running; });
+    piMock.sessionAbort.mockImplementationOnce(async () => { finish(); });
+    const result = runPiWorker({
+      context: makeContext(), github: makeGithub(), linear, signal: controller.signal,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
+      llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
+    }).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(started).toBe(true));
+    controller.abort(new Error("Task lease lost"));
+    expect(await result).toMatchObject({ message: "Task lease lost" });
+    expect(piMock.sessionAbort).toHaveBeenCalled();
+    expect(linear.commentAndHandBack).not.toHaveBeenCalled();
+  });
   // In production clone.ts creates netrcDir via mkdtemp before pi runs. Use a unique dir
   // per test (not a shared /tmp path) so a parallel dispatch.test, whose dispatch cleanup
   // rm's its netrcDir, can't delete ours mid-write.
@@ -560,6 +605,61 @@ describe("runPiWorker", () => {
 
     expect(linear.moveTicketToInReview).toHaveBeenCalledWith("ABC-1");
     expect(result).toMatchObject({ status: "done", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
+  });
+
+  it("retains every existing PR when an iteration pushes only one repository", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const prs = [
+      { owner: "acme", repo: "widgets", number: 7 },
+      { owner: "acme", repo: "api", number: 8 },
+    ];
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: workspaceRoot,
+        prTitle: "fix",
+        prBody: "fix",
+      });
+    });
+
+    const result = await runPiWorker({
+      context: makeContext({ state: "iteration", prs }),
+      github: makeGithub(),
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
+    });
+
+    expect(result).toMatchObject({ status: "done", notifyOnComplete: true, prs });
+  });
+
+  it("returns every newly opened PR once after repeated pushes across repositories", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    const prs = [
+      { owner: "acme", repo: "widgets", number: 7 },
+      { owner: "acme", repo: "api", number: 8 },
+    ];
+    gitMock.getRemoteRef.mockResolvedValueOnce({ owner: "acme", repo: "widgets" })
+      .mockResolvedValueOnce({ owner: "acme", repo: "api" })
+      .mockResolvedValueOnce({ owner: "acme", repo: "widgets" });
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValueOnce(prs[0]).mockResolvedValueOnce(prs[1]);
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      for (let i = 0; i < 3; i++) {
+        await executeTool(customTools, "push_for_review", {
+          repoRoot: workspaceRoot,
+          prTitle: "fix",
+          prBody: "fix",
+        });
+      }
+    });
+
+    const result = await runPiWorker({
+      context: makeContext(), github, linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
+    });
+
+    expect(github.createPullRequest).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ status: "done", notifyOnComplete: true, prs });
   });
 
   it("sets notifyOnComplete=true on result for a new PR after push_for_review", async () => {

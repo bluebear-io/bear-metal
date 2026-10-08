@@ -81,9 +81,10 @@ export class TaskWorker {
       if (!task) {
         return;
       }
-      void this.queue.add(() => this.runTask(task)).catch((err) => {
+      void this.queue.add(() => this.runTask(task)).catch(async (err) => {
+        if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
         this.logger.error({ err, taskId: task.id, ticketId: task.ticketId, workerId: this.workerId }, "SQL task failed");
-        void this.db.upsertRunCrashed(task.id, String(err));
+        if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount })) return;
         void this.db.recordEvent({
           id: randomUUID(),
           ticketId: task.ticketId,
@@ -98,7 +99,7 @@ export class TaskWorker {
         // Release the row immediately so we don't have to wait for stale-heartbeat recovery on the
         // manager side. If the cap is reached the row is abandoned (terminal pending + slot released)
         // and the scheduler re-admits the ticket as a fresh start next tick.
-        void this.db.markCrashed(task.id, this.workerId, this.maxReclaims).then((res) => {
+        void this.db.markCrashed(task.id, this.workerId, this.maxReclaims, task.reclaimCount).then((res) => {
           if (res) this.logger.warn(
             { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId, action: res.action, reclaimCount: res.task.reclaimCount },
             "crashed task recovered",
@@ -139,9 +140,12 @@ export class TaskWorker {
       payloadJson: null,
       createdAt: new Date().toISOString(),
     });
+    const controller = new AbortController();
     const heartbeat = setInterval(() => {
-      void this.db.heartbeat(task.id, this.workerId).then((ok) => {
+      void this.db.heartbeat(task.id, this.workerId, task.reclaimCount).then((ok) => {
         if (!ok) {
+          clearInterval(heartbeat);
+          controller.abort(new Error(`Task lease lost: ${task.id}`));
           this.logger.warn(
             { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId },
             "task heartbeat lost lease; the row was reclaimed or completed elsewhere",
@@ -155,6 +159,7 @@ export class TaskWorker {
     let result: DispatchResult;
     try {
       result = await this.runDispatch({
+        signal: controller.signal,
         ...task.input!,
         runId: task.id,
         integrations: this.integrations,
@@ -205,7 +210,9 @@ export class TaskWorker {
         },
       });
     } catch (err) {
-      void this.db.upsertRunCrashed(task.id, String(err));
+      if (controller.signal.aborted) return;
+      if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
+      if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount })) return;
       void this.db.recordEvent({
         id: randomUUID(),
         ticketId: task.ticketId,
@@ -222,7 +229,20 @@ export class TaskWorker {
       clearInterval(heartbeat);
       await traceWriter.flush();
     }
-    await this.db.complete(task.id, result);
+    if (controller.signal.aborted) return;
+    if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) {
+      this.logger.warn({ taskId: task.id, workerId: this.workerId }, "discarding result after task lease loss");
+      return;
+    }
+    try {
+      await this.db.complete(task.id, result, this.workerId, task.reclaimCount);
+    } catch (err) {
+      if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) {
+        this.logger.warn({ taskId: task.id, workerId: this.workerId }, "discarding result after task lease loss");
+        return;
+      }
+      throw err;
+    }
 
     if (task.ticketId) {
       if (result.status === "pending") {

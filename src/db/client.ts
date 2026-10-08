@@ -692,9 +692,11 @@ export interface DbClient {
   followSlackThread(key: SlackThreadKey, firstMessageTs: string, directMessage?: boolean): Promise<void>;
   getSlackThreadActivation(key: SlackThreadKey): Promise<{ directMessage: boolean; mentionTimestamps: string[] }>;
   queueSlackCoordinationReply(key: SlackThreadKey, reply: SlackCoordinationReply): Promise<SlackReplyDelivery>;
+  listSlackCoordinationReplies(key: SlackThreadKey, sourceTs: string[]): Promise<SlackReplyDelivery[]>;
   beginSlackReplyGroup(key: SlackThreadKey, replies: SlackCoordinationReply[]): Promise<string>;
   finishSlackReplyGroup(key: SlackThreadKey, groupKey: string, outcome: "posted" | "rejected" | "uncertain", replyTs: string | null, error: string | null): Promise<void>;
   unsubscribeSlackThread(key: SlackThreadKey, sourceTs: string): Promise<void>;
+  suspendSlackChannel(workspaceId: string, channelId: string): Promise<void>;
   listSlackUnsubscribeReactions(key: SlackThreadKey, includeCompleted?: boolean): Promise<SlackUnsubscribeReaction[]>;
   markSlackUnsubscribeReactionPosted(key: SlackThreadKey, sourceTs: string): Promise<void>;
   failSlackUnsubscribeReaction(key: SlackThreadKey, sourceTs: string, error: string, permanent: boolean): Promise<void>;
@@ -746,7 +748,7 @@ export interface DbClient {
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
-  upsertRunCrashed(taskId: string, error: string): Promise<void>;
+  upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
   upsertPullRequest(id: string, ticketId: string, data: PullRequestInputData): Promise<void>;
@@ -760,7 +762,7 @@ export interface DbClient {
 
   enqueue(input: DispatchTaskInput): Promise<TaskRecord>;
   acquireNext(workerId: string): Promise<TaskRecord | null>;
-  complete(taskId: string, result: DispatchResult): Promise<void>;
+  complete(taskId: string, result: DispatchResult, workerId?: string, reclaimCount?: number): Promise<void>;
   listTracked(): Promise<TaskSlot[]>;
   /** Current latest tracked task for one ticket, or null if its slot is released. */
   getTrackedSlot(ticketId: string): Promise<TaskSlot | null>;
@@ -772,9 +774,9 @@ export interface DbClient {
   countTracked(): Promise<number>;
   setSlotStatus(ticketId: string, status: SlotStatus): Promise<TaskRecord>;
   getIterationCount(ticketId: string): Promise<number>;
-  heartbeat(taskId: string, workerId: string): Promise<boolean>;
+  heartbeat(taskId: string, workerId: string, reclaimCount?: number): Promise<boolean>;
   reclaimStaleTasks(options: ReclaimStaleOptions): Promise<ReclaimResult[]>;
-  markCrashed(taskId: string, workerId: string, maxReclaims: number): Promise<ReclaimResult | null>;
+  markCrashed(taskId: string, workerId: string, maxReclaims: number, reclaimCount?: number): Promise<ReclaimResult | null>;
   close(): Promise<void>;
 
   listTickets(options: ListTicketsOptions): Promise<ListTicketsResult>;
@@ -1586,6 +1588,21 @@ export class SqlDbClient implements DbClient {
     return { sourceTs: reply.sourceTs, requestIndex: saved.request_index, text: saved.reply_text, kind, ...(saved.task_id ? { taskId: saved.task_id } : {}), direct: saved.direct === 1, state: saved.state };
   }
 
+  async listSlackCoordinationReplies(key: SlackThreadKey, sourceTs: string[]): Promise<SlackReplyDelivery[]> {
+    if (sourceTs.length === 0) return [];
+    const rows = await this.query<{
+      source_ts: string; request_index: number; reply_text: string; task_id: string | null;
+      direct: number; reply_kind: NonNullable<SlackCoordinationReply["kind"]>; state: SlackReplyDelivery["state"];
+    }>(
+      `SELECT source_ts, request_index, reply_text, task_id, direct, reply_kind, state FROM slack_reply_deliveries
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND source_ts IN (${sourceTs.map(() => "?").join(",")})
+       ORDER BY source_ts, request_index, reply_key`,
+      [key.workspaceId, key.channelId, key.threadTs, ...sourceTs],
+    );
+    return rows.map((row) => ({ sourceTs: row.source_ts, requestIndex: row.request_index, text: row.reply_text,
+      kind: row.reply_kind, ...(row.task_id ? { taskId: row.task_id } : {}), direct: row.direct === 1, state: row.state }));
+  }
+
   async beginSlackReplyGroup(key: SlackThreadKey, replies: SlackCoordinationReply[]): Promise<string> {
     const members = replies.map(slackReplyKey).sort();
     if (members.length === 0 || new Set(members).size !== members.length) throw new Error("Reply group requires distinct members");
@@ -1742,6 +1759,11 @@ export class SqlDbClient implements DbClient {
       if (!row.edited_user || row.edited_text === null) throw new Error(`Slack edit ${row.message_ts} is missing user or text`);
       return { ts: row.message_ts, originalTs: row.original_message_ts, user: row.edited_user, text: row.edited_text };
     });
+  }
+
+  async suspendSlackChannel(workspaceId: string, channelId: string): Promise<void> {
+    if (!workspaceId || !channelId) throw new Error("Slack channel suspension requires workspace and channel IDs");
+    await this.run(`UPDATE slack_threads SET following = 0 WHERE workspace_id = ? AND channel_id = ?`, [workspaceId, channelId]);
   }
 
   async listSlackPendingThreads(): Promise<SlackThreadKey[]> {
@@ -2160,14 +2182,16 @@ export class SqlDbClient implements DbClient {
     );
   }
 
-  async upsertRunCrashed(taskId: string, error: string): Promise<void> {
+  async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean> {
     const now = this.clock.nowIso();
-    await this.run(
+    const result = await this.run(
       `UPDATE tasks SET run_status = 'crashed', stop_reason = 'crash',
          error = ?, ended_at = ?, updated_at = ?
-       WHERE id = ?`,
-      [error, now, now, taskId],
+       WHERE id = ? AND reclaim_count = ? AND ${lease.workerId === null ? "worker_id IS NULL" : "worker_id = ?"}
+         AND ${lease.abandoned ? "result_status = 'pending' AND slot_status = 'released'" : "result_status IS NULL"}`,
+      [error, now, now, taskId, lease.reclaimCount, ...(lease.workerId === null ? [] : [lease.workerId])],
     );
+    return result.changes === 1;
   }
 
   async upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void> {
@@ -2350,12 +2374,12 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  async complete(taskId: string, result: DispatchResult): Promise<void> {
+  async complete(taskId: string, result: DispatchResult, workerId?: string, reclaimCount?: number): Promise<void> {
     const now = this.clock.nowIso();
     const update = await this.run(
       `UPDATE tasks SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?
-       WHERE id = ? AND worker_id IS NOT NULL AND result_status IS NULL`,
-      [result.status, JSON.stringify(result), now, now, taskId],
+       WHERE id = ? AND worker_id IS NOT NULL AND result_status IS NULL${workerId === undefined ? "" : " AND worker_id = ?"}${reclaimCount === undefined ? "" : " AND reclaim_count = ?"}`,
+      [result.status, JSON.stringify(result), now, now, taskId, ...(workerId === undefined ? [] : [workerId]), ...(reclaimCount === undefined ? [] : [reclaimCount])],
     );
     if (update.changes !== 1) {
       throw new Error(`Cannot complete task that is missing, unacquired, or already completed: ${taskId}`);
@@ -2492,12 +2516,12 @@ export class SqlDbClient implements DbClient {
     return Number(rows[0]?.count ?? 0);
   }
 
-  async heartbeat(taskId: string, workerId: string): Promise<boolean> {
+  async heartbeat(taskId: string, workerId: string, reclaimCount?: number): Promise<boolean> {
     const now = this.clock.nowIso();
     const result = await this.run(
       `UPDATE tasks SET worker_heartbeat_at = ?, updated_at = ?
-       WHERE id = ? AND worker_id = ? AND result_status IS NULL`,
-      [now, now, taskId, workerId],
+       WHERE id = ? AND worker_id = ? AND result_status IS NULL${reclaimCount === undefined ? "" : " AND reclaim_count = ?"}`,
+      [now, now, taskId, workerId, ...(reclaimCount === undefined ? [] : [reclaimCount])],
     );
     return result.changes === 1;
   }
@@ -2559,11 +2583,11 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  async markCrashed(taskId: string, workerId: string, maxReclaims: number): Promise<ReclaimResult | null> {
+  async markCrashed(taskId: string, workerId: string, maxReclaims: number, reclaimCount?: number): Promise<ReclaimResult | null> {
     if (this.dialect === "sqlite") {
       const db = this.requireSqlite();
       const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as TaskRow | undefined;
-      if (!row || row.worker_id !== workerId || row.result_status !== null) return null;
+      if (!row || row.worker_id !== workerId || row.result_status !== null || (reclaimCount !== undefined && Number(row.reclaim_count) !== reclaimCount)) return null;
       return this.sqliteApplyRecovery(db, row, maxReclaims, `worker ${workerId} reported crash`);
     }
 
@@ -2573,7 +2597,7 @@ export class SqlDbClient implements DbClient {
       await client.query("BEGIN");
       const result = await client.query<TaskRow>("SELECT * FROM tasks WHERE id = $1 FOR UPDATE", [taskId]);
       const row = result.rows[0];
-      if (!row || row.worker_id !== workerId || row.result_status !== null) {
+      if (!row || row.worker_id !== workerId || row.result_status !== null || (reclaimCount !== undefined && Number(row.reclaim_count) !== reclaimCount)) {
         await client.query("COMMIT");
         return null;
       }
