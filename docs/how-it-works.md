@@ -52,9 +52,10 @@ When the scheduler dispatches a worker, bear-metal:
    selects the LLM provider and model (Anthropic, OpenAI, Google, or Amazon
    Bedrock), returns a `buildWorkspace` function, and may add a system-prompt
    suffix and duration/token limits.
-2. **Builds the workspace.** Creates
-   `BEAR_METAL_WORKSPACE_DIR/<ticket ID>/agent` and calls `buildWorkspace`
-   with a ten-minute abort signal. The builder is responsible for cloning the
+2. **Builds the workspace.** Creates a fresh per-run directory under
+   `BEAR_METAL_WORKSPACE_DIR/<ticket ID>/` (default base
+   `~/.bear-metal/workspace`) with an `agent/` working directory, and calls
+   `buildWorkspace` with a ten-minute abort signal. The builder is responsible for cloning the
    target repositories. The workspace is removed after the run.
 3. **Runs the coding agent.** The agent works inside the workspace with the
    ticket description, any prior PR review context, and the repository's own
