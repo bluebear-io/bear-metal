@@ -57,6 +57,28 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it("logs a failed archived-channel suspension and retries it without rejecting wake", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> hello" }]);
+    const archived = new SlackThreadReplyRejectedError("Slack chat.postMessage rejected: is_archived", "is_archived");
+    vi.mocked(api.reply).mockRejectedValue(archived);
+    const failure = new Error("Database connection dropped");
+    vi.spyOn(db, "suspendSlackChannel").mockRejectedValueOnce(failure);
+    const logger = createLogger({ name: "test", level: "silent" });
+    const logError = vi.spyOn(logger, "error");
+    const coordinator = makeCoordinator({ db, api, logger, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 1, answer: "Hello" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await expect(coordinator.wake(key)).resolves.toBeUndefined();
+      expect(logError).toHaveBeenCalledWith({ err: failure, originalErr: archived, key }, "Failed to suspend archived Slack channel");
+      expect(await db.listSlackPendingThreads()).toEqual([key]);
+      await coordinator.wake(key);
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+    } finally { await coordinator.stop(); await db.close(); }
+  });
   it("stops polling an archived channel without deleting work and resumes on a new mention", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");

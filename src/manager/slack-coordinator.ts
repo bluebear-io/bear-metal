@@ -85,7 +85,12 @@ export class SlackCoordinator {
       succeeded = (await this.input.db.listSlackUnsubscribeReactions(key)).length === 0;
     }).catch(async (err) => {
       if (err instanceof SlackThreadReplyRejectedError && err.code === "is_archived") {
-        await this.input.db.suspendSlackChannel(key.workspaceId, key.channelId);
+        try {
+          await this.input.db.suspendSlackChannel(key.workspaceId, key.channelId);
+        } catch (suspendErr) {
+          this.input.logger.error({ err: suspendErr, originalErr: err, key }, "Failed to suspend archived Slack channel");
+          return;
+        }
         this.input.logger.error({ err, key }, "Slack channel archived; coordination suspended until a new mention");
         return;
       }
