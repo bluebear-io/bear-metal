@@ -38,19 +38,6 @@ export class SlackCoordinator {
   private timer: NodeJS.Timeout | undefined;
   private stopping = false;
 
-  private async applyTicketLabelsAfterCreate(taskId: string, ticketIssueId: string, request: string): Promise<void> {
-    try {
-      const customization = validateTaskCustomization(await this.input.config.customizeTask({
-        type: "coding", id: taskId, trigger: "slack", request,
-      }));
-      if (!customization.ticketLabels?.length) return;
-      const missing = await this.input.linear.addLabelsByName(ticketIssueId, customization.ticketLabels);
-      if (missing.length) this.input.logger.warn({ missing, ticketIssueId }, "ticket labels not found in Linear");
-    } catch (err) {
-      this.input.logger.warn({ err, ticketIssueId }, "failed to apply ticket labels");
-    }
-  }
-
   constructor(private readonly input: {
     db: DbClient;
     api: SlackThreadApi;
@@ -115,6 +102,19 @@ export class SlackCoordinator {
     });
     this.active.set(id, run);
     return run;
+  }
+
+  private async applyTicketLabelsAfterCreate(taskId: string, ticketIssueId: string, request: string): Promise<void> {
+    try {
+      const customization = validateTaskCustomization(await this.input.config.customizeTask({
+        type: "coding", id: taskId, trigger: "slack", request,
+      }));
+      if (!customization.ticketLabels?.length) return;
+      const missing = await this.input.linear.addLabelsByName(ticketIssueId, customization.ticketLabels);
+      if (missing.length) this.input.logger.warn({ missing, ticketIssueId }, "ticket labels not found in Linear");
+    } catch (err) {
+      this.input.logger.warn({ err, ticketIssueId }, "failed to apply ticket labels");
+    }
   }
 
   private async deliverUnsubscribeReactions(key: SlackThreadKey, attempted: Set<string>): Promise<void> {
