@@ -263,6 +263,27 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return { owner: input.owner, repo: input.repo, number: data.number };
   }
 
+  async addLabels(ref: PullRequestRef, labels: readonly string[]): Promise<void> {
+    const requested = [...new Set(labels.map((l) => l.trim()).filter(Boolean))];
+    if (requested.length === 0) return;
+    const existing = await this.octokit.paginate(this.octokit.issues.listLabelsForRepo, {
+      owner: ref.owner,
+      repo: ref.repo,
+      per_page: 100,
+    });
+    const byLower = new Map(existing.map((label) => [label.name.toLowerCase(), label.name]));
+    const resolved = [...new Set(
+      requested.map((label) => byLower.get(label.toLowerCase())).filter((label): label is string => !!label),
+    )];
+    if (resolved.length === 0) return;
+    await this.octokit.issues.addLabels({
+      owner: ref.owner,
+      repo: ref.repo,
+      issue_number: ref.number,
+      labels: resolved,
+    });
+  }
+
   async getDefaultBranch(owner: string, repo: string): Promise<string> {
     const { data } = await this.octokit.repos.get({ owner, repo });
     return data.default_branch;

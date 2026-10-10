@@ -10,6 +10,7 @@ export function buildTask(input: {
   attachments: TicketAttachment[];
   prs: PullRequestRef[];
   pullRequests: PullRequestContext[];
+  trigger?: "slack" | "linear";
 }) {
   const issue = input.ticket.issue;
   const pullRequests = input.pullRequests.map((context, index) => normalizePullRequest(input.prs[index]!, context));
@@ -43,6 +44,7 @@ export function buildTask(input: {
     repositories,
     run: { kind: input.state, iteration: input.iteration },
     pullRequests,
+    ...(input.trigger ? { trigger: input.trigger } : {}),
   } satisfies Task);
 }
 

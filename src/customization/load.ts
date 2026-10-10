@@ -98,6 +98,8 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
     if (limits.maxDurationMs !== undefined) positiveInteger(limits.maxDurationMs, "customizeTask result.limits.maxDurationMs");
     if (limits.maxTokens !== undefined) positiveInteger(limits.maxTokens, "customizeTask result.limits.maxTokens");
   }
+  if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
+  if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");
   return value as TaskCustomization;
 }
 
@@ -123,6 +125,11 @@ function positiveInteger(value: unknown, field: string): number {
 }
 function nonEmptyStringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error(`${field} must be a non-empty array`);
+  for (const [index, entry] of value.entries()) nonEmptyString(entry, `${field}[${index}]`);
+  return value as string[];
+}
+function stringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
   for (const [index, entry] of value.entries()) nonEmptyString(entry, `${field}[${index}]`);
   return value as string[];
 }

@@ -662,6 +662,39 @@ describe("runPiWorker", () => {
     expect(result).toMatchObject({ status: "done", notifyOnComplete: true, prs });
   });
 
+  it("adds pull request labels after push_for_review", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const github = makeGithub();
+    github.getDefaultBranch.mockResolvedValue("main");
+    github.createPullRequest.mockResolvedValue({ owner: "acme", repo: "widgets", number: 42 });
+    github.addLabels = vi.fn(async () => {});
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      await executeTool(customTools, "push_for_review", {
+        repoRoot: workspaceRoot,
+        prTitle: "feat: ship",
+        prBody: "body",
+      });
+    });
+
+    await runPiWorker({
+      context: makeContext(),
+      github,
+      linear: makeLinear(),
+      gitEnv: {},
+      maxWorkerTimeMs: 7_200_000,
+      maxWorkerTokens: 20_000_000,
+      llmProvider: "anthropic",
+      llmApiKey: "test-key",
+      llmModel: "claude-opus-4-7",
+      pullRequestLabels: ["my-label"],
+    });
+
+    expect(github.addLabels).toHaveBeenCalledWith(
+      { owner: "acme", repo: "widgets", number: 42 },
+      ["my-label"],
+    );
+  });
+
   it("sets notifyOnComplete=true on result for a new PR after push_for_review", async () => {
     const { runPiWorker } = await import("./pi.js");
     const github = makeGithub();
@@ -974,6 +1007,7 @@ function makeGithub() {
     leaveComment: vi.fn().mockResolvedValue(undefined),
     getDefaultBranch: vi.fn(),
     createPullRequest: vi.fn(),
+    addLabels: vi.fn(),
   };
 }
 

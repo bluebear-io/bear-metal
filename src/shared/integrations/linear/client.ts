@@ -405,6 +405,31 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     });
   }
 
+  async addLabelsByName(ticketId: string, names: readonly string[]): Promise<string[]> {
+    const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+    if (unique.length === 0) return [];
+    return this.withClient(async (client) => {
+      const issue = await client.issue(ticketId);
+      const team = await issue.team;
+      const teamId = team?.id ?? null;
+      const ids: string[] = [];
+      const missing: string[] = [];
+      for (const name of unique) {
+        const page = await client.issueLabels({ filter: { name: { eqIgnoreCase: name } }, first: 20 });
+        const match = teamId
+          ? page.nodes.find((label) => label.teamId === teamId || !label.teamId) ?? page.nodes[0]
+          : page.nodes[0];
+        if (match) ids.push(match.id);
+        else missing.push(name);
+      }
+      if (ids.length > 0) {
+        const result = await client.updateIssue(ticketId, { addedLabelIds: ids });
+        if (!result.success) throw new Error(`Linear did not label ${ticketId}`);
+      }
+      return missing;
+    });
+  }
+
   async delegateSlackCodingTicket(ticketId: string): Promise<void> {
     await this.withClient(async (client) => {
       const result = await client.updateIssue(ticketId, { delegateId: await this.getAgentId() });

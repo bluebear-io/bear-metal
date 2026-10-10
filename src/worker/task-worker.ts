@@ -162,6 +162,7 @@ export class TaskWorker {
         signal: controller.signal,
         ...task.input!,
         runId: task.id,
+        hasSlackLinkedTicket: (issueId) => this.db.hasSlackLinkedTicket(issueId),
         integrations: this.integrations,
         agentToolGateway: this.agentToolGateway,
         config: this.config,
