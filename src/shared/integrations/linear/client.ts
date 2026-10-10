@@ -405,7 +405,6 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     });
   }
 
-  /** Adds labels by name (additive). Returns names that could not be resolved. */
   async addLabelsByName(ticketId: string, names: readonly string[]): Promise<string[]> {
     const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
     if (unique.length === 0) return [];

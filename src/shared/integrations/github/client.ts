@@ -263,7 +263,6 @@ export class GitHubIntegration implements Integration, CommentCapable<PullReques
     return { owner: input.owner, repo: input.repo, number: data.number };
   }
 
-  /** Adds labels to a PR via the Issues API (case-insensitive; existing repo labels only). */
   async addLabels(ref: PullRequestRef, labels: readonly string[]): Promise<void> {
     const requested = [...new Set(labels.map((l) => l.trim()).filter(Boolean))];
     if (requested.length === 0) return;
