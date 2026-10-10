@@ -96,6 +96,8 @@ export interface Task {
   readonly repositories?: readonly Repository[];
   readonly run?: Readonly<{ kind: "new" | "iteration"; iteration: number }>;
   readonly pullRequests?: readonly TaskPullRequest[];
+  /** How the harness reached this task (when known). */
+  readonly trigger?: "slack" | "linear";
 }
 
 export interface TaskComment {
@@ -137,6 +139,10 @@ export interface TaskCustomization {
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;
   additionalSystemPrompt?: string | null;
   limits?: { maxDurationMs?: number; maxTokens?: number };
+  /** Label names added to the linked Linear ticket (additive). */
+  ticketLabels?: readonly string[];
+  /** Label names added to PRs the harness creates or updates. */
+  pullRequestLabels?: readonly string[];
 }
 
 export interface ResolvedLlm {

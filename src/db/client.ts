@@ -718,6 +718,7 @@ export interface DbClient {
   approveSlackResearchResult(id: string): Promise<void>;
   failSlackTask(id: string, error: string): Promise<void>;
   attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void>;
+  hasSlackLinkedTicket(ticketIssueId: string): Promise<boolean>;
   resumeSlackTicketReplacement(id: string): Promise<void>;
   cancelSlackTask(id: string, supersededBy?: string): Promise<void>;
   beginSlackTaskReply(id: string): Promise<void>;
@@ -1950,6 +1951,14 @@ export class SqlDbClient implements DbClient {
       [ticketId, ticketUrl, this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot attach ticket to Slack task: ${id}`);
+  }
+
+  async hasSlackLinkedTicket(ticketIssueId: string): Promise<boolean> {
+    const rows = await this.query<{ one: number }>(
+      `SELECT 1 AS one FROM tasks WHERE ticket_id = ? AND slack_workspace_id IS NOT NULL LIMIT 1`,
+      [ticketIssueId],
+    );
+    return rows.length > 0;
   }
 
   async cancelSlackTask(id: string, supersededBy?: string): Promise<void> {

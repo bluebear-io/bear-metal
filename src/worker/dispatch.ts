@@ -29,6 +29,8 @@ export interface DispatchInput {
   signal?: AbortSignal;
   state: DispatchState;
   ticketId: string;
+  ticketIssueId?: string;
+  hasSlackLinkedTicket?: (ticketIssueId: string) => Promise<boolean>;
   runId: string;
   prs: PullRequestRef[];
   integrations: WorkerIntegrations;
@@ -87,7 +89,18 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     }))
     : rawPullRequests;
   const ticketAttachments = ticket.attachments ?? [];
-  const task = buildTask({ state, iteration: input.iteration, ticket, attachments: ticketAttachments, prs, pullRequests });
+  const fromSlack = input.ticketIssueId && input.hasSlackLinkedTicket
+    ? await input.hasSlackLinkedTicket(input.ticketIssueId)
+    : false;
+  const task = buildTask({
+    state,
+    iteration: input.iteration,
+    ticket,
+    attachments: ticketAttachments,
+    prs,
+    pullRequests,
+    trigger: fromSlack ? "slack" : "linear",
+  });
   const { customization, llm } = await customizeAndResolve(input.config, task);
   input.signal?.throwIfAborted();
   logger.info({ ticketId, provider: llm.provider, model: llm.model }, "selected task LLM");
@@ -125,6 +138,14 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   };
 
   input.signal?.throwIfAborted();
+  if (customization.ticketLabels?.length && linear.addLabelsByName) {
+    try {
+      const missing = await linear.addLabelsByName(ticket.issue.id, customization.ticketLabels);
+      if (missing.length) logger.warn({ ticketId, missing }, "ticket labels not found in Linear");
+    } catch (err) {
+      logger.warn({ err, ticketId }, "failed to apply ticket labels");
+    }
+  }
   await linear.moveTicketToInProgress(ticketId);
   input.signal?.throwIfAborted();
   logger.debug({ ticketId }, "linear ticket moved to in progress");
@@ -147,6 +168,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       signal: input.signal,
       runId: input.runId,
       systemPrompt: customization.additionalSystemPrompt,
+      pullRequestLabels: customization.pullRequestLabels,
       onAgentStarted: input.onAgentStarted,
       onToolCallProgress: input.onToolCallProgress,
       onTraceEvent: input.onTraceEvent,

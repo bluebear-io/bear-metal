@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
+import { validateTaskCustomization } from "../customization/load.js";
 import type { BearMetalConfig, Task } from "../customization/types.js";
 import type { DbClient, NewSlackTask, SlackCoordinationReply, SlackTaskRecord, SlackThreadKey } from "../db/client.js";
 import { slackReplyKey } from "../db/client.js";
@@ -36,6 +37,19 @@ export class SlackCoordinator {
   private readonly active = new Map<string, Promise<void>>();
   private timer: NodeJS.Timeout | undefined;
   private stopping = false;
+
+  private async applyTicketLabelsAfterCreate(taskId: string, ticketIssueId: string, request: string): Promise<void> {
+    try {
+      const customization = validateTaskCustomization(await this.input.config.customizeTask({
+        type: "coding", id: taskId, trigger: "slack", request,
+      }));
+      if (!customization.ticketLabels?.length) return;
+      const missing = await this.input.linear.addLabelsByName(ticketIssueId, customization.ticketLabels);
+      if (missing.length) this.input.logger.warn({ missing, ticketIssueId }, "ticket labels not found in Linear");
+    } catch (err) {
+      this.input.logger.warn({ err, ticketIssueId }, "failed to apply ticket labels");
+    }
+  }
 
   constructor(private readonly input: {
     db: DbClient;
@@ -308,6 +322,7 @@ export class SlackCoordinator {
       try {
         const ticket = await this.input.linear.createSlackCodingTicket({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId, assigneeId });
         await this.input.db.attachSlackTicket(task.id, ticket.id, ticket.url);
+        await this.applyTicketLabelsAfterCreate(task.id, ticket.id, args.description);
         // Delegating before attachment lets the scheduler create a second row for this ticket.
         if (task.delegateToBearMetal) await this.input.linear.delegateSlackCodingTicket(ticket.id);
         const updated = await getTask(task.id);
@@ -585,6 +600,7 @@ export class SlackCoordinator {
               if (replacement.state === "queued") {
                 const ticket = await this.input.linear.createSlackCodingTicket(codingInput);
                 await this.input.db.attachSlackTicket(replacement.id, ticket.id, ticket.url);
+                await this.applyTicketLabelsAfterCreate(replacement.id, ticket.id, codingInput.description);
                 replacement = await getTask(replacement.id);
               }
               if (replacement.state !== "awaiting_coordination" || !replacement.ticketId || !replacement.ticketUrl) {
