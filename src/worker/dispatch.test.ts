@@ -114,6 +114,26 @@ describe("dispatch customization boundary", () => {
     expect(state.piInputs[0].context.pullRequests[0]).toBe(pullRequest);
   });
 
+  it("applies ticket labels before In Progress when customizeTask returns ticketLabels", async () => {
+    const addLabelsByName = vi.fn(async () => ["missing-label"]);
+    const config = makeConfig();
+    config.customizeTask = async (task) => {
+      if (!("identifier" in task)) throw new Error("Expected a Linear task");
+      state.tasks.push(task);
+      state.calls.push("customize");
+      return {
+        llm: { provider: "openai", model: "gpt-test" },
+        buildWorkspace: async ({ workspacePath }) => { state.calls.push("build"); await writeFile(join(workspacePath, "README.md"), "ready"); },
+        ticketLabels: ["my-label", "missing-label"],
+      };
+    };
+    const integrations = makeIntegrations();
+    integrations.linear.addLabelsByName = addLabelsByName;
+    await dispatch(config, { integrations, ticketIssueId: "issue-uuid", hasSlackLinkedTicket: async () => false });
+    expect(addLabelsByName).toHaveBeenCalledWith("id", ["my-label", "missing-label"]);
+    expect(state.calls.indexOf("in-progress")).toBeGreaterThan(state.calls.indexOf("build"));
+  });
+
   it("preserves the pull request context when no issue comments are completed", async () => {
     const pullRequest = makePullRequestContext([{ id: "comment-1", body: "Review", author: "reviewer", authorId: null, databaseId: 1, isMinimized: false, createdAt: "created", updatedAt: "updated" }]);
     const commentStore = { getCompleted: vi.fn(async () => new Set<string>()), markCompleted: vi.fn() };
@@ -124,9 +144,29 @@ describe("dispatch customization boundary", () => {
   });
 });
 
-async function dispatch(config: BearMetalConfig, options: { state?: "new" | "iteration"; prs?: Array<{ owner: string; repo: string; number: number }>; integrations?: ReturnType<typeof makeIntegrations> } = {}) {
+async function dispatch(
+  config: BearMetalConfig,
+  options: {
+    state?: "new" | "iteration";
+    prs?: Array<{ owner: string; repo: string; number: number }>;
+    integrations?: ReturnType<typeof makeIntegrations>;
+    ticketIssueId?: string;
+    hasSlackLinkedTicket?: (id: string) => Promise<boolean>;
+  } = {},
+) {
   const { dispatch } = await import("./dispatch.js");
-  return dispatch({ state: options.state ?? "new", iteration: 1, ticketId: "ABC-1", runId: "run-1", prs: options.prs ?? [], integrations: options.integrations ?? makeIntegrations(), agentToolGateway: { availableTools: () => [], execute: vi.fn() }, config });
+  return dispatch({
+    state: options.state ?? "new",
+    iteration: 1,
+    ticketId: "ABC-1",
+    runId: "run-1",
+    prs: options.prs ?? [],
+    integrations: options.integrations ?? makeIntegrations(),
+    agentToolGateway: { availableTools: () => [], execute: vi.fn() },
+    config,
+    ticketIssueId: options.ticketIssueId,
+    hasSlackLinkedTicket: options.hasSlackLinkedTicket,
+  });
 }
 
 function makeConfig(): BearMetalConfig {
@@ -153,7 +193,7 @@ function makeIntegrations(options: { ticket?: WorkerInputContext["ticket"]; pull
       getInstallationToken: vi.fn(async () => "github-token"), getBotIdentity: vi.fn(async () => ({ login: "bear-metal", id: "bot", numericId: 1, userNumericId: 1 })), getPullRequestContext: vi.fn(async () => options.pullRequest), resolveReviewThread: vi.fn(), replyToReviewThread: vi.fn(), leaveComment: vi.fn(), getDefaultBranch: vi.fn(), createPullRequest: vi.fn(),
     },
     linear: {
-      getTicketContext: vi.fn(async () => options.ticket ?? makeTicketContext()), getTicketAttachments: vi.fn(async () => []), getAccessToken: vi.fn(async () => "linear-token"), moveTicketToInProgress: vi.fn(async () => { state.calls.push("in-progress"); }), moveTicketToInReview: vi.fn(), commentAndHandBack: vi.fn(), getUserEmail: vi.fn(async () => null),
+      getTicketContext: vi.fn(async () => options.ticket ?? makeTicketContext()), getTicketAttachments: vi.fn(async () => []), getAccessToken: vi.fn(async () => "linear-token"), moveTicketToInProgress: vi.fn(async () => { state.calls.push("in-progress"); }), moveTicketToInReview: vi.fn(), commentAndHandBack: vi.fn(), getUserEmail: vi.fn(async () => null), addLabelsByName: vi.fn(async (_id: string, _names: readonly string[]) => [] as string[]),
     },
     commentStore: options.commentStore,
   };

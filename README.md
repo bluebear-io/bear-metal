@@ -125,7 +125,7 @@ The same module may be `.mts`; use the canonical source above as the typing refe
 
 `customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, or a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
 
-The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt` and independent duration/token limits. See the canonical source for the exact nested DTO and return shapes.
+The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt`, independent duration/token limits, and optional `ticketLabels` / `pullRequestLabels` (label names the harness adds to the linked Linear ticket and to PRs it creates or updates; failures are logged only). Coding tasks may include `trigger: "slack" | "linear"` when known. See the canonical source for the exact nested DTO and return shapes.
 
 `llmProviders` is required and may be empty. It contains only key-based providers: Anthropic, OpenAI, and Google entries require lazy `getApiKey` functions. Only the key-based provider selected by `customizeTask` is resolved; selecting one without an entry fails that task with the exact configuration entry to add. Bedrock is not registered here because it uses the ambient AWS SDK credential chain.
 

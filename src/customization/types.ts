@@ -96,6 +96,7 @@ export interface Task {
   readonly repositories?: readonly Repository[];
   readonly run?: Readonly<{ kind: "new" | "iteration"; iteration: number }>;
   readonly pullRequests?: readonly TaskPullRequest[];
+  readonly trigger?: "slack" | "linear";
 }
 
 export interface TaskComment {
@@ -137,6 +138,8 @@ export interface TaskCustomization {
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;
   additionalSystemPrompt?: string | null;
   limits?: { maxDurationMs?: number; maxTokens?: number };
+  ticketLabels?: readonly string[];
+  pullRequestLabels?: readonly string[];
 }
 
 export interface ResolvedLlm {

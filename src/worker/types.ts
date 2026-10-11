@@ -70,6 +70,7 @@ export interface WorkerGitHub {
     base: string;
     body: string;
   }): Promise<PullRequestRef>;
+  addLabels?(ref: PullRequestRef, labels: readonly string[]): Promise<void>;
 }
 
 export interface WorkerCommentStore {
@@ -88,6 +89,7 @@ export interface WorkerLinear {
   moveTicketToInReview(ticketId: string): Promise<void>;
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
   getUserEmail(userId: string): Promise<string | null>;
+  addLabelsByName?(ticketId: string, names: readonly string[]): Promise<string[]>;
 }
 
 export type WorkerIntegrations = {

@@ -69,6 +69,7 @@ export async function runPiWorker(input: {
   /** Null for amazon-bedrock, which uses ambient AWS credentials instead of a key. */
   llmApiKey: string | null;
   llmModel: string;
+  pullRequestLabels?: readonly string[];
 }): Promise<DispatchResult> {
   input.signal?.throwIfAborted();
   let decision: DispatchResult | undefined;
@@ -298,6 +299,13 @@ export async function runPiWorker(input: {
       input.signal?.throwIfAborted();
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote, signal: input.signal }));
       input.signal?.throwIfAborted();
+      if (input.pullRequestLabels?.length && input.github.addLabels) {
+        try {
+          await input.github.addLabels(pr, input.pullRequestLabels);
+        } catch (err) {
+          logger.warn({ err, pr }, "failed to apply pull request labels");
+        }
+      }
       setDecision({ status: "done", prs: [pr], notifyOnComplete: true });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
