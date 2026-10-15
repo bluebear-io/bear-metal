@@ -6,9 +6,17 @@ import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig, type
 import type { DbClient } from "../db/client.js";
 import { runWorkspaceBuilder, workspaceForResearchTask } from "./clone.js";
 import { CoordinatorWorkspaceCache } from "./coordinator-workspace.js";
+import { createLogger } from "../shared/logger.js";
+import { sessionCostUsd } from "./cost.js";
 import { createAgentGatewayTools } from "./pi.js";
 import { AgentTraceWriter, redactTraceText, traceJson } from "./trace.js";
 import { createWorkspaceGuardedTools } from "./workspace-guard.js";
+
+const logger = createLogger({
+  level: process.env.LOG_LEVEL ?? "info",
+  name: "worker:slack-agent",
+  pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
+});
 
 const coordinatorWorkspaces = new WeakMap<BearMetalConfig, CoordinatorWorkspaceCache>();
 
@@ -131,7 +139,13 @@ export async function runSlackAgent(input: {
       await stopPromise;
       if (stopError) throw stopError;
       const stats = session.getSessionStats();
-      await input.db.setAgentRunUsage(input.task.id, stats.tokens.input, stats.tokens.output);
+      let costUsd: number | null = null;
+      try {
+        costUsd = sessionCostUsd(model, stats);
+      } catch (err) {
+        logger.warn({ err, taskId: input.task.id }, "failed to compute session cost; storing run without cost");
+      }
+      await input.db.setAgentRunUsage(input.task.id, stats.tokens.input, stats.tokens.output, costUsd);
       if (limitError) throw limitError;
       await input.validateOutcome?.();
       if (input.task.type === "coordinator" && input.output) outputJson = JSON.stringify(await input.output());
