@@ -184,7 +184,9 @@ export class SlackCoordinator {
         const payload = buildCoordinatorPayload(key, batch, thread, tasks, edits, requiredResponses);
         const persistedReplies = await this.input.db.listSlackCoordinationReplies(key, batch);
         const completedActions = tasks.filter((task) => batch.includes(task.sourceTs) && task.state !== "failed"
-          && (task.type === "research" || task.ticketId !== null && task.ticketUrl !== null
+          && (task.type === "research" && (task.replacesTaskId === null || tasks.some((previous) =>
+            previous.id === task.replacesTaskId && previous.state === "canceled" && previous.supersededBy === task.id))
+            || task.ticketId !== null && task.ticketUrl !== null
             && (!task.delegateToBearMetal || task.ackState !== null || task.coordinatedAt !== null
               || persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))));
         const savedReplies = persistedReplies.filter((reply) =>
@@ -612,7 +614,7 @@ export class SlackCoordinator {
               await this.input.db.failSlackTask(next.task.id, String(err));
               throw err;
             }
-          } else if (!codingInput && next.created) {
+          } else if (!codingInput && (next.created || previous.supersededBy !== next.task.id)) {
             try {
               await cancel(previous.id, next.task.id);
               this.input.wakeResearch();

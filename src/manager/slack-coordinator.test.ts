@@ -1407,6 +1407,54 @@ describe("Slack coordinator", () => {
     }
   });
 
+  it.each([false, true])("recovers a research replacement after restart before cancellation (replacement ID=%s)", async (retryReplacement) => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-research-replacement-recovery-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    const original = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
+    await db.beginSlackBatchAcknowledgment([original.id]);
+    await db.markSlackResearchStartedReply(original.id, "original-reply");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> include B too" }]);
+    const logger = createLogger({ name: "test", level: "silent" });
+    const logError = vi.spyOn(logger, "error");
+    let retryId = original.id;
+    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools }) => {
+      await tools.find((tool) => tool.name === "update_task")!.execute("update", {
+        id: retryId, sourceTs: "100.2", requestIndex: 1, type: "research", correction: "Include B too", quote: "Find A and B",
+      }, undefined, undefined, {} as never);
+    };
+    const create = db.createSlackTask.bind(db);
+    vi.spyOn(db, "createSlackTask").mockImplementationOnce(async (input) => {
+      await create(input);
+      throw new Error("Process stopped after replacement persisted");
+    });
+    try {
+      await makeCoordinator({ db, api, runAgent, logger }).wake(key);
+      const replacement = (await db.listSlackThreadTasks(key)).find((task) => task.id !== original.id)!;
+      expect(replacement).toMatchObject({ state: "queued", replacesTaskId: original.id });
+      expect((await db.getSlackTask(original.id))?.state).toBe("queued");
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
+      if (retryReplacement) retryId = replacement.id;
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      logError.mockClear();
+      await makeCoordinator({ db, api, runAgent, logger }).wake(key);
+      expect(logError.mock.calls).toEqual([]);
+      expect((await db.getSlackTask(original.id))).toMatchObject({ state: "canceled", supersededBy: replacement.id });
+      expect((await db.listSlackThreadTasks(key))).toHaveLength(2);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect(replies).toEqual(["Looking into Find A and B.\n\nCanceled Find A"]);
+      expect((await db.claimSlackResearchTask())?.id).toBe(replacement.id);
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("preserves the original on replacement failure and retries after restart (replacement ID=%s)", async (retryReplacement) => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-replacement-recovery-"));
     const url = `sqlite:${join(dir, "db.sqlite")}`;
