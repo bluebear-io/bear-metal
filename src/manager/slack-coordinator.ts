@@ -668,7 +668,7 @@ export class SlackCoordinator {
       if (failed.some((task) => task.sourceTs === sourceTs)
         || existing.some((reply) => reply.sourceTs === sourceTs && reply.kind !== "failure" && reply.state !== "queued")) continue;
       replies.push({ sourceTs, requestIndex: 1, kind: "failure",
-        text: "I couldn't process this request because of an internal error. Please try again." });
+        text: "An internal error interrupted processing this message. Some requested work may already have started." });
     }
     await this.postCoordinationReply(key, [...new Set(replies.map((reply) => reply.sourceTs))].sort(), replies);
   }
@@ -716,7 +716,13 @@ export class SlackCoordinator {
       if (!await this.input.db.isSlackThreadFollowing(key, reply.sourceTs) || (reply.kind !== "task_cancel" && reply.taskId && current.get(reply.taskId)?.supersededBy)) continue;
       const saved = await this.input.db.queueSlackCoordinationReply(key, reply);
       if (saved.state === "posted") continue;
-      if (saved.state === "posting") throw new Error(`Reply ${reply.sourceTs}/${reply.requestIndex} has unresolved delivery`);
+      if (saved.state === "posting") {
+        if (reply.kind === "failure") {
+          this.input.logger.warn({ key, replyKey: slackReplyKey(reply) }, "Failure notice delivery unresolved; skipping without resend");
+          continue;
+        }
+        throw new Error(`Reply ${reply.sourceTs}/${reply.requestIndex} has unresolved delivery`);
+      }
       active.push(saved);
     }
     if (active.length === 0) return;

@@ -9,7 +9,7 @@ import { SlackIntegration, SlackThreadReplyRejectedError, type SlackReadClient }
 import { SlackThreadApi } from "./slack-thread-api.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 
-const failureReply = "I couldn't process this request because of an internal error. Please try again.";
+const failureReply = "An internal error interrupted processing this message. Some requested work may already have started.";
 
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
 
@@ -1473,7 +1473,7 @@ describe("Slack coordinator", () => {
     try {
       await makeCoordinator({ db, api, runAgent }).wake(key);
       await makeCoordinator({ db, api, runAgent }).wake(key);
-      expect(replies).toEqual(["I couldn't process this request because of an internal error. Please try again."]);
+      expect(replies).toEqual(["An internal error interrupted processing this message. Some requested work may already have started."]);
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
       expect(runAgent).toHaveBeenCalledTimes(2);
     } finally { await db.close(); }
@@ -1504,11 +1504,19 @@ describe("Slack coordinator", () => {
     const db = await makeDb();
     const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "A", quote: "A" })).task;
     await db.failSlackTask(task.id, "Provider error");
-    const { api } = makeApi([]);
+    const { api, replies } = makeApi([]);
     vi.mocked(api.reply).mockRejectedValue(new Error("Connection lost after Slack may have accepted the message"));
     try {
       await makeCoordinator({ db, api, runAgent: async () => {} }).wake(key);
+      const answer = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.2", sourceUserId: "U1", requestIndex: 1, request: "B", quote: "B" })).task;
+      await db.beginSlackBatchAcknowledgment([answer.id]);
+      await db.markSlackResearchStartedReply(answer.id, "started-B");
+      await db.claimSlackResearchTask();
+      await db.completeSlackResearchTask(answer.id, "Answer B");
+      await db.approveSlackResearchResult(answer.id);
       await makeCoordinator({ db, api, runAgent: async () => {} }).wake(key);
+      expect(replies).toEqual([`Replying to <@U1>'s "B"\n\nAnswer B`]);
+      expect((await db.getSlackTask(answer.id))?.state).toBe("coordinated");
       expect(api.reply).toHaveBeenCalledTimes(1);
       expect((await db.listSlackCoordinationReplies(key, ["100.1"]))).toMatchObject([{ kind: "failure", state: "posting" }]);
     } finally { await db.close(); }
