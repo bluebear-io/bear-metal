@@ -337,6 +337,8 @@ For a deployed smoke test, delegate one task for each branch of your `customizeT
 
 ### Slack
 
+The harness reports coordinator and research failures in the followed Slack thread without requiring an agent-written response. Failure notices are persisted and deduplicated independently from task acknowledgments; they do not complete an unfinished request. Explicitly rejected Slack deliveries can retry on later polls. Uncertain delivery stays visible in logs and the delivery ledger and is not resent automatically. An uncertain failure notice does not block delivery of other research answers. Raw exception details stay in the logs. A failed research task can be superseded by a new request; retry recovery reconciles acknowledgment bookkeeping only when the delivery ledger proves Slack accepted the message.
+
 Slack integration is entirely optional. Choose the features you need; the two apps below are optional and independent. A permission or event subscription is required only for the feature that uses it. Create apps at [Slack App Management](https://api.slack.com/apps) using **Create New App → From scratch**.
 
 | Mode | Configuration | Slack setup |

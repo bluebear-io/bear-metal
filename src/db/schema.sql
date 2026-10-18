@@ -385,3 +385,7 @@ CREATE TABLE IF NOT EXISTS slack_unsubscribe_reactions (
 ALTER TABLE slack_unsubscribe_reactions ADD COLUMN state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'posted', 'failed'));
 ALTER TABLE slack_unsubscribe_reactions ADD COLUMN error TEXT;
 UPDATE slack_unsubscribe_reactions SET state = 'posted' WHERE posted = 1 AND state = 'queued';
+
+DROP INDEX IF EXISTS slack_delivery_action;
+CREATE UNIQUE INDEX slack_delivery_action ON slack_reply_deliveries
+  (workspace_id, channel_id, thread_ts, source_ts, request_index) WHERE reply_kind NOT IN ('task_cancel', 'failure');

@@ -9,6 +9,8 @@ import { SlackIntegration, SlackThreadReplyRejectedError, type SlackReadClient }
 import { SlackThreadApi } from "./slack-thread-api.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 
+const failureReply = "An internal error interrupted processing this message. Some requested work may already have started.";
+
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
 
 async function makeDb() {
@@ -155,11 +157,11 @@ describe("Slack coordinator", () => {
     try {
       await first.wake(key);
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
-      expect(replies).toEqual([]);
+      expect(replies).toEqual([failureReply]);
       await second.wake(key);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       expect((await db.listSlackThreadTasks(key)).map((task) => task.request).sort()).toEqual(["Explain A", "Explain B"]);
-      expect(replies).toEqual(["Looking into A.\n\nLooking into B."]);
+      expect(replies).toEqual([failureReply, "Looking into A.\n\nLooking into B."]);
     } finally { await db.close(); }
   });
 
@@ -174,7 +176,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
-      expect(replies).toEqual([]);
+      expect(replies).toEqual([failureReply]);
     } finally { await db.close(); }
   });
 
@@ -211,7 +213,7 @@ describe("Slack coordinator", () => {
     try {
       await makeCoordinator({ db, api, runAgent: async () => {} }).wake(key);
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
-      expect(replies).toEqual([]);
+      expect(replies).toEqual([failureReply]);
     } finally { await db.close(); }
   });
   it("recovers an existing research decision and delivers its completed answer", async () => {
@@ -287,7 +289,7 @@ describe("Slack coordinator", () => {
         expect(api.react).toHaveBeenCalledWith(key, "100.1", "thumbsup");
         expect(followingWhenReacted).toBe(false);
       }
-      expect(replies).toEqual([]);
+      expect(replies).toEqual(failure ? [failureReply] : []);
       expect(await db.isSlackThreadFollowing(key)).toBe(failure);
     } finally { await db.close(); }
   });
@@ -1407,6 +1409,155 @@ describe("Slack coordinator", () => {
     }
   });
 
+  it("replaces an already failed research task without announcing dead work", async () => {
+    const db = await makeDb();
+    const original = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
+    await db.failSlackTask(original.id, "Research agent ended without answer_research");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> retry" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+      await tools.find((tool) => tool.name === "update_task")!.execute("update", {
+        id: original.id, sourceTs: "100.2", requestIndex: 1, type: "research", correction: "Retry now", quote: "Find A",
+      }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      const replacement = (await db.listSlackThreadTasks(key)).find((task) => task.id !== original.id)!;
+      expect((await db.claimSlackResearchTask())?.id).toBe(replacement.id);
+      expect((await db.getSlackTask(original.id))?.supersededBy).toBe(replacement.id);
+      expect(replies).toContain("Looking into Find A.\n\nCanceled Find A");
+    } finally { await db.close(); }
+  });
+
+  it("rejects start_research reusing a failed replacement", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.2");
+    const original = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "A", quote: "A" })).task;
+    const failed = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.2", requestIndex: 1, request: "B", quote: "B", replacesTaskId: original.id })).task;
+    await db.failSlackTask(failed.id, "Cancellation failed");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> retry" }]);
+    let rejected = false;
+    try {
+      await makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+        try {
+          await tools.find((tool) => tool.name === "start_research")!.execute("start", {
+            sourceTs: "100.2", requestIndex: 1, request: "B", quote: "B",
+          }, undefined, undefined, {} as never);
+        } catch { rejected = true; throw new Error("Research could not start"); }
+      } }).wake(key);
+      expect(rejected).toBe(true);
+      expect(replies.join("\n")).not.toContain("Looking into");
+    } finally { await db.close(); }
+  });
+
+  it("reports coordinator failure even when a task acknowledgment is queued but unsent", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> research" }]);
+    try {
+      await makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+        await tools.find((tool) => tool.name === "start_research")!.execute("start", {
+          sourceTs: "100.2", requestIndex: 1, request: "Find A", quote: "Find A",
+        }, undefined, undefined, {} as never);
+        throw new Error("Provider failed after saving tool result");
+      } }).wake(key);
+      expect(replies).toEqual([failureReply]);
+    } finally { await db.close(); }
+  });
+
+  it("reports coordinator failure once without treating it as a completed request", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> retry" }]);
+    const runAgent = vi.fn(async () => { throw new Error("Provider unavailable with secret details"); });
+    try {
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(replies).toEqual(["An internal error interrupted processing this message. Some requested work may already have started."]);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
+      expect(runAgent).toHaveBeenCalledTimes(2);
+    } finally { await db.close(); }
+  });
+
+  it("delivers a failed research notice after acknowledgment and retries a rejected Slack delivery", async () => {
+    const db = await makeDb();
+    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
+    await db.beginSlackBatchAcknowledgment([task.id]);
+    await db.markSlackResearchStartedReply(task.id, "initial-reply");
+    await db.failSlackTask(task.id, "Private infrastructure error");
+    const { api, replies } = makeApi([]);
+    vi.mocked(api.reply).mockRejectedValueOnce(new SlackThreadReplyRejectedError("Slack unavailable", "ratelimited"));
+    const runAgent = vi.fn(async () => {});
+    try {
+      expect(await db.listSlackPendingThreads()).toContainEqual(key);
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(await db.listSlackPendingThreads()).toContainEqual(key);
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      await makeCoordinator({ db, api, runAgent }).wake(key);
+      expect(replies).toEqual([`Research failed for Find A. Reference: ${task.id}.`]);
+      expect(await db.listSlackPendingThreads()).not.toContainEqual(key);
+      expect(runAgent).not.toHaveBeenCalled();
+    } finally { await db.close(); }
+  });
+
+  it("does not resend a failure notice after an uncertain Slack delivery", async () => {
+    const db = await makeDb();
+    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "A", quote: "A" })).task;
+    await db.failSlackTask(task.id, "Provider error");
+    const { api, replies } = makeApi([]);
+    vi.mocked(api.reply).mockRejectedValue(new Error("Connection lost after Slack may have accepted the message"));
+    try {
+      await makeCoordinator({ db, api, runAgent: async () => {} }).wake(key);
+      const answer = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.2", sourceUserId: "U1", requestIndex: 1, request: "B", quote: "B" })).task;
+      await db.beginSlackBatchAcknowledgment([answer.id]);
+      await db.markSlackResearchStartedReply(answer.id, "started-B");
+      await db.claimSlackResearchTask();
+      await db.completeSlackResearchTask(answer.id, "Answer B");
+      await db.approveSlackResearchResult(answer.id);
+      await makeCoordinator({ db, api, runAgent: async () => {} }).wake(key);
+      expect(replies).toEqual([`Replying to <@U1>'s "B"\n\nAnswer B`]);
+      expect((await db.getSlackTask(answer.id))?.state).toBe("coordinated");
+      expect(api.reply).toHaveBeenCalledTimes(1);
+      expect((await db.listSlackCoordinationReplies(key, ["100.1"]))).toMatchObject([{ kind: "failure", state: "posting" }]);
+    } finally { await db.close(); }
+  });
+
+  it("rejects replacement resumption when acknowledgment delivery is unknown", async () => {
+    const db = await makeDb();
+    const original = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "A", quote: "A" })).task;
+    const next = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.2", requestIndex: 1, request: "B", quote: "B", replacesTaskId: original.id })).task;
+    await db.failSlackTask(next.id, "Cancellation failed");
+    await db.beginSlackBatchAcknowledgment([next.id]);
+    try {
+      await expect(db.resumeSlackResearchReplacement(next.id)).rejects.toThrow("Cannot resume Slack research replacement");
+      expect((await db.getSlackTask(next.id))?.state).toBe("failed");
+    } finally { await db.close(); }
+  });
+
+  it("resumes a failed replacement whose acknowledgment was delivered before bookkeeping failed", async () => {
+    const db = await makeDb();
+    const original = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "A", quote: "A" })).task;
+    const next = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.2", requestIndex: 1, request: "B", quote: "B", replacesTaskId: original.id })).task;
+    await db.failSlackTask(original.id, "Previous research failed");
+    await db.failSlackTask(next.id, "Cancellation failed");
+    const reply = await db.queueSlackCoordinationReply(key, { taskId: next.id, sourceTs: "100.2", requestIndex: 1, text: "Looking into B." });
+    await db.beginSlackBatchAcknowledgment([next.id]);
+    const group = await db.beginSlackReplyGroup(key, [reply]);
+    await db.finishSlackReplyGroup(key, group, "posted", "delivered-reply", null);
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> retry" }]);
+    try {
+      await makeCoordinator({ db, api, runAgent: async ({ tools }) => {
+        await tools.find((tool) => tool.name === "update_task")!.execute("update", {
+          id: next.id, sourceTs: "100.2", requestIndex: 1, type: "research", correction: "Retry now", quote: "B",
+        }, undefined, undefined, {} as never);
+      } }).wake(key);
+      expect((await db.getSlackTask(next.id))?.ackState).toBe("posted");
+      expect(replies).toEqual(["Canceled A"]);
+      expect((await db.claimSlackResearchTask())?.id).toBe(next.id);
+    } finally { await db.close(); }
+  });
+
   it.each([false, true].flatMap((retryReplacement) => ["creation", "cancellation", "notification"].map((failure) => ({ retryReplacement, failure }))))("recovers a research replacement after restart at $failure (replacement ID=$retryReplacement)", async ({ retryReplacement, failure }) => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-research-replacement-recovery-"));
     const url = `sqlite:${join(dir, "db.sqlite")}`;
@@ -1461,7 +1612,7 @@ describe("Slack coordinator", () => {
       expect((await db.listSlackThreadTasks(key))).toHaveLength(2);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
       await makeCoordinator({ db, api, runAgent, logger }).wake(key);
-      expect(replies).toEqual(["Looking into Find A and B.\n\nCanceled Find A"]);
+      expect(replies).toEqual([failure === "cancellation" ? `Research failed for Find A and B. Reference: ${replacement.id}.` : failureReply, "Looking into Find A and B.\n\nCanceled Find A"]);
       expect((await db.claimSlackResearchTask())?.id).toBe(replacement.id);
     } finally {
       await db.close();
@@ -1497,7 +1648,7 @@ describe("Slack coordinator", () => {
       expect(await db.getSlackTask(original.id)).toEqual(before);
       expect(cancel).not.toHaveBeenCalled();
       expect(delegate).not.toHaveBeenCalled();
-      expect(replies).toEqual([]);
+      expect(replies).toEqual([failureReply]);
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
       const failed = (await db.listSlackThreadTasks(key)).find((task) => task.id !== original.id)!;
       expect(failed.state).toBe("failed");
@@ -1513,7 +1664,7 @@ describe("Slack coordinator", () => {
       expect(delegate).toHaveBeenCalledWith("new-ticket");
       expect((await db.getSlackTask(original.id))).toMatchObject({ state: "canceled", supersededBy: failed.id });
       expect((await db.getSlackTask(failed.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
+      expect(replies).toEqual([failureReply, "Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
@@ -1538,13 +1689,13 @@ describe("Slack coordinator", () => {
       expect(create).toHaveBeenCalledOnce();
       const replacement = (await db.listSlackThreadTasks(key)).find((task) => task.id !== old.id)!;
       expect(replacement).toMatchObject({ state: "failed", ticketId: "new-ticket" });
-      expect(replies).toEqual([]);
+      expect(replies).toEqual([failureReply]);
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledOnce();
       expect((await db.getSlackTask(replacement.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
       expect((await db.getSlackTask(old.id))).toMatchObject({ state: "canceled", supersededBy: replacement.id });
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
+      expect(replies).toEqual([failureReply, "Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); }
   });

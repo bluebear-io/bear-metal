@@ -96,6 +96,13 @@ export class SlackCoordinator {
         return;
       }
       this.input.logger.error({ err, key }, "Slack thread coordination failed");
+      if (err instanceof SlackThreadReplyRejectedError) return;
+      try {
+        const pending = await this.input.db.listSlackPendingMessages(key);
+        if (pending.length > 0) await this.postFailureReplies(key, pending);
+      } catch (notificationError) {
+        this.input.logger.error({ err: notificationError, originalErr: err, key }, "Slack failure notification failed");
+      }
     }).finally(() => {
       this.active.delete(id);
       if (succeeded) void this.poll();
@@ -190,9 +197,9 @@ export class SlackCoordinator {
             || task.ticketId !== null && task.ticketUrl !== null
             && (!task.delegateToBearMetal || task.ackState !== null || task.coordinatedAt !== null
               || persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))));
-        const savedReplies = persistedReplies.filter((reply) =>
+        const savedReplies = persistedReplies.filter((reply) => reply.kind !== "failure" && (
           !reply.taskId || completedActions.some((task) => task.id === reply.taskId)
-            || reply.kind === "task_cancel" && tasks.some((task) => task.id === reply.taskId && task.state === "canceled"));
+            || reply.kind === "task_cancel" && tasks.some((task) => task.id === reply.taskId && task.state === "canceled")));
         // Restore saved actions without bypassing the agent: the same message may contain unfinished requests.
         const decisions = new Set([...completedActions.map((task) => task.sourceTs), ...savedReplies.map((reply) => reply.sourceTs)]);
         let unsubscribeTs: string | undefined;
@@ -239,6 +246,7 @@ export class SlackCoordinator {
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
       await this.postBatchReply(key);
       if ((await this.input.db.listSlackPendingMessages(key)).length > 0) continue;
+      await this.postFailureReplies(key);
       await this.postResearchAnswers(key);
       const remaining = await this.input.db.listSlackPendingMessages(key);
       if (remaining.length === 0) return;
@@ -340,6 +348,7 @@ export class SlackCoordinator {
     const createResearch = async (args: NewSlackTask) => {
       const sourceUserId = requireSource(args.sourceTs);
       const result = await this.input.db.createSlackTask({ ...args, sourceUserId });
+      if (["failed", "canceled"].includes(result.task.state)) throw new Error(`Research task ${result.task.id} is ${result.task.state}; use update_task to retry it`);
       if (result.task.ackState === null) queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: args.sourceTs, requestIndex: args.requestIndex, taskId: result.task.id, text: this.taskAcknowledgmentText(result.task) }));
       if (result.created) this.input.wakeResearch();
       decisions?.add(args.sourceTs);
@@ -626,13 +635,15 @@ export class SlackCoordinator {
             }
           }
           const updated = await getTask(next.task.id);
-          if (updated.ackState === null) {
-            const canceled = await getTask(previous.id);
-            if (canceled.state !== "canceled" || canceled.supersededBy !== updated.id) throw new Error(`Replacement ${updated.id} has not canceled task ${previous.id}`);
+          const canceled = await getTask(previous.id);
+          if (canceled.state !== "canceled" || canceled.supersededBy !== updated.id) throw new Error(`Replacement ${updated.id} has not canceled task ${previous.id}`);
+          if (canceled.ackState === null) {
             queueReply?.(await this.input.db.queueSlackCoordinationReply(key, {
               sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: canceled.id,
               kind: "task_cancel", text: this.taskAcknowledgmentText(canceled),
             }));
+          }
+          if (updated.ackState === null) {
             queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) }));
           }
           decisions?.add(params.sourceTs);
@@ -640,6 +651,26 @@ export class SlackCoordinator {
         },
       }),
     ];
+  }
+
+  private async postFailureReplies(key: SlackThreadKey, pending: string[] = []): Promise<void> {
+    const tasks = await this.input.db.listSlackThreadTasks(key);
+    const failed = tasks.filter((task) => task.type === "research" && task.state === "failed" && !task.supersededBy);
+    const replies: CoordinationReply[] = failed.map((task) => {
+      if (!task.quote) throw new Error(`Research task ${task.id} has no question quote`);
+      return {
+        sourceTs: task.sourceTs, requestIndex: task.requestIndex, taskId: task.id, kind: "failure",
+        text: `Research failed for ${safeSlackLine(task.quote)}. Reference: ${task.id}.`,
+      };
+    });
+    const existing = pending.length > 0 ? await this.input.db.listSlackCoordinationReplies(key, pending) : [];
+    for (const sourceTs of pending) {
+      if (failed.some((task) => task.sourceTs === sourceTs)
+        || existing.some((reply) => reply.sourceTs === sourceTs && reply.kind !== "failure" && reply.state !== "queued")) continue;
+      replies.push({ sourceTs, requestIndex: 1, kind: "failure",
+        text: "An internal error interrupted processing this message. Some requested work may already have started." });
+    }
+    await this.postCoordinationReply(key, [...new Set(replies.map((reply) => reply.sourceTs))].sort(), replies);
   }
 
   private async postBatchReply(key: SlackThreadKey): Promise<void> {
@@ -685,7 +716,13 @@ export class SlackCoordinator {
       if (!await this.input.db.isSlackThreadFollowing(key, reply.sourceTs) || (reply.kind !== "task_cancel" && reply.taskId && current.get(reply.taskId)?.supersededBy)) continue;
       const saved = await this.input.db.queueSlackCoordinationReply(key, reply);
       if (saved.state === "posted") continue;
-      if (saved.state === "posting") throw new Error(`Reply ${reply.sourceTs}/${reply.requestIndex} has unresolved delivery`);
+      if (saved.state === "posting") {
+        if (reply.kind === "failure") {
+          this.input.logger.warn({ key, replyKey: slackReplyKey(reply) }, "Failure notice delivery unresolved; skipping without resend");
+          continue;
+        }
+        throw new Error(`Reply ${reply.sourceTs}/${reply.requestIndex} has unresolved delivery`);
+      }
       active.push(saved);
     }
     if (active.length === 0) return;
@@ -696,7 +733,7 @@ export class SlackCoordinator {
       else groups.push([reply]);
     }
     for (const group of groups) {
-      const ids = group.flatMap((reply) => reply.taskId && current.get(reply.taskId)!.ackState === null && !current.get(reply.taskId)!.coordinatedAt ? [reply.taskId] : []);
+      const ids = group.flatMap((reply) => reply.kind !== "failure" && reply.taskId && current.get(reply.taskId)!.ackState === null && !current.get(reply.taskId)!.coordinatedAt ? [reply.taskId] : []);
       if (ids.length > 0) await this.input.db.beginSlackBatchAcknowledgment(ids);
       const groupKey = await this.input.db.beginSlackReplyGroup(key, group);
       let replyTs: string;
