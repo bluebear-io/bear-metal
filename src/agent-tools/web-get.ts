@@ -173,12 +173,13 @@ async function resolveAddresses(hostname: string): Promise<ReadonlyArray<Resolve
   }
 }
 
-async function nativeRequest(input: WebGetRequestInput): Promise<WebGetRequestResult> {
+export async function nativeRequest(input: WebGetRequestInput): Promise<WebGetRequestResult> {
   return new Promise((resolve, reject) => {
     const getter = input.url.protocol === "https:" ? httpsGet : httpGet;
     const requestOptions: RequestOptions = {
       protocol: input.url.protocol,
       hostname: input.url.hostname,
+      family: input.family,
       port: input.url.port || undefined,
       path: `${input.url.pathname}${input.url.search}`,
       headers: input.headers,

@@ -15,6 +15,55 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
 }));
 
 describe("Slack agent review deferral", () => {
+  it.each(["research", "coordinator"] as const)("provides shell execution only to %s tasks when appropriate", async (type) => {
+    const base = await mkdtemp(join(tmpdir(), "bear-metal-shell-test-"));
+    vi.stubEnv("BEAR_METAL_WORKSPACE_DIR", base);
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const taskId = type === "research" ? (await db.createSlackTask({
+      type: "research", thread: { workspaceId: "T", channelId: "C", threadTs: "100.0" },
+      sourceTs: "101.0", requestIndex: 1, request: "research", quote: "research",
+    })).task.id : "shell-coordinator";
+    if (type === "research") await db.claimSlackResearchTask();
+    sessionFactory.mockImplementation(async (options) => ({ session: {
+      subscribe: () => () => {},
+      prompt: async () => {
+        const bash = options.customTools.find((tool: { name: string }) => tool.name === "bash");
+        if (type === "coordinator") {
+          expect(bash).toBeUndefined();
+          return;
+        }
+        expect(bash).toBeDefined();
+        const result = await bash.execute("shell-call", { command: "printf research-shell-ready" });
+        expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: expect.stringContaining("research-shell-ready") })]));
+        expect(options.tools).not.toContain("write");
+        expect(options.tools).not.toContain("edit");
+      },
+      getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }),
+      dispose: vi.fn(),
+    } }));
+    const config: BearMetalConfig = {
+      linear: { clientId: "id", getClientSecret: () => "secret" },
+      github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
+      llmProviders: { anthropic: { getApiKey: () => "test-key" } },
+      customizeTask: () => ({
+        llm: { provider: "anthropic", model: "claude-sonnet-4-5-20250929" },
+        buildWorkspace: async ({ workspacePath }) => { await writeFile(join(workspacePath, "AGENTS.md"), "Repository guidance"); },
+      }),
+    };
+    try {
+      await runSlackAgent({
+        task: { id: taskId, type, request: "research", slack: { workspaceId: "T", channelId: "C", threadTs: "100.0", sourceTs: "101.0" } },
+        prompt: "Research", config, db, tools: [], githubToken: "token", getGithubToken: async () => "token",
+      });
+    } finally {
+      sessionFactory.mockReset();
+      vi.unstubAllEnvs();
+      await db.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   it("aborts the review session and records a clean deferred run", async () => {
     const base = await mkdtemp(join(tmpdir(), "bear-metal-deferred-review-test-"));
     vi.stubEnv("BEAR_METAL_WORKSPACE_DIR", base);
