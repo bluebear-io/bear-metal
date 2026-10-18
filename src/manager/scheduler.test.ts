@@ -580,26 +580,30 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(0);
   });
 
-  it("releases a tracked ticket whose worker handed it back (pending + delegation dropped)", async () => {
+  it("notifies once and stops retrying failed CI after an iteration hands back to the human", async () => {
     const db = await makeDb();
-    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "pending", prs: [] });
-    const reassigned = makeTicket("a", { delegate: { id: "someone-else" } });
-    const github = new FakeGitHub();
+    await seedCompletedTask(db, { state: "iteration", ticketId: "A", prs: [prRef(7)] }, { status: "pending", prs: [prRef(7)] });
+    const reassigned = makeTicket("a", { delegate: null });
+    const github = new FakeGitHub({ status: status(openPr(7), true, false) });
     const handler = new RecordingHandler(db);
+    const slack = new FakeSlack();
     const scheduler = buildScheduler({
       linear: new FakeLinear([], { A: reassigned }),
       github,
       db,
       handler,
       concurrency: 1,
+      slack: slack.asIntegration(),
     });
 
+    await scheduler.tick();
     await scheduler.tick();
     await scheduler.stop();
 
     expect(handler.handled).toHaveLength(0);
     expect(await db.countTracked()).toBe(0);
     expect(github.statusCalls).toHaveLength(0);
+    expect(slack.needsInputCalls).toHaveLength(1);
   });
 
   it("keys on delegate, not assignee: releases a pending ticket assigned to the agent but delegated elsewhere", async () => {

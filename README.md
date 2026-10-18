@@ -289,6 +289,8 @@ The agent must be a full Linear workspace member, not a guest.
 
 > **Delegation model:** Bear Metal picks up tickets delegated to the bot user, not merely assigned. In Linear, open a ticket, choose **Delegate**, and select the bot account. The original assignee stays on the ticket; Bear Metal works on their behalf and hands it back when done.
 
+The agent can call `respond_to_ticket_reporter` during both initial work and PR iterations when it needs human input. The tool posts the blocker to Linear and removes Bear Metal delegation. The scheduler sends the needs-input notification when Slack is configured and stops scheduling the ticket until it is re-delegated, even if PR checks remain failed.
+
 ### Anthropic
 
 Create a key in the [Anthropic Console](https://console.anthropic.com), register `llmProviders.anthropic.getApiKey`, and select `{ provider: "anthropic", model: "..." }` from `customizeTask`.

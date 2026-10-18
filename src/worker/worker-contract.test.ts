@@ -26,7 +26,7 @@ describe("worker contract", () => {
     });
   });
 
-  it("builds state-specific iteration instructions and excludes respond_to_ticket_reporter", () => {
+  it("builds iteration instructions with ticket-level human handback for blockers", () => {
     const context: WorkerInputContext = {
       state: "iteration",
       ticketId: "ABC-1",
@@ -80,7 +80,9 @@ describe("worker contract", () => {
     expect(prompt).toMatch(/openComments/);
     expect(prompt).toMatch(/Never read, write, search, or cd outside the repository root/);
     expect(prompt).toMatch(/ABC-1/);
-    expect(prompt).not.toMatch(/respond_to_ticket_reporter/);
+    expect(prompt).toMatch(/respond_to_ticket_reporter/);
+    expect(prompt).toContain("The only valid way to finish is calling the above tools for each open comment, plus `push_for_review` if you wrote code, OR calling `respond_to_ticket_reporter` if you cannot proceed and need human input.");
+    expect(prompt).toContain("pauses work until a human re-delegates");
   });
 
   it("builds state-specific new task instructions with respond_to_ticket_reporter", () => {
