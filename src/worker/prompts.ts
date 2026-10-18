@@ -19,6 +19,8 @@ export function buildWorkerPrompt(
         "Calling one of those two tools is the only valid way to finish.",
       ]
     : [
+        "If you cannot proceed and need human input, call `respond_to_ticket_reporter` with the blocker or question. This posts to Linear, removes Bear Metal delegation, and pauses work until a human re-delegates the ticket.",
+        "",
         "For every open comment in `openComments`, you MUST choose exactly one action:",
         "- `agree_with_github_message` — if you agree and have fixed the code.",
         "- `disagree_with_github_message` — if you disagree, reply with a concrete explanation backed by clear code-based evidence.",
@@ -27,7 +29,7 @@ export function buildWorkerPrompt(
         "",
         "Every entry in `openComments` must be handled — leaving one unhandled causes a re-dispatch loop.",
         "If you made ANY code changes, you must call `push_for_review` before exiting.",
-        "Do NOT output a text response to signal completion. The only valid way to finish is calling the above tools for each open comment, plus `push_for_review` if you wrote code.",
+        "Do NOT output a text response to signal completion. The only valid way to finish is calling the above tools for each open comment, plus `push_for_review` if you wrote code, OR calling `respond_to_ticket_reporter` if you cannot proceed and need human input.",
       ];
 
   const taskInstructions = isNew
@@ -44,6 +46,7 @@ export function buildWorkerPrompt(
         "3. For each failed check: read the code and logs, find the root cause, fix it.",
         "4. For each open comment: read the context and respond using the tools above.",
         "5. Call `push_for_review` once all code changes are done.",
+        "   OR call `respond_to_ticket_reporter` if you are blocked and need human input.",
       ];
 
   const customSystemPromptSection = opts?.customSystemPrompt

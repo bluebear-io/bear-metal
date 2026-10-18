@@ -352,10 +352,10 @@ export async function runPiWorker(input: {
   const isNew = input.context.state === "new";
   const stateTools = isNew
     ? (["respond_to_ticket_reporter", "push_for_review"] as const)
-    : (["agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "push_for_review"] as const);
+    : (["respond_to_ticket_reporter", "agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "push_for_review"] as const);
   const stateCustomTools = isNew
     ? [respondToTicketReporter, pushForReview]
-    : [agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
+    : [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
   const agentTools = input.agentToolGateway
     ? createAgentGatewayTools(input.agentToolGateway, {
         taskId: input.context.ticketId,

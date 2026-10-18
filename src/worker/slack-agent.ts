@@ -78,7 +78,10 @@ export async function runSlackAgent(input: {
       ? createAgentGatewayTools(input.gateway, { taskId: input.task.id, runId: input.task.id, workspaceRoot: agentWorkdir })
         .filter((tool) => ["github_read", "linear_read", "slack_read", "web_get"].includes(tool.name))
       : [];
-    const fileTools = createWorkspaceGuardedTools(agentWorkdir).filter((tool) => ["read", "grep", "find", "ls"].includes(tool.name));
+    const allowedWorkspaceTools = input.task.type === "research"
+      ? ["read", "bash", "grep", "find", "ls"]
+      : ["read", "grep", "find", "ls"];
+    const fileTools = createWorkspaceGuardedTools(agentWorkdir).filter((tool) => allowedWorkspaceTools.includes(tool.name));
     const customTools = [...input.tools, ...gatewayTools, ...fileTools];
     const { session } = await createAgentSession({
       cwd: agentWorkdir,

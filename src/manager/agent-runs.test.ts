@@ -27,7 +27,9 @@ describe("agent run API", () => {
         .toMatchObject({ id: research.task.id, title: "What is 2 + 2?" });
       expect((await request(app).get("/api/tasks?type=research")).body.total).toBe(1);
       expect((await request(app).get("/api/tasks?q=2%20%2B%202")).body.tasks).toMatchObject([{ id: research.task.id }]);
-      expect((await request(app).get("/api/tasks?statuses=succeeded")).body.tasks).toMatchObject([{ id: "coord-1" }]);
+      const completed = await request(app).get("/api/tasks?statuses=succeeded");
+      expect(completed.status, JSON.stringify({ body: completed.body, text: completed.text })).toBe(200);
+      expect(completed.body.tasks).toMatchObject([{ id: "coord-1" }]);
       expect((await request(app).get("/api/tasks?type=unknown")).status).toBe(400);
     } finally {
       await db.close();

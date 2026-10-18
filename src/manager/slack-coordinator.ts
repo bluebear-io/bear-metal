@@ -184,7 +184,10 @@ export class SlackCoordinator {
         const payload = buildCoordinatorPayload(key, batch, thread, tasks, edits, requiredResponses);
         const persistedReplies = await this.input.db.listSlackCoordinationReplies(key, batch);
         const completedActions = tasks.filter((task) => batch.includes(task.sourceTs) && task.state !== "failed"
-          && (task.type === "research" || task.ticketId !== null && task.ticketUrl !== null
+          && (task.type === "research" && (task.replacesTaskId === null || tasks.some((previous) =>
+            previous.id === task.replacesTaskId && previous.state === "canceled" && previous.supersededBy === task.id)
+            && persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))
+            || task.ticketId !== null && task.ticketUrl !== null
             && (!task.delegateToBearMetal || task.ackState !== null || task.coordinatedAt !== null
               || persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))));
         const savedReplies = persistedReplies.filter((reply) =>
@@ -612,8 +615,9 @@ export class SlackCoordinator {
               await this.input.db.failSlackTask(next.task.id, String(err));
               throw err;
             }
-          } else if (!codingInput && next.created) {
+          } else if (!codingInput && (next.created || next.task.state === "failed" || previous.supersededBy !== next.task.id)) {
             try {
+              if (next.task.state === "failed") await this.input.db.resumeSlackResearchReplacement(next.task.id);
               await cancel(previous.id, next.task.id);
               this.input.wakeResearch();
             } catch (err) {
@@ -622,7 +626,15 @@ export class SlackCoordinator {
             }
           }
           const updated = await getTask(next.task.id);
-          if (updated.ackState === null) queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) }));
+          if (updated.ackState === null) {
+            const canceled = await getTask(previous.id);
+            if (canceled.state !== "canceled" || canceled.supersededBy !== updated.id) throw new Error(`Replacement ${updated.id} has not canceled task ${previous.id}`);
+            queueReply?.(await this.input.db.queueSlackCoordinationReply(key, {
+              sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: canceled.id,
+              kind: "task_cancel", text: this.taskAcknowledgmentText(canceled),
+            }));
+            queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) }));
+          }
           decisions?.add(params.sourceTs);
           return { content: [{ type: "text", text: JSON.stringify(await getTask(next.task.id)) }], details: {} };
         },

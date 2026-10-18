@@ -555,25 +555,26 @@ describe("runPiWorker", () => {
     expect(prompt).toContain("untrusted data");
   });
 
-  it("registers iteration tools in iteration mode, not respond_to_ticket_reporter", async () => {
+  it("lets a CI iteration hand back to its human without an open review thread", async () => {
     const { runPiWorker } = await import("./pi.js");
     const registeredNames: string[] = [];
+    const linear = makeLinear();
+    const github = makeGithub();
+    let prompt = "";
     piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
       for (const tool of customTools) registeredNames.push(tool.name);
-      await executeTool(customTools, "respond_to_comment_writer", {
-        threadId: "thread-1",
-        text: "Blocked.",
-      });
+      await executeTool(customTools, "respond_to_ticket_reporter", { text: "Blocked by the AppSync quota. Need a human to free capacity." });
     });
 
-    await runPiWorker({
+    const result = await runPiWorker({
       context: makeContext({
         state: "iteration",
         prs: [{ owner: "acme", repo: "widgets", number: 7 }],
-        pullRequests: [makePullRequestContext()],
+        pullRequests: [{ ...makePullRequestContext(), unresolvedReviewThreads: [], issueComments: [] }],
       }),
-      github: makeGithub(),
-      linear: makeLinear(),
+      github,
+      linear,
+      onAgentStarted: (payload) => { prompt = payload.prompt; },
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7",
     });
 
@@ -582,7 +583,11 @@ describe("runPiWorker", () => {
     expect(registeredNames).toContain("respond_to_comment_writer");
     expect(registeredNames).toContain("mark_github_message_completed");
     expect(registeredNames).toContain("push_for_review");
-    expect(registeredNames).not.toContain("respond_to_ticket_reporter");
+    expect(registeredNames).toContain("respond_to_ticket_reporter");
+    expect(linear.commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("Blocked by the AppSync quota"));
+    expect(github.replyToReviewThread).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "pending", prs: [{ owner: "acme", repo: "widgets", number: 7 }] });
+    expect(prompt).toContain("respond_to_ticket_reporter");
   });
 
   it("moves the Linear ticket to In Review after writing code", async () => {

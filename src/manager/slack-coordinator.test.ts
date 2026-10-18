@@ -526,7 +526,7 @@ describe("Slack coordinator", () => {
       await coordinator.wake(key);
       expect(cancel).toHaveBeenCalledWith("old-ticket");
       expect(delegate).toHaveBeenCalledTimes(choice === true ? 1 : 0);
-      expect(replies).toEqual([choice === true ? "Created a ticket for <https://linear.app/new|fix B> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix B>."]);
+      expect(replies).toEqual([`${choice === true ? "Created a ticket for <https://linear.app/new|fix B> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix B>."}\n\nCanceled https://linear.app/old`]);
       expect((await db.listSlackThreadTasks(key)).find((task) => task.ticketId === "ticket-new")?.delegateToBearMetal).toBe(choice === true);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); }
@@ -1407,6 +1407,68 @@ describe("Slack coordinator", () => {
     }
   });
 
+  it.each([false, true].flatMap((retryReplacement) => ["creation", "cancellation", "notification"].map((failure) => ({ retryReplacement, failure }))))("recovers a research replacement after restart at $failure (replacement ID=$retryReplacement)", async ({ retryReplacement, failure }) => {
+    const dir = await mkdtemp(join(tmpdir(), "bear-metal-research-replacement-recovery-"));
+    const url = `sqlite:${join(dir, "db.sqlite")}`;
+    let db = new SqlDbClient(url, 5);
+    await db.initSchema();
+    await db.followSlackThread(key, "100.1");
+    const original = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "100.1", requestIndex: 1, request: "Find A", quote: "Find A" })).task;
+    await db.beginSlackBatchAcknowledgment([original.id]);
+    await db.markSlackResearchStartedReply(original.id, "original-reply");
+    await db.recordSlackMessage(key, "100.2");
+    const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> include B too" }]);
+    const logger = createLogger({ name: "test", level: "silent" });
+    const logError = vi.spyOn(logger, "error");
+    let retryId = original.id;
+    let recovering = false;
+    let missingDecision = false;
+    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools, validateOutcome }) => {
+      if (recovering) {
+        try { await validateOutcome?.(); } catch { missingDecision = true; }
+      }
+      await tools.find((tool) => tool.name === "update_task")!.execute("update", {
+        id: retryId, sourceTs: "100.2", requestIndex: 1, type: "research", correction: "Include B too", quote: "Find A and B",
+      }, undefined, undefined, {} as never);
+    };
+    if (failure === "creation") {
+      const create = db.createSlackTask.bind(db);
+      vi.spyOn(db, "createSlackTask").mockImplementationOnce(async (input) => {
+        await create(input);
+        throw new Error("Process stopped after replacement persisted");
+      });
+    } else if (failure === "cancellation") {
+      vi.spyOn(db, "cancelSlackTask").mockRejectedValueOnce(new Error("Transient cancellation failure"));
+    } else {
+      vi.spyOn(db, "queueSlackCoordinationReply").mockRejectedValueOnce(new Error("Process stopped before notification persisted"));
+    }
+    try {
+      await makeCoordinator({ db, api, runAgent, logger }).wake(key);
+      const replacement = (await db.listSlackThreadTasks(key)).find((task) => task.id !== original.id)!;
+      expect(replacement).toMatchObject({ state: failure === "cancellation" ? "failed" : "queued", replacesTaskId: original.id });
+      expect((await db.getSlackTask(original.id))?.state).toBe(failure === "notification" ? "canceled" : "queued");
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
+      if (retryReplacement) retryId = replacement.id;
+      await db.close();
+      db = new SqlDbClient(url, 5);
+      await db.initSchema();
+      logError.mockClear();
+      recovering = true;
+      await makeCoordinator({ db, api, runAgent, logger }).wake(key);
+      expect(missingDecision).toBe(true);
+      expect(logError.mock.calls).toEqual([]);
+      expect((await db.getSlackTask(original.id))).toMatchObject({ state: "canceled", supersededBy: replacement.id });
+      expect((await db.listSlackThreadTasks(key))).toHaveLength(2);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      await makeCoordinator({ db, api, runAgent, logger }).wake(key);
+      expect(replies).toEqual(["Looking into Find A and B.\n\nCanceled Find A"]);
+      expect((await db.claimSlackResearchTask())?.id).toBe(replacement.id);
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])("preserves the original on replacement failure and retries after restart (replacement ID=%s)", async (retryReplacement) => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-replacement-recovery-"));
     const url = `sqlite:${join(dir, "db.sqlite")}`;
@@ -1451,7 +1513,7 @@ describe("Slack coordinator", () => {
       expect(delegate).toHaveBeenCalledWith("new-ticket");
       expect((await db.getSlackTask(original.id))).toMatchObject({ state: "canceled", supersededBy: failed.id });
       expect((await db.getSlackTask(failed.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
@@ -1482,7 +1544,7 @@ describe("Slack coordinator", () => {
       expect(create).toHaveBeenCalledOnce();
       expect((await db.getSlackTask(replacement.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
       expect((await db.getSlackTask(old.id))).toMatchObject({ state: "canceled", supersededBy: replacement.id });
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); }
   });
@@ -1512,9 +1574,11 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(order).toEqual(["create new", "cancel old-ticket", "delegate new"]);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect((await db.getSlackTask(old.id))?.state).toBe("canceled");
       expect(await db.listSlackPendingThreads()).toEqual([]);
+      await coordinator.wake(key);
+      expect(replies).toHaveLength(1);
     } finally {
       await db.close();
     }
