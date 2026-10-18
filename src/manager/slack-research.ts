@@ -48,15 +48,21 @@ export class SlackResearchWorker {
     while (this.queue.pending + this.queue.size < 2) {
       const task = await this.input.db.claimSlackResearchTask();
       if (!task) return;
-      void this.queue.add(() => this.run(task)).catch((err) => {
-        this.input.logger.error({ err, taskId: task.id }, "Slack research task failed");
-        void this.input.db.getSlackTask(task.id).then((current) => {
+      void this.queue.add(async () => {
+        try {
+          await this.run(task);
+        } catch (err) {
+          this.input.logger.error({ err, taskId: task.id }, "Slack research task failed");
+          const current = await this.input.db.getSlackTask(task.id);
           if (current?.state === "canceled" || current?.state === "coordinated" ||
             (current?.state === "awaiting_coordination" && current.result)) return;
-          return this.input.db.failSlackTask(task.id, String(err));
-        }).catch((dbErr) => {
-          this.input.logger.error({ err: dbErr, taskId: task.id }, "Cannot mark Slack research task failed");
-        });
+          await this.input.db.failSlackTask(task.id, String(err));
+          void this.input.wakeThread(task.thread).catch((notificationError) => {
+            this.input.logger.error({ err: notificationError, taskId: task.id }, "Cannot wake Slack thread after research failure");
+          });
+        }
+      }).catch((err) => {
+        this.input.logger.error({ err, taskId: task.id }, "Cannot record Slack research failure");
       });
     }
   }

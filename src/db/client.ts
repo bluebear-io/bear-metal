@@ -99,13 +99,14 @@ export interface SlackCoordinationReply {
   text: string;
   taskId?: string;
   direct?: boolean;
-  kind?: "answer" | "clarification" | "task_ack" | "task_cancel";
+  kind?: "answer" | "clarification" | "task_ack" | "task_cancel" | "failure";
 }
 
 export type SlackReplyDelivery = SlackCoordinationReply & { state: "queued" | "posting" | "posted" };
 
 export function slackReplyKey(reply: SlackCoordinationReply): string {
   const kind = reply.kind ?? (reply.direct ? "answer" : reply.taskId ? "task_ack" : "clarification");
+  if (kind === "failure") return `${reply.sourceTs}/failure/${reply.taskId ?? "request"}`;
   if (kind === "task_cancel") {
     if (!reply.taskId) throw new Error("Cancellation reply requires a task ID");
     return `${reply.sourceTs}/task_cancel/${reply.taskId}`;
@@ -1784,6 +1785,9 @@ export class SqlDbClient implements DbClient {
          AND thread.channel_id = tasks.slack_channel_id AND thread.thread_ts = tasks.slack_thread_ts
        WHERE thread.following = 1 AND tasks.slack_source_ts >= thread.first_message_ts
          AND (thread.unsubscribed_message_ts IS NULL OR tasks.slack_source_ts > thread.unsubscribed_message_ts) AND task_type IN ('coding', 'research') AND (
+         (slack_state = 'failed' AND task_type = 'research' AND superseded_by IS NULL AND NOT EXISTS (
+           SELECT 1 FROM slack_reply_deliveries delivery WHERE delivery.task_id = tasks.id
+             AND delivery.reply_kind = 'failure' AND delivery.state = 'posted')) OR
          (slack_state = 'awaiting_coordination' AND task_type = 'research') OR
          slack_state = 'approved' OR
          (slack_ack_state IS NULL AND slack_state = 'awaiting_coordination' AND task_type = 'coding') OR
@@ -1946,10 +1950,15 @@ export class SqlDbClient implements DbClient {
   }
 
   async resumeSlackResearchReplacement(id: string): Promise<void> {
+    const delivered = `EXISTS (SELECT 1 FROM slack_reply_deliveries delivery
+      WHERE delivery.task_id = tasks.id AND delivery.reply_kind = 'task_ack' AND delivery.state = 'posted')`;
     const result = await this.run(
-      `UPDATE tasks SET slack_state = 'queued', error = NULL, updated_at = ?
+      `UPDATE tasks SET slack_state = 'queued', error = NULL, updated_at = ?,
+       slack_ack_state = CASE WHEN ${delivered} THEN 'posted' ELSE NULL END,
+       slack_reply_ts = (SELECT reply_ts FROM slack_reply_deliveries delivery
+         WHERE delivery.task_id = tasks.id AND delivery.reply_kind = 'task_ack' AND delivery.state = 'posted' LIMIT 1)
        WHERE id = ? AND task_type = 'research' AND slack_state = 'failed'
-       AND slack_ack_state IS NULL AND slack_replaces_task_id IS NOT NULL AND ticket_id IS NULL`,
+       AND (slack_ack_state IS NULL OR ${delivered}) AND slack_replaces_task_id IS NOT NULL AND ticket_id IS NULL`,
       [this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot resume Slack research replacement: ${id}`);
@@ -1976,7 +1985,7 @@ export class SqlDbClient implements DbClient {
     if (id === supersededBy) throw new Error("Cannot replace a task with itself");
     const result = await this.run(
       `UPDATE tasks SET slack_state = 'canceled', slack_ack_state = NULL, superseded_by = ?, coordinated_at = NULL, updated_at = ?
-       WHERE id = ? AND task_type IN ('coding', 'research') AND slack_state NOT IN ('failed', 'canceled')`,
+       WHERE id = ? AND task_type IN ('coding', 'research') AND slack_state != 'canceled' AND (slack_state != 'failed' OR task_type = 'research')`,
       [supersededBy ?? null, this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot cancel Slack task: ${id}`);

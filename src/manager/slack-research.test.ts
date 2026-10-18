@@ -42,6 +42,26 @@ describe("Slack research worker", () => {
       await db.close();
     }
   });
+  it("wakes coordination after storing a research failure", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "1.3", requestIndex: 1, request: "Find the answer", quote: "Find the answer" })).task;
+    const wakeThread = vi.fn(async () => {
+      expect((await db.getSlackTask(task.id))?.state).toBe("failed");
+    });
+    const worker = new SlackResearchWorker({
+      db, github: { getInstallationToken: async () => "token" } as GitHubIntegration,
+      config: {} as ConstructorParameters<typeof SlackResearchWorker>[0]["config"],
+      logger: createLogger({ name: "test", level: "silent" }), pollIntervalMs: 60_000, wakeThread,
+      runAgent: async () => { throw new Error("Provider unavailable"); },
+    });
+    try {
+      await worker.tick();
+      await worker.stop();
+      expect(wakeThread).toHaveBeenCalledWith(key);
+    } finally { await db.close(); }
+  });
+
   it("stores the answer for coordination and wakes the owning thread", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
