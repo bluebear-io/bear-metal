@@ -1407,7 +1407,7 @@ describe("Slack coordinator", () => {
     }
   });
 
-  it.each([false, true])("recovers a research replacement after restart before cancellation (replacement ID=%s)", async (retryReplacement) => {
+  it.each([false, true].flatMap((retryReplacement) => ["creation", "cancellation", "notification"].map((failure) => ({ retryReplacement, failure }))))("recovers a research replacement after restart at $failure (replacement ID=$retryReplacement)", async ({ retryReplacement, failure }) => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-research-replacement-recovery-"));
     const url = `sqlite:${join(dir, "db.sqlite")}`;
     let db = new SqlDbClient(url, 5);
@@ -1421,32 +1421,46 @@ describe("Slack coordinator", () => {
     const logger = createLogger({ name: "test", level: "silent" });
     const logError = vi.spyOn(logger, "error");
     let retryId = original.id;
-    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools }) => {
+    let recovering = false;
+    let missingDecision = false;
+    const runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]> = async ({ tools, validateOutcome }) => {
+      if (recovering) {
+        try { await validateOutcome?.(); } catch { missingDecision = true; }
+      }
       await tools.find((tool) => tool.name === "update_task")!.execute("update", {
         id: retryId, sourceTs: "100.2", requestIndex: 1, type: "research", correction: "Include B too", quote: "Find A and B",
       }, undefined, undefined, {} as never);
     };
-    const create = db.createSlackTask.bind(db);
-    vi.spyOn(db, "createSlackTask").mockImplementationOnce(async (input) => {
-      await create(input);
-      throw new Error("Process stopped after replacement persisted");
-    });
+    if (failure === "creation") {
+      const create = db.createSlackTask.bind(db);
+      vi.spyOn(db, "createSlackTask").mockImplementationOnce(async (input) => {
+        await create(input);
+        throw new Error("Process stopped after replacement persisted");
+      });
+    } else if (failure === "cancellation") {
+      vi.spyOn(db, "cancelSlackTask").mockRejectedValueOnce(new Error("Transient cancellation failure"));
+    } else {
+      vi.spyOn(db, "queueSlackCoordinationReply").mockRejectedValueOnce(new Error("Process stopped before notification persisted"));
+    }
     try {
       await makeCoordinator({ db, api, runAgent, logger }).wake(key);
       const replacement = (await db.listSlackThreadTasks(key)).find((task) => task.id !== original.id)!;
-      expect(replacement).toMatchObject({ state: "queued", replacesTaskId: original.id });
-      expect((await db.getSlackTask(original.id))?.state).toBe("queued");
+      expect(replacement).toMatchObject({ state: failure === "cancellation" ? "failed" : "queued", replacesTaskId: original.id });
+      expect((await db.getSlackTask(original.id))?.state).toBe(failure === "notification" ? "canceled" : "queued");
       expect(await db.listSlackPendingMessages(key)).toEqual(["100.2"]);
       if (retryReplacement) retryId = replacement.id;
       await db.close();
       db = new SqlDbClient(url, 5);
       await db.initSchema();
       logError.mockClear();
+      recovering = true;
       await makeCoordinator({ db, api, runAgent, logger }).wake(key);
+      expect(missingDecision).toBe(true);
       expect(logError.mock.calls).toEqual([]);
       expect((await db.getSlackTask(original.id))).toMatchObject({ state: "canceled", supersededBy: replacement.id });
       expect((await db.listSlackThreadTasks(key))).toHaveLength(2);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      await makeCoordinator({ db, api, runAgent, logger }).wake(key);
       expect(replies).toEqual(["Looking into Find A and B.\n\nCanceled Find A"]);
       expect((await db.claimSlackResearchTask())?.id).toBe(replacement.id);
     } finally {

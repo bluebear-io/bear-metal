@@ -185,7 +185,8 @@ export class SlackCoordinator {
         const persistedReplies = await this.input.db.listSlackCoordinationReplies(key, batch);
         const completedActions = tasks.filter((task) => batch.includes(task.sourceTs) && task.state !== "failed"
           && (task.type === "research" && (task.replacesTaskId === null || tasks.some((previous) =>
-            previous.id === task.replacesTaskId && previous.state === "canceled" && previous.supersededBy === task.id))
+            previous.id === task.replacesTaskId && previous.state === "canceled" && previous.supersededBy === task.id)
+            && persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))
             || task.ticketId !== null && task.ticketUrl !== null
             && (!task.delegateToBearMetal || task.ackState !== null || task.coordinatedAt !== null
               || persistedReplies.some((reply) => reply.taskId === task.id && reply.kind === "task_ack"))));
@@ -614,8 +615,9 @@ export class SlackCoordinator {
               await this.input.db.failSlackTask(next.task.id, String(err));
               throw err;
             }
-          } else if (!codingInput && (next.created || previous.supersededBy !== next.task.id)) {
+          } else if (!codingInput && (next.created || next.task.state === "failed" || previous.supersededBy !== next.task.id)) {
             try {
+              if (next.task.state === "failed") await this.input.db.resumeSlackResearchReplacement(next.task.id);
               await cancel(previous.id, next.task.id);
               this.input.wakeResearch();
             } catch (err) {

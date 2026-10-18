@@ -720,6 +720,7 @@ export interface DbClient {
   attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void>;
   hasSlackLinkedTicket(ticketIssueId: string): Promise<boolean>;
   resumeSlackTicketReplacement(id: string): Promise<void>;
+  resumeSlackResearchReplacement(id: string): Promise<void>;
   cancelSlackTask(id: string, supersededBy?: string): Promise<void>;
   beginSlackTaskReply(id: string): Promise<void>;
   beginSlackBatchAcknowledgment(ids: string[]): Promise<void>;
@@ -1942,6 +1943,16 @@ export class SqlDbClient implements DbClient {
       [this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot resume Slack ticket replacement: ${id}`);
+  }
+
+  async resumeSlackResearchReplacement(id: string): Promise<void> {
+    const result = await this.run(
+      `UPDATE tasks SET slack_state = 'queued', error = NULL, updated_at = ?
+       WHERE id = ? AND task_type = 'research' AND slack_state = 'failed'
+       AND slack_ack_state IS NULL AND slack_replaces_task_id IS NOT NULL AND ticket_id IS NULL`,
+      [this.clock.nowIso(), id],
+    );
+    if (result.changes !== 1) throw new Error(`Cannot resume Slack research replacement: ${id}`);
   }
 
   async attachSlackTicket(id: string, ticketId: string, ticketUrl: string): Promise<void> {
