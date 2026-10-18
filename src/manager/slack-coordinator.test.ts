@@ -526,7 +526,7 @@ describe("Slack coordinator", () => {
       await coordinator.wake(key);
       expect(cancel).toHaveBeenCalledWith("old-ticket");
       expect(delegate).toHaveBeenCalledTimes(choice === true ? 1 : 0);
-      expect(replies).toEqual([choice === true ? "Created a ticket for <https://linear.app/new|fix B> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix B>."]);
+      expect(replies).toEqual([`${choice === true ? "Created a ticket for <https://linear.app/new|fix B> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix B>."}\n\nCanceled https://linear.app/old`]);
       expect((await db.listSlackThreadTasks(key)).find((task) => task.ticketId === "ticket-new")?.delegateToBearMetal).toBe(choice === true);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); }
@@ -1451,7 +1451,7 @@ describe("Slack coordinator", () => {
       expect(delegate).toHaveBeenCalledWith("new-ticket");
       expect((await db.getSlackTask(original.id))).toMatchObject({ state: "canceled", supersededBy: failed.id });
       expect((await db.getSlackTask(failed.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
@@ -1482,7 +1482,7 @@ describe("Slack coordinator", () => {
       expect(create).toHaveBeenCalledOnce();
       expect((await db.getSlackTask(replacement.id))).toMatchObject({ state: "coordinated", ticketId: "new-ticket" });
       expect((await db.getSlackTask(old.id))).toMatchObject({ state: "canceled", supersededBy: replacement.id });
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
     } finally { await db.close(); }
   });
@@ -1512,9 +1512,11 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(order).toEqual(["create new", "cancel old-ticket", "delegate new"]);
-      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal."]);
+      expect(replies).toEqual(["Created a ticket for <https://linear.app/new|implement B> and assigned it to Bear Metal.\n\nCanceled https://linear.app/old"]);
       expect((await db.getSlackTask(old.id))?.state).toBe("canceled");
       expect(await db.listSlackPendingThreads()).toEqual([]);
+      await coordinator.wake(key);
+      expect(replies).toHaveLength(1);
     } finally {
       await db.close();
     }

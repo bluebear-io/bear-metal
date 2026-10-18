@@ -622,7 +622,15 @@ export class SlackCoordinator {
             }
           }
           const updated = await getTask(next.task.id);
-          if (updated.ackState === null) queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) }));
+          if (updated.ackState === null) {
+            const canceled = await getTask(previous.id);
+            if (canceled.state !== "canceled" || canceled.supersededBy !== updated.id) throw new Error(`Replacement ${updated.id} has not canceled task ${previous.id}`);
+            queueReply?.(await this.input.db.queueSlackCoordinationReply(key, {
+              sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: canceled.id,
+              kind: "task_cancel", text: this.taskAcknowledgmentText(canceled),
+            }));
+            queueReply?.(await this.input.db.queueSlackCoordinationReply(key, { sourceTs: params.sourceTs, requestIndex: params.requestIndex, taskId: updated.id, text: this.taskAcknowledgmentText(updated, params.slackTitle) }));
+          }
           decisions?.add(params.sourceTs);
           return { content: [{ type: "text", text: JSON.stringify(await getTask(next.task.id)) }], details: {} };
         },
