@@ -8,7 +8,7 @@ import { renderWithProviders } from "./test/utils.js";
 
 vi.mock("./api/client.js", () => ({
   fetchTasks: vi.fn().mockResolvedValue({ tasks: [{ id: "coord-1", type: "coordinator", status: "succeeded", runStatus: "succeeded", ticketId: null, identifier: null, title: "Slack thread coordination", ticketUrl: null, attemptCount: 1, workerId: null, assigneeName: null, updatedAt: "2026-10-01T10:01:00.000Z", createdAt: "2026-10-01T10:00:00.000Z", pullRequests: [] }], total: 1, page: 1, pageSize: 20 }),
-  fetchAgentRunDetail: vi.fn().mockResolvedValue({ run: { id: "coord-1", type: "coordinator", status: "succeeded", ticketId: null, ticketIdentifier: null, ticketTitle: null, ticketUrl: null, slackWorkspaceId: "T1", slackChannelId: "C1", slackThreadTs: "100.0", slackSourceTs: "101.0", request: "coordinate", resultJson: null, error: null, provider: "anthropic", modelName: "claude", promptTokens: null, completionTokens: null, attemptNumber: 1, workerId: null, stopReason: "completed", inputJson: null, contextJson: null, slackState: null, startedAt: "2026-10-01T10:00:00.000Z", endedAt: "2026-10-01T10:01:00.000Z", createdAt: "2026-10-01T10:00:00.000Z" }, trace: [{ id: "trace-1", runId: "coord-1", kind: "assistant_text", contentJson: JSON.stringify({ text: "The request was ignored." }), createdAt: "2026-10-01T10:00:30.000Z" }] }),
+  fetchAgentRunDetail: vi.fn().mockResolvedValue({ run: { id: "coord-1", type: "coordinator", status: "succeeded", ticketId: null, ticketIdentifier: null, ticketTitle: null, ticketUrl: null, slackWorkspaceId: "T1", slackChannelId: "C1", slackThreadTs: "100.0", slackSourceTs: "101.0", request: "coordinate", resultJson: null, error: null, provider: "anthropic", modelName: "claude", promptTokens: null, completionTokens: null, costUsd: null, attemptNumber: 1, workerId: null, stopReason: "completed", inputJson: null, contextJson: null, slackState: null, startedAt: "2026-10-01T10:00:00.000Z", endedAt: "2026-10-01T10:01:00.000Z", createdAt: "2026-10-01T10:00:00.000Z" }, trace: [{ id: "trace-1", runId: "coord-1", kind: "assistant_text", contentJson: JSON.stringify({ text: "The request was ignored." }), createdAt: "2026-10-01T10:00:30.000Z" }] }),
   fetchTicketDetail: vi.fn(),
   fetchTickets: vi.fn().mockResolvedValue({ tickets: [], total: 0, page: 1, pageSize: 50 }),
   fetchTicketFilters: vi.fn().mockResolvedValue({ bmStatuses: [], stopReasons: [], labels: [], workers: [] }),
@@ -54,7 +54,7 @@ describe("App", () => {
     vi.mocked(fetchAgentRunDetail).mockResolvedValueOnce({
       run: { id: "research-1", type: "research", status: "succeeded", slackState: "coordinated",
         slackQuote: "What is 2 + 2?", slackReplyTs: "101.0", attemptNumber: 1, workerId: null,
-        stopReason: "completed", promptTokens: 10, completionTokens: 5, contextJson: null, inputJson: null,
+        stopReason: "completed", promptTokens: 10, completionTokens: 5, costUsd: 0.25, contextJson: null, inputJson: null,
         ticketId: null, ticketIdentifier: null, ticketTitle: null, ticketUrl: null, slackWorkspaceId: "T1",
         slackChannelId: "C1", slackThreadTs: "100.0", slackSourceTs: "100.0",
         request: "What is 2 + 2?", resultJson: '{"answer":"4"}', error: null, provider: "anthropic",
@@ -72,6 +72,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Event log" })).toBeInTheDocument();
     expect(screen.getByText("coordinated")).toBeInTheDocument();
     expect(screen.getByText("answer_research")).toBeInTheDocument();
+    expect(screen.getAllByText("$0.250")).toHaveLength(2);
   });
 
   it("shows processed coordinator messages and its persisted output below the summary", async () => {
