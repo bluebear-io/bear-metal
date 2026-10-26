@@ -9,12 +9,52 @@ import { SqlDbClient } from "../db/client.js";
 import { runSlackAgent } from "./slack-agent.js";
 
 const sessionFactory = vi.hoisted(() => vi.fn());
-vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@earendil-works/pi-coding-agent")>(),
-  createAgentSession: sessionFactory,
+vi.mock("./pi-runtime.js", () => ({
+  createPiSessionRuntime: async (options: unknown) => {
+    const { session, dispose } = await sessionFactory(options);
+    return { session, dispose: dispose ?? (async () => {}) };
+  },
 }));
 
 describe("Slack agent review deferral", () => {
+  it("reports the session start before prompting and ends the session through the runtime", async () => {
+    const base = await mkdtemp(join(tmpdir(), "bear-metal-lifecycle-test-"));
+    vi.stubEnv("BEAR_METAL_WORKSPACE_DIR", base);
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const events: string[] = [];
+    sessionFactory.mockResolvedValue({
+      session: {
+        subscribe: () => () => {},
+        bindExtensions: async () => { events.push("bindExtensions"); },
+        prompt: async () => { events.push("prompt"); },
+        getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }),
+      },
+      dispose: async () => { events.push("runtime.dispose"); },
+    });
+    const config: BearMetalConfig = {
+      linear: { clientId: "id", getClientSecret: () => "secret" },
+      github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
+      llmProviders: { anthropic: { getApiKey: () => "test-key" } },
+      customizeTask: () => ({
+        llm: { provider: "anthropic", model: "claude-sonnet-4-5-20250929" },
+        buildWorkspace: async ({ workspacePath }) => { await writeFile(join(workspacePath, "AGENTS.md"), "Repository guidance"); },
+      }),
+    };
+    try {
+      await runSlackAgent({
+        task: { id: "lifecycle-coordinator", type: "coordinator", request: "request", slack: { workspaceId: "T", channelId: "C", threadTs: "100.0", sourceTs: "101.0" } },
+        prompt: "prompt", config, db, tools: [], getGithubToken: async () => "token",
+      });
+      expect(events).toEqual(["bindExtensions", "prompt", "runtime.dispose"]);
+    } finally {
+      sessionFactory.mockReset();
+      vi.unstubAllEnvs();
+      await db.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   it.each(["research", "coordinator"] as const)("provides shell execution only to %s tasks when appropriate", async (type) => {
     const base = await mkdtemp(join(tmpdir(), "bear-metal-shell-test-"));
     vi.stubEnv("BEAR_METAL_WORKSPACE_DIR", base);
@@ -39,8 +79,8 @@ describe("Slack agent review deferral", () => {
         expect(options.tools).not.toContain("write");
         expect(options.tools).not.toContain("edit");
       },
+      bindExtensions: async () => {},
       getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }),
-      dispose: vi.fn(),
     } }));
     const config: BearMetalConfig = {
       linear: { clientId: "id", getClientSecret: () => "secret" },
@@ -90,8 +130,8 @@ describe("Slack agent review deferral", () => {
         await aborted;
       },
       abort,
+      bindExtensions: async () => {},
       getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }),
-      dispose: vi.fn(),
     } });
     const config: BearMetalConfig = {
       linear: { clientId: "id", getClientSecret: () => "secret" },

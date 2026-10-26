@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createAgentSession, defineTool, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   push,
@@ -20,6 +20,7 @@ import type {
   WorkerLinear,
 } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
+import { createPiSessionRuntime } from "./pi-runtime.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 import type {
   AgentToolAuditRecord,
@@ -369,11 +370,10 @@ export async function runPiWorker(input: {
   const pendingArgs = new Map<string, { args: unknown; thought: string | null; startedAt: number }>();
   let currentThought: string | null = null;
   let toolCallSequence = 0;
-  const { session } = await createAgentSession({
+  const runtime = await createPiSessionRuntime({
     cwd: workspaceRoot,
     modelRuntime,
     model,
-    sessionManager: SessionManager.inMemory(),
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls", ...stateTools, ...agentTools.map((tool) => tool.name)],
     customTools: [
       ...guardedTools,
@@ -381,6 +381,7 @@ export async function runPiWorker(input: {
       ...agentTools,
     ],
   });
+  const session = runtime.session;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
       logger.debug({ tool: event.toolName, args: redactCredentials(event.args) }, "pi tool call");
@@ -535,7 +536,7 @@ export async function runPiWorker(input: {
       logger.warn({ exportError }, "failed to export session transcript");
     }
     unsubscribe();
-    session.dispose();
+    await runtime.dispose();
     logger.debug({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
     if (leaseAbort) await leaseAbort;
   }
