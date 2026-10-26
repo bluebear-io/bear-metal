@@ -484,11 +484,21 @@ export async function runPiWorker(input: {
     input.signal?.throwIfAborted();
     // SDK sessions emit session_start to extensions only from bindExtensions; the Pi CLI calls it itself.
     // session.abort() cannot interrupt an extension handler, so a stuck one is cut off by the time limit or lease loss.
-    await untilStopped(session.bindExtensions({
-      onError: (error) => {
-        logger.error({ ...error, ticketId: input.context.ticketId }, "pi extension error");
+    await untilStopped(
+      session.bindExtensions({
+        onError: (error) => {
+          logger.error({ ...error, ticketId: input.context.ticketId }, "pi extension error");
+        },
+      }),
+      sessionStop.signal,
+      (outcome) => {
+        if (outcome.status === "rejected") {
+          logger.error({ error: outcome.reason, ticketId: input.context.ticketId }, "pi extension binding rejected after stop");
+        } else {
+          logger.warn({ ticketId: input.context.ticketId }, "pi extension binding settled after stop");
+        }
       },
-    }), sessionStop.signal);
+    );
     input.signal?.throwIfAborted();
     await session.prompt(prompt);
     input.signal?.throwIfAborted();
@@ -552,15 +562,32 @@ export async function runPiWorker(input: {
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
 }
 
-function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+/** Rejects with the signal's reason on stop; `work` keeps running, and its later outcome goes to `onSettledAfterStop`. */
+function untilStopped<T>(
+  work: Promise<T>,
+  signal: AbortSignal,
+  onSettledAfterStop: (outcome: PromiseSettledResult<T>) => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onStop = () => reject(signal.reason);
-    if (signal.aborted) {
-      onStop();
-      return;
-    }
-    signal.addEventListener("abort", onStop, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onStop));
+    let stopped = false;
+    const onStop = () => {
+      stopped = true;
+      reject(signal.reason);
+    };
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onStop);
+        if (stopped) onSettledAfterStop({ status: "fulfilled", value });
+        else resolve(value);
+      },
+      (reason: unknown) => {
+        signal.removeEventListener("abort", onStop);
+        if (stopped) onSettledAfterStop({ status: "rejected", reason });
+        else reject(reason);
+      },
+    );
+    if (signal.aborted) onStop();
+    else signal.addEventListener("abort", onStop, { once: true });
   });
 }
 

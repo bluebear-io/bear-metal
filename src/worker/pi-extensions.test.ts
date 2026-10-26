@@ -13,7 +13,7 @@ const harness = vi.hoisted(() => ({
   events: [] as string[],
   logError: vi.fn(),
   dispose: vi.fn(),
-  bindExtensionsError: null as Error | null,
+  bindExtensions: null as (() => Promise<void>) | null,
 }));
 
 vi.mock("../shared/index.js", async (importOriginal) => {
@@ -55,10 +55,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
         harness.dispose();
         dispose();
       };
-      if (harness.bindExtensionsError) {
-        const error = harness.bindExtensionsError;
-        result.session.bindExtensions = async () => { throw error; };
-      }
+      if (harness.bindExtensions) result.session.bindExtensions = harness.bindExtensions;
       result.session.prompt = async () => {
         harness.events.push("prompt");
         const tools = options?.customTools as unknown as TestTool[];
@@ -83,7 +80,7 @@ describe("runPiWorker extensions", () => {
     harness.events.length = 0;
     harness.logError.mockClear();
     harness.dispose.mockClear();
-    harness.bindExtensionsError = null;
+    harness.bindExtensions = null;
   });
 
   afterEach(async () => {
@@ -126,7 +123,7 @@ describe("runPiWorker extensions", () => {
 
   it("disposes the session when binding extensions rejects", async () => {
     harness.extensionFactories = [];
-    harness.bindExtensionsError = new Error("bind failed");
+    harness.bindExtensions = async () => { throw new Error("bind failed"); };
 
     await expect(runWorker(workspaceRoot, root)).rejects.toThrow("bind failed");
 
@@ -147,6 +144,23 @@ describe("runPiWorker extensions", () => {
     expect(harness.events).toEqual([]);
     expect(harness.dispose).toHaveBeenCalledOnce();
     expect(linear.commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("time limit"));
+  });
+
+  it("logs a binding rejection that arrives after the time limit stopped it", async () => {
+    let rejectBinding!: (error: Error) => void;
+    harness.extensionFactories = [];
+    harness.bindExtensions = () => new Promise<void>((_, reject) => { rejectBinding = reject; });
+    const linear = { commentAndHandBack: vi.fn(async () => {}), moveTicketToInReview: vi.fn(async () => {}) };
+
+    const result = await runWorker(workspaceRoot, root, { maxWorkerTimeMs: 50, linear });
+    rejectBinding(new Error("late bind failure"));
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+
+    expect(result.status).toBe("pending");
+    expect(harness.logError).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ message: "late bind failure" }), ticketId: "ABC-1" }),
+      "pi extension binding rejected after stop",
+    );
   });
 });
 
