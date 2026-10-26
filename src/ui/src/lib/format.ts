@@ -67,6 +67,20 @@ export const formatCostUsd = (cost: number | null): string => {
   return `$${cost.toFixed(2)}`;
 };
 
+interface RunCost {
+  costUsd: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+}
+
+/** Sum of priced runs; runs that used tokens without a known price are counted, not hidden. */
+export const formatRunsCost = (runs: RunCost[]): string => {
+  const priced = runs.filter((run) => run.costUsd !== null);
+  const unpriced = runs.filter((run) => run.costUsd === null && ((run.promptTokens ?? 0) > 0 || (run.completionTokens ?? 0) > 0)).length;
+  const total = priced.length === 0 ? "—" : formatCostUsd(priced.reduce((sum, run) => sum + (run.costUsd ?? 0), 0));
+  return unpriced === 0 ? total : `${total} (${unpriced} unpriced run${unpriced === 1 ? "" : "s"})`;
+};
+
 export const formatPercent = (ratio: number): string => `${(ratio * 100).toFixed(0)}%`;
 
 export const formatSeconds = (seconds: number | null): string => {

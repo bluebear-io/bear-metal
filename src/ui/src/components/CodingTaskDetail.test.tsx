@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
@@ -49,6 +49,7 @@ const ticketDetail: TicketDetail = {
       error: "Tests failed",
       promptTokens: 50_000,
       completionTokens: 2_000,
+      costUsd: 1.234,
       modelName: "claude-sonnet-4",
       provider: "anthropic",
       createdAt: "2026-06-09T08:04:00.000Z",
@@ -77,6 +78,7 @@ const ticketDetail: TicketDetail = {
       error: null,
       promptTokens: null,
       completionTokens: null,
+      costUsd: null,
       modelName: null,
       provider: null,
       createdAt: "2026-06-09T08:59:00.000Z",
@@ -185,5 +187,44 @@ describe("CodingTaskDetail", () => {
     // Review thread comment renders inline with resolution status.
     expect(screen.getByText("Should this guard against null PR?")).toBeVisible();
     expect(screen.getByText(/Needs action/i)).toBeVisible();
+  });
+
+  it("shows per-run USD cost and the ticket total", () => {
+    mockUseTicketDetail.mockReturnValue({
+      data: ticketDetail,
+      error: null,
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useTicketDetail>);
+
+    renderPage();
+
+    expect(screen.getByRole("columnheader", { name: "Cost" })).toBeVisible();
+    const summary = screen.getByRole("heading", { name: "Summary" }).closest("section");
+    if (!summary) throw new Error("Summary section missing");
+    expect(within(summary).getByText("Cost").nextElementSibling).toHaveTextContent("$1.23");
+    const runs = screen.getByRole("heading", { name: "Runs" }).closest("section");
+    if (!runs) throw new Error("Runs section missing");
+    expect(within(runs).getByText("$1.23")).toBeVisible();
+  });
+
+  it("counts runs that used tokens without known pricing instead of hiding them", () => {
+    const [first, second] = ticketDetail.runs;
+    mockUseTicketDetail.mockReturnValue({
+      data: { ...ticketDetail, runs: [first!, { ...second!, promptTokens: 1_000, completionTokens: 10, costUsd: null }] },
+      error: null,
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useTicketDetail>);
+
+    renderPage();
+
+    const summary = screen.getByRole("heading", { name: "Summary" }).closest("section");
+    if (!summary) throw new Error("Summary section missing");
+    expect(within(summary).getByText("Cost").nextElementSibling).toHaveTextContent("$1.23 (1 unpriced run)");
   });
 });

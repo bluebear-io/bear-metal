@@ -14,6 +14,7 @@ export interface AgentRunSummary {
   stopReason: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  costUsd: number | null;
   contextJson: string | null;
   inputJson: string | null;
   ticketId: string | null;
@@ -220,6 +221,7 @@ export interface Run {
   error: string | null;
   promptTokens: number | null;
   completionTokens: number | null;
+  costUsd: number | null;
   modelName: string | null;
   provider: string | null;
   createdAt: string;

@@ -15,10 +15,10 @@ import { PageHeader } from "../components/PageHeader.js";
 import { QueryBoundary } from "../components/QueryBoundary.js";
 import { RefreshButton } from "../components/RefreshButton.js";
 import { StatusBadge } from "../components/StatusBadge.js";
-import { formatDateTime, parseLabels } from "../lib/format.js";
+import { formatDateTime, formatRunsCost, parseLabels } from "../lib/format.js";
 import { CopyableBlock, Field, RunsSection, Section } from "./TaskDetailSections.js";
 
-const TicketSummary = ({ ticket, maxIterations }: { ticket: Ticket; maxIterations: number | undefined }) => {
+const TicketSummary = ({ ticket, runs, maxIterations }: { ticket: Ticket; runs: Run[]; maxIterations: number | undefined }) => {
   const labels = parseLabels(ticket.labelsJson);
 
   return (
@@ -41,6 +41,7 @@ const TicketSummary = ({ ticket, maxIterations }: { ticket: Ticket; maxIteration
         </div>
         <Field label="Linear status" value={`${ticket.linearStatusName} (${ticket.linearStatusType})`} />
         <Field label="Attempts" value={`${ticket.attemptCount} / ${maxIterations ?? "?"}`} />
+        <Field label="Cost" value={formatRunsCost(runs)} />
         <Field label="Owner" value={ticket.assigneeName ?? "—"} />
         <Field label="Branch" value={ticket.branchName} />
         <Field label="Updated" value={formatDateTime(ticket.updatedAt)} />
@@ -388,7 +389,7 @@ export const CodingTaskDetail = () => {
       >
         {detail === undefined ? null : (
           <div className="flex flex-col gap-6">
-            <TicketSummary ticket={detail.ticket} maxIterations={configQuery.data?.maxIterations} />
+            <TicketSummary ticket={detail.ticket} runs={detail.runs} maxIterations={configQuery.data?.maxIterations} />
             <PullRequestSection pullRequests={detail.pullRequests} />
             <RunsSection runs={detail.runs} />
             <EventLogSection runs={detail.runs} events={detail.events} />
