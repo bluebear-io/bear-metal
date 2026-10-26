@@ -64,7 +64,8 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   createLsToolDefinition: () => makeTool("ls"),
 }));
 
-vi.mock("./pi-runtime.js", () => ({
+vi.mock("./pi-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pi-runtime.js")>()),
   createPiSessionRuntime: async (input: { customTools: TestTool[] }) => ({
     session: {
       subscribe: vi.fn().mockReturnValue(vi.fn()),

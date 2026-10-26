@@ -9,6 +9,9 @@ import {
   type ModelRuntime,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { untilStopped } from "./until-stopped.js";
+
+export const SESSION_SHUTDOWN_GRACE_MS = 30_000;
 
 /**
  * End the returned runtime with `runtime.dispose()`, not `runtime.session.dispose()`: only the runtime
@@ -41,4 +44,30 @@ export async function createPiSessionRuntime(options: {
     agentDir: getAgentDir(),
     sessionManager: SessionManager.inMemory(options.cwd),
   });
+}
+
+/**
+ * Ends the runtime and never rejects. `session.abort()` cannot interrupt an extension `session_shutdown`
+ * handler, so after `graceMs` the session is disposed without waiting for the handlers.
+ */
+export async function disposePiSessionRuntime(
+  runtime: AgentSessionRuntime,
+  onFailure: (failure: { error: unknown; settledAfterGrace: boolean }) => void,
+  graceMs = SESSION_SHUTDOWN_GRACE_MS,
+): Promise<void> {
+  const grace = new AbortController();
+  const timer = setTimeout(
+    () => grace.abort(new Error(`extension session_shutdown handlers did not finish within ${graceMs} ms`)),
+    graceMs,
+  );
+  try {
+    await untilStopped(runtime.dispose(), grace.signal, (outcome) => {
+      if (outcome.status === "rejected") onFailure({ error: outcome.reason, settledAfterGrace: true });
+    });
+  } catch (error) {
+    onFailure({ error, settledAfterGrace: false });
+    runtime.session.dispose();
+  } finally {
+    clearTimeout(timer);
+  }
 }

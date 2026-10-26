@@ -20,7 +20,8 @@ import type {
   WorkerLinear,
 } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
-import { createPiSessionRuntime } from "./pi-runtime.js";
+import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
+import { untilStopped } from "./until-stopped.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 import type {
   AgentToolAuditRecord,
@@ -536,7 +537,9 @@ export async function runPiWorker(input: {
       logger.warn({ exportError }, "failed to export session transcript");
     }
     unsubscribe();
-    await runtime.dispose();
+    await disposePiSessionRuntime(runtime, ({ error, settledAfterGrace }) => {
+      logger.error({ error, settledAfterGrace, ticketId: input.context.ticketId }, "pi runtime dispose failed");
+    });
     logger.debug({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
     if (leaseAbort) await leaseAbort;
   }
@@ -561,35 +564,6 @@ export async function runPiWorker(input: {
   }
   const withUsage = usage ? { ...decision, usage } : decision;
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
-}
-
-/** Rejects with the signal's reason on stop; `work` keeps running, and its later outcome goes to `onSettledAfterStop`. */
-function untilStopped<T>(
-  work: Promise<T>,
-  signal: AbortSignal,
-  onSettledAfterStop: (outcome: PromiseSettledResult<T>) => void,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    let stopped = false;
-    const onStop = () => {
-      stopped = true;
-      reject(signal.reason);
-    };
-    work.then(
-      (value) => {
-        signal.removeEventListener("abort", onStop);
-        if (stopped) onSettledAfterStop({ status: "fulfilled", value });
-        else resolve(value);
-      },
-      (reason: unknown) => {
-        signal.removeEventListener("abort", onStop);
-        if (stopped) onSettledAfterStop({ status: "rejected", reason });
-        else reject(reason);
-      },
-    );
-    if (signal.aborted) onStop();
-    else signal.addEventListener("abort", onStop, { once: true });
-  });
 }
 
 /**
