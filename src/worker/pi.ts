@@ -381,13 +381,6 @@ export async function runPiWorker(input: {
       ...agentTools,
     ],
   });
-  // SDK sessions emit session_start to extensions only from bindExtensions; the Pi CLI calls it itself.
-  await session.bindExtensions({
-    onError: (error) => {
-      logger.error({ ...error, ticketId: input.context.ticketId }, "pi extension error");
-    },
-  });
-
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
       logger.debug({ tool: event.toolName, args: redactCredentials(event.args) }, "pi tool call");
@@ -468,10 +461,12 @@ export async function runPiWorker(input: {
     }
   });
 
+  const sessionStop = new AbortController();
   const timeoutHandle = setTimeout(() => {
     if (!limitHitReason) {
       limitHitReason = `time limit of ${input.maxWorkerTimeMs / 60_000} minutes reached`;
       logger.warn({ ticketId: input.context.ticketId }, "time limit reached; aborting session");
+      sessionStop.abort(new Error(limitHitReason));
       session.abort().catch((err) => {
         logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
       });
@@ -480,11 +475,20 @@ export async function runPiWorker(input: {
 
   let leaseAbort: Promise<void> | undefined;
   const onLeaseAbort = () => {
+    sessionStop.abort(input.signal?.reason);
     leaseAbort = session.abort();
     void leaseAbort.catch((error) => logger.error({ error, ticketId: input.context.ticketId }, "lease-loss session abort failed"));
   };
   input.signal?.addEventListener("abort", onLeaseAbort, { once: true });
   try {
+    input.signal?.throwIfAborted();
+    // SDK sessions emit session_start to extensions only from bindExtensions; the Pi CLI calls it itself.
+    // session.abort() cannot interrupt an extension handler, so a stuck one is cut off by the time limit or lease loss.
+    await untilStopped(session.bindExtensions({
+      onError: (error) => {
+        logger.error({ ...error, ticketId: input.context.ticketId }, "pi extension error");
+      },
+    }), sessionStop.signal);
     input.signal?.throwIfAborted();
     await session.prompt(prompt);
     input.signal?.throwIfAborted();
@@ -546,6 +550,18 @@ export async function runPiWorker(input: {
   }
   const withUsage = usage ? { ...decision, usage } : decision;
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
+}
+
+function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onStop = () => reject(signal.reason);
+    if (signal.aborted) {
+      onStop();
+      return;
+    }
+    signal.addEventListener("abort", onStop, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onStop));
+  });
 }
 
 /**

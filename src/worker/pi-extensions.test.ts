@@ -12,6 +12,8 @@ const harness = vi.hoisted(() => ({
   extensionFactories: [] as unknown[],
   events: [] as string[],
   logError: vi.fn(),
+  dispose: vi.fn(),
+  bindExtensionsError: null as Error | null,
 }));
 
 vi.mock("../shared/index.js", async (importOriginal) => {
@@ -48,6 +50,15 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
       });
       await resourceLoader.reload();
       const result = await actual.createAgentSession({ ...options, agentDir: harness.agentDir, resourceLoader });
+      const dispose = result.session.dispose.bind(result.session);
+      result.session.dispose = () => {
+        harness.dispose();
+        dispose();
+      };
+      if (harness.bindExtensionsError) {
+        const error = harness.bindExtensionsError;
+        result.session.bindExtensions = async () => { throw error; };
+      }
       result.session.prompt = async () => {
         harness.events.push("prompt");
         const tools = options?.customTools as unknown as TestTool[];
@@ -71,6 +82,8 @@ describe("runPiWorker extensions", () => {
     await mkdir(harness.agentDir);
     harness.events.length = 0;
     harness.logError.mockClear();
+    harness.dispose.mockClear();
+    harness.bindExtensionsError = null;
   });
 
   afterEach(async () => {
@@ -110,16 +123,45 @@ describe("runPiWorker extensions", () => {
       "pi extension error",
     );
   });
+
+  it("disposes the session when binding extensions rejects", async () => {
+    harness.extensionFactories = [];
+    harness.bindExtensionsError = new Error("bind failed");
+
+    await expect(runWorker(workspaceRoot, root)).rejects.toThrow("bind failed");
+
+    expect(harness.dispose).toHaveBeenCalledOnce();
+    expect(harness.events).toEqual([]);
+  });
+
+  it("hands back on the time limit when an extension session_start never settles", async () => {
+    const factory: ExtensionFactory = (pi) => {
+      pi.on("session_start", () => new Promise<void>(() => {}));
+    };
+    harness.extensionFactories = [factory];
+    const linear = { commentAndHandBack: vi.fn(async () => {}), moveTicketToInReview: vi.fn(async () => {}) };
+
+    const result = await runWorker(workspaceRoot, root, { maxWorkerTimeMs: 50, linear });
+
+    expect(result.status).toBe("pending");
+    expect(harness.events).toEqual([]);
+    expect(harness.dispose).toHaveBeenCalledOnce();
+    expect(linear.commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("time limit"));
+  });
 });
 
-async function runWorker(workspaceRoot: string, workspaceDir: string) {
+async function runWorker(
+  workspaceRoot: string,
+  workspaceDir: string,
+  options: { maxWorkerTimeMs?: number; linear?: unknown } = {},
+) {
   const { runPiWorker } = await import("./pi.js");
   return runPiWorker({
     context: makeContext(workspaceRoot, workspaceDir),
     github: {} as never,
-    linear: { commentAndHandBack: vi.fn(async () => {}), moveTicketToInReview: vi.fn(async () => {}) } as never,
+    linear: (options.linear ?? { commentAndHandBack: vi.fn(async () => {}), moveTicketToInReview: vi.fn(async () => {}) }) as never,
     gitEnv: {},
-    maxWorkerTimeMs: 60_000,
+    maxWorkerTimeMs: options.maxWorkerTimeMs ?? 60_000,
     maxWorkerTokens: 1_000_000,
     llmProvider: "anthropic",
     llmApiKey: "test-key",
