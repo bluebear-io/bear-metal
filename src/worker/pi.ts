@@ -381,6 +381,12 @@ export async function runPiWorker(input: {
       ...agentTools,
     ],
   });
+  // SDK sessions emit session_start to extensions only from bindExtensions; the Pi CLI calls it itself.
+  await session.bindExtensions({
+    onError: (error) => {
+      logger.error({ ...error, ticketId: input.context.ticketId }, "pi extension error");
+    },
+  });
 
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {

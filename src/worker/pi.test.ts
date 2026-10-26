@@ -68,6 +68,7 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: async (input: { customTools: TestTool[] }) => ({
     session: {
       subscribe: vi.fn().mockReturnValue(vi.fn()),
+      bindExtensions: async () => {},
       exportToJsonl: vi.fn(),
       prompt: async () => piMock.runTools(input.customTools),
       dispose: piMock.sessionDispose,
