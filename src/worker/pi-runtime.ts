@@ -66,7 +66,11 @@ export async function disposePiSessionRuntime(
     });
   } catch (error) {
     onFailure({ error, settledAfterGrace: false });
-    runtime.session.dispose();
+    try {
+      runtime.session.dispose();
+    } catch (disposeError) {
+      onFailure({ error: disposeError, settledAfterGrace: false });
+    }
   } finally {
     clearTimeout(timer);
   }

@@ -50,6 +50,23 @@ describe("disposePiSessionRuntime", () => {
     expect(sessionDispose).toHaveBeenCalledOnce();
   });
 
+  it("reports a throwing forced session dispose instead of throwing it", async () => {
+    const failure = new Error("dispose exploded");
+    const sessionFailure = new Error("session already disposed");
+    const runtime = {
+      dispose: async () => { throw failure; },
+      session: { dispose: () => { throw sessionFailure; } },
+    } as unknown as AgentSessionRuntime;
+    const onFailure = vi.fn();
+
+    await expect(disposePiSessionRuntime(runtime, onFailure, 1_000)).resolves.toBeUndefined();
+
+    expect(onFailure.mock.calls).toEqual([
+      [{ error: failure, settledAfterGrace: false }],
+      [{ error: sessionFailure, settledAfterGrace: false }],
+    ]);
+  });
+
   it("reports a rejection that arrives after the grace period", async () => {
     vi.useFakeTimers();
     let rejectDispose!: (error: Error) => void;
