@@ -9,7 +9,7 @@ type TestTool = { name: string; parameters?: unknown; execute: (id: string, para
 
 const piMock = vi.hoisted(() => ({
   sessionAbort: vi.fn(async () => {}),
-  sessionDispose: vi.fn(),
+  runtimeDispose: vi.fn(async () => {}),
   runTools: vi.fn(async (customTools: TestTool[]) => {
     const tool = customTools.find((candidate) => candidate.name === "respond_to_ticket_reporter");
     if (!tool) {
@@ -53,9 +53,6 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
       getModel: piMock.modelRegistryFind,
     }),
   },
-  SessionManager: {
-    inMemory: () => ({}),
-  },
   defineTool: (definition: unknown) => definition,
   createLocalBashOperations: () => ({ exec: vi.fn() }),
   createReadToolDefinition: () => makeTool("read"),
@@ -65,15 +62,19 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
   createGrepToolDefinition: () => makeTool("grep"),
   createFindToolDefinition: () => makeTool("find"),
   createLsToolDefinition: () => makeTool("ls"),
-  createAgentSession: async (input: { customTools: TestTool[] }) => ({
+}));
+
+vi.mock("./pi-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pi-runtime.js")>()),
+  createPiSessionRuntime: async (input: { customTools: TestTool[] }) => ({
     session: {
       subscribe: vi.fn().mockReturnValue(vi.fn()),
       bindExtensions: async () => {},
       exportToJsonl: vi.fn(),
       prompt: async () => piMock.runTools(input.customTools),
-      dispose: piMock.sessionDispose,
       abort: piMock.sessionAbort,
     },
+    dispose: piMock.runtimeDispose,
   }),
 }));
 
@@ -915,7 +916,7 @@ describe("runPiWorker", () => {
 
     expect(commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("Need a product decision."));
     expect(result).toEqual({ status: "pending", prs: [] });
-    expect(piMock.sessionDispose).toHaveBeenCalled();
+    expect(piMock.runtimeDispose).toHaveBeenCalled();
   });
 
   describe("amazon-bedrock provider", () => {

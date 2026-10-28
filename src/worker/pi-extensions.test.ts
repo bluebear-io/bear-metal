@@ -42,14 +42,14 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
         refreshOnCreate: false,
       }),
     },
-    createAgentSession: async (options: Parameters<typeof actual.createAgentSession>[0]) => {
-      const resourceLoader = new actual.DefaultResourceLoader({
-        cwd: options!.cwd!,
-        agentDir: harness.agentDir,
-        extensionFactories: harness.extensionFactories as ExtensionFactory[],
-      });
-      await resourceLoader.reload();
-      const result = await actual.createAgentSession({ ...options, agentDir: harness.agentDir, resourceLoader });
+    getAgentDir: () => harness.agentDir,
+    createAgentSessionServices: (options: Parameters<typeof actual.createAgentSessionServices>[0]) =>
+      actual.createAgentSessionServices({
+        ...options,
+        resourceLoaderOptions: { extensionFactories: harness.extensionFactories as ExtensionFactory[] },
+      }),
+    createAgentSessionFromServices: async (options: Parameters<typeof actual.createAgentSessionFromServices>[0]) => {
+      const result = await actual.createAgentSessionFromServices(options);
       const dispose = result.session.dispose.bind(result.session);
       result.session.dispose = () => {
         harness.dispose();
@@ -58,7 +58,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
       if (harness.bindExtensions) result.session.bindExtensions = harness.bindExtensions;
       result.session.prompt = async () => {
         harness.events.push("prompt");
-        const tools = options?.customTools as unknown as TestTool[];
+        const tools = options.customTools as unknown as TestTool[];
         const tool = tools.find((candidate) => candidate.name === "respond_to_ticket_reporter")!;
         await tool.execute("tool-call-id", { text: "Need a product decision." });
       };
@@ -79,7 +79,7 @@ describe("runPiWorker extensions", () => {
     await mkdir(harness.agentDir);
     harness.events.length = 0;
     harness.logError.mockClear();
-    harness.dispose.mockClear();
+    harness.dispose.mockReset();
     harness.bindExtensions = null;
   });
 
@@ -102,6 +102,25 @@ describe("runPiWorker extensions", () => {
     expect(result.status).toBe("pending");
     expect(harness.events).toEqual(["session_start", "prompt"]);
     expect(reasons).toEqual(["startup"]);
+  });
+
+  it("fires session_shutdown on loaded extensions before the session is disposed", async () => {
+    const reasons: string[] = [];
+    harness.dispose.mockImplementation(() => harness.events.push("dispose"));
+    const factory: ExtensionFactory = (pi) => {
+      pi.on("session_start", () => { harness.events.push("session_start"); });
+      pi.on("session_shutdown", (event) => {
+        harness.events.push("session_shutdown");
+        reasons.push(event.reason);
+      });
+    };
+    harness.extensionFactories = [factory];
+
+    const result = await runWorker(workspaceRoot, root);
+
+    expect(result.status).toBe("pending");
+    expect(harness.events).toEqual(["session_start", "prompt", "session_shutdown", "dispose"]);
+    expect(reasons).toEqual(["quit"]);
   });
 
   it("logs extension errors through the worker logger", async () => {

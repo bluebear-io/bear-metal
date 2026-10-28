@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createAgentSession, defineTool, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   push,
@@ -20,6 +20,8 @@ import type {
   WorkerLinear,
 } from "./types.js";
 import { buildWorkerPrompt } from "./prompts.js";
+import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
+import { untilStopped } from "./until-stopped.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 import type {
   AgentToolAuditRecord,
@@ -369,11 +371,10 @@ export async function runPiWorker(input: {
   const pendingArgs = new Map<string, { args: unknown; thought: string | null; startedAt: number }>();
   let currentThought: string | null = null;
   let toolCallSequence = 0;
-  const { session } = await createAgentSession({
+  const runtime = await createPiSessionRuntime({
     cwd: workspaceRoot,
     modelRuntime,
     model,
-    sessionManager: SessionManager.inMemory(),
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls", ...stateTools, ...agentTools.map((tool) => tool.name)],
     customTools: [
       ...guardedTools,
@@ -381,6 +382,7 @@ export async function runPiWorker(input: {
       ...agentTools,
     ],
   });
+  const session = runtime.session;
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "tool_execution_start") {
       logger.debug({ tool: event.toolName, args: redactCredentials(event.args) }, "pi tool call");
@@ -535,7 +537,9 @@ export async function runPiWorker(input: {
       logger.warn({ exportError }, "failed to export session transcript");
     }
     unsubscribe();
-    session.dispose();
+    await disposePiSessionRuntime(runtime, ({ error, settledAfterGrace }) => {
+      logger.error({ error, settledAfterGrace, ticketId: input.context.ticketId }, "pi runtime dispose failed");
+    });
     logger.debug({ ticketId: input.context.ticketId, hasDecision: !!decision }, "pi session disposed");
     if (leaseAbort) await leaseAbort;
   }
@@ -560,35 +564,6 @@ export async function runPiWorker(input: {
   }
   const withUsage = usage ? { ...decision, usage } : decision;
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
-}
-
-/** Rejects with the signal's reason on stop; `work` keeps running, and its later outcome goes to `onSettledAfterStop`. */
-function untilStopped<T>(
-  work: Promise<T>,
-  signal: AbortSignal,
-  onSettledAfterStop: (outcome: PromiseSettledResult<T>) => void,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    let stopped = false;
-    const onStop = () => {
-      stopped = true;
-      reject(signal.reason);
-    };
-    work.then(
-      (value) => {
-        signal.removeEventListener("abort", onStop);
-        if (stopped) onSettledAfterStop({ status: "fulfilled", value });
-        else resolve(value);
-      },
-      (reason: unknown) => {
-        signal.removeEventListener("abort", onStop);
-        if (stopped) onSettledAfterStop({ status: "rejected", reason });
-        else reject(reason);
-      },
-    );
-    if (signal.aborted) onStop();
-    else signal.addEventListener("abort", onStop, { once: true });
-  });
 }
 
 /**

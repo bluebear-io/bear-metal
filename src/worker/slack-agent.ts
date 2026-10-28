@@ -1,14 +1,23 @@
 import { rm } from "node:fs/promises";
-import { createAgentSession, ModelRuntime, SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { customizeAndResolve } from "../customization/task.js";
 import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig, type Task } from "../customization/types.js";
 import type { DbClient } from "../db/client.js";
+import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForResearchTask } from "./clone.js";
 import { CoordinatorWorkspaceCache } from "./coordinator-workspace.js";
 import { createAgentGatewayTools } from "./pi.js";
+import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
 import { AgentTraceWriter, redactTraceText, traceJson } from "./trace.js";
+import { untilStopped } from "./until-stopped.js";
 import { createWorkspaceGuardedTools } from "./workspace-guard.js";
+
+const logger = createLogger({
+  level: process.env.LOG_LEVEL ?? "info",
+  name: "worker:slack-agent",
+  pretty: process.env.LOG_PRETTY === "true" || process.env.LOG_PRETTY === "1",
+});
 
 const coordinatorWorkspaces = new WeakMap<BearMetalConfig, CoordinatorWorkspaceCache>();
 
@@ -83,21 +92,23 @@ export async function runSlackAgent(input: {
       : ["read", "grep", "find", "ls"];
     const fileTools = createWorkspaceGuardedTools(agentWorkdir).filter((tool) => allowedWorkspaceTools.includes(tool.name));
     const customTools = [...input.tools, ...gatewayTools, ...fileTools];
-    const { session } = await createAgentSession({
+    const runtime = await createPiSessionRuntime({
       cwd: agentWorkdir,
       modelRuntime,
       model,
-      sessionManager: SessionManager.inMemory(),
       tools: customTools.map((tool) => tool.name),
       customTools,
     });
+    const session = runtime.session;
     let limitError: Error | null = null;
     let stopPromise: Promise<void> | undefined;
     let stopError: Error | null = null;
     const pendingArgs = new Map<string, unknown>();
+    const sessionStop = new AbortController();
     const abort = (reason: string) => {
       if (limitError) return;
       limitError = new Error(reason);
+      sessionStop.abort(limitError);
       void session.abort().catch((err) => { limitError = new Error(`Slack agent abort failed: ${String(err)}`); });
     };
     const unsubscribe = session.subscribe((event) => {
@@ -130,6 +141,23 @@ export async function runSlackAgent(input: {
     });
     const timeout = setTimeout(() => abort("Slack agent time limit reached"), customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS);
     try {
+      // SDK sessions emit session_start to extensions only from bindExtensions; the Pi CLI calls it itself.
+      // session.abort() cannot interrupt an extension handler, so a stuck one is cut off by the time or token limit.
+      await untilStopped(
+        session.bindExtensions({
+          onError: (error) => {
+            logger.error({ ...error, taskId: input.task.id }, "pi extension error");
+          },
+        }),
+        sessionStop.signal,
+        (outcome) => {
+          if (outcome.status === "rejected") {
+            logger.error({ error: outcome.reason, taskId: input.task.id }, "pi extension binding rejected after stop");
+          } else {
+            logger.warn({ taskId: input.task.id }, "pi extension binding settled after stop");
+          }
+        },
+      );
       await session.prompt(prompt);
       await stopPromise;
       if (stopError) throw stopError;
@@ -141,7 +169,9 @@ export async function runSlackAgent(input: {
     } finally {
       clearTimeout(timeout);
       unsubscribe();
-      session.dispose();
+      await disposePiSessionRuntime(runtime, ({ error, settledAfterGrace }) => {
+        logger.error({ error, settledAfterGrace, taskId: input.task.id }, "pi runtime dispose failed");
+      });
     }
   } catch (err) {
     runError = String(err);
