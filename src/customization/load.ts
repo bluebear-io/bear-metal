@@ -6,7 +6,7 @@ import type { BearMetalConfig, LlmProvider, SecretGetter, TaskCustomization } fr
 const ALLOWED_EXTENSIONS = [".js", ".mjs", ".ts", ".mts"] as const;
 const PROVIDERS = new Set<LlmProvider>(["anthropic", "openai", "google", "amazon-bedrock"]);
 const KEY_BASED_PROVIDERS = new Set(["anthropic", "openai", "google"]);
-const APPLICATION_INFERENCE_PROFILE_ARN = /^arn:aws:bedrock:[a-z0-9-]+:\d{12}:application-inference-profile\/[a-z0-9]+$/;
+const APPLICATION_INFERENCE_PROFILE_ARN = /^arn:aws(?:-[a-z]+)*:bedrock:[a-z0-9-]+:\d{12}:application-inference-profile\/[a-z0-9]+$/;
 
 export async function loadBearMetalConfig(env: NodeJS.ProcessEnv = process.env): Promise<Readonly<BearMetalConfig>> {
   const configuredPath = env.BEAR_METAL_CONFIG_FILE?.trim();
