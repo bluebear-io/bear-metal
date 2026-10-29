@@ -134,7 +134,8 @@ export interface TaskPullRequest {
 }
 
 export interface TaskCustomization {
-  llm: { provider: LlmProvider; model: string };
+  /** `modelArn` (amazon-bedrock only) calls this ARN, which must resolve to the same model as `model`, for example a tagged inference profile. */
+  llm: { provider: LlmProvider; model: string; modelArn?: string };
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;
   additionalSystemPrompt?: string | null;
   limits?: { maxDurationMs?: number; maxTokens?: number };
@@ -146,4 +147,5 @@ export interface ResolvedLlm {
   provider: LlmProvider;
   model: string;
   apiKey: string | null;
+  modelArn: string | null;
 }

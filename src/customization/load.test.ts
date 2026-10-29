@@ -89,5 +89,20 @@ describe("configuration validation", () => {
   it("requires an explicit supported customization shape", () => {
     expect(() => validateTaskCustomization({ llm: { provider: "anthropic", model: "model" }, buildWorkspace() {}, limits: { maxTokens: 0 } })).toThrow("maxTokens");
   });
+  it("accepts any Bedrock ARN as modelArn and rejects any other use of it", () => {
+    const customization = (llm: Record<string, unknown>) => ({ llm, buildWorkspace() {} });
+    const model = "us.anthropic.claude-sonnet-5-5";
+    for (const arn of [
+      "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123def456",
+      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-5-5",
+      "arn:aws-us-gov:bedrock:us-gov-west-1::foundation-model/anthropic.claude-sonnet-5-5",
+    ]) {
+      expect(validateTaskCustomization(customization({ provider: "amazon-bedrock", model, modelArn: arn })).llm.modelArn).toBe(arn);
+    }
+    expect(() => validateTaskCustomization(customization({ provider: "anthropic", model: "claude-opus-5-5", modelArn: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc" }))).toThrow("customizeTask result.llm.modelArn");
+    for (const invalid of ["", "us.anthropic.claude-sonnet-5-5", 7]) {
+      expect(() => validateTaskCustomization(customization({ provider: "amazon-bedrock", model, modelArn: invalid }))).toThrow("customizeTask result.llm.modelArn");
+    }
+  });
   it("rejects empty resolved secrets", async () => await expect(resolveSecret(async () => "", "secret getter")).rejects.toThrow("non-empty"));
 });

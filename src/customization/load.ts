@@ -89,6 +89,12 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
   nonEmptyString(llm.provider, "customizeTask result.llm.provider");
   if (!PROVIDERS.has(llm.provider as LlmProvider)) throw new Error(`customizeTask result.llm.provider: unsupported provider ${llm.provider}`);
   nonEmptyString(llm.model, "customizeTask result.llm.model");
+  if (llm.modelArn !== undefined) {
+    if (llm.provider !== "amazon-bedrock") throw new Error("customizeTask result.llm.modelArn is only supported for amazon-bedrock");
+    if (!nonEmptyString(llm.modelArn, "customizeTask result.llm.modelArn").startsWith("arn:")) {
+      throw new Error("customizeTask result.llm.modelArn must be an ARN");
+    }
+  }
   callable(customization.buildWorkspace, "customizeTask result.buildWorkspace");
   if (customization.additionalSystemPrompt !== undefined && customization.additionalSystemPrompt !== null && typeof customization.additionalSystemPrompt !== "string") {
     throw new Error("customizeTask result.additionalSystemPrompt must be a string or null");
