@@ -12,3 +12,6 @@ data/
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+
+# Plan files are local working notes, never committed
+docs/plans/
