@@ -325,6 +325,8 @@ async customizeTask(task) {
 }
 ```
 
+To bill a model to a Bedrock application inference profile, keep `model` as the catalog model id and add `inferenceProfileArn` (for example `{ provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", inferenceProfileArn: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123" }`). Bear Metal calls the profile and takes the model's capabilities, including prompt caching, from the catalog entry.
+
 `AWS_REGION` selects the region. `AWS_BEDROCK_FORCE_CACHE=1` forces prompt-cache points for application inference-profile ARNs. The runtime identity needs the appropriate Bedrock invocation permissions for the selected model or inference profile; configure those permissions through your deployment IaC.
 
 The selected provider and model appear in the `selected task LLM` log entry and completed-run usage. Run the routing regression tests locally with:

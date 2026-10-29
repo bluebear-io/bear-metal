@@ -6,6 +6,7 @@ import type { BearMetalConfig, LlmProvider, SecretGetter, TaskCustomization } fr
 const ALLOWED_EXTENSIONS = [".js", ".mjs", ".ts", ".mts"] as const;
 const PROVIDERS = new Set<LlmProvider>(["anthropic", "openai", "google", "amazon-bedrock"]);
 const KEY_BASED_PROVIDERS = new Set(["anthropic", "openai", "google"]);
+const APPLICATION_INFERENCE_PROFILE_ARN = /^arn:aws:bedrock:[a-z0-9-]+:\d{12}:application-inference-profile\/[a-z0-9]+$/;
 
 export async function loadBearMetalConfig(env: NodeJS.ProcessEnv = process.env): Promise<Readonly<BearMetalConfig>> {
   const configuredPath = env.BEAR_METAL_CONFIG_FILE?.trim();
@@ -89,6 +90,12 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
   nonEmptyString(llm.provider, "customizeTask result.llm.provider");
   if (!PROVIDERS.has(llm.provider as LlmProvider)) throw new Error(`customizeTask result.llm.provider: unsupported provider ${llm.provider}`);
   nonEmptyString(llm.model, "customizeTask result.llm.model");
+  if (llm.inferenceProfileArn !== undefined) {
+    if (llm.provider !== "amazon-bedrock") throw new Error("customizeTask result.llm.inferenceProfileArn is only supported for amazon-bedrock");
+    if (typeof llm.inferenceProfileArn !== "string" || !APPLICATION_INFERENCE_PROFILE_ARN.test(llm.inferenceProfileArn)) {
+      throw new Error("customizeTask result.llm.inferenceProfileArn must be a Bedrock application inference profile ARN");
+    }
+  }
   callable(customization.buildWorkspace, "customizeTask result.buildWorkspace");
   if (customization.additionalSystemPrompt !== undefined && customization.additionalSystemPrompt !== null && typeof customization.additionalSystemPrompt !== "string") {
     throw new Error("customizeTask result.additionalSystemPrompt must be a string or null");

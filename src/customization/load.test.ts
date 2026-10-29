@@ -89,5 +89,14 @@ describe("configuration validation", () => {
   it("requires an explicit supported customization shape", () => {
     expect(() => validateTaskCustomization({ llm: { provider: "anthropic", model: "model" }, buildWorkspace() {}, limits: { maxTokens: 0 } })).toThrow("maxTokens");
   });
+  it("accepts a Bedrock application inference profile ARN and rejects any other use of it", () => {
+    const customization = (llm: Record<string, unknown>) => ({ llm, buildWorkspace() {} });
+    const arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123def456";
+    expect(validateTaskCustomization(customization({ provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", inferenceProfileArn: arn })).llm.inferenceProfileArn).toBe(arn);
+    expect(() => validateTaskCustomization(customization({ provider: "anthropic", model: "claude-opus-5-5", inferenceProfileArn: arn }))).toThrow("customizeTask result.llm.inferenceProfileArn");
+    for (const invalid of ["", "us.anthropic.claude-sonnet-5-5", "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-5-5", 7]) {
+      expect(() => validateTaskCustomization(customization({ provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", inferenceProfileArn: invalid }))).toThrow("customizeTask result.llm.inferenceProfileArn");
+    }
+  });
   it("rejects empty resolved secrets", async () => await expect(resolveSecret(async () => "", "secret getter")).rejects.toThrow("non-empty"));
 });

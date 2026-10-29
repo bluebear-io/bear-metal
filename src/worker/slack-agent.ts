@@ -7,6 +7,7 @@ import type { DbClient } from "../db/client.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForResearchTask } from "./clone.js";
 import { CoordinatorWorkspaceCache } from "./coordinator-workspace.js";
+import { resolveSessionModel } from "./model.js";
 import { createAgentGatewayTools } from "./pi.js";
 import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
 import { AgentTraceWriter, redactTraceText, traceJson } from "./trace.js";
@@ -81,8 +82,7 @@ export async function runSlackAgent(input: {
     traceWriter.record("prompt", { text: redactTraceText(prompt) });
     const modelRuntime = await ModelRuntime.create();
     if (llm.apiKey) await modelRuntime.setRuntimeApiKey(llm.provider, llm.apiKey);
-    const model = modelRuntime.getModel(llm.provider, llm.model);
-    if (!model) throw new Error(`No model found for ${llm.provider}/${llm.model}`);
+    const model = resolveSessionModel(modelRuntime, llm);
     const gatewayTools = input.gateway
       ? createAgentGatewayTools(input.gateway, { taskId: input.task.id, runId: input.task.id, workspaceRoot: agentWorkdir })
         .filter((tool) => ["github_read", "linear_read", "slack_read", "web_get"].includes(tool.name))

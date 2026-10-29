@@ -198,7 +198,7 @@ async function runWorker(
     maxWorkerTokens: 1_000_000,
     llmProvider: "anthropic",
     llmApiKey: "test-key",
-    llmModel: "claude-opus-4-7",
+    llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
   });
 }
 

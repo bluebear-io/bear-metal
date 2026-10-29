@@ -134,7 +134,8 @@ export interface TaskPullRequest {
 }
 
 export interface TaskCustomization {
-  llm: { provider: LlmProvider; model: string };
+  /** `inferenceProfileArn` (amazon-bedrock only) runs `model` under a Bedrock application inference profile. */
+  llm: { provider: LlmProvider; model: string; inferenceProfileArn?: string };
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;
   additionalSystemPrompt?: string | null;
   limits?: { maxDurationMs?: number; maxTokens?: number };
@@ -146,4 +147,5 @@ export interface ResolvedLlm {
   provider: LlmProvider;
   model: string;
   apiKey: string | null;
+  inferenceProfileArn: string | null;
 }

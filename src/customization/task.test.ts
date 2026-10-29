@@ -36,11 +36,14 @@ describe("task customization", () => {
     const anthropic = vi.fn(() => "anthropic-secret"); const openai = vi.fn(() => "openai-secret");
     const config = { llmProviders: { anthropic: { getApiKey: anthropic }, openai: { getApiKey: openai } }, customizeTask: () => ({ llm: { provider: "openai", model: "gpt" }, async buildWorkspace() {} }) } as unknown as BearMetalConfig;
     const result = await customizeAndResolve(config, {} as never);
-    expect(result.llm).toEqual({ provider: "openai", model: "gpt", apiKey: "openai-secret" }); expect(anthropic).not.toHaveBeenCalled();
+    expect(result.llm).toEqual({ provider: "openai", model: "gpt", apiKey: "openai-secret", inferenceProfileArn: null }); expect(anthropic).not.toHaveBeenCalled();
   });
   it("uses ambient credentials for Bedrock without a registry entry", async () => {
     const config = { llmProviders: {}, customizeTask: () => ({ llm: { provider: "amazon-bedrock", model: "model" }, async buildWorkspace() {} }) } as unknown as BearMetalConfig;
-    await expect(customizeAndResolve(config, {} as never)).resolves.toMatchObject({ llm: { provider: "amazon-bedrock", model: "model", apiKey: null } });
+    await expect(customizeAndResolve(config, {} as never)).resolves.toMatchObject({ llm: { provider: "amazon-bedrock", model: "model", apiKey: null, inferenceProfileArn: null } });
+    const arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123def456";
+    const profiled = { llmProviders: {}, customizeTask: () => ({ llm: { provider: "amazon-bedrock", model: "model", inferenceProfileArn: arn }, async buildWorkspace() {} }) } as unknown as BearMetalConfig;
+    await expect(customizeAndResolve(profiled, {} as never)).resolves.toMatchObject({ llm: { provider: "amazon-bedrock", model: "model", apiKey: null, inferenceProfileArn: arn } });
   });
   it("explains that key-based providers need a credential getter", async () => {
     const config = { llmProviders: {}, customizeTask: () => ({ llm: { provider: "openai", model: "model" }, async buildWorkspace() {} }) } as unknown as BearMetalConfig;

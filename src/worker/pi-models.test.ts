@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import { resolveSessionModel } from "./model.js";
 
 describe("Pi model compatibility", () => {
   it("resolves upgraded coding and existing research models from the real SDK", async () => {
@@ -14,6 +15,18 @@ describe("Pi model compatibility", () => {
     ] as const) {
       expect(runtime.getModel(provider, id), `${provider}/${id}`).toMatchObject({ provider, id });
     }
+  });
+
+  it("runs a Bedrock catalog model under an application inference profile ARN", async () => {
+    const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
+    const arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123def456";
+    const catalog = runtime.getModel("amazon-bedrock", "us.anthropic.claude-sonnet-5-5");
+    expect(catalog).toBeDefined();
+    expect(resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", inferenceProfileArn: arn }))
+      .toEqual({ ...catalog, id: arn });
+    expect(resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", inferenceProfileArn: null })).toBe(catalog);
+    expect(() => resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "not-a-model", inferenceProfileArn: arn }))
+      .toThrow('No model found for provider "amazon-bedrock" / model "not-a-model"');
   });
 
   it("creates a real 5.5 session using the supplied runtime credentials and tool allowlist", async () => {
