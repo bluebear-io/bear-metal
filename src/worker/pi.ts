@@ -72,7 +72,7 @@ export async function runPiWorker(input: {
   /** Null for amazon-bedrock, which uses ambient AWS credentials instead of a key. */
   llmApiKey: string | null;
   llmModel: string;
-  llmInferenceProfileArn: string | null;
+  llmModelArn: string | null;
   pullRequestLabels?: readonly string[];
 }): Promise<DispatchResult> {
   input.signal?.throwIfAborted();
@@ -329,7 +329,7 @@ export async function runPiWorker(input: {
   } else if (input.llmProvider !== "amazon-bedrock") {
     throw new Error(`Missing API key for LLM provider "${input.llmProvider}"`);
   }
-  const model = resolveSessionModel(modelRuntime, { provider: input.llmProvider, model: input.llmModel, inferenceProfileArn: input.llmInferenceProfileArn });
+  const model = resolveSessionModel(modelRuntime, { provider: input.llmProvider, model: input.llmModel, modelArn: input.llmModelArn });
 
   const agentsMd = await readAgentsMd(workspaceRoot);
   const prompt = buildWorkerPrompt(input.context, {

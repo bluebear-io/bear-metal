@@ -95,7 +95,7 @@ describe("runPiWorker", () => {
     const result = await runPiWorker({
       context: makeContext(), github, linear, signal: controller.signal, gitEnv: {},
       maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
-      llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     }).catch((error: unknown) => error);
     expect(gitMock.push).not.toHaveBeenCalled();
     expect(result).toMatchObject({ message: "Task lease lost" });
@@ -114,7 +114,7 @@ describe("runPiWorker", () => {
     const result = runPiWorker({
       context: makeContext(), github: makeGithub(), linear, signal: controller.signal,
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000,
-      llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     }).catch((error: unknown) => error);
     await vi.waitFor(() => expect(started).toBe(true));
     controller.abort(new Error("Task lease lost"));
@@ -153,7 +153,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -185,7 +185,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -212,7 +212,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    const result = await runPiWorker({ context, github, linear, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[0],
@@ -240,7 +240,7 @@ describe("runPiWorker", () => {
       // agent calls no finish tool — disagree-only, no code changes
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(result).toEqual({ status: "done", prs: context.prs });
   });
@@ -282,7 +282,7 @@ describe("runPiWorker", () => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-2", text: "Question 2." });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(github.replyToReviewThread).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ status: "pending", prs: context.prs });
@@ -305,7 +305,7 @@ describe("runPiWorker", () => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Blocked here." });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(result).toMatchObject({ status: "pending", prs: context.prs });
   });
@@ -327,7 +327,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    const result = await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(result.status).toBe("pending");
     expect(result.prs).toEqual(context.prs);
@@ -355,7 +355,7 @@ describe("runPiWorker", () => {
       await executeTool(customTools, "respond_to_comment_writer", { threadId: "thread-1", text: "Question." });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(github.replyToReviewThread).toHaveBeenCalledWith(
       context.prs[1],
@@ -389,7 +389,7 @@ describe("runPiWorker", () => {
       }
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).toMatch(/Unknown comment id/);
@@ -410,7 +410,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
     expect(github.resolveReviewThread).not.toHaveBeenCalled();
@@ -433,7 +433,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(github.leaveComment).toHaveBeenCalledWith(
       context.prs[0],
@@ -458,7 +458,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(commentStore.markCompleted).toHaveBeenCalledWith(context.prs[0], "IC_abc123");
     expect(github.resolveReviewThread).not.toHaveBeenCalled();
@@ -479,7 +479,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    await runPiWorker({ context, github, linear: makeLinear(), commentStore, gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(github.resolveReviewThread).toHaveBeenCalledWith("thread-1");
     expect(commentStore.markCompleted).not.toHaveBeenCalled();
@@ -498,7 +498,7 @@ describe("runPiWorker", () => {
       context: makeContext({ state: "new" }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(registeredNames).toContain("respond_to_ticket_reporter");
@@ -543,7 +543,7 @@ describe("runPiWorker", () => {
       agentToolGateway: { availableTools: () => ["github_read", "slack_read", "web_get"], execute },
       runId: "run-123",
       onAgentStarted: (payload) => { prompt = payload.prompt; },
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(execute).toHaveBeenCalledWith(
@@ -577,7 +577,7 @@ describe("runPiWorker", () => {
       github,
       linear,
       onAgentStarted: (payload) => { prompt = payload.prompt; },
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(registeredNames).toContain("agree_with_github_message");
@@ -607,7 +607,7 @@ describe("runPiWorker", () => {
       context: makeContext({ prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
       github: makeGithub(),
       linear,
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(linear.moveTicketToInReview).toHaveBeenCalledWith("ABC-1");
@@ -632,7 +632,7 @@ describe("runPiWorker", () => {
       context: makeContext({ state: "iteration", prs }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(result).toMatchObject({ status: "done", notifyOnComplete: true, prs });
@@ -662,7 +662,7 @@ describe("runPiWorker", () => {
 
     const result = await runPiWorker({
       context: makeContext(), github, linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(github.createPullRequest).toHaveBeenCalledTimes(2);
@@ -692,7 +692,7 @@ describe("runPiWorker", () => {
       maxWorkerTokens: 20_000_000,
       llmProvider: "anthropic",
       llmApiKey: "test-key",
-      llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      llmModel: "claude-opus-4-7", llmModelArn: null,
       pullRequestLabels: ["my-label"],
     });
 
@@ -715,7 +715,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(result.notifyOnComplete).toBe(true);
     expect(result.prs).toEqual([{ owner: "acme", repo: "widgets", number: 42 }]);
@@ -739,7 +739,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(result.notifyOnComplete).toBe(true);
@@ -758,7 +758,7 @@ describe("runPiWorker", () => {
       });
     });
 
-    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null });
+    const result = await runPiWorker({ context: makeContext(), github, linear: makeLinear(), gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null });
 
     expect(result.notifyOnComplete).toBe(true);
   });
@@ -785,7 +785,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(result.notifyOnComplete).toBe(true);
@@ -836,7 +836,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(result.notifyOnComplete).toBe(true);
@@ -863,7 +863,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(result.notifyOnComplete).toBe(true);
@@ -893,7 +893,7 @@ describe("runPiWorker", () => {
       }),
       github: makeGithub(),
       linear: makeLinear(),
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(result.notifyOnComplete).toBe(true);
@@ -911,7 +911,7 @@ describe("runPiWorker", () => {
         ...makeLinear(),
         commentAndHandBack,
       },
-      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmInferenceProfileArn: null,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
     expect(commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("Need a product decision."));
@@ -932,7 +932,7 @@ describe("runPiWorker", () => {
         maxWorkerTokens: 20_000_000,
         llmProvider: "amazon-bedrock",
         llmApiKey: null,
-          llmModel: "us.anthropic.claude-opus-4-6-v1", llmInferenceProfileArn: null,
+          llmModel: "us.anthropic.claude-opus-4-6-v1", llmModelArn: null,
       });
 
       expect(piMock.setRuntimeApiKey).not.toHaveBeenCalled();
@@ -955,7 +955,7 @@ describe("runPiWorker", () => {
           maxWorkerTokens: 20_000_000,
           llmProvider: "anthropic",
           llmApiKey: null,
-          llmModel: "us.anthropic.claude-opus-4-6-v1", llmInferenceProfileArn: null,
+          llmModel: "us.anthropic.claude-opus-4-6-v1", llmModelArn: null,
         }),
       ).rejects.toThrow(/Missing API key for LLM provider "anthropic"/);
     });

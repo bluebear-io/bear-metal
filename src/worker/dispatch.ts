@@ -103,7 +103,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   });
   const { customization, llm } = await customizeAndResolve(input.config, task);
   input.signal?.throwIfAborted();
-  logger.info({ ticketId, provider: llm.provider, model: llm.model, inferenceProfileArn: llm.inferenceProfileArn }, "selected task LLM");
+  logger.info({ ticketId, provider: llm.provider, model: llm.model, modelArn: llm.modelArn }, "selected task LLM");
 
   await mkdir(workspaceDir, { recursive: true });
   input.onWorkspaceBuilding?.();
@@ -177,7 +177,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       llmProvider: llm.provider,
       llmApiKey: llm.apiKey,
       llmModel: llm.model,
-      llmInferenceProfileArn: llm.inferenceProfileArn,
+      llmModelArn: llm.modelArn,
       prs,
     });
     logger.info({ ticketId, status: result.status }, "pi worker session completed");

@@ -17,15 +17,15 @@ describe("Pi model compatibility", () => {
     }
   });
 
-  it("runs a Bedrock catalog model under an application inference profile ARN", async () => {
+  it("runs a Bedrock catalog model under a model ARN", async () => {
     const runtime = await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false });
     const arn = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123def456";
     const catalog = runtime.getModel("amazon-bedrock", "us.anthropic.claude-sonnet-5-5");
     expect(catalog).toBeDefined();
-    expect(resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", inferenceProfileArn: arn }))
+    expect(resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", modelArn: arn }))
       .toEqual({ ...catalog, id: arn });
-    expect(resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", inferenceProfileArn: null })).toBe(catalog);
-    expect(() => resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "not-a-model", inferenceProfileArn: arn }))
+    expect(resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "us.anthropic.claude-sonnet-5-5", modelArn: null })).toBe(catalog);
+    expect(() => resolveSessionModel(runtime, { provider: "amazon-bedrock", model: "not-a-model", modelArn: arn }))
       .toThrow('No model found for provider "amazon-bedrock" / model "not-a-model"');
   });
 

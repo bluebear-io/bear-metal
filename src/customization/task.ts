@@ -52,7 +52,7 @@ export async function customizeAndResolve(config: BearMetalConfig, task: Task): 
   const customization = validateTaskCustomization(await config.customizeTask(task));
   const provider = customization.llm.provider;
   if (provider === "amazon-bedrock") {
-    return { customization, llm: { provider, model: customization.llm.model, apiKey: null, inferenceProfileArn: customization.llm.inferenceProfileArn ?? null } };
+    return { customization, llm: { provider, model: customization.llm.model, apiKey: null, modelArn: customization.llm.modelArn ?? null } };
   }
   const definition = config.llmProviders[provider];
   if (!definition) {
@@ -60,7 +60,7 @@ export async function customizeAndResolve(config: BearMetalConfig, task: Task): 
     throw new Error(`customizeTask selected unconfigured LLM provider "${provider}". ${fix}`);
   }
   const apiKey = await resolveSecret(definition.getApiKey, `config.llmProviders.${provider}.getApiKey result`);
-  return { customization, llm: { provider, model: customization.llm.model, apiKey, inferenceProfileArn: null } };
+  return { customization, llm: { provider, model: customization.llm.model, apiKey, modelArn: null } };
 }
 
 function normalizeStatus(value: string): TaskStatusCategory {
