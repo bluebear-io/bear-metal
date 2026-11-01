@@ -64,6 +64,7 @@ export async function runSlackAgent(input: {
   try {
     await input.db.startAgentRun(input.task, null, null);
     runStarted = true;
+    const ownerEmail = await resolveOwnerEmail(input.owner);
     const { customization, llm } = await customizeAndResolve(input.config, input.task);
     await input.db.setAgentRunModel(input.task.id, llm.provider, llm.model);
     if (input.task.type === "research") {
@@ -104,7 +105,7 @@ export async function runSlackAgent(input: {
       model,
       tools: customTools.map((tool) => tool.name),
       customTools,
-      ownerEmail: await resolveOwnerEmail(input.owner),
+      ownerEmail,
     });
     const session = runtime.session;
     let limitError: Error | null = null;
@@ -201,8 +202,6 @@ export async function runSlackAgent(input: {
   }
 }
 
-// BlueBear decides who owns a session without an owner, so a sender without a resolvable email
-// leaves the session unowned instead of failing the run.
 // A bot sender or no sender has no owner; a failed lookup fails the run.
 async function resolveOwnerEmail(owner: { slackUserId: string | null; directory: SlackUserDirectory } | undefined): Promise<string | null> {
   if (!owner?.slackUserId) return null;
