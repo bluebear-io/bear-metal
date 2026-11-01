@@ -6,7 +6,7 @@ import type { BearMetalConfig, Task } from "../customization/types.js";
 import type { DbClient, SlackTaskRecord, SlackThreadKey } from "../db/client.js";
 import type { GitHubIntegration } from "../shared/integrations/github/client.js";
 import type { Logger } from "../shared/logger.js";
-import { runSlackAgent } from "../worker/slack-agent.js";
+import { runSlackAgent, type SlackUserDirectory } from "../worker/slack-agent.js";
 
 export class SlackResearchWorker {
   private readonly queue = new PQueue({ concurrency: 2 });
@@ -16,6 +16,7 @@ export class SlackResearchWorker {
   constructor(private readonly input: {
     db: DbClient;
     github: GitHubIntegration;
+    slackUsers: SlackUserDirectory;
     config: BearMetalConfig;
     gateway?: AgentToolGatewayLike;
     logger: Logger;
@@ -101,6 +102,7 @@ export class SlackResearchWorker {
     };
     await (this.input.runAgent ?? runSlackAgent)({
       task: customizationTask,
+      owner: { slackUserId: task.sourceUserId, directory: this.input.slackUsers },
       db: this.input.db,
       config: this.input.config,
       githubToken: await this.input.github.getInstallationToken(),

@@ -31,8 +31,14 @@ function coordinatorWorkspaceFor(config: BearMetalConfig): CoordinatorWorkspaceC
   return cache;
 }
 
+export interface SlackUserDirectory {
+  findUserEmail(userId: string): Promise<string | null>;
+}
+
 export async function runSlackAgent(input: {
   task: Task;
+  /** The Slack user whose message the session answers; BlueBear reports their email as its owner. */
+  owner?: { slackUserId: string | null; directory: SlackUserDirectory };
   prompt: string;
   config: BearMetalConfig;
   db: DbClient;
@@ -98,6 +104,7 @@ export async function runSlackAgent(input: {
       model,
       tools: customTools.map((tool) => tool.name),
       customTools,
+      ownerEmail: await resolveOwnerEmail(input.owner),
     });
     const session = runtime.session;
     let limitError: Error | null = null;
@@ -192,4 +199,12 @@ export async function runSlackAgent(input: {
       }
     }
   }
+}
+
+// BlueBear decides who owns a session without an owner, so a sender without a resolvable email
+// leaves the session unowned instead of failing the run.
+// A bot sender or no sender has no owner; a failed lookup fails the run.
+async function resolveOwnerEmail(owner: { slackUserId: string | null; directory: SlackUserDirectory } | undefined): Promise<string | null> {
+  if (!owner?.slackUserId) return null;
+  return await owner.directory.findUserEmail(owner.slackUserId);
 }

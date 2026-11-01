@@ -123,6 +123,27 @@ describe("runPiWorker extensions", () => {
     expect(reasons).toEqual(["quit"]);
   });
 
+  it.each([
+    { assignee: { id: "creator", email: "owner@example.com" }, want: [{ email: "owner@example.com" }] },
+    { assignee: { id: "creator" }, want: [] },
+    { assignee: null, want: [] },
+  ])("gives extensions the ticket assignee as the BlueBear owner ($want)", async ({ assignee, want }) => {
+    const owners: unknown[][] = [];
+    const factory: ExtensionFactory = (pi) => {
+      pi.on("session_start", (_event, ctx) => {
+        owners.push(ctx.sessionManager.getEntries()
+          .filter((entry) => entry.type === "custom" && entry.customType === "bluebear-owner")
+          .map((entry) => (entry.type === "custom" ? entry.data : undefined)));
+      });
+    };
+    harness.extensionFactories = [factory];
+
+    const result = await runWorker(workspaceRoot, root, { assignee });
+
+    expect(result.status).toBe("pending");
+    expect(owners).toEqual([want]);
+  });
+
   it("logs extension errors through the worker logger", async () => {
     const factory: ExtensionFactory = (pi) => {
       pi.on("session_start", () => {
@@ -186,11 +207,13 @@ describe("runPiWorker extensions", () => {
 async function runWorker(
   workspaceRoot: string,
   workspaceDir: string,
-  options: { maxWorkerTimeMs?: number; linear?: unknown } = {},
+  options: { maxWorkerTimeMs?: number; linear?: unknown; assignee?: WorkerInputContext["ticket"]["issue"]["assignee"] } = {},
 ) {
   const { runPiWorker } = await import("./pi.js");
+  const context = makeContext(workspaceRoot, workspaceDir);
+  if (options.assignee !== undefined) context.ticket.issue.assignee = options.assignee;
   return runPiWorker({
-    context: makeContext(workspaceRoot, workspaceDir),
+    context,
     github: {} as never,
     linear: (options.linear ?? { commentAndHandBack: vi.fn(async () => {}), moveTicketToInReview: vi.fn(async () => {}) }) as never,
     gitEnv: {},

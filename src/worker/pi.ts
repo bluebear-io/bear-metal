@@ -380,6 +380,7 @@ export async function runPiWorker(input: {
       ...stateCustomTools,
       ...agentTools,
     ],
+    ownerEmail: input.context.ticket.issue.assignee?.email,
   });
   const session = runtime.session;
   const unsubscribe = session.subscribe((event) => {
