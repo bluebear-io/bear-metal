@@ -39,7 +39,6 @@ export class TaskWorker {
   private readonly pollIntervalMs: number;
   private readonly config: BearMetalConfig;
   private readonly runDispatch: DispatchRunner;
-  private readonly startedAtMs: number;
   private readonly heartbeatIntervalMs: number;
   private readonly maxReclaims: number;
   private readonly agentId: string | undefined;
@@ -55,7 +54,6 @@ export class TaskWorker {
     this.pollIntervalMs = deps.pollIntervalMs;
     this.config = deps.config;
     this.runDispatch = deps.runDispatch ?? dispatch;
-    this.startedAtMs = Date.now();
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs;
     this.maxReclaims = deps.maxReclaims;
     this.agentId = deps.agentId;
