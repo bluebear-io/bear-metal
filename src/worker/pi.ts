@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -299,7 +299,6 @@ export async function runPiWorker(input: {
         collectedPrs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
         input.context.prs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
         null;
-      const isNewPr = existingPr === null;
       input.signal?.throwIfAborted();
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote, signal: input.signal }));
       input.signal?.throwIfAborted();
@@ -565,87 +564,6 @@ export async function runPiWorker(input: {
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
 }
 
-/**
- * Walk the pi session message history and build a flat, ordered list of tool calls. Each
- * assistant `tool_use` block becomes a step; its matching user `tool_result` block (paired by
- * id) supplies the result body and status. Assistant text emitted in the same turn as a
- * tool_use is attached as the step's `thoughtText`.
- *
- * The function is defensive about shape because the upstream message format isn't typed in
- * this file: malformed entries are skipped rather than crashing the worker.
- */
-function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] {
-  // Pass 1: index results by id. SDK uses role:"toolResult"; Anthropic wire format uses role:"user" + tool_result blocks.
-  const resultsById = new Map<string, { text: string; status: "ok" | "error" }>();
-  for (const msg of messages) {
-    if (!isRecord(msg)) continue;
-
-    if (msg.role === "toolResult") {
-      const id = typeof msg.toolCallId === "string" ? msg.toolCallId : null;
-      if (!id) continue;
-      const text = renderResultContent((msg as { content: unknown }).content);
-      const status: "ok" | "error" = msg.isError === true ? "error" : "ok";
-      resultsById.set(id, { text, status });
-      continue;
-    }
-
-    if (msg.role === "user") {
-      for (const block of contentBlocks(msg as { content: unknown })) {
-        if (!isRecord(block) || block.type !== "tool_result") continue;
-        const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
-        if (!id) continue;
-        const text = renderResultContent(block.content);
-        const status: "ok" | "error" = block.is_error === true ? "error" : "ok";
-        resultsById.set(id, { text, status });
-      }
-    }
-  }
-
-  // Pass 2: emit steps in order. SDK uses type:"toolCall"+arguments; wire format uses type:"tool_use"+input.
-  const steps: DispatchToolCall[] = [];
-  let sequence = 0;
-  for (const msg of messages) {
-    if (!isRecord(msg) || msg.role !== "assistant") continue;
-    const blocks = contentBlocks(msg as { content: unknown });
-    const thought = blocks
-      .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && b.text.length > 0)
-      .map((b) => (b as { text: string }).text)
-      .join("\n")
-      .trim() || null;
-    for (const block of blocks) {
-      if (!isRecord(block)) continue;
-      if (block.type !== "toolCall" && block.type !== "tool_use") continue;
-      const id = typeof block.id === "string" && block.id.length > 0
-        ? block.id
-        : `tc_${sequence}`;
-      const toolName = typeof block.name === "string" ? block.name : "unknown";
-      const args = block.arguments !== undefined ? block.arguments : block.input;
-      const argsJson = safeStringify(args);
-      const result = resultsById.get(id) ?? null;
-      const rawResult = result?.text ?? null;
-      const outputSize = rawResult === null ? null : rawResult.length;
-      const truncated = rawResult === null
-        ? null
-        : rawResult.length > MAX_TOOL_CALL_RESULT_CHARS
-          ? `${rawResult.slice(0, MAX_TOOL_CALL_RESULT_CHARS)}… [truncated, ${rawResult.length - MAX_TOOL_CALL_RESULT_CHARS} more chars]`
-          : rawResult;
-      steps.push({
-        id,
-        sequence,
-        toolName,
-        argsJson,
-        resultText: truncated,
-        resultStatus: result === null ? "unknown" : result.status,
-        outputSize,
-        thoughtText: thought,
-        createdAt: Date.now(),
-      });
-      sequence += 1;
-    }
-  }
-  return steps;
-}
-
 /** Render a `tool_result.content` value to a flat string. Accepts either a string or an array of text blocks. */
 function renderResultContent(content: unknown): string {
   if (typeof content === "string") return content;
@@ -667,10 +585,6 @@ function renderResultContent(content: unknown): string {
 
 function contentBlocks(msg: { content: unknown }): unknown[] {
   return Array.isArray(msg.content) ? msg.content : [];
-}
-
-function isMessage(v: unknown): v is { role: string; content: unknown } {
-  return isRecord(v) && typeof v.role === "string";
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
