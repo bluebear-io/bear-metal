@@ -89,6 +89,13 @@ describe("configuration validation", () => {
   it("requires an explicit supported customization shape", () => {
     expect(() => validateTaskCustomization({ llm: { provider: "anthropic", model: "model" }, buildWorkspace() {}, limits: { maxTokens: 0 } })).toThrow("maxTokens");
   });
+  it("accepts only known agent tool names", () => {
+    const customization = (tools: unknown) => ({ llm: { provider: "anthropic", model: "model" }, buildWorkspace() {}, tools });
+    expect(validateTaskCustomization(customization(["read", "commit_changes", "push_for_review"])).tools).toEqual(["read", "commit_changes", "push_for_review"]);
+    expect(validateTaskCustomization(customization([])).tools).toEqual([]);
+    expect(() => validateTaskCustomization(customization(["read", "rm_rf"]))).toThrow("customizeTask result.tools: unknown tool rm_rf");
+    expect(() => validateTaskCustomization(customization("read"))).toThrow("customizeTask result.tools must be an array");
+  });
   it("accepts any Bedrock ARN as modelArn and rejects any other use of it", () => {
     const customization = (llm: Record<string, unknown>) => ({ llm, buildWorkspace() {} });
     const model = "us.anthropic.claude-sonnet-5-5";

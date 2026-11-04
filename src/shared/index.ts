@@ -3,6 +3,7 @@ export { redactCredentials } from "./redaction.js";
 export type { JsonValue } from "./json.js";
 export {
   push,
+  commitAll,
   getCurrentBranch,
   getRemoteRef,
   parseGitHubRemote,

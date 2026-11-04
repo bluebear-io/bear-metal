@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { BearMetalConfig, LlmProvider, SecretGetter, TaskCustomization } from "./types.js";
+import { AGENT_TOOL_CHOICES, type BearMetalConfig, type LlmProvider, type SecretGetter, type TaskCustomization } from "./types.js";
 
 const ALLOWED_EXTENSIONS = [".js", ".mjs", ".ts", ".mts"] as const;
 const PROVIDERS = new Set<LlmProvider>(["anthropic", "openai", "google", "amazon-bedrock"]);
@@ -106,6 +106,11 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
   }
   if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
   if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");
+  if (customization.tools !== undefined) {
+    for (const tool of stringArray(customization.tools, "customizeTask result.tools")) {
+      if (!(AGENT_TOOL_CHOICES as readonly string[]).includes(tool)) throw new Error(`customizeTask result.tools: unknown tool ${tool}`);
+    }
+  }
   return value as TaskCustomization;
 }
 

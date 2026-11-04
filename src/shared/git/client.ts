@@ -29,6 +29,24 @@ export async function push(repoRoot: string, env: NodeJS.ProcessEnv): Promise<vo
   await git(["push", "-u", "origin", "HEAD"], repoRoot, env);
 }
 
+/** Switches to `branch` (creating it when missing), stages every change and commits it. Returns the commit SHA. */
+export async function commitAll(repoRoot: string, branch: string, message: string, env: NodeJS.ProcessEnv): Promise<string> {
+  if (branch === "main" || branch === "master") {
+    throw new Error(`Refusing to commit task changes directly on ${branch}; name a task branch`);
+  }
+  await git(["check-ref-format", "--branch", branch], repoRoot, env);
+  const current = (await git(["branch", "--show-current"], repoRoot, env)).stdout.trim();
+  if (current !== branch) {
+    const exists = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repoRoot, env).then(() => true, () => false);
+    await git(exists ? ["switch", branch] : ["switch", "-c", branch], repoRoot, env);
+  }
+  await git(["add", "-A"], repoRoot, env);
+  const staged = (await git(["diff", "--cached", "--name-only"], repoRoot, env)).stdout.trim();
+  if (!staged) throw new Error(`commit_changes called but ${repoRoot} has no changes to commit`);
+  await git(["commit", "-m", message], repoRoot, env);
+  return (await git(["rev-parse", "HEAD"], repoRoot, env)).stdout.trim();
+}
+
 export async function getCurrentBranch(repoRoot: string): Promise<string> {
   return (await git(["branch", "--show-current"], repoRoot)).stdout.trim();
 }
