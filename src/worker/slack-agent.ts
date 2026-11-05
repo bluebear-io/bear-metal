@@ -2,6 +2,7 @@ import { rm } from "node:fs/promises";
 import { ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { customizeAndResolve } from "../customization/task.js";
+import { narrowTools } from "../customization/tools.js";
 import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig, type Task } from "../customization/types.js";
 import type { DbClient } from "../db/client.js";
 import { createLogger } from "../shared/index.js";
@@ -83,15 +84,17 @@ export async function runSlackAgent(input: {
     const modelRuntime = await ModelRuntime.create();
     if (llm.apiKey) await modelRuntime.setRuntimeApiKey(llm.provider, llm.apiKey);
     const model = resolveSessionModel(modelRuntime, llm);
-    const roleAllows = (name: string) => customization.tools === undefined || (customization.tools as readonly string[]).includes(name);
     const gatewayTools = input.gateway
-      ? createAgentGatewayTools(input.gateway, { taskId: input.task.id, runId: input.task.id, workspaceRoot: agentWorkdir })
-        .filter((tool) => ["github_read", "linear_read", "slack_read", "web_get"].includes(tool.name) && roleAllows(tool.name))
+      ? narrowTools(createAgentGatewayTools(input.gateway, { taskId: input.task.id, runId: input.task.id, workspaceRoot: agentWorkdir })
+        .filter((tool) => ["github_read", "linear_read", "slack_read", "web_get"].includes(tool.name)), customization.tools)
       : [];
     const allowedWorkspaceTools = input.task.type === "research"
       ? ["read", "bash", "grep", "find", "ls"]
       : ["read", "grep", "find", "ls"];
-    const fileTools = createWorkspaceGuardedTools(agentWorkdir).filter((tool) => allowedWorkspaceTools.includes(tool.name) && roleAllows(tool.name));
+    const fileTools = narrowTools(
+      createWorkspaceGuardedTools(agentWorkdir).filter((tool) => allowedWorkspaceTools.includes(tool.name)),
+      customization.tools,
+    );
     const customTools = [...input.tools, ...gatewayTools, ...fileTools];
     const runtime = await createPiSessionRuntime({
       cwd: agentWorkdir,

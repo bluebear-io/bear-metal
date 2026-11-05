@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { narrowTools } from "../customization/tools.js";
 import type { AgentToolChoice } from "../customization/types.js";
 import {
   push,
@@ -35,6 +36,15 @@ import type {
 import { SLACK_READ_OPERATIONS } from "../agent-tools/slack-read.js";
 import { redactCredentials, redactSensitiveText } from "../agent-tools/transport.js";
 import { redactTraceText, traceText } from "./trace.js";
+
+// Tools that end or hand back a task; a role's tool list never removes them, or the task could not finish.
+const HAND_BACK_TOOLS: ReadonlySet<string> = new Set([
+  "respond_to_ticket_reporter",
+  "agree_with_github_message",
+  "disagree_with_github_message",
+  "respond_to_comment_writer",
+  "mark_github_message_completed",
+]);
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -369,10 +379,7 @@ export async function runPiWorker(input: {
     ...stateCustomTools,
     ...agentTools,
   ];
-  const customTools = input.allowedTools === undefined
-    ? allTools
-    : allTools.filter((tool) => (input.allowedTools as readonly string[]).includes(tool.name)
-      || (stateCustomTools.some((stateTool) => stateTool.name === tool.name) && tool.name !== "push_for_review"));
+  const customTools = narrowTools(allTools, input.allowedTools, HAND_BACK_TOOLS);
   const toolNames = customTools.map((tool) => tool.name);
 
   const agentsMd = await readAgentsMd(workspaceRoot);

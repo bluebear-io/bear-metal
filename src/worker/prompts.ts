@@ -2,10 +2,16 @@ import type { PullRequestContext, ReviewThread } from "../shared/index.js";
 import type { IssueComment } from "../shared/integrations/github/types.js";
 import type { WorkerInputContext } from "./types.js";
 
-export function buildWorkerPrompt(
-  context: WorkerInputContext,
-  opts?: { repoRoot?: string; agentsMd?: string; customSystemPrompt?: string; hasAgentTools?: boolean; allowedTools?: readonly string[] },
-): string {
+export interface WorkerPromptOptions {
+  repoRoot?: string;
+  agentsMd?: string;
+  customSystemPrompt?: string;
+  hasAgentTools?: boolean;
+  /** Set when a role narrowed the tools: the names the agent actually has. */
+  allowedTools?: readonly string[];
+}
+
+export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerPromptOptions): string {
   const isNew = context.state === "new";
   const repoRoot = opts?.repoRoot ?? context.cloneScript.workspaceDir;
 
