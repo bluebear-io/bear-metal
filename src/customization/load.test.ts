@@ -45,6 +45,17 @@ describe("configuration validation", () => {
     expect(validateBearMetalConfig({ ...config, agentIntegrations: { linear: config.agentIntegrations.linear } }).agentIntegrations?.linear).toBeDefined();
     expect(validateBearMetalConfig({ ...config, agentIntegrations: { slack: config.agentIntegrations.slack } }).agentIntegrations?.slack).toBeDefined();
   });
+  it("validates Slack customer intake settings", () => {
+    const intake = { channelNamePattern: /^customer_.+$/, triggerReaction: "bear_paw_seen", ownerEmail: "owner@example.com" };
+    const slack = { notificationChannel: "C1", getBotToken: () => "token", getSigningSecret: () => "secret" };
+    const withIntake = (overrides: object, slackOverrides: object = {}) => ({ ...valid(), slack: { ...slack, ...slackOverrides, customerIntake: { ...intake, ...overrides } } });
+    expect(validateBearMetalConfig(withIntake({})).slack?.customerIntake?.triggerReaction).toBe("bear_paw_seen");
+    expect(() => validateBearMetalConfig(withIntake({ channelNamePattern: "^customer_" }))).toThrow("channelNamePattern must be a RegExp");
+    expect(() => validateBearMetalConfig(withIntake({ channelNamePattern: /customer_/g }))).toThrow("must not use the g or y flag");
+    expect(() => validateBearMetalConfig(withIntake({ triggerReaction: ":bear_paw_seen:" }))).toThrow("emoji name without colons");
+    expect(() => validateBearMetalConfig(withIntake({ ownerEmail: "owner" }))).toThrow("ownerEmail must be an email address");
+    expect(() => validateBearMetalConfig(withIntake({}, { getSigningSecret: undefined }))).toThrow("requires config.slack.getSigningSecret");
+  });
   it("validates credentials for each configured agent integration", () => {
     const config = valid();
     expect(() => validateBearMetalConfig({ ...config, agentIntegrations: { ...config.agentIntegrations, slack: {} } })).toThrow("config.agentIntegrations.slack.getBotToken");

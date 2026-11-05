@@ -94,6 +94,50 @@ describe("Slack event intake", () => {
     }
   });
 
+  it("records each member's intake reaction once and ignores other reactions", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const wakeIntake = vi.fn();
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({
+      db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }),
+      wake: async () => {}, customerIntake: { triggerReaction: "bear_paw_seen", wake: wakeIntake },
+    }));
+    const send = async (event: object) => {
+      const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
+      return request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text);
+    };
+    const reaction = { type: "reaction_added", user: "U1", reaction: "bear_paw_seen", item: { type: "message", channel: "C1", ts: "400.1" } };
+    try {
+      expect((await send(reaction)).status).toBe(200);
+      expect((await send(reaction)).status).toBe(200);
+      expect((await send({ ...reaction, reaction: "eyes" })).status).toBe(200);
+      expect((await send({ ...reaction, item: { type: "file", file: "F1" } })).status).toBe(200);
+      expect(await db.listPendingSlackIntakeReactions()).toEqual([{ workspaceId: "T1", channelId: "C1", messageTs: "400.1", reactorUserId: "U1" }]);
+      expect(wakeIntake).toHaveBeenCalledTimes(1);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("ignores intake reactions when customer intake is not configured", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }), wake: async () => {} }));
+    const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event: {
+      type: "reaction_added", user: "U1", reaction: "bear_paw_seen", item: { type: "message", channel: "C1", ts: "400.1" },
+    } });
+    try {
+      expect((await request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text)).status).toBe(200);
+      expect(await db.listPendingSlackIntakeReactions()).toEqual([]);
+    } finally {
+      await db.close();
+    }
+  });
+
   it("activates every threaded DM and rejects unsigned requests", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();

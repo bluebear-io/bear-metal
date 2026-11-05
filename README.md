@@ -366,15 +366,16 @@ The table lists the complete scope set for the main app with all supported Slack
 | `chat:write` | Send ticket/coding notifications or interactive replies, including DMs |
 | `chat:write.public` | Send notifications to public channels the bot has not joined; omit when it joins every destination |
 | `channels:history` | Read public-channel messages and threads; receive `message.channels` |
-| `channels:read` | Discover public channels and read their basic information through Slack read tools |
+| `channels:read` | Discover public channels and read their basic information through Slack read tools; find customer intake channels |
 | `groups:history` | Read private-channel messages and threads; receive `message.groups` |
-| `groups:read` | Discover private channels and read their basic information through Slack read tools |
+| `groups:read` | Discover private channels and read their basic information through Slack read tools; find private customer intake channels |
 | `im:history` | Read one-to-one DMs and their threads; receive `message.im` |
 | `im:read` | Discover one-to-one DM conversations and read their basic information |
 | `mpim:history` | Read group-DM messages and threads; receive `message.mpim` |
 | `mpim:read` | Discover group-DM conversations and read their basic information |
 | `files:read` | Search and download Slack files for coordinator/research context |
 | `files:write` | Upload full research results as Markdown attachments when a summary is provided for an answer longer than 500 characters; [Slack upload APIs require this scope](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/) |
+| `reactions:read` | Receive `reaction_added` for customer intake |
 | `reactions:write` | Add the 👍 acknowledgment after unsubscribe; [required by `reactions.add`](https://docs.slack.dev/reference/methods/reactions.add/) |
 | `users:read` | Read user profiles/lists and resolve a Slack requester's identity for ticket creation |
 | `users:read.email` | Read requester email for Slack-to-Linear ticket assignment and look up a ticket requester's Slack user for DM notifications |
@@ -391,7 +392,7 @@ Read scopes do not bypass conversation membership or workspace policy. Invite th
 
 #### Interactive bot events
 
-Notifications and the coding-agent read-only app require none of these subscriptions. For the full interactive setup, subscribe to all five under **Event Subscriptions → Subscribe to bot events**; for a narrower setup, select the conversation types you use. Slack may add a required scope when you subscribe; approve it by reinstalling.
+Notifications and the coding-agent read-only app require none of these subscriptions. For the full interactive setup, subscribe to the five message events, plus `reaction_added` for customer intake, under **Event Subscriptions → Subscribe to bot events**; for a narrower setup, select the conversation types you use. Slack may add a required scope when you subscribe; approve it by reinstalling.
 
 | Bot event | Required scope | When needed |
 | --- | --- | --- |
@@ -400,6 +401,7 @@ Notifications and the coding-agent read-only app require none of these subscript
 | `message.groups` | `groups:history` | Receive subsequent private-channel messages, edits and deletions in followed threads |
 | `message.im` | `im:history` | Receive one-to-one DM requests, threaded replies, edits and deletions |
 | `message.mpim` | `mpim:history` | Receive group-DM message events; [Slack's event reference](https://docs.slack.dev/reference/events/message.mpim/) describes this separate conversation type |
+| `reaction_added` | `reactions:read` | Receive customer intake reactions; needed only with `slack.customerIntake` |
 
 Group DMs are not treated as one-to-one DMs: `message.mpim` alone does not activate an unfollowed conversation. Only `app_mention` events and one-to-one `message.im` events activate following; ordinary messages are processed only in already-followed threads.
 
@@ -416,6 +418,21 @@ Every coordinator reply group, including clarifications and task acknowledgments
 Ask Bear Metal to stop bothering or following a thread to unsubscribe. The harness adds a 👍 reaction to the source message only after successful unsubscription, with no text acknowledgment. Reaction delivery is persisted with unsubscription. Transient failures remain pending for retry even while the thread is unfollowed, including after a restart. Permanent rejections are stored as failed with their error and logged visibly. Reaction failures never block resumed conversations. Stops sent as message edits react to the original Slack message. This requires [`reactions:write`](https://docs.slack.dev/reference/methods/reactions.add/). Following is stored durably; no further task messages or late research results from that subscription are posted. Work already started continues. A later channel mention or DM resumes following from the first such message after the stop request, skipping intervening ordinary messages and old task results. Automatic unsubscribe after ignored messages is deferred.
 
 When Slack rejects a reply with `is_archived`, coordination stops durably for all followed threads in that workspace's channel. The rejection is logged; tasks and research are retained, no reply is marked delivered, and no unsubscribe reaction is generated. If saving the suspension fails, the database error is logged and a later poll retries the pending reply. After unarchiving, a new mention resumes its thread from the new message. Other reply failures retain their existing retry or uncertain-delivery handling.
+
+#### Customer channel intake
+
+Set `slack.customerIntake` to turn customer conversations into delegated tickets without a Bear Metal mention. It requires the interactive bot setup, the `reaction_added` event, and the bot's membership in each customer channel; matching channels the bot has not joined are skipped with a warning.
+
+| Field | Purpose |
+| --- | --- |
+| `channelNamePattern` | `RegExp` matched against channel names, for example `/^customer_.+$/`. Other channels are never read for intake |
+| `triggerReaction` | Emoji name, without colons, that requests a ticket for the reacted message |
+| `ownerEmail` | Linear user who is assigned every intake ticket and becomes its human owner |
+
+- **Reaction:** a full member of the bot's workspace adds `triggerReaction` to a message in a matching channel. Reactions from guests, bots and Slack Connect users are ignored. Bear Metal reads the thread and creates one ticket for the message, unless an intake ticket in the same thread already asks for the same outcome.
+- **Daily sweep:** once every 24 hours, Bear Metal reviews each matching channel's new top-level messages and their threads, and creates a ticket for each request that needs engineering work. Conversations that need no work produce no ticket. The first sweep reads the last 24 hours; later sweeps start where the previous successful sweep of that channel ended, so a failed channel is retried on the next run. Replies posted to threads whose first message is older than the sweep window are not reviewed; use the reaction for them.
+- **Tickets** contain the customer's request, conversation context and expected outcome, plus the Slack message link, channel, original author and intake source. They are assigned to `ownerEmail`, receive the coding task's `ticketLabels` for a Slack trigger, and are delegated to Bear Metal. Intake never posts in customer channels.
+- **Duplicates:** each Slack message produces at most one intake ticket across reactions, retries and sweeps. A failed Linear creation is retried by the next reaction or sweep. If the manager stops after asking Linear to create a ticket but before recording the result, that message fails visibly instead of risking a second ticket.
 
 Workers retain every PR associated with a ticket across iterations, including PRs in repositories that were not pushed again. Slack notifications list every PR in each opened, updated, or validation-delayed group.
 

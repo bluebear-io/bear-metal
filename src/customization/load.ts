@@ -36,6 +36,20 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
     nonEmptyString(slack.notificationChannel, "config.slack.notificationChannel");
     callable(slack.getBotToken, "config.slack.getBotToken");
     if (slack.getSigningSecret !== undefined) callable(slack.getSigningSecret, "config.slack.getSigningSecret");
+    if (slack.customerIntake !== undefined) {
+      const intake = object(slack.customerIntake, "config.slack.customerIntake");
+      if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("config.slack.customerIntake.channelNamePattern must be a RegExp");
+      if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) {
+        throw new Error("config.slack.customerIntake.channelNamePattern must not use the g or y flag");
+      }
+      if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "config.slack.customerIntake.triggerReaction"))) {
+        throw new Error("config.slack.customerIntake.triggerReaction must be an emoji name without colons");
+      }
+      if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "config.slack.customerIntake.ownerEmail"))) {
+        throw new Error("config.slack.customerIntake.ownerEmail must be an email address");
+      }
+      if (slack.getSigningSecret === undefined) throw new Error("config.slack.customerIntake requires config.slack.getSigningSecret");
+    }
   }
   if (config.agentIntegrations !== undefined) {
     const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");

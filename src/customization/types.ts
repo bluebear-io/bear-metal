@@ -26,6 +26,8 @@ export interface BearMetalConfig {
     notificationChannel: string;
     getBotToken: SecretGetter;
     getSigningSecret?: SecretGetter;
+    /** Requires `getSigningSecret`: reactions arrive through the Slack Events API. */
+    customerIntake?: SlackCustomerIntakeConfig;
   };
   agentIntegrations?: {
     github?: {
@@ -67,6 +69,15 @@ export interface BearMetalConfig {
     google: { getApiKey: SecretGetter };
   }>;
   customizeTask: (task: Task) => TaskCustomization | Promise<TaskCustomization>;
+}
+
+export interface SlackCustomerIntakeConfig {
+  /** Channel names (without `#`) whose conversations are reviewed. Only channels the bot is a member of can be read. */
+  channelNamePattern: RegExp;
+  /** Emoji name, without colons, that workspace members add to a message to request a ticket. */
+  triggerReaction: string;
+  /** Linear user email that intake tickets are assigned to before delegation to Bear Metal. */
+  ownerEmail: string;
 }
 
 export type TaskStatusCategory = "backlog" | "unstarted" | "started" | "completed" | "canceled";
