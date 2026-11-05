@@ -225,6 +225,7 @@ export class SlackCoordinator {
         };
         await (this.input.runAgent ?? runSlackAgent)({
           task,
+          owner: { slackUserId: sourceUsers.get(latestBatchTs) ?? null, directory: this.input.api },
           db: this.input.db,
           config: this.input.config,
           gateway: this.input.gateway,
@@ -264,6 +265,7 @@ export class SlackCoordinator {
       let reviewDeferred = false;
       await (this.input.runAgent ?? runSlackAgent)({
         task: { type: "coordinator", id: randomUUID(), request, slack: { ...key, sourceTs: current.sourceTs } },
+        owner: { slackUserId: current.sourceUserId, directory: this.input.api },
         db: this.input.db,
         config: this.input.config,
         gateway: this.input.gateway,

@@ -5,6 +5,7 @@ import { createLogger } from "../shared/logger.js";
 import { SlackResearchWorker } from "./slack-research.js";
 
 const key: SlackThreadKey = { workspaceId: "T1", channelId: "C1", threadTs: "1.0" };
+const slackUsers = { findUserEmail: async (userId: string) => `${userId}@example.com` };
 
 describe("Slack research worker", () => {
   it("finishes answer submission without waiting for the coordinator run", async () => {
@@ -16,6 +17,7 @@ describe("Slack research worker", () => {
     let submitted = false;
     const worker = new SlackResearchWorker({
       db, github: { getInstallationToken: async () => "token" } as GitHubIntegration,
+      slackUsers,
       config: {} as ConstructorParameters<typeof SlackResearchWorker>[0]["config"],
       logger: createLogger({ name: "test", level: "silent" }), pollIntervalMs: 60_000, wakeThread,
       runAgent: async ({ tools, prompt }) => {
@@ -51,6 +53,7 @@ describe("Slack research worker", () => {
     });
     const worker = new SlackResearchWorker({
       db, github: { getInstallationToken: async () => "token" } as GitHubIntegration,
+      slackUsers,
       config: {} as ConstructorParameters<typeof SlackResearchWorker>[0]["config"],
       logger: createLogger({ name: "test", level: "silent" }), pollIntervalMs: 60_000, wakeThread,
       runAgent: async () => { throw new Error("Provider unavailable"); },
@@ -65,14 +68,16 @@ describe("Slack research worker", () => {
   it("stores the answer for coordination and wakes the owning thread", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
-    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "1.1", requestIndex: 1, request: "Find the answer", quote: "Find the answer" })).task;
+    const task = (await db.createSlackTask({ type: "research", thread: key, sourceTs: "1.1", sourceUserId: "U-requester", requestIndex: 1, request: "Find the answer", quote: "Find the answer" })).task;
     const wakeThread = vi.fn(async () => {});
     const worker = new SlackResearchWorker({
       db, github: { getInstallationToken: async () => "token" } as GitHubIntegration,
+      slackUsers,
       config: {} as ConstructorParameters<typeof SlackResearchWorker>[0]["config"],
       logger: createLogger({ name: "test", level: "silent" }), pollIntervalMs: 60_000, wakeThread,
-      runAgent: async ({ tools, task: customizationTask, prompt }) => {
+      runAgent: async ({ tools, task: customizationTask, prompt, owner }) => {
         expect(customizationTask).toMatchObject({ type: "research", request: "Find the answer" });
+        expect(owner).toEqual({ slackUserId: "U-requester", directory: slackUsers });
         expect(prompt).not.toContain("Question quote:");
         expect(prompt).toContain("answer_research");
         const tool = tools.find((candidate) => candidate.name === "answer_research");

@@ -9,6 +9,22 @@ describe("Slack thread reader", () => {
     await expect(api.getUserEmail("U1")).resolves.toBe("user@example.com");
     expect(call).toHaveBeenCalledWith("users.info", { user: "U1" });
   });
+  it.each([
+    { name: "a bot without an email has none", user: { id: "U1", is_bot: true, profile: {} }, want: null },
+    { name: "a human with an email has it", user: { id: "U1", is_bot: false, profile: { email: "user@example.com" } }, want: "user@example.com" },
+  ])("finds the sender's email: $name", async ({ user, want }) => {
+    const call = vi.fn(async () => ({ ok: true, user }));
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(api.findUserEmail("U1")).resolves.toBe(want);
+    expect(call).toHaveBeenCalledWith("users.info", { user: "U1" });
+  });
+  it.each([
+    { name: "a human without an email", response: { ok: true, user: { id: "U1", is_bot: false, profile: {} } }, error: "missing user email (check the users:read.email scope)" },
+    { name: "a failed lookup", response: { ok: false, error: "user_not_found" }, error: "user_not_found" },
+  ])("rejects the sender's email lookup for $name", async ({ response, error }) => {
+    const api = new SlackThreadApi({ call: vi.fn(async () => response) } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(api.findUserEmail("U1")).rejects.toThrow(`Cannot resolve Slack email for U1: ${error}`);
+  });
   it("bounds an edited message read to its original timestamp", async () => {
     const call = vi.fn(async () => ({ ok: true, messages: [{ ts: "100.1", user: "U1", text: "edited" }] }));
     const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);

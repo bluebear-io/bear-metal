@@ -6,6 +6,8 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { BearMetalConfig } from "../customization/types.js";
 import { SqlDbClient } from "../db/client.js";
+import { SlackThreadApi } from "../manager/slack-thread-api.js";
+import type { SlackIntegration, SlackReadClient } from "../shared/integrations/slack/client.js";
 import { runSlackAgent } from "./slack-agent.js";
 
 const sessionFactory = vi.hoisted(() => vi.fn());
@@ -203,3 +205,86 @@ describe("Slack agent review deferral", () => {
     }
   });
 });
+
+describe("Slack agent BlueBear owner", () => {
+  it.each([
+    { name: "the sender's email", owner: { slackUserId: "U1", directory: { findUserEmail: async () => "sender@example.com" } }, want: "sender@example.com" },
+    { name: "no owner for a bot sender", owner: { slackUserId: "B1", directory: slackUsers({ ok: true, user: { id: "B1", is_bot: true, profile: {} } }) }, want: null },
+    { name: "no owner without a sender", owner: { slackUserId: null, directory: { findUserEmail: async () => "unused@example.com" } }, want: null },
+    { name: "no owner when the caller names none", owner: undefined, want: null },
+  ])("starts the session with $name", async ({ owner, want }) => {
+    const base = await mkdtemp(join(tmpdir(), "bear-metal-owner-test-"));
+    vi.stubEnv("BEAR_METAL_WORKSPACE_DIR", base);
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const ownerEmails: unknown[] = [];
+    sessionFactory.mockImplementation(async (options: { ownerEmail?: string | null }) => {
+      ownerEmails.push(options.ownerEmail ?? null);
+      return { session: {
+        subscribe: () => () => {},
+        bindExtensions: async () => {},
+        prompt: async () => {},
+        getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }),
+      } };
+    });
+    const config: BearMetalConfig = {
+      linear: { clientId: "id", getClientSecret: () => "secret" },
+      github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
+      llmProviders: { anthropic: { getApiKey: () => "test-key" } },
+      customizeTask: () => ({
+        llm: { provider: "anthropic", model: "claude-sonnet-4-5-20250929" },
+        buildWorkspace: async ({ workspacePath }) => { await writeFile(join(workspacePath, "AGENTS.md"), "Repository guidance"); },
+      }),
+    };
+    try {
+      await runSlackAgent({
+        task: { id: "owner-coordinator", type: "coordinator", request: "request", slack: { workspaceId: "T", channelId: "C", threadTs: "100.0", sourceTs: "101.0" } },
+        owner,
+        prompt: "prompt", config, db, tools: [], getGithubToken: async () => "token",
+      });
+      expect(ownerEmails).toEqual([want]);
+    } finally {
+      sessionFactory.mockReset();
+      vi.unstubAllEnvs();
+      await db.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { name: "a human sender has no email", response: { ok: true, user: { id: "U1", is_bot: false, profile: {} } }, error: "missing user email (check the users:read.email scope)" },
+    { name: "the sender email lookup fails", response: { ok: false, error: "missing_scope" }, error: "missing_scope" },
+  ])("fails the run when $name", async ({ response, error }) => {
+    const base = await mkdtemp(join(tmpdir(), "bear-metal-owner-test-"));
+    vi.stubEnv("BEAR_METAL_WORKSPACE_DIR", base);
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const config: BearMetalConfig = {
+      linear: { clientId: "id", getClientSecret: () => "secret" },
+      github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
+      llmProviders: { anthropic: { getApiKey: () => "test-key" } },
+      customizeTask: () => ({
+        llm: { provider: "anthropic", model: "claude-sonnet-4-5-20250929" },
+        buildWorkspace: async ({ workspacePath }) => { await writeFile(join(workspacePath, "AGENTS.md"), "Repository guidance"); },
+      }),
+    };
+    try {
+      await expect(runSlackAgent({
+        task: { id: "owner-lookup-failed", type: "coordinator", request: "request", slack: { workspaceId: "T", channelId: "C", threadTs: "100.0", sourceTs: "101.0" } },
+        owner: { slackUserId: "U1", directory: slackUsers(response) },
+        prompt: "prompt", config, db, tools: [], getGithubToken: async () => "token",
+      })).rejects.toThrow(`Cannot resolve Slack email for U1: ${error}`);
+      expect(sessionFactory).not.toHaveBeenCalled();
+      expect((await db.getAgentRunDetail("owner-lookup-failed"))?.run).toMatchObject({ status: "failed" });
+    } finally {
+      sessionFactory.mockReset();
+      vi.unstubAllEnvs();
+      await db.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+});
+
+function slackUsers(response: unknown): SlackThreadApi {
+  return new SlackThreadApi({ call: async () => response } as unknown as SlackReadClient, {} as SlackIntegration);
+}
