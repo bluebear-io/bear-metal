@@ -131,7 +131,11 @@ export class SlackCustomerIntake {
         await this.input.db.finishSlackIntakeReaction(reaction, outcome.state, outcome.reason);
         if (outcome.state === "ignored") this.input.logger.info({ reaction, reason: outcome.reason }, "Slack intake reaction ignored");
       } catch (err) {
-        await this.failReaction(reaction, err);
+        try {
+          await this.failReaction(reaction, err);
+        } catch (bookkeepingErr) {
+          this.input.logger.error({ err: bookkeepingErr, cause: err, reaction }, "Slack intake reaction bookkeeping failed; the reaction stays pending for the next poll");
+        }
       }
     }
   }
@@ -412,7 +416,13 @@ export class SlackCustomerIntake {
 
   private async validateDestination(run: IntakeRun, args: { teamId: string; projectId?: string; cycleId?: string }): Promise<void> {
     run.destinations ??= this.input.linear.listSlackTicketDestinations();
-    const destinations = await run.destinations;
+    let destinations: TicketDestinations;
+    try {
+      destinations = await run.destinations;
+    } catch (err) {
+      run.destinations = undefined;
+      throw err;
+    }
     if (!destinations.teams.some((team) => team.id === args.teamId)) throw new Error(`teamId ${args.teamId} is not a team returned by list_ticket_destinations`);
     if (args.projectId && !destinations.projects.some((project) => project.id === args.projectId && project.teamIds.includes(args.teamId))) {
       throw new Error(`projectId ${args.projectId} is not a project of team ${args.teamId} returned by list_ticket_destinations`);

@@ -3,6 +3,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BearMetalConfig } from "../customization/types.js";
 import { InvalidInputLinearError } from "@linear/sdk";
 import { SqlDbClient } from "../db/client.js";
+import { LinearRefusedError } from "../shared/integrations/linear/client.js";
 import { createLogger } from "../shared/logger.js";
 import type { runSlackAgent } from "../worker/slack-agent.js";
 import { SLACK_INTAKE_REACTION_MAX_ATTEMPTS, SlackCustomerIntake } from "./slack-intake.js";
@@ -233,9 +234,39 @@ describe("Slack customer intake", () => {
     expect(await db.recordSlackIntakeReaction(reaction())).toBe(true);
   });
 
-  it("retries a rejected Linear creation on the next attempt without duplicating it", async () => {
+  it("keeps processing other due reactions when recording one reaction's failure fails", async () => {
     seedThread();
-    linear.createSlackCodingTicket.mockRejectedValueOnce(new InvalidInputLinearError({ message: "Linear rejected the issue" }));
+    slack.threads["CACME/400.1"] = [message("400.1", "UCUSTOMER", "Please add SSO")];
+    vi.spyOn(db, "retrySlackIntakeReaction").mockRejectedValueOnce(new Error("database unavailable"));
+    agent.mockImplementationOnce(async () => { throw new Error("agent crashed"); });
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_customer_ticket", ticketArgs("400.1", "Add SSO")); });
+    await db.recordSlackIntakeReaction(reaction());
+    await db.recordSlackIntakeReaction(reaction({ messageTs: "400.1" }));
+    await intake.processReactions();
+    expect(agent).toHaveBeenCalledTimes(2);
+    expect(linear.created).toEqual([expect.objectContaining({ title: "Add SSO" })]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([expect.objectContaining({ messageTs: "100.2", attempts: 0 })]);
+  });
+
+  it("does not reuse a failed destination lookup for later ticket attempts in the same run", async () => {
+    seedThread();
+    linear.listSlackTicketDestinations.mockRejectedValueOnce(new Error("rate limited"));
+    agent.mockImplementation(async ({ tools }) => {
+      await expect(call(tools, "create_customer_ticket", ticketArgs("100.2"))).rejects.toThrow("rate limited");
+      await call(tools, "create_customer_ticket", ticketArgs("100.2"));
+    });
+    await db.recordSlackIntakeReaction(reaction());
+    await intake.processReactions();
+    expect(linear.created).toHaveLength(1);
+    expect(linear.delegated).toEqual(["issue-1"]);
+  });
+
+  it.each([
+    ["an SDK rejection", () => new InvalidInputLinearError({ message: "Linear rejected the issue" })],
+    ["an unsuccessful mutation payload", () => new LinearRefusedError("Linear did not create the coding ticket")],
+  ])("retries a Linear creation refused with %s on the next attempt without duplicating it", async (_name, refusal) => {
+    seedThread();
+    linear.createSlackCodingTicket.mockRejectedValueOnce(refusal());
     agent.mockImplementation(async ({ tools }) => { await call(tools, "create_customer_ticket", ticketArgs("100.2")); });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
