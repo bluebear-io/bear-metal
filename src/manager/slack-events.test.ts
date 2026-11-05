@@ -7,6 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { createSlackEventsRouter } from "./slack-events.js";
 
 const secret = "test-signing-secret";
+const DUE = "9999-12-31T00:00:00.000Z";
 
 function signed(body: object) {
   const text = JSON.stringify(body);
@@ -114,8 +115,19 @@ describe("Slack event intake", () => {
       expect((await send(reaction)).status).toBe(200);
       expect((await send({ ...reaction, reaction: "eyes" })).status).toBe(200);
       expect((await send({ ...reaction, item: { type: "file", file: "F1" } })).status).toBe(200);
-      expect(await db.listPendingSlackIntakeReactions()).toEqual([{ workspaceId: "T1", channelId: "C1", messageTs: "400.1", reactorUserId: "U1" }]);
+      const [pending] = await db.listPendingSlackIntakeReactions(DUE);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([{ workspaceId: "T1", channelId: "C1", messageTs: "400.1", reactorUserId: "U1", attempts: 0 }]);
       expect(wakeIntake).toHaveBeenCalledTimes(1);
+
+      await db.finishSlackIntakeReaction(pending!, "ignored", "bot not in channel");
+      expect((await send(reaction)).status).toBe(200);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toHaveLength(1);
+      expect(wakeIntake).toHaveBeenCalledTimes(2);
+
+      await db.finishSlackIntakeReaction(pending!, "processed", null);
+      expect((await send(reaction)).status).toBe(200);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+      expect(wakeIntake).toHaveBeenCalledTimes(2);
     } finally {
       await db.close();
     }
@@ -132,7 +144,7 @@ describe("Slack event intake", () => {
     try {
       expect((await request(app).post("/slack/events").set("Content-Type", "application/json")
         .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text)).status).toBe(200);
-      expect(await db.listPendingSlackIntakeReactions()).toEqual([]);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
     } finally {
       await db.close();
     }

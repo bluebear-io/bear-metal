@@ -397,6 +397,8 @@ CREATE TABLE IF NOT EXISTS slack_intake_reactions (
   reactor_user_id TEXT NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processed', 'ignored', 'failed')),
   reason TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, channel_id, message_ts, reactor_user_id)

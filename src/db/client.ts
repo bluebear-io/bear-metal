@@ -213,6 +213,11 @@ export interface SlackIntakeReaction {
   reactorUserId: string;
 }
 
+export interface PendingSlackIntakeReaction extends SlackIntakeReaction {
+  /** Failed processing attempts so far. */
+  attempts: number;
+}
+
 export interface SlackIntakeSource {
   workspaceId: string;
   channelId: string;
@@ -778,8 +783,11 @@ export interface DbClient {
   failSlackBatchAcknowledgment(ids: string[], error: string): Promise<void>;
   markSlackResearchStartedReply(id: string, replyTs: string): Promise<void>;
   markSlackTaskCoordinated(id: string, replyTs?: string): Promise<void>;
+  /** Queues a reaction; re-adding one that was ignored or failed queues it again. Returns false when it is already queued or processed. */
   recordSlackIntakeReaction(reaction: SlackIntakeReaction): Promise<boolean>;
-  listPendingSlackIntakeReactions(): Promise<SlackIntakeReaction[]>;
+  /** Pending reactions whose next attempt is due at `dueAt` (ISO time). */
+  listPendingSlackIntakeReactions(dueAt: string): Promise<PendingSlackIntakeReaction[]>;
+  retrySlackIntakeReaction(reaction: PendingSlackIntakeReaction, reason: string, nextAttemptAt: string): Promise<void>;
   finishSlackIntakeReaction(reaction: SlackIntakeReaction, state: "processed" | "ignored" | "failed", reason: string | null): Promise<void>;
   /** Claims a source message for ticket creation; `claimed` is false when another attempt already owns it. */
   claimSlackIntakeTicket(input: SlackIntakeSource & { threadTs: string; trigger: SlackIntakeTicket["trigger"]; title: string }): Promise<{ ticket: SlackIntakeTicket; claimed: boolean }>;
@@ -2110,18 +2118,32 @@ export class SqlDbClient implements DbClient {
     const result = await this.run(
       `INSERT INTO slack_intake_reactions (workspace_id, channel_id, message_ts, reactor_user_id, state, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'pending', ?, ?)
-       ON CONFLICT (workspace_id, channel_id, message_ts, reactor_user_id) DO NOTHING`,
+       ON CONFLICT (workspace_id, channel_id, message_ts, reactor_user_id) DO UPDATE SET
+         state = 'pending', reason = NULL, attempts = 0, next_attempt_at = NULL, updated_at = excluded.updated_at
+       WHERE slack_intake_reactions.state IN ('ignored', 'failed')`,
       [reaction.workspaceId, reaction.channelId, reaction.messageTs, reaction.reactorUserId, now, now],
     );
     return result.changes === 1;
   }
 
-  async listPendingSlackIntakeReactions(): Promise<SlackIntakeReaction[]> {
-    const rows = await this.query<{ workspace_id: string; channel_id: string; message_ts: string; reactor_user_id: string }>(
-      `SELECT workspace_id, channel_id, message_ts, reactor_user_id FROM slack_intake_reactions
-       WHERE state = 'pending' ORDER BY created_at ASC, message_ts ASC`,
+  async listPendingSlackIntakeReactions(dueAt: string): Promise<PendingSlackIntakeReaction[]> {
+    const rows = await this.query<{ workspace_id: string; channel_id: string; message_ts: string; reactor_user_id: string; attempts: number | string }>(
+      `SELECT workspace_id, channel_id, message_ts, reactor_user_id, attempts FROM slack_intake_reactions
+       WHERE state = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at ASC, message_ts ASC`,
+      [dueAt],
     );
-    return rows.map((row) => ({ workspaceId: row.workspace_id, channelId: row.channel_id, messageTs: row.message_ts, reactorUserId: row.reactor_user_id }));
+    return rows.map((row) => ({
+      workspaceId: row.workspace_id, channelId: row.channel_id, messageTs: row.message_ts, reactorUserId: row.reactor_user_id, attempts: Number(row.attempts),
+    }));
+  }
+
+  async retrySlackIntakeReaction(reaction: PendingSlackIntakeReaction, reason: string, nextAttemptAt: string): Promise<void> {
+    const result = await this.run(
+      `UPDATE slack_intake_reactions SET attempts = attempts + 1, reason = ?, next_attempt_at = ?, updated_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND message_ts = ? AND reactor_user_id = ? AND state = 'pending' AND attempts = ?`,
+      [reason, nextAttemptAt, this.clock.nowIso(), reaction.workspaceId, reaction.channelId, reaction.messageTs, reaction.reactorUserId, reaction.attempts],
+    );
+    if (result.changes !== 1) throw new Error(`Cannot schedule a retry for Slack intake reaction ${reaction.channelId}/${reaction.messageTs} by ${reaction.reactorUserId}`);
   }
 
   async finishSlackIntakeReaction(reaction: SlackIntakeReaction, state: "processed" | "ignored" | "failed", reason: string | null): Promise<void> {

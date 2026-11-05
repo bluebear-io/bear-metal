@@ -1,8 +1,18 @@
-import { AuthenticationLinearError, type Issue, LinearClient } from "@linear/sdk";
+import { AuthenticationLinearError, type Issue, LinearClient, type LinearErrorType } from "@linear/sdk";
 
 import type { CommentCapable, Integration } from "../base.js";
 import type { TokenProvider } from "./token.js";
 import type { LinearTicketContext, Ticket, TicketAttachment } from "./types.js";
+
+const REJECTION_TYPES: ReadonlySet<string> = new Set<`${LinearErrorType}`>([
+  "InvalidInput", "Ratelimited", "AuthenticationError", "Forbidden", "FeatureNotAccessible", "UsageLimitExceeded", "UserError",
+]);
+
+/** True when Linear refused the request before applying it; network, internal and unknown errors leave the outcome uncertain. */
+export function isLinearRejection(err: unknown): boolean {
+  const type = err instanceof Error ? (err as { type?: unknown }).type : undefined;
+  return typeof type === "string" && REJECTION_TYPES.has(type);
+}
 
 export interface LinearIntegrationOptions {
   tokenProvider: TokenProvider;

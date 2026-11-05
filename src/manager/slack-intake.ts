@@ -5,9 +5,9 @@ import { Type } from "typebox";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { validateTaskCustomization } from "../customization/load.js";
 import type { BearMetalConfig, SlackCustomerIntakeConfig, Task } from "../customization/types.js";
-import type { DbClient, SlackIntakeReaction, SlackIntakeSource, SlackIntakeTicket } from "../db/client.js";
+import type { DbClient, PendingSlackIntakeReaction, SlackIntakeReaction, SlackIntakeSource, SlackIntakeTicket } from "../db/client.js";
 import type { GitHubIntegration } from "../shared/integrations/github/client.js";
-import type { LinearIntegration } from "../shared/integrations/linear/client.js";
+import { isLinearRejection, type LinearIntegration } from "../shared/integrations/linear/client.js";
 import type { Logger } from "../shared/logger.js";
 import { runSlackAgent } from "../worker/slack-agent.js";
 import { compareSlackTs, slackTsFromMs, type SlackIntakeApi, type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
@@ -16,8 +16,14 @@ export const SLACK_INTAKE_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const SLACK_INTAKE_INITIAL_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const SWEEP_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_PAYLOAD_TEXT = 4_000;
+export const SLACK_INTAKE_REACTION_MAX_ATTEMPTS = 5;
+const REACTION_RETRY_BASE_MS = 5 * 60 * 1000;
 
 type IntakeLinear = Pick<LinearIntegration, "createSlackCodingTicket" | "delegateSlackCodingTicket" | "findUserIdByEmail" | "listSlackTicketDestinations" | "addLabelsByName">;
+type TicketDestinations = Awaited<ReturnType<IntakeLinear["listSlackTicketDestinations"]>>;
+
+/** A failure that another attempt cannot fix without a person checking Linear first. */
+class NonRetryableIntakeError extends Error {}
 
 interface IntakeRun {
   trigger: SlackIntakeTicket["trigger"];
@@ -26,6 +32,7 @@ interface IntakeRun {
   /** Human messages the agent may cite as a ticket source, mapped to their thread. */
   sources: Map<string, { threadTs: string; message: SlackIntakeMessage }>;
   created: SlackIntakeTicket[];
+  destinations?: Promise<TicketDestinations>;
 }
 
 function isHumanMessage(message: SlackIntakeMessage, botUserId: string): boolean {
@@ -56,7 +63,7 @@ function reactionPrompt(payload: string): string {
 }
 
 function sweepPrompt(payload: string): string {
-  return `Review new messages in a customer Slack channel and decide which customer requests need engineering work from Bear Metal: a bug fix, a code or configuration change, or a new capability. Requests that need no work produce no ticket: questions answered in the conversation, greetings and social messages, status updates, acknowledgements, requests already resolved or explicitly handled by a person in the thread, and requests already covered by an existing intake ticket in the payload. For each distinct actionable request, call create_customer_ticket once with sourceTs set to the message that best states the request. When in doubt whether a request asks for engineering work, do not create a ticket. After deciding on every request, call finish_review exactly once with a short summary of the decisions. ${SHARED_RULES}\n${payload}`;
+  return `Review new messages in a customer Slack channel and decide which customer requests need engineering work from Bear Metal: a bug fix, a code or configuration change, or a new capability. Requests that need no work produce no ticket: questions answered in the conversation, greetings and social messages, status updates, acknowledgements, requests already resolved or explicitly handled by a person in the thread, and requests already covered by an existing intake ticket in the payload. For each thread with an actionable request, call create_customer_ticket once with sourceTs set to the message that best states the request; a thread gets at most one intake ticket, so cover every request of a thread in its ticket. When in doubt whether a request asks for engineering work, do not create a ticket. After deciding on every request, call finish_review exactly once with a short summary of the decisions. ${SHARED_RULES}\n${payload}`;
 }
 
 export class SlackCustomerIntake {
@@ -117,17 +124,28 @@ export class SlackCustomerIntake {
   }
 
   async processReactions(): Promise<void> {
-    for (const reaction of await this.input.db.listPendingSlackIntakeReactions()) {
+    for (const reaction of await this.input.db.listPendingSlackIntakeReactions(new Date(this.now()).toISOString())) {
       if (this.stopping) return;
       try {
         const outcome = await this.processReaction(reaction);
         await this.input.db.finishSlackIntakeReaction(reaction, outcome.state, outcome.reason);
         if (outcome.state === "ignored") this.input.logger.info({ reaction, reason: outcome.reason }, "Slack intake reaction ignored");
       } catch (err) {
-        this.input.logger.error({ err, reaction }, "Slack intake reaction failed");
-        await this.input.db.finishSlackIntakeReaction(reaction, "failed", String(err));
+        await this.failReaction(reaction, err);
       }
     }
+  }
+
+  private async failReaction(reaction: PendingSlackIntakeReaction, err: unknown): Promise<void> {
+    const attempt = reaction.attempts + 1;
+    if (err instanceof NonRetryableIntakeError || attempt >= SLACK_INTAKE_REACTION_MAX_ATTEMPTS) {
+      this.input.logger.error({ err, reaction, attempt }, "Slack intake reaction failed; a workspace member can remove and re-add the reaction to retry");
+      await this.input.db.finishSlackIntakeReaction(reaction, "failed", String(err));
+      return;
+    }
+    const nextAttemptAt = new Date(this.now() + REACTION_RETRY_BASE_MS * 2 ** reaction.attempts).toISOString();
+    this.input.logger.error({ err, reaction, attempt, nextAttemptAt }, "Slack intake reaction attempt failed; retrying");
+    await this.input.db.retrySlackIntakeReaction(reaction, String(err), nextAttemptAt);
   }
 
   async sweepIfDue(): Promise<void> {
@@ -178,9 +196,14 @@ export class SlackCustomerIntake {
     if (!this.matchesChannel(channel.name)) return { state: "ignored", reason: `Channel #${channel.name} is outside customer intake` };
     const reactor = await this.input.api.getUser(reaction.reactorUserId);
     if (!this.isWorkspaceMember(reactor)) return { state: "ignored", reason: `Reactor ${reaction.reactorUserId} is not a workspace member` };
+    if (!channel.isMember) {
+      this.input.logger.warn({ channel: channel.name, channelId: channel.id, messageTs: reaction.messageTs }, "Slack customer intake cannot read a channel the bot has not joined; invite the bot and re-add the reaction");
+      return { state: "ignored", reason: `Bot has not joined #${channel.name}` };
+    }
     const source: SlackIntakeSource = { workspaceId: reaction.workspaceId, channelId: reaction.channelId, sourceTs: reaction.messageTs };
     const existing = await this.input.db.getSlackIntakeTicket(source);
     if (existing?.state === "delegated") return { state: "processed", reason: `Already tracked by ${existing.ticketIdentifier}` };
+    if (existing?.state === "creating") throw this.unresolvedCreation(source);
     const { threadTs, messages } = await this.input.api.readMessageThread(reaction.channelId, reaction.messageTs);
     const target = messages.find((message) => message.ts === reaction.messageTs);
     if (!target) throw new Error(`Slack thread ${reaction.channelId}/${threadTs} omitted reacted message ${reaction.messageTs}`);
@@ -331,24 +354,35 @@ export class SlackCustomerIntake {
     const entry = run.sources.get(args.sourceTs);
     if (!entry) throw new Error(`Message ${args.sourceTs} is not an eligible source in this intake run`);
     const source: SlackIntakeSource = { workspaceId: this.input.workspaceId, channelId: run.channel.id, sourceTs: args.sourceTs };
+    await this.validateDestination(run, args);
+    if (run.trigger === "sweep") await this.requireUntrackedThread(source, entry.threadTs);
     const { ticket: claimedTicket, claimed } = await this.input.db.claimSlackIntakeTicket({ ...source, threadTs: entry.threadTs, trigger: run.trigger, title: args.title });
     if (claimedTicket.state === "delegated") return claimedTicket;
-    if (!claimed && claimedTicket.state === "creating") {
-      throw new Error(`Slack intake ${run.channel.id}/${args.sourceTs} has an unresolved ticket creation; check Linear for a ticket before clearing it`);
-    }
+    if (!claimed && claimedTicket.state === "creating") throw this.unresolvedCreation(source);
     let ticketId = claimedTicket.ticketId;
     if (claimedTicket.state === "creating") {
-      let created: { id: string; identifier: string; url: string };
       let description: string;
+      let assigneeId: string;
       try {
         description = await this.ticketDescription(run, entry.message, args);
-        created = await this.input.linear.createSlackCodingTicket({
-          teamId: args.teamId, projectId: args.projectId, cycleId: args.cycleId, title: args.title, description,
-          assigneeId: await this.input.linear.findUserIdByEmail(this.input.intake.ownerEmail),
-        });
+        assigneeId = await this.input.linear.findUserIdByEmail(this.input.intake.ownerEmail);
       } catch (err) {
         await this.input.db.failSlackIntakeTicket(source, String(err));
         throw err;
+      }
+      let created: { id: string; identifier: string; url: string };
+      try {
+        created = await this.input.linear.createSlackCodingTicket({
+          teamId: args.teamId, projectId: args.projectId, cycleId: args.cycleId, title: args.title, description, assigneeId,
+        });
+      } catch (err) {
+        if (isLinearRejection(err)) {
+          await this.input.db.failSlackIntakeTicket(source, String(err));
+          throw err;
+        }
+        // Linear may have created the ticket before the error, so the claim stays 'creating' and blocks a second create.
+        this.input.logger.error({ err, channel: run.channel.name, sourceTs: args.sourceTs }, "Slack customer intake ticket creation outcome is unknown");
+        throw this.unresolvedCreation(source, err);
       }
       // Attach before delegating: the scheduler picks up delegated tickets and needs the Slack link to label them.
       await this.input.db.attachSlackIntakeTicket(source, created);
@@ -368,6 +402,33 @@ export class SlackCustomerIntake {
     run.created.push(delegated);
     this.input.logger.info({ channel: run.channel.name, sourceTs: args.sourceTs, ticket: delegated.ticketIdentifier, trigger: run.trigger }, "Slack customer intake ticket delegated");
     return delegated;
+  }
+
+  private unresolvedCreation(source: SlackIntakeSource, cause?: unknown): NonRetryableIntakeError {
+    return new NonRetryableIntakeError(
+      `Slack intake ${source.channelId}/${source.sourceTs} has an unresolved ticket creation${cause === undefined ? "" : ` (${String(cause)})`}; check Linear for a ticket before clearing it`,
+    );
+  }
+
+  private async validateDestination(run: IntakeRun, args: { teamId: string; projectId?: string; cycleId?: string }): Promise<void> {
+    run.destinations ??= this.input.linear.listSlackTicketDestinations();
+    const destinations = await run.destinations;
+    if (!destinations.teams.some((team) => team.id === args.teamId)) throw new Error(`teamId ${args.teamId} is not a team returned by list_ticket_destinations`);
+    if (args.projectId && !destinations.projects.some((project) => project.id === args.projectId && project.teamIds.includes(args.teamId))) {
+      throw new Error(`projectId ${args.projectId} is not a project of team ${args.teamId} returned by list_ticket_destinations`);
+    }
+    if (args.cycleId && !destinations.cycles.some((cycle) => cycle.id === args.cycleId && cycle.teamId === args.teamId)) {
+      throw new Error(`cycleId ${args.cycleId} is not a cycle of team ${args.teamId} returned by list_ticket_destinations`);
+    }
+  }
+
+  /** Sweeps run without a person in the loop, so they create at most one intake ticket per thread. */
+  private async requireUntrackedThread(source: SlackIntakeSource, threadTs: string): Promise<void> {
+    const tickets = await this.input.db.listSlackIntakeThreadTickets(source.workspaceId, source.channelId, [threadTs]);
+    const other = tickets.find((ticket) => ticket.sourceTs !== source.sourceTs && (ticket.state !== "failed" || ticket.ticketId !== null));
+    if (other) {
+      throw new Error(`Thread ${threadTs} already has intake ticket ${other.ticketIdentifier ?? `for message ${other.sourceTs}`}; a sweep creates at most one ticket per thread, and a team member can react to request another`);
+    }
   }
 
   private async ticketDescription(run: IntakeRun, message: SlackIntakeMessage, args: { customerRequest: string; conversationContext: string; expectedOutcome: string }): Promise<string> {

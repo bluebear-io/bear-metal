@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BearMetalConfig } from "../customization/types.js";
+import { InvalidInputLinearError } from "@linear/sdk";
 import { SqlDbClient } from "../db/client.js";
 import { createLogger } from "../shared/logger.js";
 import type { runSlackAgent } from "../worker/slack-agent.js";
-import { SlackCustomerIntake } from "./slack-intake.js";
+import { SLACK_INTAKE_REACTION_MAX_ATTEMPTS, SlackCustomerIntake } from "./slack-intake.js";
 import { slackTsFromMs, type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
 
 const DAY = 24 * 60 * 60 * 1000;
+const RETRY_BASE = 5 * 60 * 1000;
+const DUE = "9999-12-31T00:00:00.000Z";
 const NOW = Date.UTC(2026, 10, 5, 12);
 
 type AgentInput = Parameters<typeof runSlackAgent>[0];
@@ -76,7 +79,11 @@ class FakeLinear {
     if (email !== "owner@example.com") throw new Error(`unexpected owner ${email}`);
     return "linear-owner";
   });
-  listSlackTicketDestinations = vi.fn(async () => ({ teams: [{ id: "team-1", key: "DEN", name: "Engineering" }], projects: [], cycles: [] }));
+  listSlackTicketDestinations = vi.fn(async () => ({
+    teams: [{ id: "team-1", key: "DEN", name: "Engineering" }, { id: "team-2", key: "OPS", name: "Operations" }],
+    projects: [{ id: "project-1", name: "Bear Metal", teamIds: ["team-1"] }],
+    cycles: [{ id: "cycle-2", name: null, number: 7, teamId: "team-2", startsAt: "2026-11-01T00:00:00.000Z", endsAt: "2026-11-14T00:00:00.000Z" }],
+  }));
   addLabelsByName = vi.fn(async (ticketId: string, labels: readonly string[]) => { this.labeled.push({ ticketId, labels }); return []; });
 }
 
@@ -163,20 +170,22 @@ describe("Slack customer intake", () => {
     expect(linear.labeled).toEqual([{ ticketId: "issue-1", labels: ["signal:slack"] }]);
     expect(await db.hasSlackLinkedTicket("issue-1")).toBe(true);
     expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toMatchObject({ state: "delegated", ticketIdentifier: "DEN-1", trigger: "reaction" });
-    expect(await db.listPendingSlackIntakeReactions()).toEqual([]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
-  it("ignores reactions outside customer channels and from customers, guests, or other workspaces", async () => {
+  it("ignores reactions outside customer channels, in channels the bot has not joined, and from customers, guests, or other workspaces", async () => {
     slack.threads["CENG/200.1"] = [message("200.1", "UMEMBER", "internal")];
+    slack.threads["CGLOBEX/300.1"] = [message("300.1", "UCUSTOMER", "Please add SAML")];
     seedThread();
     await db.recordSlackIntakeReaction(reaction({ channelId: "CENG", messageTs: "200.1" }));
+    await db.recordSlackIntakeReaction(reaction({ channelId: "CGLOBEX", messageTs: "300.1" }));
     await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UCUSTOMER" }));
     await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UGUEST" }));
     await db.recordSlackIntakeReaction({ ...reaction(), workspaceId: "T2" });
     await intake.processReactions();
     expect(agent).not.toHaveBeenCalled();
     expect(linear.created).toEqual([]);
-    expect(await db.listPendingSlackIntakeReactions()).toEqual([]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
   it("does not create a second ticket for repeated reactions or a message a sweep already ticketed", async () => {
@@ -209,31 +218,38 @@ describe("Slack customer intake", () => {
     expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toBeNull();
   });
 
-  it("fails a reaction visibly when the agent neither creates nor defers a ticket", async () => {
+  it("retries a reaction with backoff and fails it visibly after the last attempt", async () => {
     seedThread();
     await db.recordSlackIntakeReaction(reaction());
-    await intake.processReactions();
+    for (let attempt = 1; attempt <= SLACK_INTAKE_REACTION_MAX_ATTEMPTS; attempt += 1) {
+      await intake.processReactions();
+      expect(agent).toHaveBeenCalledTimes(attempt);
+      await intake.processReactions();
+      expect(agent).toHaveBeenCalledTimes(attempt);
+      now += RETRY_BASE * 2 ** (attempt - 1);
+    }
     expect(linear.created).toEqual([]);
-    expect(await db.listPendingSlackIntakeReactions()).toEqual([]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+    expect(await db.recordSlackIntakeReaction(reaction())).toBe(true);
   });
 
-  it("retries a failed Linear creation on the next trigger without duplicating it", async () => {
+  it("retries a rejected Linear creation on the next attempt without duplicating it", async () => {
     seedThread();
-    linear.createSlackCodingTicket.mockRejectedValueOnce(new Error("Linear unavailable"));
+    linear.createSlackCodingTicket.mockRejectedValueOnce(new InvalidInputLinearError({ message: "Linear rejected the issue" }));
     agent.mockImplementation(async ({ tools }) => { await call(tools, "create_customer_ticket", ticketArgs("100.2")); });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
     expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toMatchObject({ state: "failed", ticketId: null });
-    slack.users.UMEMBER2 = { ...slack.users.UMEMBER!, id: "UMEMBER2" };
-    await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UMEMBER2" }));
+    now += RETRY_BASE;
     await intake.processReactions();
     expect(linear.created).toHaveLength(1);
     expect(linear.delegated).toEqual(["issue-1"]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
-  it("refuses to recreate a ticket whose earlier creation outcome is unknown", async () => {
+  it("keeps an unknown-outcome Linear creation unresolved instead of creating it again", async () => {
     seedThread();
-    await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2", threadTs: "100.1", trigger: "sweep", title: "t" });
+    linear.createSlackCodingTicket.mockRejectedValueOnce(new Error("socket hang up"));
     let error: unknown;
     agent.mockImplementation(async ({ tools }) => {
       error = await call(tools, "create_customer_ticket", ticketArgs("100.2")).catch((err: unknown) => err);
@@ -241,7 +257,36 @@ describe("Slack customer intake", () => {
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
     expect(String(error)).toContain("unresolved ticket creation");
+    expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toMatchObject({ state: "creating", ticketId: null });
+    now += RETRY_BASE;
+    await intake.processReactions();
+    expect(agent).toHaveBeenCalledTimes(1);
+    expect(linear.createSlackCodingTicket).toHaveBeenCalledTimes(1);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+  });
+
+  it("refuses to recreate a ticket whose earlier creation outcome is unknown", async () => {
+    seedThread();
+    await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2", threadTs: "100.1", trigger: "sweep", title: "t" });
+    await db.recordSlackIntakeReaction(reaction());
+    await intake.processReactions();
+    expect(agent).not.toHaveBeenCalled();
     expect(linear.created).toEqual([]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+  });
+
+  it("rejects Linear destinations that list_ticket_destinations did not return for the team", async () => {
+    seedThread();
+    agent.mockImplementation(async ({ tools }) => {
+      await expect(call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), teamId: "team-x" })).rejects.toThrow("teamId team-x");
+      await expect(call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), teamId: "team-2", projectId: "project-1" })).rejects.toThrow("projectId project-1");
+      await expect(call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), cycleId: "cycle-2" })).rejects.toThrow("cycleId cycle-2");
+      await call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), projectId: "project-1" });
+    });
+    await db.recordSlackIntakeReaction(reaction());
+    await intake.processReactions();
+    expect(linear.created).toEqual([expect.objectContaining({ teamId: "team-1", projectId: "project-1" })]);
+    expect(linear.listSlackTicketDestinations).toHaveBeenCalledTimes(1);
   });
 
   it("sweeps only joined customer channels over the last 24 hours on the first run, then from the previous sweep", async () => {
@@ -278,6 +323,7 @@ describe("Slack customer intake", () => {
       await expect(call(tools, "create_customer_ticket", ticketArgs("1.0"))).rejects.toThrow("not an eligible source");
       await call(tools, "create_customer_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
       await call(tools, "create_customer_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
+      await expect(call(tools, "create_customer_ticket", ticketArgs(reply, "Investigate EU SSO"))).rejects.toThrow("at most one ticket per thread");
       await call(tools, "finish_review", { summary: "One SSO bug." });
     });
     await intake.sweep(NOW);
@@ -290,6 +336,7 @@ describe("Slack customer intake", () => {
     agent.mockImplementation(async ({ tools, prompt }) => {
       expect(prompt).toContain("\"ticket\":\"DEN-1\"");
       await call(tools, "create_customer_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
+      await expect(call(tools, "create_customer_ticket", ticketArgs(reply, "Fix SSO login again"))).rejects.toThrow("already has intake ticket DEN-1");
       await call(tools, "finish_review", { summary: "Already tracked." });
     });
     await intake.sweep(NOW + 1000);
