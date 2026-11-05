@@ -35,14 +35,15 @@ export async function commitAll(repoRoot: string, branch: string, message: strin
     throw new Error(`Refusing to commit task changes directly on ${branch}; name a task branch`);
   }
   await git(["check-ref-format", "--branch", branch], repoRoot, env);
+  if (!(await git(["status", "--porcelain"], repoRoot, env)).stdout.trim()) {
+    throw new Error(`commit_changes called but ${repoRoot} has no changes to commit`);
+  }
   const current = (await git(["branch", "--show-current"], repoRoot, env)).stdout.trim();
   if (current !== branch) {
     const exists = await git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], repoRoot, env).then(() => true, () => false);
     await git(exists ? ["switch", branch] : ["switch", "-c", branch], repoRoot, env);
   }
   await git(["add", "-A"], repoRoot, env);
-  const staged = (await git(["diff", "--cached", "--name-only"], repoRoot, env)).stdout.trim();
-  if (!staged) throw new Error(`commit_changes called but ${repoRoot} has no changes to commit`);
   await git(["commit", "-m", message], repoRoot, env);
   return (await git(["rev-parse", "HEAD"], repoRoot, env)).stdout.trim();
 }

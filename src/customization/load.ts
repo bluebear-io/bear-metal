@@ -107,8 +107,12 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
   if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
   if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");
   if (customization.tools !== undefined) {
-    for (const tool of stringArray(customization.tools, "customizeTask result.tools")) {
+    const tools = stringArray(customization.tools, "customizeTask result.tools");
+    for (const tool of tools) {
       if (!(AGENT_TOOL_CHOICES as readonly string[]).includes(tool)) throw new Error(`customizeTask result.tools: unknown tool ${tool}`);
+      if ((tool === "edit" || tool === "write" || tool === "commit_changes") && !tools.includes("push_for_review")) {
+        throw new Error(`customizeTask result.tools: ${tool} needs push_for_review, or the workspace is deleted with the changes`);
+      }
     }
   }
   return value as TaskCustomization;

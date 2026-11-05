@@ -42,5 +42,7 @@ describe("commitAll", () => {
     await git(repo, "checkout", "--", "README.md");
     await expect(commitAll(repo, "feat/ABC-1/empty", "x", env)).rejects.toThrow("has no changes to commit");
     expect(await git(repo, "log", "--format=%s", "--all")).toBe("init");
+    expect(await git(repo, "branch", "--show-current")).toBe("main");
+    expect(await git(repo, "branch", "--list", "feat/ABC-1/empty")).toBe("");
   });
 });

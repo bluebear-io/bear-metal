@@ -57,6 +57,6 @@ describe("Slack research tools", () => {
   });
 
   it("narrows to the role's tools and never widens past the research set", async () => {
-    expect(await researchTools(["read", "grep", "linear_read", "edit", "write", "github_dispatch"])).toEqual(["linear_read", "read", "grep"]);
+    expect(await researchTools(["read", "grep", "linear_read", "edit", "write", "push_for_review", "github_dispatch"])).toEqual(["linear_read", "read", "grep"]);
   });
 });
