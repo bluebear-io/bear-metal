@@ -1,10 +1,13 @@
 import { access } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isAgentToolChoice } from "./tools.js";
 import type { BearMetalConfig, LlmProvider, SecretGetter, TaskCustomization } from "./types.js";
 
 const ALLOWED_EXTENSIONS = [".js", ".mjs", ".ts", ".mts"] as const;
 const PROVIDERS = new Set<LlmProvider>(["anthropic", "openai", "google", "amazon-bedrock"]);
+// The workspace is deleted when a task ends, so changes survive only through push_for_review.
+const WORKSPACE_CHANGING_TOOLS = ["edit", "write", "commit_changes"];
 const KEY_BASED_PROVIDERS = new Set(["anthropic", "openai", "google"]);
 
 export async function loadBearMetalConfig(env: NodeJS.ProcessEnv = process.env): Promise<Readonly<BearMetalConfig>> {
@@ -106,6 +109,15 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
   }
   if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
   if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");
+  if (customization.tools !== undefined) {
+    const tools = stringArray(customization.tools, "customizeTask result.tools");
+    const unknown = tools.find((tool) => !isAgentToolChoice(tool));
+    if (unknown !== undefined) throw new Error(`customizeTask result.tools: unknown tool ${unknown}`);
+    const changing = tools.find((tool) => WORKSPACE_CHANGING_TOOLS.includes(tool));
+    if (changing !== undefined && !tools.includes("push_for_review")) {
+      throw new Error(`customizeTask result.tools: ${changing} needs push_for_review, or the workspace is deleted with the changes`);
+    }
+  }
   return value as TaskCustomization;
 }
 

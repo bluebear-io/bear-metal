@@ -2,8 +2,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { narrowTools } from "../customization/tools.js";
+import type { AgentToolChoice } from "../customization/types.js";
 import {
   push,
+  commitAll,
   createLogger,
   getCurrentBranch,
   getRemoteRef,
@@ -33,6 +36,15 @@ import type {
 import { SLACK_READ_OPERATIONS } from "../agent-tools/slack-read.js";
 import { redactCredentials, redactSensitiveText } from "../agent-tools/transport.js";
 import { redactTraceText, traceText } from "./trace.js";
+
+// Tools that end or hand back a task; a role's tool list never removes them, or the task could not finish.
+const HAND_BACK_TOOLS: ReadonlySet<string> = new Set([
+  "respond_to_ticket_reporter",
+  "agree_with_github_message",
+  "disagree_with_github_message",
+  "respond_to_comment_writer",
+  "mark_github_message_completed",
+]);
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -74,6 +86,8 @@ export async function runPiWorker(input: {
   llmModel: string;
   llmModelArn: string | null;
   pullRequestLabels?: readonly string[];
+  /** From `customizeTask`; narrows the agent's tools. Undefined keeps the default set. */
+  allowedTools?: readonly AgentToolChoice[];
 }): Promise<DispatchResult> {
   input.signal?.throwIfAborted();
   let decision: DispatchResult | undefined;
@@ -268,6 +282,23 @@ export async function runPiWorker(input: {
     },
   });
 
+  const commitChanges = defineTool({
+    name: "commit_changes",
+    label: "Commit changes",
+    description: "Switch to the task branch (creating it when missing), stage every change in the repository, and commit it.",
+    parameters: Type.Object({
+      repoRoot: Type.String({ description: "Absolute path to the git repository root containing the changes." }),
+      branch: Type.String({ description: "Task branch to commit on, following the repository's branching strategy. Never main or master." }),
+      message: Type.String({ description: "Commit message following the repository's commit convention." }),
+    }),
+    execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
+      const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
+      const sha = await commitAll(repoRoot, params.branch, params.message, input.gitEnv);
+      return { content: [{ type: "text", text: `Committed ${sha} on ${params.branch}.` }], details: { sha } };
+    },
+  });
+
   const pushForReview = defineTool({
     name: "push_for_review",
     label: "Push for review",
@@ -330,29 +361,7 @@ export async function runPiWorker(input: {
   }
   const model = resolveSessionModel(modelRuntime, { provider: input.llmProvider, model: input.llmModel, modelArn: input.llmModelArn });
 
-  const agentsMd = await readAgentsMd(workspaceRoot);
-  const prompt = buildWorkerPrompt(input.context, {
-    repoRoot: workspaceRoot,
-    agentsMd,
-    customSystemPrompt: input.systemPrompt ?? undefined,
-    hasAgentTools: input.agentToolGateway !== undefined,
-  });
-  input.onTraceEvent?.("prompt", { text: redactTraceText(prompt) });
-  const workspaceDir = input.context.cloneScript.workspaceDir;
-  const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
-
-  input.onAgentStarted?.({
-    state: input.context.state,
-    ticket: input.context.ticket,
-    pullRequests: input.context.pullRequests,
-    prs: input.prs ?? [],
-    prompt,
-  });
-
   const isNew = input.context.state === "new";
-  const stateTools = isNew
-    ? (["respond_to_ticket_reporter", "push_for_review"] as const)
-    : (["respond_to_ticket_reporter", "agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "push_for_review"] as const);
   const stateCustomTools = isNew
     ? [respondToTicketReporter, pushForReview]
     : [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
@@ -363,6 +372,33 @@ export async function runPiWorker(input: {
         workspaceRoot,
       }, input.signal)
     : [];
+  const allTools = [
+    ...createWorkspaceGuardedTools(workspaceRoot, input.gitEnv),
+    ...(input.allowedTools?.includes("commit_changes") ? [commitChanges] : []),
+    ...stateCustomTools,
+    ...agentTools,
+  ];
+  const customTools = narrowTools(allTools, input.allowedTools, HAND_BACK_TOOLS);
+  const toolNames = customTools.map((tool) => tool.name);
+
+  const agentsMd = await readAgentsMd(workspaceRoot);
+  const prompt = buildWorkerPrompt(input.context, {
+    repoRoot: workspaceRoot,
+    agentsMd,
+    customSystemPrompt: input.systemPrompt ?? undefined,
+    hasAgentTools: agentTools.some((tool) => toolNames.includes(tool.name)),
+    allowedTools: input.allowedTools === undefined ? undefined : toolNames,
+  });
+  input.onTraceEvent?.("prompt", { text: redactTraceText(prompt) });
+  const workspaceDir = input.context.cloneScript.workspaceDir;
+
+  input.onAgentStarted?.({
+    state: input.context.state,
+    ticket: input.context.ticket,
+    pullRequests: input.context.pullRequests,
+    prs: input.prs ?? [],
+    prompt,
+  });
 
   let usage: DispatchUsage | null = null;
   const toolCalls: DispatchToolCall[] = [];
@@ -373,12 +409,8 @@ export async function runPiWorker(input: {
     cwd: workspaceRoot,
     modelRuntime,
     model,
-    tools: ["read", "bash", "edit", "write", "grep", "find", "ls", ...stateTools, ...agentTools.map((tool) => tool.name)],
-    customTools: [
-      ...guardedTools,
-      ...stateCustomTools,
-      ...agentTools,
-    ],
+    tools: toolNames,
+    customTools,
   });
   const session = runtime.session;
   const unsubscribe = session.subscribe((event) => {
