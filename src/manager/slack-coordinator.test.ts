@@ -45,10 +45,12 @@ function makeCoordinator(input: {
   runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>;
   linear?: Partial<LinearIntegration>;
   wakeResearch?: () => void;
+  isReadOnlyChannel?: (channel: string) => Promise<boolean>;
   logger?: ReturnType<typeof createLogger>;
 }) {
   return new SlackCoordinator({
     db: input.db, api: input.api,
+    isReadOnlyChannel: input.isReadOnlyChannel,
     botUserId: "UBOT",
     linear: { findUserIdByEmail: async () => "linear-user-1", ...input.linear } as LinearIntegration,
     github: { getInstallationToken: async () => "token" } as ConstructorParameters<typeof SlackCoordinator>[0]["github"],
@@ -59,6 +61,21 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
+  it("suspends previously queued customer work without responses or reactions", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> help" }]);
+    const runAgent = vi.fn(async () => {});
+    const coordinator = makeCoordinator({ db, api, runAgent, isReadOnlyChannel: async () => true });
+    try {
+      await coordinator.wake(key);
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(api.react).not.toHaveBeenCalled();
+      expect(api.replyResearch).not.toHaveBeenCalled();
+      expect(replies).toEqual([]);
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+    } finally { await coordinator.stop(); await db.close(); }
+  });
   it("logs a failed archived-channel suspension and retries it without rejecting wake", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");

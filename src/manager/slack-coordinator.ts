@@ -49,6 +49,7 @@ export class SlackCoordinator {
     logger: Logger;
     pollIntervalMs: number;
     wakeResearch: () => void;
+    isReadOnlyChannel?: (channel: string) => Promise<boolean>;
     runAgent?: typeof runSlackAgent;
   }) {}
 
@@ -141,6 +142,10 @@ export class SlackCoordinator {
   }
 
   private async runThread(key: SlackThreadKey): Promise<void> {
+    if (await this.input.isReadOnlyChannel?.(key.channelId)) {
+      await this.input.db.suspendSlackChannel(key.workspaceId, key.channelId);
+      return;
+    }
     const attemptedReactions = new Set<string>();
     for (;;) {
       await this.deliverUnsubscribeReactions(key, attemptedReactions);

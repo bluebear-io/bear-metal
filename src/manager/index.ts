@@ -110,6 +110,7 @@ const slack =
     ? new SlackIntegration({
       token: slackToken,
       channel: customizationConfig.slack.notificationChannel,
+      readOnlyChannelPattern: customizationConfig.slack.customerIntake?.channelNamePattern,
       logger: createLogger({ level: runtimeConfig.logLevel, name: "slack", pretty: runtimeConfig.logPretty }),
     })
     : undefined;
@@ -153,6 +154,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     db, api: threadApi, linear, github, config: customizationConfig, gateway: slackGateway, logger, botUserId: auth.user_id,
     pollIntervalMs: runtimeConfig.pollIntervalMs,
     wakeResearch: () => slackResearch?.wake(),
+    isReadOnlyChannel: (channel) => slack.isReadOnlyChannel(channel),
   });
   slackResearch = new SlackResearchWorker({
     db, github, config: customizationConfig, gateway: slackGateway, logger,
@@ -173,6 +175,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     botUserId: auth.user_id,
     workspaceId: auth.team_id,
     logger,
+    isReadOnlyChannel: (channel) => slack.isReadOnlyChannel(channel),
     wake: (key) => slackCoordinator!.wake(key),
     ...(intakeConfig ? { customerIntake: { triggerReaction: intakeConfig.triggerReaction, wake: () => slackIntake!.wake() } } : {}),
   });

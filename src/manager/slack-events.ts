@@ -38,6 +38,7 @@ export function createSlackEventsRouter(input: {
   workspaceId: string;
   logger: Logger;
   wake: (key: SlackThreadKey) => Promise<void>;
+  isReadOnlyChannel?: (channel: string) => Promise<boolean>;
   customerIntake?: { triggerReaction: string; wake: () => void };
 }): Router {
   if (!input.signingSecret || !input.botUserId || !input.workspaceId) throw new Error("Slack events require signing secret, bot user ID, and workspace ID");
@@ -86,6 +87,11 @@ export function createSlackEventsRouter(input: {
         return;
       }
       if (!event || (event.type !== "app_mention" && event.type !== "message")) {
+        res.sendStatus(200);
+        return;
+      }
+      if (event.channel && await input.isReadOnlyChannel?.(event.channel)) {
+        await input.db.suspendSlackChannel(input.workspaceId, event.channel);
         res.sendStatus(200);
         return;
       }

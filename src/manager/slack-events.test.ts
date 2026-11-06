@@ -17,6 +17,32 @@ function signed(body: object) {
 }
 
 describe("Slack event intake", () => {
+  it.each(["app_mention", "message"])("does not activate customer conversations for %s", async (type) => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const key = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
+    await db.followSlackThread(key, "100.0");
+    const wake = vi.fn(async () => {});
+    const intakeWake = vi.fn();
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1",
+      logger: createLogger({ name: "test", level: "silent" }), wake, isReadOnlyChannel: async () => true,
+      customerIntake: { triggerReaction: "bear_paw_seen", wake: intakeWake } }));
+    const send = async (event: object) => {
+      const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
+      return request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text);
+    };
+    try {
+      expect((await send({ type, channel: "C1", ts: "100.1", thread_ts: "100.0", user: "U1", text: "<@UBOT> help" })).status).toBe(200);
+      expect(wake).not.toHaveBeenCalled();
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect((await send({ type: "reaction_added", reaction: "bear_paw_seen", user: "U1", item: { type: "message", channel: "C1", ts: "100.1" } })).status).toBe(200);
+      expect(intakeWake).toHaveBeenCalledOnce();
+      expect(wake).not.toHaveBeenCalled();
+    } finally { await db.close(); }
+  });
   it("abandons a deleted message and its pending edits", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
