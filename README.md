@@ -401,7 +401,7 @@ Notifications and the coding-agent read-only app require none of these subscript
 | `message.groups` | `groups:history` | Receive subsequent private-channel messages, edits and deletions in followed threads |
 | `message.im` | `im:history` | Receive one-to-one DM requests, threaded replies, edits and deletions |
 | `message.mpim` | `mpim:history` | Receive group-DM message events; [Slack's event reference](https://docs.slack.dev/reference/events/message.mpim/) describes this separate conversation type |
-| `reaction_added` | `reactions:read` | Receive customer intake reactions; needed only with `slack.customerIntake` |
+| `reaction_added` | `reactions:read` | Receive intake reactions; needed only when `customizeTask` enables Slack intake |
 
 Group DMs are not treated as one-to-one DMs: `message.mpim` alone does not activate an unfollowed conversation. Only `app_mention` events and one-to-one `message.im` events activate following; ordinary messages are processed only in already-followed threads.
 
@@ -419,20 +419,28 @@ Ask Bear Metal to stop bothering or following a thread to unsubscribe. The harne
 
 When Slack rejects a reply with `is_archived`, coordination stops durably for all followed threads in that workspace's channel. The rejection is logged; tasks and research are retained, no reply is marked delivered, and no unsubscribe reaction is generated. If saving the suspension fails, the database error is logged and a later poll retries the pending reply. After unarchiving, a new mention resumes its thread from the new message. Other reply failures retain their existing retry or uncertain-delivery handling.
 
-#### Customer channel intake
+#### Channel intake through customizeTask
 
-Set `slack.customerIntake` to turn customer conversations into delegated tickets without a Bear Metal mention. It requires the interactive bot setup, the `reaction_added` event, and the bot's membership in each customer channel; matching channels the bot has not joined are skipped with a warning.
+All intake policy comes from `customizeTask`. At startup, when Slack is configured, Bear Metal calls it with `type: "coordinator"`, `trigger: "slack"`, and `slackIntake: "configure"`. Return an optional `slackIntake` policy alongside the normal model and workspace customization. Omitting the policy disables intake; the configuration call does not start an agent or build a workspace. The policy is resolved once per manager startup, so restart after changing it.
 
-| Field | Purpose |
+| Policy field | Purpose |
 | --- | --- |
-| `channelNamePattern` | `RegExp` matched against channel names, for example `/^customer_.+$/`. Other channels are never read for intake |
-| `triggerReaction` | Emoji name, without colons, that requests a ticket for the reacted message |
-| `ownerEmail` | Linear user who is assigned every intake ticket and becomes its human owner |
+| `channelNamePattern` | Non-stateful `RegExp` selecting channel names, such as `/^support-.+$/` |
+| `triggerReaction` | Emoji name without colons |
+| `sweepIntervalMs` | Positive interval between sweeps |
+| `initialLookbackMs` | Positive history window for a channel's first sweep |
+| `ownerEmail` | Linear user assigned intake tickets |
+| `isEligibleReactor(user, workspaceId)` | Boolean or async Boolean authorization decision using the verified Slack user |
+| `reactionInstructions` / `sweepInstructions` | Instructions defining what work should become a ticket |
+| `readOnlyChannels` | Block messages, replies, reactions, files and notification fallbacks to selected channels; mentions cannot activate conversational handling there |
 
-- **Reaction:** a full member of the bot's workspace adds `triggerReaction` to a message in a matching channel. Reactions from guests, bots and Slack Connect users are ignored. Bear Metal reads the thread and creates one ticket for the message, unless an intake ticket in the same thread already asks for the same outcome. A failed attempt is retried with backoff, up to five attempts. A reaction that failed, or was ignored because the bot had not joined the channel, is queued again when the member removes and re-adds it.
-- **Daily sweep:** once every 24 hours, Bear Metal reviews each matching channel's new top-level messages and their threads, and creates a ticket for each thread with a request that needs engineering work. A sweep never adds a ticket to a thread that already has an intake ticket; react to request another one. Conversations that need no work produce no ticket. The first sweep reads the last 24 hours; later sweeps start where the previous successful sweep of that channel ended, so a failed channel is retried on the next run. Replies posted to threads whose first message is older than the sweep window are not reviewed; use the reaction for them.
-- **Tickets** contain the customer's request, conversation context and expected outcome, plus the Slack message link, channel, original author and intake source. They are assigned to `ownerEmail`, receive the coding task's `ticketLabels` for a Slack trigger, and are delegated to Bear Metal. Intake never posts in customer channels.
-- **Duplicates:** each Slack message produces at most one intake ticket across reactions, retries and sweeps. A creation Linear rejected is retried by the next attempt, reaction or sweep. If Linear's answer is lost, for example after a network error, or the manager stops before recording it, that message fails visibly instead of risking a second ticket. Ticket destinations must be a team, project and cycle from Linear's lists, with the project and cycle belonging to the team.
+Reaction and sweep agent tasks call `customizeTask` normally with `slackIntake: "reaction"` or `"sweep"`, so their model, workspace, limits and additional instructions can also be customized. Keep workspace-specific names, ownership and task-selection rules in your customization module.
+
+Intake requires the interactive bot setup, the `reaction_added` subscription, and membership in selected channels. Channels the bot has not joined are logged and skipped. Existing `slack.customerIntake` configuration is rejected; move it into the `customizeTask` return value and supply the policy fields above.
+
+Each reaction targets one message; sweeps create at most one intake ticket per thread. Tickets include the request, context, expected outcome and original Slack source. Later sweeps resume from the last successful channel cursor. New replies on threads whose first message is older than the sweep window are not reviewed; use the reaction for those requests.
+
+An uncertain ticket-creation result fails visibly rather than risking a duplicate. Intake itself has no Slack-writing tools. When `readOnlyChannels` is enabled, the shared writer also enforces silence for other bot flows, and channel lookup failures block outgoing writes.
 
 Workers retain every PR associated with a ticket across iterations, including PRs in repositories that were not pushed again. Slack notifications list every PR in each opened, updated, or validation-delayed group.
 

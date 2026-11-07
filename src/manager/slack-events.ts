@@ -39,7 +39,7 @@ export function createSlackEventsRouter(input: {
   logger: Logger;
   wake: (key: SlackThreadKey) => Promise<void>;
   isReadOnlyChannel?: (channel: string) => Promise<boolean>;
-  customerIntake?: { triggerReaction: string; wake: () => void };
+  intake?: { triggerReaction: string; wake: () => void };
 }): Router {
   if (!input.signingSecret || !input.botUserId || !input.workspaceId) throw new Error("Slack events require signing secret, bot user ID, and workspace ID");
   const router = Router();
@@ -70,7 +70,7 @@ export function createSlackEventsRouter(input: {
       }
       const event = payload.event;
       if (event?.type === "reaction_added") {
-        const intake = input.customerIntake;
+        const intake = input.intake;
         if (!intake || event.reaction !== intake.triggerReaction || event.item?.type !== "message") {
           res.sendStatus(200);
           return;

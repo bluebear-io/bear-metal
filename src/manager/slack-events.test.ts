@@ -27,7 +27,7 @@ describe("Slack event intake", () => {
     const app = express();
     app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1",
       logger: createLogger({ name: "test", level: "silent" }), wake, isReadOnlyChannel: async () => true,
-      customerIntake: { triggerReaction: "bear_paw_seen", wake: intakeWake } }));
+      intake: { triggerReaction: "bear_paw_seen", wake: intakeWake } }));
     const send = async (event: object) => {
       const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
       return request(app).post("/slack/events").set("Content-Type", "application/json")
@@ -128,7 +128,7 @@ describe("Slack event intake", () => {
     const app = express();
     app.use("/slack", createSlackEventsRouter({
       db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }),
-      wake: async () => {}, customerIntake: { triggerReaction: "bear_paw_seen", wake: wakeIntake },
+      wake: async () => {}, intake: { triggerReaction: "bear_paw_seen", wake: wakeIntake },
     }));
     const send = async (event: object) => {
       const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });

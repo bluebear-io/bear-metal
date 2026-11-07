@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { BearMetalConfig } from "../customization/types.js";
+import type { BearMetalConfig, SlackIntakePolicy } from "../customization/types.js";
 import { InvalidInputLinearError } from "@linear/sdk";
 import { SqlDbClient } from "../db/client.js";
 import { LinearRefusedError } from "../shared/integrations/linear/client.js";
 import { createLogger } from "../shared/logger.js";
 import type { runSlackAgent } from "../worker/slack-agent.js";
-import { SLACK_INTAKE_REACTION_MAX_ATTEMPTS, SlackCustomerIntake } from "./slack-intake.js";
+import { SLACK_INTAKE_REACTION_MAX_ATTEMPTS, SlackIntake } from "./slack-intake.js";
 import { slackTsFromMs, type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -26,8 +26,8 @@ function ts(offsetMs: number): string {
 
 class FakeSlack {
   channels: SlackIntakeChannel[] = [
-    { id: "CACME", name: "customer_acme", isMember: true },
-    { id: "CGLOBEX", name: "customer_globex", isMember: false },
+    { id: "CACME", name: "support-acme", isMember: true },
+    { id: "CGLOBEX", name: "support-globex", isMember: false },
     { id: "CENG", name: "engineering", isMember: true },
   ];
   users: Record<string, SlackIntakeUser> = {
@@ -96,18 +96,19 @@ async function call(tools: ToolDefinition[], name: string, params: object) {
 
 const ticketArgs = (sourceTs: string, title = "Export audit logs as CSV") => ({
   sourceTs, teamId: "team-1", title,
-  customerRequest: "Please let us export audit logs as CSV.",
+  request: "Please let us export audit logs as CSV.",
   conversationContext: "Acme's compliance team exports logs weekly.",
   expectedOutcome: "Audit logs page offers a CSV download.",
 });
 
-describe("Slack customer intake", () => {
+describe("Slack channel intake", () => {
   let db: SqlDbClient;
   let slack: FakeSlack;
   let linear: FakeLinear;
   let agent: ReturnType<typeof vi.fn<(input: AgentInput) => Promise<void>>>;
-  let intake: SlackCustomerIntake;
+  let intake: SlackIntake;
   let now: number;
+  let policy: SlackIntakePolicy;
 
   beforeEach(async () => {
     db = new SqlDbClient("sqlite::memory:", 5);
@@ -116,10 +117,14 @@ describe("Slack customer intake", () => {
     linear = new FakeLinear();
     agent = vi.fn(async () => {});
     now = NOW;
-    intake = new SlackCustomerIntake({
+    policy = { channelNamePattern: /^support-.+$/, triggerReaction: "ticket", ownerEmail: "owner@example.com",
+      sweepIntervalMs: DAY, initialLookbackMs: DAY, readOnlyChannels: true,
+      isEligibleReactor: (user, workspaceId) => user.teamId === workspaceId && !user.isBot && !user.deleted && !user.guest,
+      reactionInstructions: "Track the flagged request.", sweepInstructions: "Find unresolved engineering requests." };
+    intake = new SlackIntake({
       db, api: slack, linear, github: { getInstallationToken: async () => "token" },
       config: { customizeTask: async () => ({ llm: { provider: "anthropic", model: "m" }, buildWorkspace: async () => {}, ticketLabels: ["signal:slack"] }) } as unknown as BearMetalConfig,
-      intake: { channelNamePattern: /^customer_.+$/, triggerReaction: "bear_paw_seen", ownerEmail: "owner@example.com" },
+      intake: policy,
       workspaceId: "T1", botUserId: "UBOT", logger: createLogger({ name: "test", level: "silent" }), pollIntervalMs: 60_000,
       now: () => now,
       runAgent: async (input) => {
@@ -152,7 +157,7 @@ describe("Slack customer intake", () => {
       expect(task).toMatchObject({ type: "coordinator", slack: { channelId: "CACME", threadTs: "100.1", sourceTs: "100.2" } });
       expect(prompt).toContain("\"targetMessageTs\":\"100.2\"");
       expect(prompt).not.toContain("bot noise");
-      await call(tools, "create_customer_ticket", ticketArgs("100.2"));
+      await call(tools, "create_intake_ticket", ticketArgs("100.2"));
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
@@ -160,13 +165,13 @@ describe("Slack customer intake", () => {
     expect(linear.created).toHaveLength(1);
     const created = linear.created[0]!;
     expect(created.assigneeId).toBe("linear-owner");
-    expect(created.description).toContain("## Customer request\nPlease let us export audit logs as CSV.");
+    expect(created.description).toContain("## Request\nPlease let us export audit logs as CSV.");
     expect(created.description).toContain("## Conversation context\nAcme's compliance team exports logs weekly.");
     expect(created.description).toContain("## Expected outcome\nAudit logs page offers a CSV download.");
     expect(created.description).toContain("- Message: https://example.slack.com/archives/CACME/p1002");
-    expect(created.description).toContain("- Channel: #customer_acme");
+    expect(created.description).toContain("- Channel: #support-acme");
     expect(created.description).toContain("- Requested by: Casey Customer (Slack user `UCUSTOMER`)");
-    expect(created.description).toContain("- Intake: `:bear_paw_seen:` reaction by Dana Member");
+    expect(created.description).toContain("- Intake: `:ticket:` reaction by Dana Member");
     expect(linear.delegated).toEqual(["issue-1"]);
     expect(linear.labeled).toEqual([{ ticketId: "issue-1", labels: ["signal:slack"] }]);
     expect(await db.hasSlackLinkedTicket("issue-1")).toBe(true);
@@ -174,7 +179,7 @@ describe("Slack customer intake", () => {
     expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
-  it("ignores reactions outside customer channels, in channels the bot has not joined, and from customers, guests, or other workspaces", async () => {
+  it("ignores reactions outside selected channels, in channels the bot has not joined, and from customers, guests, or other workspaces", async () => {
     slack.threads["CENG/200.1"] = [message("200.1", "UMEMBER", "internal")];
     slack.threads["CGLOBEX/300.1"] = [message("300.1", "UCUSTOMER", "Please add SAML")];
     seedThread();
@@ -191,7 +196,7 @@ describe("Slack customer intake", () => {
 
   it("does not create a second ticket for repeated reactions or a message a sweep already ticketed", async () => {
     seedThread();
-    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_customer_ticket", ticketArgs("100.2")); });
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("100.2")); });
     expect(await db.recordSlackIntakeReaction(reaction())).toBe(true);
     expect(await db.recordSlackIntakeReaction(reaction())).toBe(false);
     await intake.processReactions();
@@ -239,7 +244,7 @@ describe("Slack customer intake", () => {
     slack.threads["CACME/400.1"] = [message("400.1", "UCUSTOMER", "Please add SSO")];
     vi.spyOn(db, "retrySlackIntakeReaction").mockRejectedValueOnce(new Error("database unavailable"));
     agent.mockImplementationOnce(async () => { throw new Error("agent crashed"); });
-    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_customer_ticket", ticketArgs("400.1", "Add SSO")); });
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("400.1", "Add SSO")); });
     await db.recordSlackIntakeReaction(reaction());
     await db.recordSlackIntakeReaction(reaction({ messageTs: "400.1" }));
     await intake.processReactions();
@@ -252,8 +257,8 @@ describe("Slack customer intake", () => {
     seedThread();
     linear.listSlackTicketDestinations.mockRejectedValueOnce(new Error("rate limited"));
     agent.mockImplementation(async ({ tools }) => {
-      await expect(call(tools, "create_customer_ticket", ticketArgs("100.2"))).rejects.toThrow("rate limited");
-      await call(tools, "create_customer_ticket", ticketArgs("100.2"));
+      await expect(call(tools, "create_intake_ticket", ticketArgs("100.2"))).rejects.toThrow("rate limited");
+      await call(tools, "create_intake_ticket", ticketArgs("100.2"));
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
@@ -267,7 +272,7 @@ describe("Slack customer intake", () => {
   ])("retries a Linear creation refused with %s on the next attempt without duplicating it", async (_name, refusal) => {
     seedThread();
     linear.createSlackCodingTicket.mockRejectedValueOnce(refusal());
-    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_customer_ticket", ticketArgs("100.2")); });
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("100.2")); });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
     expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toMatchObject({ state: "failed", ticketId: null });
@@ -283,7 +288,7 @@ describe("Slack customer intake", () => {
     linear.createSlackCodingTicket.mockRejectedValueOnce(new Error("socket hang up"));
     let error: unknown;
     agent.mockImplementation(async ({ tools }) => {
-      error = await call(tools, "create_customer_ticket", ticketArgs("100.2")).catch((err: unknown) => err);
+      error = await call(tools, "create_intake_ticket", ticketArgs("100.2")).catch((err: unknown) => err);
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
@@ -309,10 +314,10 @@ describe("Slack customer intake", () => {
   it("rejects Linear destinations that list_ticket_destinations did not return for the team", async () => {
     seedThread();
     agent.mockImplementation(async ({ tools }) => {
-      await expect(call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), teamId: "team-x" })).rejects.toThrow("teamId team-x");
-      await expect(call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), teamId: "team-2", projectId: "project-1" })).rejects.toThrow("projectId project-1");
-      await expect(call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), cycleId: "cycle-2" })).rejects.toThrow("cycleId cycle-2");
-      await call(tools, "create_customer_ticket", { ...ticketArgs("100.2"), projectId: "project-1" });
+      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), teamId: "team-x" })).rejects.toThrow("teamId team-x");
+      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), teamId: "team-2", projectId: "project-1" })).rejects.toThrow("projectId project-1");
+      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), cycleId: "cycle-2" })).rejects.toThrow("cycleId cycle-2");
+      await call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), projectId: "project-1" });
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
@@ -320,7 +325,43 @@ describe("Slack customer intake", () => {
     expect(linear.listSlackTicketDestinations).toHaveBeenCalledTimes(1);
   });
 
-  it("sweeps only joined customer channels over the last 24 hours on the first run, then from the previous sweep", async () => {
+  it("uses custom channel selection, timing, instructions and task context", async () => {
+    policy.channelNamePattern = /^engineering$/;
+    policy.sweepIntervalMs = 2 * 60 * 60 * 1000;
+    policy.initialLookbackMs = 7 * DAY;
+    policy.sweepInstructions = "Only track release automation requests.";
+    slack.history.CENG = [message(ts(-60000), "UMEMBER", "Please automate release notes")];
+    agent.mockImplementation(async ({ task, prompt, tools }) => {
+      expect(task.slackIntake).toBe("sweep");
+      expect(prompt).toContain(policy.sweepInstructions);
+      expect(prompt).not.toContain("BlueBear");
+      await call(tools, "finish_review", { summary: "Reviewed." });
+    });
+    await intake.sweepIfDue();
+    expect(slack.historyCalls).toEqual([{ channelId: "CENG", oldest: ts(-7 * DAY), latest: ts(0) }]);
+    now += policy.sweepIntervalMs - 1;
+    await intake.sweepIfDue();
+    expect(slack.historyCalls).toHaveLength(1);
+    now += 1;
+    await intake.sweepIfDue();
+    expect(slack.historyCalls[1]).toEqual({ channelId: "CENG", oldest: ts(0), latest: ts(policy.sweepIntervalMs) });
+  });
+
+  it("honors the deployment's async reactor authorization and reaction instructions", async () => {
+    seedThread();
+    policy.isEligibleReactor = async (user) => user.id === "UCUSTOMER";
+    policy.reactionInstructions = "Track this partner's request.";
+    agent.mockImplementation(async ({ task, prompt, tools }) => {
+      expect(task.slackIntake).toBe("reaction");
+      expect(prompt).toContain(policy.reactionInstructions);
+      await call(tools, "create_intake_ticket", ticketArgs("100.2"));
+    });
+    await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UCUSTOMER" }));
+    await intake.processReactions();
+    expect(linear.created).toHaveLength(1);
+  });
+
+  it("sweeps only joined selected channels over the last 24 hours on the first run, then from the previous sweep", async () => {
     slack.history.CACME = [message(ts(-2 * 60 * 60 * 1000), "UCUSTOMER", "Thanks, all good!")];
     slack.history.CENG = [message(ts(-60 * 1000), "UMEMBER", "please fix the build")];
     agent.mockImplementation(async ({ tools }) => { await call(tools, "finish_review", { summary: "No engineering work requested." }); });
@@ -351,23 +392,23 @@ describe("Slack customer intake", () => {
     ];
     agent.mockImplementation(async ({ tools, prompt }) => {
       expect(prompt).toContain("SSO login fails");
-      await expect(call(tools, "create_customer_ticket", ticketArgs("1.0"))).rejects.toThrow("not an eligible source");
-      await call(tools, "create_customer_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
-      await call(tools, "create_customer_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
-      await expect(call(tools, "create_customer_ticket", ticketArgs(reply, "Investigate EU SSO"))).rejects.toThrow("at most one ticket per thread");
+      await expect(call(tools, "create_intake_ticket", ticketArgs("1.0"))).rejects.toThrow("not an eligible source");
+      await call(tools, "create_intake_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
+      await call(tools, "create_intake_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
+      await expect(call(tools, "create_intake_ticket", ticketArgs(reply, "Investigate EU SSO"))).rejects.toThrow("at most one ticket per thread");
       await call(tools, "finish_review", { summary: "One SSO bug." });
     });
     await intake.sweep(NOW);
     expect(linear.created).toHaveLength(1);
-    expect(linear.created[0]!.description).toContain("- Intake: Daily customer channel sweep");
+    expect(linear.created[0]!.description).toContain("- Intake: Scheduled channel sweep");
     expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: root })).toMatchObject({ state: "delegated", threadTs: root, trigger: "sweep" });
 
     await db.setSlackIntakeSweepCursor("T1", "CACME", ts(-DAY));
     agent.mockReset();
     agent.mockImplementation(async ({ tools, prompt }) => {
       expect(prompt).toContain("\"ticket\":\"DEN-1\"");
-      await call(tools, "create_customer_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
-      await expect(call(tools, "create_customer_ticket", ticketArgs(reply, "Fix SSO login again"))).rejects.toThrow("already has intake ticket DEN-1");
+      await call(tools, "create_intake_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
+      await expect(call(tools, "create_intake_ticket", ticketArgs(reply, "Fix SSO login again"))).rejects.toThrow("already has intake ticket DEN-1");
       await call(tools, "finish_review", { summary: "Already tracked." });
     });
     await intake.sweep(NOW + 1000);

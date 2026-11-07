@@ -37,18 +37,7 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
     callable(slack.getBotToken, "config.slack.getBotToken");
     if (slack.getSigningSecret !== undefined) callable(slack.getSigningSecret, "config.slack.getSigningSecret");
     if (slack.customerIntake !== undefined) {
-      const intake = object(slack.customerIntake, "config.slack.customerIntake");
-      if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("config.slack.customerIntake.channelNamePattern must be a RegExp");
-      if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) {
-        throw new Error("config.slack.customerIntake.channelNamePattern must not use the g or y flag");
-      }
-      if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "config.slack.customerIntake.triggerReaction"))) {
-        throw new Error("config.slack.customerIntake.triggerReaction must be an emoji name without colons");
-      }
-      if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "config.slack.customerIntake.ownerEmail"))) {
-        throw new Error("config.slack.customerIntake.ownerEmail must be an email address");
-      }
-      if (slack.getSigningSecret === undefined) throw new Error("config.slack.customerIntake requires config.slack.getSigningSecret");
+      throw new Error("Return slackIntake from customizeTask instead of config.slack.customerIntake");
     }
   }
   if (config.agentIntegrations !== undefined) {
@@ -118,6 +107,19 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
     if (limits.maxDurationMs !== undefined) positiveInteger(limits.maxDurationMs, "customizeTask result.limits.maxDurationMs");
     if (limits.maxTokens !== undefined) positiveInteger(limits.maxTokens, "customizeTask result.limits.maxTokens");
   }
+  if (customization.slackIntake !== undefined) {
+    const intake = object(customization.slackIntake, "customizeTask result.slackIntake");
+    if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("slackIntake.channelNamePattern must be a RegExp");
+    if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) throw new Error("slackIntake.channelNamePattern must not use the g or y flag");
+    if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "slackIntake.triggerReaction"))) throw new Error("slackIntake.triggerReaction must be an emoji name without colons");
+    if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "slackIntake.ownerEmail"))) throw new Error("slackIntake.ownerEmail must be an email address");
+    positiveInteger(intake.sweepIntervalMs, "slackIntake.sweepIntervalMs");
+    positiveInteger(intake.initialLookbackMs, "slackIntake.initialLookbackMs");
+    if (typeof intake.readOnlyChannels !== "boolean") throw new Error("slackIntake.readOnlyChannels must be a boolean");
+    callable(intake.isEligibleReactor, "slackIntake.isEligibleReactor");
+    nonEmptyString(intake.reactionInstructions, "slackIntake.reactionInstructions");
+    nonEmptyString(intake.sweepInstructions, "slackIntake.sweepInstructions");
+  }
   if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
   if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");
   return value as TaskCustomization;
@@ -152,4 +154,15 @@ function stringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
   for (const [index, entry] of value.entries()) nonEmptyString(entry, `${field}[${index}]`);
   return value as string[];
+}
+
+export async function resolveSlackIntakePolicy(config: BearMetalConfig) {
+  if (!config.slack) return undefined;
+  const customization = validateTaskCustomization(await config.customizeTask({
+    type: "coordinator", id: "slack-intake-configuration", trigger: "slack", slackIntake: "configure",
+  }));
+  if (customization.slackIntake && !config.slack.getSigningSecret) {
+    throw new Error("customizeTask slackIntake requires config.slack.getSigningSecret");
+  }
+  return customization.slackIntake;
 }
