@@ -366,16 +366,16 @@ The table lists the complete scope set for the main app with all supported Slack
 | `chat:write` | Send ticket/coding notifications or interactive replies, including DMs |
 | `chat:write.public` | Send notifications to public channels the bot has not joined; omit when it joins every destination |
 | `channels:history` | Read public-channel messages and threads; receive `message.channels` |
-| `channels:read` | Discover public channels and read their basic information through Slack read tools; find customer intake channels |
+| `channels:read` | Discover public channels and read their basic information through Slack read tools; find intake channels |
 | `groups:history` | Read private-channel messages and threads; receive `message.groups` |
-| `groups:read` | Discover private channels and read their basic information through Slack read tools; find private customer intake channels |
+| `groups:read` | Discover private channels and read their basic information through Slack read tools; find private intake channels |
 | `im:history` | Read one-to-one DMs and their threads; receive `message.im` |
 | `im:read` | Discover one-to-one DM conversations and read their basic information |
 | `mpim:history` | Read group-DM messages and threads; receive `message.mpim` |
 | `mpim:read` | Discover group-DM conversations and read their basic information |
 | `files:read` | Search and download Slack files for coordinator/research context |
 | `files:write` | Upload full research results as Markdown attachments when a summary is provided for an answer longer than 500 characters; [Slack upload APIs require this scope](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/) |
-| `reactions:read` | Receive `reaction_added` for customer intake |
+| `reactions:read` | Receive `reaction_added` for channel intake |
 | `reactions:write` | Add the 👍 acknowledgment after unsubscribe; [required by `reactions.add`](https://docs.slack.dev/reference/methods/reactions.add/) |
 | `users:read` | Read user profiles/lists and resolve a Slack requester's identity for ticket creation |
 | `users:read.email` | Read requester email for Slack-to-Linear ticket assignment and look up a ticket requester's Slack user for DM notifications |
@@ -392,7 +392,7 @@ Read scopes do not bypass conversation membership or workspace policy. Invite th
 
 #### Interactive bot events
 
-Notifications and the coding-agent read-only app require none of these subscriptions. For the full interactive setup, subscribe to the five message events, plus `reaction_added` for customer intake, under **Event Subscriptions → Subscribe to bot events**; for a narrower setup, select the conversation types you use. Slack may add a required scope when you subscribe; approve it by reinstalling.
+Notifications and the coding-agent read-only app require none of these subscriptions. For the full interactive setup, subscribe to the five message events, plus `reaction_added` for channel intake, under **Event Subscriptions → Subscribe to bot events**; for a narrower setup, select the conversation types you use. Slack may add a required scope when you subscribe; approve it by reinstalling.
 
 | Bot event | Required scope | When needed |
 | --- | --- | --- |

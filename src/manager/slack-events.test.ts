@@ -17,7 +17,7 @@ function signed(body: object) {
 }
 
 describe("Slack event intake", () => {
-  it.each(["app_mention", "message"])("does not activate customer conversations for %s", async (type) => {
+  it.each(["app_mention", "message"])("does not activate read-only channel conversations for %s", async (type) => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     const key = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
@@ -159,7 +159,7 @@ describe("Slack event intake", () => {
     }
   });
 
-  it("ignores intake reactions when customer intake is not configured", async () => {
+  it("ignores intake reactions when channel intake is not configured", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     const app = express();

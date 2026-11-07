@@ -61,7 +61,7 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
-  it("suspends previously queued customer work without responses or reactions", async () => {
+  it("suspends previously queued read-only channel work without responses or reactions", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
     const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> help" }]);

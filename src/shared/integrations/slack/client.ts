@@ -202,8 +202,8 @@ export class SlackIntegration implements Integration {
 
   private async assertWritable(channel: string): Promise<void> {
     if (await this.isReadOnlyChannel(channel)) {
-      this.logger.warn({ channel }, "Blocked Slack write to read-only customer channel");
-      throw new SlackThreadReplyRejectedError(`Slack channel ${channel} is read-only`, "read_only_customer_channel");
+      this.logger.warn({ channel }, "Blocked Slack write to read-only channel");
+      throw new SlackThreadReplyRejectedError(`Slack channel ${channel} is read-only`, "read_only_channel");
     }
   }
 

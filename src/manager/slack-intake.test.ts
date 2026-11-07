@@ -33,7 +33,7 @@ class FakeSlack {
   users: Record<string, SlackIntakeUser> = {
     UMEMBER: { id: "UMEMBER", name: "Dana Member", teamId: "T1", isBot: false, deleted: false, guest: false },
     UGUEST: { id: "UGUEST", name: "Gus Guest", teamId: "T1", isBot: false, deleted: false, guest: true },
-    UCUSTOMER: { id: "UCUSTOMER", name: "Casey Customer", teamId: "TCUSTOMER", isBot: false, deleted: false, guest: false },
+    UEXTERNAL: { id: "UEXTERNAL", name: "Casey External", teamId: "TEXTERNAL", isBot: false, deleted: false, guest: false },
   };
   history: Record<string, SlackIntakeMessage[]> = {};
   threads: Record<string, SlackIntakeMessage[]> = {};
@@ -145,8 +145,8 @@ describe("Slack channel intake", () => {
 
   function seedThread() {
     slack.threads["CACME/100.1"] = [
-      message("100.1", "UCUSTOMER", "Our auditors want logs.", { replyCount: 2 }),
-      message("100.2", "UCUSTOMER", "Can you add CSV export for audit logs?", { threadTs: "100.1" }),
+      message("100.1", "UEXTERNAL", "Our auditors want logs.", { replyCount: 2 }),
+      message("100.2", "UEXTERNAL", "Can you add CSV export for audit logs?", { threadTs: "100.1" }),
       message("100.3", "UBOT", "bot noise", { threadTs: "100.1" }),
     ];
   }
@@ -170,7 +170,7 @@ describe("Slack channel intake", () => {
     expect(created.description).toContain("## Expected outcome\nAudit logs page offers a CSV download.");
     expect(created.description).toContain("- Message: https://example.slack.com/archives/CACME/p1002");
     expect(created.description).toContain("- Channel: #support-acme");
-    expect(created.description).toContain("- Requested by: Casey Customer (Slack user `UCUSTOMER`)");
+    expect(created.description).toContain("- Requested by: Casey External (Slack user `UEXTERNAL`)");
     expect(created.description).toContain("- Intake: `:ticket:` reaction by Dana Member");
     expect(linear.delegated).toEqual(["issue-1"]);
     expect(linear.labeled).toEqual([{ ticketId: "issue-1", labels: ["signal:slack"] }]);
@@ -179,13 +179,13 @@ describe("Slack channel intake", () => {
     expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
-  it("ignores reactions outside selected channels, in channels the bot has not joined, and from customers, guests, or other workspaces", async () => {
+  it("ignores reactions outside selected channels, in channels the bot has not joined, and from external users, guests, or other workspaces", async () => {
     slack.threads["CENG/200.1"] = [message("200.1", "UMEMBER", "internal")];
-    slack.threads["CGLOBEX/300.1"] = [message("300.1", "UCUSTOMER", "Please add SAML")];
+    slack.threads["CGLOBEX/300.1"] = [message("300.1", "UEXTERNAL", "Please add SAML")];
     seedThread();
     await db.recordSlackIntakeReaction(reaction({ channelId: "CENG", messageTs: "200.1" }));
     await db.recordSlackIntakeReaction(reaction({ channelId: "CGLOBEX", messageTs: "300.1" }));
-    await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UCUSTOMER" }));
+    await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UEXTERNAL" }));
     await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UGUEST" }));
     await db.recordSlackIntakeReaction({ ...reaction(), workspaceId: "T2" });
     await intake.processReactions();
@@ -241,7 +241,7 @@ describe("Slack channel intake", () => {
 
   it("keeps processing other due reactions when recording one reaction's failure fails", async () => {
     seedThread();
-    slack.threads["CACME/400.1"] = [message("400.1", "UCUSTOMER", "Please add SSO")];
+    slack.threads["CACME/400.1"] = [message("400.1", "UEXTERNAL", "Please add SSO")];
     vi.spyOn(db, "retrySlackIntakeReaction").mockRejectedValueOnce(new Error("database unavailable"));
     agent.mockImplementationOnce(async () => { throw new Error("agent crashed"); });
     agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("400.1", "Add SSO")); });
@@ -349,20 +349,20 @@ describe("Slack channel intake", () => {
 
   it("honors the deployment's async reactor authorization and reaction instructions", async () => {
     seedThread();
-    policy.isEligibleReactor = async (user) => user.id === "UCUSTOMER";
+    policy.isEligibleReactor = async (user) => user.id === "UEXTERNAL";
     policy.reactionInstructions = "Track this partner's request.";
     agent.mockImplementation(async ({ task, prompt, tools }) => {
       expect(task.slackIntake).toBe("reaction");
       expect(prompt).toContain(policy.reactionInstructions);
       await call(tools, "create_intake_ticket", ticketArgs("100.2"));
     });
-    await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UCUSTOMER" }));
+    await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UEXTERNAL" }));
     await intake.processReactions();
     expect(linear.created).toHaveLength(1);
   });
 
   it("sweeps only joined selected channels over the last 24 hours on the first run, then from the previous sweep", async () => {
-    slack.history.CACME = [message(ts(-2 * 60 * 60 * 1000), "UCUSTOMER", "Thanks, all good!")];
+    slack.history.CACME = [message(ts(-2 * 60 * 60 * 1000), "UEXTERNAL", "Thanks, all good!")];
     slack.history.CENG = [message(ts(-60 * 1000), "UMEMBER", "please fix the build")];
     agent.mockImplementation(async ({ tools }) => { await call(tools, "finish_review", { summary: "No engineering work requested." }); });
 
@@ -385,9 +385,9 @@ describe("Slack channel intake", () => {
   it("creates sweep tickets for actionable requests and skips sources it already ticketed", async () => {
     const root = ts(-60 * 60 * 1000);
     const reply = ts(-30 * 60 * 1000);
-    slack.history.CACME = [message(root, "UCUSTOMER", "SSO login fails for our EU tenant", { replyCount: 1 })];
+    slack.history.CACME = [message(root, "UEXTERNAL", "SSO login fails for our EU tenant", { replyCount: 1 })];
     slack.threads[`CACME/${root}`] = [
-      message(root, "UCUSTOMER", "SSO login fails for our EU tenant", { replyCount: 1 }),
+      message(root, "UEXTERNAL", "SSO login fails for our EU tenant", { replyCount: 1 }),
       message(reply, "UMEMBER", "Looking into it", { threadTs: root }),
     ];
     agent.mockImplementation(async ({ tools, prompt }) => {
@@ -416,7 +416,7 @@ describe("Slack channel intake", () => {
   });
 
   it("keeps a channel's cursor when its review fails so the next sweep covers it again", async () => {
-    slack.history.CACME = [message(ts(-1000), "UCUSTOMER", "Can you add dark mode?")];
+    slack.history.CACME = [message(ts(-1000), "UEXTERNAL", "Can you add dark mode?")];
     await intake.sweep(NOW);
     expect(await db.getSlackIntakeSweepCursor("T1", "CACME")).toBeNull();
     expect(await db.getSlackIntakeLastSweep("T1")).toBe(new Date(NOW).toISOString());
