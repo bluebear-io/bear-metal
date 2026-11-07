@@ -69,6 +69,27 @@ export interface BearMetalConfig {
   customizeTask: (task: Task) => TaskCustomization | Promise<TaskCustomization>;
 }
 
+export interface SlackChannelIntakePolicy {
+  channelNamePattern: RegExp;
+  triggerReaction: string;
+  ownerEmail: string;
+  sweepIntervalMs: number;
+  initialLookbackMs: number;
+  readOnlyChannels: boolean;
+  isEligibleReactor: (user: Readonly<SlackIntakeReactor>, workspaceId: string) => boolean | Promise<boolean>;
+  reactionInstructions: string;
+  sweepInstructions: string;
+}
+
+export interface SlackIntakeReactor {
+  id: string;
+  name: string;
+  teamId: string | null;
+  isBot: boolean;
+  deleted: boolean;
+  guest: boolean;
+}
+
 export type TaskStatusCategory = "backlog" | "unstarted" | "started" | "completed" | "canceled";
 export type TaskPriority = "none" | "urgent" | "high" | "medium" | "low";
 
@@ -76,6 +97,7 @@ export interface Task {
   readonly id: string;
   readonly type: "coding" | "coordinator" | "research";
   readonly request?: string;
+  readonly slackChannelIntake?: "configure" | "reaction" | "sweep";
   readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
   readonly identifier?: string;
   readonly title?: string;
@@ -134,6 +156,7 @@ export interface TaskPullRequest {
 }
 
 export interface TaskCustomization {
+  slackChannelIntake?: SlackChannelIntakePolicy;
   /** `modelArn` (amazon-bedrock only) calls this ARN, which must resolve to the same model as `model`, for example a tagged inference profile. */
   llm: { provider: LlmProvider; model: string; modelArn?: string };
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;

@@ -1,8 +1,22 @@
-import { AuthenticationLinearError, type Issue, LinearClient } from "@linear/sdk";
+import { AuthenticationLinearError, type Issue, LinearClient, type LinearErrorType } from "@linear/sdk";
 
 import type { CommentCapable, Integration } from "../base.js";
 import type { TokenProvider } from "./token.js";
 import type { LinearTicketContext, Ticket, TicketAttachment } from "./types.js";
+
+const REJECTION_TYPES: ReadonlySet<string> = new Set<`${LinearErrorType}`>([
+  "InvalidInput", "Ratelimited", "AuthenticationError", "Forbidden", "FeatureNotAccessible", "UsageLimitExceeded", "UserError",
+]);
+
+/** Linear answered that it did not apply the mutation, so retrying cannot duplicate its effect. */
+export class LinearRefusedError extends Error {}
+
+/** True when Linear refused the request before applying it; network, internal and unknown errors leave the outcome uncertain. */
+export function isLinearRejection(err: unknown): boolean {
+  if (err instanceof LinearRefusedError) return true;
+  const type = err instanceof Error ? (err as { type?: unknown }).type : undefined;
+  return typeof type === "string" && REJECTION_TYPES.has(type);
+}
 
 export interface LinearIntegrationOptions {
   tokenProvider: TokenProvider;
@@ -374,7 +388,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     assigneeId?: string;
   }): Promise<{ id: string; url: string; identifier: string }> {
     if (!input.teamId || !input.title.trim() || !input.description.trim()) {
-      throw new Error("Coding ticket requires team, title, and description");
+      throw new LinearRefusedError("Coding ticket requires team, title, and description");
     }
     return this.withClient(async (client) => {
       const result = await client.createIssue({
@@ -385,7 +399,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
         ...(input.assigneeId ? { assigneeId: input.assigneeId } : {}),
         ...(input.cycleId ? { cycleId: input.cycleId } : {}),
       });
-      if (!result.success) throw new Error("Linear did not create the coding ticket");
+      if (!result.success) throw new LinearRefusedError("Linear did not create the coding ticket");
       const issue = await result.issue;
       if (!issue) throw new Error("Linear creation response omitted the issue");
       return { id: issue.id, url: issue.url, identifier: issue.identifier };

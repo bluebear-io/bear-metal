@@ -18,6 +18,8 @@ interface SlackEventEnvelope {
     user?: string;
     bot_id?: string;
     message?: { ts?: string; thread_ts?: string; user?: string; bot_id?: string; text?: string; subtype?: string };
+    reaction?: string;
+    item?: { type?: string; channel?: string; ts?: string };
   };
 }
 
@@ -36,6 +38,8 @@ export function createSlackEventsRouter(input: {
   workspaceId: string;
   logger: Logger;
   wake: (key: SlackThreadKey) => Promise<void>;
+  isReadOnlyChannel?: (channel: string) => Promise<boolean>;
+  intake?: { triggerReaction: string; wake: () => void };
 }): Router {
   if (!input.signingSecret || !input.botUserId || !input.workspaceId) throw new Error("Slack events require signing secret, bot user ID, and workspace ID");
   const router = Router();
@@ -65,7 +69,29 @@ export function createSlackEventsRouter(input: {
         return;
       }
       const event = payload.event;
+      if (event?.type === "reaction_added") {
+        const intake = input.intake;
+        if (!intake || event.reaction !== intake.triggerReaction || event.item?.type !== "message") {
+          res.sendStatus(200);
+          return;
+        }
+        if (!payload.team_id || !event.user || !event.item.channel || !event.item.ts) {
+          throw new Error("Slack reaction event omitted workspace, user, channel, or message timestamp");
+        }
+        // Channel and reactor eligibility need Slack API calls, so the intake worker checks them after the 3-second ack.
+        const inserted = await input.db.recordSlackIntakeReaction({
+          workspaceId: payload.team_id, channelId: event.item.channel, messageTs: event.item.ts, reactorUserId: event.user,
+        });
+        res.sendStatus(200);
+        if (inserted) intake.wake();
+        return;
+      }
       if (!event || (event.type !== "app_mention" && event.type !== "message")) {
+        res.sendStatus(200);
+        return;
+      }
+      if (event.channel && await input.isReadOnlyChannel?.(event.channel)) {
+        await input.db.suspendSlackChannel(input.workspaceId, event.channel);
         res.sendStatus(200);
         return;
       }

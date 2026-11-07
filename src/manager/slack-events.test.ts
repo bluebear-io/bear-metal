@@ -7,6 +7,7 @@ import { createLogger } from "../shared/logger.js";
 import { createSlackEventsRouter } from "./slack-events.js";
 
 const secret = "test-signing-secret";
+const DUE = "9999-12-31T00:00:00.000Z";
 
 function signed(body: object) {
   const text = JSON.stringify(body);
@@ -16,6 +17,32 @@ function signed(body: object) {
 }
 
 describe("Slack event intake", () => {
+  it.each(["app_mention", "message"])("does not activate read-only channel conversations for %s", async (type) => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const key = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
+    await db.followSlackThread(key, "100.0");
+    const wake = vi.fn(async () => {});
+    const intakeWake = vi.fn();
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1",
+      logger: createLogger({ name: "test", level: "silent" }), wake, isReadOnlyChannel: async () => true,
+      intake: { triggerReaction: "ticket", wake: intakeWake } }));
+    const send = async (event: object) => {
+      const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
+      return request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text);
+    };
+    try {
+      expect((await send({ type, channel: "C1", ts: "100.1", thread_ts: "100.0", user: "U1", text: "<@UBOT> help" })).status).toBe(200);
+      expect(wake).not.toHaveBeenCalled();
+      expect(await db.isSlackThreadFollowing(key)).toBe(false);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      expect((await send({ type: "reaction_added", reaction: "ticket", user: "U1", item: { type: "message", channel: "C1", ts: "100.1" } })).status).toBe(200);
+      expect(intakeWake).toHaveBeenCalledOnce();
+      expect(wake).not.toHaveBeenCalled();
+    } finally { await db.close(); }
+  });
   it("abandons a deleted message and its pending edits", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
@@ -89,6 +116,61 @@ describe("Slack event intake", () => {
       await send({ type: "message", subtype: "file_share", channel: "C1", ts: "300.4", thread_ts: "300.1", user: "UBOT" });
       expect(await db.listSlackPendingMessages({ workspaceId: "T1", channelId: "C1", threadTs: "300.1" })).toEqual(["300.1", "300.2", "300.3"]);
       expect(wake).toHaveBeenCalledTimes(3);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("records each member's intake reaction once and ignores other reactions", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const wakeIntake = vi.fn();
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({
+      db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }),
+      wake: async () => {}, intake: { triggerReaction: "ticket", wake: wakeIntake },
+    }));
+    const send = async (event: object) => {
+      const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
+      return request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text);
+    };
+    const reaction = { type: "reaction_added", user: "U1", reaction: "ticket", item: { type: "message", channel: "C1", ts: "400.1" } };
+    try {
+      expect((await send(reaction)).status).toBe(200);
+      expect((await send(reaction)).status).toBe(200);
+      expect((await send({ ...reaction, reaction: "eyes" })).status).toBe(200);
+      expect((await send({ ...reaction, item: { type: "file", file: "F1" } })).status).toBe(200);
+      const [pending] = await db.listPendingSlackIntakeReactions(DUE);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([{ workspaceId: "T1", channelId: "C1", messageTs: "400.1", reactorUserId: "U1", attempts: 0 }]);
+      expect(wakeIntake).toHaveBeenCalledTimes(1);
+
+      await db.finishSlackIntakeReaction(pending!, "ignored", "bot not in channel");
+      expect((await send(reaction)).status).toBe(200);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toHaveLength(1);
+      expect(wakeIntake).toHaveBeenCalledTimes(2);
+
+      await db.finishSlackIntakeReaction(pending!, "processed", null);
+      expect((await send(reaction)).status).toBe(200);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+      expect(wakeIntake).toHaveBeenCalledTimes(2);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("ignores intake reactions when channel intake is not configured", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }), wake: async () => {} }));
+    const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event: {
+      type: "reaction_added", user: "U1", reaction: "ticket", item: { type: "message", channel: "C1", ts: "400.1" },
+    } });
+    try {
+      expect((await request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text)).status).toBe(200);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
     } finally {
       await db.close();
     }

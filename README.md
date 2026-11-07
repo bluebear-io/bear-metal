@@ -366,15 +366,16 @@ The table lists the complete scope set for the main app with all supported Slack
 | `chat:write` | Send ticket/coding notifications or interactive replies, including DMs |
 | `chat:write.public` | Send notifications to public channels the bot has not joined; omit when it joins every destination |
 | `channels:history` | Read public-channel messages and threads; receive `message.channels` |
-| `channels:read` | Discover public channels and read their basic information through Slack read tools |
+| `channels:read` | Discover public channels and read their basic information through Slack read tools; find intake channels |
 | `groups:history` | Read private-channel messages and threads; receive `message.groups` |
-| `groups:read` | Discover private channels and read their basic information through Slack read tools |
+| `groups:read` | Discover private channels and read their basic information through Slack read tools; find private intake channels |
 | `im:history` | Read one-to-one DMs and their threads; receive `message.im` |
 | `im:read` | Discover one-to-one DM conversations and read their basic information |
 | `mpim:history` | Read group-DM messages and threads; receive `message.mpim` |
 | `mpim:read` | Discover group-DM conversations and read their basic information |
 | `files:read` | Search and download Slack files for coordinator/research context |
 | `files:write` | Upload full research results as Markdown attachments when a summary is provided for an answer longer than 500 characters; [Slack upload APIs require this scope](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/) |
+| `reactions:read` | Receive `reaction_added` for channel intake |
 | `reactions:write` | Add the 👍 acknowledgment after unsubscribe; [required by `reactions.add`](https://docs.slack.dev/reference/methods/reactions.add/) |
 | `users:read` | Read user profiles/lists and resolve a Slack requester's identity for ticket creation |
 | `users:read.email` | Read requester email for Slack-to-Linear ticket assignment and look up a ticket requester's Slack user for DM notifications |
@@ -391,7 +392,7 @@ Read scopes do not bypass conversation membership or workspace policy. Invite th
 
 #### Interactive bot events
 
-Notifications and the coding-agent read-only app require none of these subscriptions. For the full interactive setup, subscribe to all five under **Event Subscriptions → Subscribe to bot events**; for a narrower setup, select the conversation types you use. Slack may add a required scope when you subscribe; approve it by reinstalling.
+Notifications and the coding-agent read-only app require none of these subscriptions. For the full interactive setup, subscribe to the five message events, plus `reaction_added` for channel intake, under **Event Subscriptions → Subscribe to bot events**; for a narrower setup, select the conversation types you use. Slack may add a required scope when you subscribe; approve it by reinstalling.
 
 | Bot event | Required scope | When needed |
 | --- | --- | --- |
@@ -400,6 +401,7 @@ Notifications and the coding-agent read-only app require none of these subscript
 | `message.groups` | `groups:history` | Receive subsequent private-channel messages, edits and deletions in followed threads |
 | `message.im` | `im:history` | Receive one-to-one DM requests, threaded replies, edits and deletions |
 | `message.mpim` | `mpim:history` | Receive group-DM message events; [Slack's event reference](https://docs.slack.dev/reference/events/message.mpim/) describes this separate conversation type |
+| `reaction_added` | `reactions:read` | Receive intake reactions; needed only when `customizeTask` enables Slack intake |
 
 Group DMs are not treated as one-to-one DMs: `message.mpim` alone does not activate an unfollowed conversation. Only `app_mention` events and one-to-one `message.im` events activate following; ordinary messages are processed only in already-followed threads.
 
@@ -416,6 +418,29 @@ Every coordinator reply group, including clarifications and task acknowledgments
 Ask Bear Metal to stop bothering or following a thread to unsubscribe. The harness adds a 👍 reaction to the source message only after successful unsubscription, with no text acknowledgment. Reaction delivery is persisted with unsubscription. Transient failures remain pending for retry even while the thread is unfollowed, including after a restart. Permanent rejections are stored as failed with their error and logged visibly. Reaction failures never block resumed conversations. Stops sent as message edits react to the original Slack message. This requires [`reactions:write`](https://docs.slack.dev/reference/methods/reactions.add/). Following is stored durably; no further task messages or late research results from that subscription are posted. Work already started continues. A later channel mention or DM resumes following from the first such message after the stop request, skipping intervening ordinary messages and old task results. Automatic unsubscribe after ignored messages is deferred.
 
 When Slack rejects a reply with `is_archived`, coordination stops durably for all followed threads in that workspace's channel. The rejection is logged; tasks and research are retained, no reply is marked delivered, and no unsubscribe reaction is generated. If saving the suspension fails, the database error is logged and a later poll retries the pending reply. After unarchiving, a new mention resumes its thread from the new message. Other reply failures retain their existing retry or uncertain-delivery handling.
+
+#### Channel intake through customizeTask
+
+All intake policy comes from `customizeTask`. At startup, when Slack is configured, Bear Metal calls it with `type: "coordinator"`, `trigger: "slack"`, and `slackChannelIntake: "configure"`. Return an optional `slackChannelIntake` policy alongside the normal model and workspace customization. Omitting the policy disables intake; the configuration call does not start an agent or build a workspace. The policy is resolved once per manager startup, so restart after changing it.
+
+| Policy field | Purpose |
+| --- | --- |
+| `channelNamePattern` | Non-stateful `RegExp` selecting channel names, such as `/^support-.+$/` |
+| `triggerReaction` | Emoji name without colons |
+| `sweepIntervalMs` | Positive interval between sweeps |
+| `initialLookbackMs` | Positive history window for a channel's first sweep |
+| `ownerEmail` | Linear user assigned intake tickets |
+| `isEligibleReactor(user, workspaceId)` | Boolean or async Boolean authorization decision using the verified Slack user |
+| `reactionInstructions` / `sweepInstructions` | Instructions defining what work should become a ticket |
+| `readOnlyChannels` | Block messages, replies, reactions, files and notification fallbacks to selected channels; mentions cannot activate conversational handling there |
+
+Reaction and sweep agent tasks call `customizeTask` normally with `slackChannelIntake: "reaction"` or `"sweep"`, so their model, workspace, limits and additional instructions can also be customized. Keep workspace-specific names, ownership and task-selection rules in your customization module.
+
+Intake requires the interactive bot setup, the `reaction_added` subscription, and membership in selected channels. Channels the bot has not joined are logged and skipped. Return `slackChannelIntake` from `customizeTask`; placing it in the top-level Slack configuration is rejected.
+
+Each reaction targets one message; sweeps create at most one intake ticket per thread. Tickets include the request, context, expected outcome and original Slack source. Later sweeps resume from the last successful channel cursor. New replies on threads whose first message is older than the sweep window are not reviewed; use the reaction for those requests.
+
+An uncertain ticket-creation result fails visibly rather than risking a duplicate. Intake itself has no Slack-writing tools. When `readOnlyChannels` is enabled, the shared writer also enforces silence for other bot flows, and channel lookup failures block outgoing writes.
 
 Workers retain every PR associated with a ticket across iterations, including PRs in repositories that were not pushed again. Slack notifications list every PR in each opened, updated, or validation-delayed group.
 
