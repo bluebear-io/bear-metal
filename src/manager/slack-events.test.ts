@@ -27,7 +27,7 @@ describe("Slack event intake", () => {
     const app = express();
     app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1",
       logger: createLogger({ name: "test", level: "silent" }), wake, isReadOnlyChannel: async () => true,
-      intake: { triggerReaction: "bear_paw_seen", wake: intakeWake } }));
+      intake: { triggerReaction: "ticket", wake: intakeWake } }));
     const send = async (event: object) => {
       const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
       return request(app).post("/slack/events").set("Content-Type", "application/json")
@@ -38,7 +38,7 @@ describe("Slack event intake", () => {
       expect(wake).not.toHaveBeenCalled();
       expect(await db.isSlackThreadFollowing(key)).toBe(false);
       expect(await db.listSlackPendingMessages(key)).toEqual([]);
-      expect((await send({ type: "reaction_added", reaction: "bear_paw_seen", user: "U1", item: { type: "message", channel: "C1", ts: "100.1" } })).status).toBe(200);
+      expect((await send({ type: "reaction_added", reaction: "ticket", user: "U1", item: { type: "message", channel: "C1", ts: "100.1" } })).status).toBe(200);
       expect(intakeWake).toHaveBeenCalledOnce();
       expect(wake).not.toHaveBeenCalled();
     } finally { await db.close(); }
@@ -128,14 +128,14 @@ describe("Slack event intake", () => {
     const app = express();
     app.use("/slack", createSlackEventsRouter({
       db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }),
-      wake: async () => {}, intake: { triggerReaction: "bear_paw_seen", wake: wakeIntake },
+      wake: async () => {}, intake: { triggerReaction: "ticket", wake: wakeIntake },
     }));
     const send = async (event: object) => {
       const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
       return request(app).post("/slack/events").set("Content-Type", "application/json")
         .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text);
     };
-    const reaction = { type: "reaction_added", user: "U1", reaction: "bear_paw_seen", item: { type: "message", channel: "C1", ts: "400.1" } };
+    const reaction = { type: "reaction_added", user: "U1", reaction: "ticket", item: { type: "message", channel: "C1", ts: "400.1" } };
     try {
       expect((await send(reaction)).status).toBe(200);
       expect((await send(reaction)).status).toBe(200);
@@ -165,7 +165,7 @@ describe("Slack event intake", () => {
     const app = express();
     app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }), wake: async () => {} }));
     const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event: {
-      type: "reaction_added", user: "U1", reaction: "bear_paw_seen", item: { type: "message", channel: "C1", ts: "400.1" },
+      type: "reaction_added", user: "U1", reaction: "ticket", item: { type: "message", channel: "C1", ts: "400.1" },
     } });
     try {
       expect((await request(app).post("/slack/events").set("Content-Type", "application/json")

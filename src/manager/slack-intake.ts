@@ -433,7 +433,7 @@ export class SlackIntake {
     const tickets = await this.input.db.listSlackIntakeThreadTickets(source.workspaceId, source.channelId, [threadTs]);
     const other = tickets.find((ticket) => ticket.sourceTs !== source.sourceTs && (ticket.state !== "failed" || ticket.ticketId !== null));
     if (other) {
-      throw new Error(`Thread ${threadTs} already has intake ticket ${other.ticketIdentifier ?? `for message ${other.sourceTs}`}; a sweep creates at most one ticket per thread, and a team member can react to request another`);
+      throw new Error(`Thread ${threadTs} already has intake ticket ${other.ticketIdentifier ?? `for message ${other.sourceTs}`}; a sweep creates at most one ticket per thread, and an eligible user can react to request another`);
     }
   }
 
