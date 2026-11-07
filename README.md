@@ -421,7 +421,7 @@ When Slack rejects a reply with `is_archived`, coordination stops durably for al
 
 #### Channel intake through customizeTask
 
-All intake policy comes from `customizeTask`. At startup, when Slack is configured, Bear Metal calls it with `type: "coordinator"`, `trigger: "slack"`, and `slackIntake: "configure"`. Return an optional `slackIntake` policy alongside the normal model and workspace customization. Omitting the policy disables intake; the configuration call does not start an agent or build a workspace. The policy is resolved once per manager startup, so restart after changing it.
+All intake policy comes from `customizeTask`. At startup, when Slack is configured, Bear Metal calls it with `type: "coordinator"`, `trigger: "slack"`, and `slackChannelIntake: "configure"`. Return an optional `slackChannelIntake` policy alongside the normal model and workspace customization. Omitting the policy disables intake; the configuration call does not start an agent or build a workspace. The policy is resolved once per manager startup, so restart after changing it.
 
 | Policy field | Purpose |
 | --- | --- |
@@ -434,9 +434,9 @@ All intake policy comes from `customizeTask`. At startup, when Slack is configur
 | `reactionInstructions` / `sweepInstructions` | Instructions defining what work should become a ticket |
 | `readOnlyChannels` | Block messages, replies, reactions, files and notification fallbacks to selected channels; mentions cannot activate conversational handling there |
 
-Reaction and sweep agent tasks call `customizeTask` normally with `slackIntake: "reaction"` or `"sweep"`, so their model, workspace, limits and additional instructions can also be customized. Keep workspace-specific names, ownership and task-selection rules in your customization module.
+Reaction and sweep agent tasks call `customizeTask` normally with `slackChannelIntake: "reaction"` or `"sweep"`, so their model, workspace, limits and additional instructions can also be customized. Keep workspace-specific names, ownership and task-selection rules in your customization module.
 
-Intake requires the interactive bot setup, the `reaction_added` subscription, and membership in selected channels. Channels the bot has not joined are logged and skipped. Existing `slack.customerIntake` configuration is rejected; move it into the `customizeTask` return value and supply the policy fields above.
+Intake requires the interactive bot setup, the `reaction_added` subscription, and membership in selected channels. Channels the bot has not joined are logged and skipped. Return `slackChannelIntake` from `customizeTask`; placing it in the top-level Slack configuration is rejected.
 
 Each reaction targets one message; sweeps create at most one intake ticket per thread. Tickets include the request, context, expected outcome and original Slack source. Later sweeps resume from the last successful channel cursor. New replies on threads whose first message is older than the sweep window are not reviewed; use the reaction for those requests.
 

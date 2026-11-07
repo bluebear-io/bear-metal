@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { BearMetalConfig, SlackIntakePolicy } from "../customization/types.js";
+import type { BearMetalConfig, SlackChannelIntakePolicy } from "../customization/types.js";
 import { InvalidInputLinearError } from "@linear/sdk";
 import { SqlDbClient } from "../db/client.js";
 import { LinearRefusedError } from "../shared/integrations/linear/client.js";
@@ -108,7 +108,7 @@ describe("Slack channel intake", () => {
   let agent: ReturnType<typeof vi.fn<(input: AgentInput) => Promise<void>>>;
   let intake: SlackIntake;
   let now: number;
-  let policy: SlackIntakePolicy;
+  let policy: SlackChannelIntakePolicy;
 
   beforeEach(async () => {
     db = new SqlDbClient("sqlite::memory:", 5);
@@ -332,7 +332,7 @@ describe("Slack channel intake", () => {
     policy.sweepInstructions = "Only track release automation requests.";
     slack.history.CENG = [message(ts(-60000), "UMEMBER", "Please automate release notes")];
     agent.mockImplementation(async ({ task, prompt, tools }) => {
-      expect(task.slackIntake).toBe("sweep");
+      expect(task.slackChannelIntake).toBe("sweep");
       expect(prompt).toContain(policy.sweepInstructions);
       expect(prompt).not.toContain("BlueBear");
       await call(tools, "finish_review", { summary: "Reviewed." });
@@ -352,7 +352,7 @@ describe("Slack channel intake", () => {
     policy.isEligibleReactor = async (user) => user.id === "UEXTERNAL";
     policy.reactionInstructions = "Track this partner's request.";
     agent.mockImplementation(async ({ task, prompt, tools }) => {
-      expect(task.slackIntake).toBe("reaction");
+      expect(task.slackChannelIntake).toBe("reaction");
       expect(prompt).toContain(policy.reactionInstructions);
       await call(tools, "create_intake_ticket", ticketArgs("100.2"));
     });

@@ -4,7 +4,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { validateTaskCustomization } from "../customization/load.js";
-import type { BearMetalConfig, SlackIntakePolicy, Task } from "../customization/types.js";
+import type { BearMetalConfig, SlackChannelIntakePolicy, Task } from "../customization/types.js";
 import type { DbClient, PendingSlackIntakeReaction, SlackIntakeReaction, SlackIntakeSource, SlackIntakeTicket } from "../db/client.js";
 import type { GitHubIntegration } from "../shared/integrations/github/client.js";
 import { isLinearRejection, type LinearIntegration } from "../shared/integrations/linear/client.js";
@@ -77,7 +77,7 @@ export class SlackIntake {
     linear: IntakeLinear;
     github: Pick<GitHubIntegration, "getInstallationToken">;
     config: BearMetalConfig;
-    intake: SlackIntakePolicy;
+    intake: SlackChannelIntakePolicy;
     workspaceId: string;
     botUserId: string;
     gateway?: AgentToolGatewayLike;
@@ -194,7 +194,7 @@ export class SlackIntake {
     if (!this.matchesChannel(channel.name)) return { state: "ignored", reason: `Channel #${channel.name} is outside channel intake` };
     const reactor = await this.input.api.getUser(reaction.reactorUserId);
     const eligible = await this.input.intake.isEligibleReactor(reactor, this.input.workspaceId);
-    if (typeof eligible !== "boolean") throw new Error("slackIntake.isEligibleReactor must return a boolean");
+    if (typeof eligible !== "boolean") throw new Error("slackChannelIntake.isEligibleReactor must return a boolean");
     if (!eligible) return { state: "ignored", reason: `Reactor ${reaction.reactorUserId} is not eligible for intake` };
     if (!channel.isMember) {
       this.input.logger.warn({ channel: channel.name, channelId: channel.id, messageTs: reaction.messageTs }, "Slack intake cannot read a channel the bot has not joined; invite the bot and re-add the reaction");
@@ -241,7 +241,7 @@ export class SlackIntake {
       }),
     ];
     await this.runAgent({
-      task: { type: "coordinator", id: randomUUID(), trigger: "slack", slackIntake: run.trigger, request: payload, slack: { ...source, threadTs, sourceTs: target.ts } },
+      task: { type: "coordinator", id: randomUUID(), trigger: "slack", slackChannelIntake: run.trigger, request: payload, slack: { ...source, threadTs, sourceTs: target.ts } },
       tools,
       prompt: reactionPrompt(payload, this.input.intake.reactionInstructions),
       output: () => ({ decision: alreadyTracked ? `Already tracked by ${alreadyTracked.ticketIdentifier}.` : "Intake ticket created.", tickets: run.created.map(payloadTicket) }),
@@ -295,7 +295,7 @@ export class SlackIntake {
       }),
     ];
     await this.runAgent({
-      task: { type: "coordinator", id: randomUUID(), trigger: "slack", slackIntake: run.trigger, request: payload, slack: { workspaceId: this.input.workspaceId, channelId: channel.id, threadTs: sources.get(latestSource)!.threadTs, sourceTs: latestSource } },
+      task: { type: "coordinator", id: randomUUID(), trigger: "slack", slackChannelIntake: run.trigger, request: payload, slack: { workspaceId: this.input.workspaceId, channelId: channel.id, threadTs: sources.get(latestSource)!.threadTs, sourceTs: latestSource } },
       tools,
       prompt: sweepPrompt(payload, this.input.intake.sweepInstructions),
       output: () => ({ decision: summary, tickets: run.created.map(payloadTicket) }),

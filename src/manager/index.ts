@@ -3,7 +3,7 @@ import "dotenv/config";
 import { SqlDbClient } from "../db/client.js";
 import { AgentToolGateway } from "../agent-tools/gateway.js";
 import { createAgentToolHandlers } from "../agent-tools/handlers.js";
-import { loadBearMetalConfig, resolveSlackIntakePolicy, resolveSecret } from "../customization/load.js";
+import { loadBearMetalConfig, resolveSlackChannelIntakePolicy, resolveSecret } from "../customization/load.js";
 import { DEFAULT_CI_DEFERRAL_MAX_MS, DEFAULT_DATABASE_URL, DEFAULT_MAX_ITERATIONS } from "../customization/types.js";
 import {
   AppTokenProvider,
@@ -102,7 +102,7 @@ const agentToolHandlers = createAgentToolHandlers({
 const agentToolGateway = Object.keys(agentToolHandlers).length > 0
   ? new AgentToolGateway({ handlers: agentToolHandlers, logger })
   : undefined;
-const intakeConfig = await resolveSlackIntakePolicy(customizationConfig);
+const intakeConfig = await resolveSlackChannelIntakePolicy(customizationConfig);
 const slackToken = customizationConfig.slack
   ? await resolveSecret(customizationConfig.slack.getBotToken, "config.slack.getBotToken result")
   : undefined;
@@ -136,7 +136,7 @@ let scheduler: Scheduler | null = null;
 let taskWorker: TaskWorker | null = null;
 let slackCoordinator: SlackCoordinator | null = null;
 let slackResearch: SlackResearchWorker | null = null;
-let slackIntake: SlackIntake | null = null;
+let slackChannelIntake: SlackIntake | null = null;
 let slackEvents: ReturnType<typeof createSlackEventsRouter> | undefined;
 
 if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.getSigningSecret) {
@@ -163,7 +163,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     wakeThread: (key) => slackCoordinator!.wake(key),
   });
   if (intakeConfig) {
-    slackIntake = new SlackIntake({
+    slackChannelIntake = new SlackIntake({
       db, api: new SlackIntakeApi(slackRead), linear, github, config: customizationConfig, intake: intakeConfig,
       workspaceId: auth.team_id, botUserId: auth.user_id, gateway: slackGateway, logger,
       pollIntervalMs: runtimeConfig.pollIntervalMs,
@@ -177,7 +177,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     logger,
     isReadOnlyChannel: (channel) => slack.isReadOnlyChannel(channel),
     wake: (key) => slackCoordinator!.wake(key),
-    ...(intakeConfig ? { intake: { triggerReaction: intakeConfig.triggerReaction, wake: () => slackIntake!.wake() } } : {}),
+    ...(intakeConfig ? { intake: { triggerReaction: intakeConfig.triggerReaction, wake: () => slackChannelIntake!.wake() } } : {}),
   });
 }
 if (runtimeConfig.runMode === "slack_only" && (!slackCoordinator || !slackResearch || !slackEvents)) {
@@ -257,7 +257,7 @@ if (runtimeConfig.apiOnly) {
   }
   if (slackResearch) await slackResearch.start();
   slackCoordinator?.start();
-  slackIntake?.start();
+  slackChannelIntake?.start();
 }
 
 let shuttingDown = false;
@@ -269,7 +269,7 @@ function shutdown(signal: string): void {
   clearInterval(tracePurgeTimer);
   logger.info({ signal }, "shutting down");
   logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
-  void Promise.all([scheduler?.stop(), taskWorker?.stop(), slackCoordinator?.stop(), slackResearch?.stop(), slackIntake?.stop()])
+  void Promise.all([scheduler?.stop(), taskWorker?.stop(), slackCoordinator?.stop(), slackResearch?.stop(), slackChannelIntake?.stop()])
     .then(() => db.close())
     .then(() => {
       if (!server) {

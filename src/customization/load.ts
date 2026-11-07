@@ -36,8 +36,8 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
     nonEmptyString(slack.notificationChannel, "config.slack.notificationChannel");
     callable(slack.getBotToken, "config.slack.getBotToken");
     if (slack.getSigningSecret !== undefined) callable(slack.getSigningSecret, "config.slack.getSigningSecret");
-    if (slack.customerIntake !== undefined) {
-      throw new Error("Return slackIntake from customizeTask instead of config.slack.customerIntake");
+    if (slack.slackChannelIntake !== undefined) {
+      throw new Error("Return slackChannelIntake from customizeTask instead of config.slack.slackChannelIntake");
     }
   }
   if (config.agentIntegrations !== undefined) {
@@ -107,18 +107,18 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
     if (limits.maxDurationMs !== undefined) positiveInteger(limits.maxDurationMs, "customizeTask result.limits.maxDurationMs");
     if (limits.maxTokens !== undefined) positiveInteger(limits.maxTokens, "customizeTask result.limits.maxTokens");
   }
-  if (customization.slackIntake !== undefined) {
-    const intake = object(customization.slackIntake, "customizeTask result.slackIntake");
-    if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("slackIntake.channelNamePattern must be a RegExp");
-    if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) throw new Error("slackIntake.channelNamePattern must not use the g or y flag");
-    if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "slackIntake.triggerReaction"))) throw new Error("slackIntake.triggerReaction must be an emoji name without colons");
-    if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "slackIntake.ownerEmail"))) throw new Error("slackIntake.ownerEmail must be an email address");
-    positiveInteger(intake.sweepIntervalMs, "slackIntake.sweepIntervalMs");
-    positiveInteger(intake.initialLookbackMs, "slackIntake.initialLookbackMs");
-    if (typeof intake.readOnlyChannels !== "boolean") throw new Error("slackIntake.readOnlyChannels must be a boolean");
-    callable(intake.isEligibleReactor, "slackIntake.isEligibleReactor");
-    nonEmptyString(intake.reactionInstructions, "slackIntake.reactionInstructions");
-    nonEmptyString(intake.sweepInstructions, "slackIntake.sweepInstructions");
+  if (customization.slackChannelIntake !== undefined) {
+    const intake = object(customization.slackChannelIntake, "customizeTask result.slackChannelIntake");
+    if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("slackChannelIntake.channelNamePattern must be a RegExp");
+    if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) throw new Error("slackChannelIntake.channelNamePattern must not use the g or y flag");
+    if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "slackChannelIntake.triggerReaction"))) throw new Error("slackChannelIntake.triggerReaction must be an emoji name without colons");
+    if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "slackChannelIntake.ownerEmail"))) throw new Error("slackChannelIntake.ownerEmail must be an email address");
+    positiveInteger(intake.sweepIntervalMs, "slackChannelIntake.sweepIntervalMs");
+    positiveInteger(intake.initialLookbackMs, "slackChannelIntake.initialLookbackMs");
+    if (typeof intake.readOnlyChannels !== "boolean") throw new Error("slackChannelIntake.readOnlyChannels must be a boolean");
+    callable(intake.isEligibleReactor, "slackChannelIntake.isEligibleReactor");
+    nonEmptyString(intake.reactionInstructions, "slackChannelIntake.reactionInstructions");
+    nonEmptyString(intake.sweepInstructions, "slackChannelIntake.sweepInstructions");
   }
   if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
   if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");
@@ -156,13 +156,13 @@ function stringArray(value: unknown, field: string): string[] {
   return value as string[];
 }
 
-export async function resolveSlackIntakePolicy(config: BearMetalConfig) {
+export async function resolveSlackChannelIntakePolicy(config: BearMetalConfig) {
   if (!config.slack) return undefined;
   const customization = validateTaskCustomization(await config.customizeTask({
-    type: "coordinator", id: "slack-intake-configuration", trigger: "slack", slackIntake: "configure",
+    type: "coordinator", id: "slack-intake-configuration", trigger: "slack", slackChannelIntake: "configure",
   }));
-  if (customization.slackIntake && !config.slack.getSigningSecret) {
-    throw new Error("customizeTask slackIntake requires config.slack.getSigningSecret");
+  if (customization.slackChannelIntake && !config.slack.getSigningSecret) {
+    throw new Error("customizeTask slackChannelIntake requires config.slack.getSigningSecret");
   }
-  return customization.slackIntake;
+  return customization.slackChannelIntake;
 }
