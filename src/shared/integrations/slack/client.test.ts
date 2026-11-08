@@ -20,6 +20,19 @@ describe("configured channels are read-only", () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("conversations.info");
   });
 
+  it("logs an interrupted upload without completing it after a channel becomes read-only", async () => {
+    const logger = createLogger({ name: "test", level: "silent" });
+    const warn = vi.spyOn(logger, "warn");
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json({ ok: true, channel: { id: "C1", name: "engineering" } }))
+      .mockResolvedValueOnce(Response.json({ ok: true, upload_url: "https://files.slack.com/upload", file_id: "F1" }))
+      .mockResolvedValueOnce(new Response("ok"))
+      .mockResolvedValueOnce(Response.json({ ok: true, channel: { id: "C1", name: "intake_ops" } }));
+    const writer = new SlackIntegration({ token: "token", channel: "C1", logger, fetchImpl, readOnlyChannelPattern: /^intake_/ });
+    await expect(writer.postThreadMarkdownFile("C1", "1.0", "result", "body")).rejects.toMatchObject({ code: "read_only_channel" });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ channel: "C1", fileId: "F1" }), expect.stringContaining("not completed"));
+  });
   it("fails closed when channel classification fails", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ ok: false, error: "missing_scope" }));
     const writer = new SlackIntegration({ token: "token", channel: "C1", logger: SILENT_LOGGER, fetchImpl, readOnlyChannelPattern: /^intake_.+$/ });
@@ -664,5 +677,22 @@ describe("SlackIntegration", () => {
     const body = JSON.parse(postInit?.body as string);
     expect(body.channel).toBe("UABC");
     expect(body.text).toContain(":raising_hand:");
+  });
+});
+
+describe("Slack read rate limits", () => {
+  it("retries rate-limited reads using Retry-After", async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("limited", { status: 429, headers: { "retry-after": "0" } }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    const reader = new SlackReadClient({ token: "token", fetchImpl });
+    await expect(reader.call("conversations.info", { channel: "C1" })).resolves.toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+  it("fails visibly after bounded rate-limit retries", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("limited", { status: 429, headers: { "retry-after": "0" } }));
+    const reader = new SlackReadClient({ token: "token", fetchImpl });
+    await expect(reader.call("conversations.info", { channel: "C1" })).rejects.toThrow("429");
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
   });
 });

@@ -17,16 +17,16 @@ function signed(body: object) {
 }
 
 describe("Slack event intake", () => {
-  it.each(["app_mention", "message"])("does not activate read-only channel conversations for %s", async (type) => {
+  it.each(["app_mention", "message"])("durably records %s before deferred channel classification", async (type) => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     const key = { workspaceId: "T1", channelId: "C1", threadTs: "100.0" };
-    await db.followSlackThread(key, "100.0");
-    const wake = vi.fn(async () => {});
+    await db.followSlackThread(key, "100.1");
+    const wake = vi.fn(() => new Promise<void>(() => {}));
     const intakeWake = vi.fn();
     const app = express();
     app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1",
-      logger: createLogger({ name: "test", level: "silent" }), wake, isReadOnlyChannel: async () => true,
+      logger: createLogger({ name: "test", level: "silent" }), wake,
       intake: { triggerReaction: "ticket", wake: intakeWake } }));
     const send = async (event: object) => {
       const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
@@ -35,12 +35,12 @@ describe("Slack event intake", () => {
     };
     try {
       expect((await send({ type, channel: "C1", ts: "100.1", thread_ts: "100.0", user: "U1", text: "<@UBOT> help" })).status).toBe(200);
-      expect(wake).not.toHaveBeenCalled();
-      expect(await db.isSlackThreadFollowing(key)).toBe(false);
-      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+      await vi.waitFor(() => expect(wake).toHaveBeenCalledWith(key));
+      expect(await db.isSlackThreadFollowing(key)).toBe(true);
+      expect(await db.listSlackPendingMessages(key)).toEqual(["100.1"]);
       expect((await send({ type: "reaction_added", reaction: "ticket", user: "U1", item: { type: "message", channel: "C1", ts: "100.1" } })).status).toBe(200);
       expect(intakeWake).toHaveBeenCalledOnce();
-      expect(wake).not.toHaveBeenCalled();
+      expect(wake).toHaveBeenCalledOnce();
     } finally { await db.close(); }
   });
   it("abandons a deleted message and its pending edits", async () => {

@@ -142,7 +142,20 @@ export class SlackCoordinator {
   }
 
   private async runThread(key: SlackThreadKey): Promise<void> {
-    if (await this.input.isReadOnlyChannel?.(key.channelId)) {
+    let readOnly: boolean | undefined;
+    try {
+      readOnly = await this.input.isReadOnlyChannel?.(key.channelId);
+    } catch (err) {
+      throw new SlackThreadReplyRejectedError("Slack channel classification failed; retaining work without sending replies", "channel_classification_failed", { cause: err });
+    }
+    if (readOnly) {
+      const pending = await this.input.db.listSlackPendingMessages(key);
+      const queued = await this.input.db.listSlackUnsubscribeReactions(key);
+      const tasks = await this.input.db.listSlackThreadTasks(key);
+      this.input.logger.warn({ key, pendingMessages: pending.length, queuedReactions: queued.length, retainedTasks: tasks.length }, "Suspending read-only Slack channel; pending coordination retained and outgoing reactions blocked");
+      for (const reaction of queued) {
+        await this.input.db.failSlackUnsubscribeReaction(key, reaction.sourceTs, "read_only_channel", true);
+      }
       await this.input.db.suspendSlackChannel(key.workspaceId, key.channelId);
       return;
     }

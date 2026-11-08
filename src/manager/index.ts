@@ -175,7 +175,6 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     botUserId: auth.user_id,
     workspaceId: auth.team_id,
     logger,
-    isReadOnlyChannel: (channel) => slack.isReadOnlyChannel(channel),
     wake: (key) => slackCoordinator!.wake(key),
     ...(intakeConfig ? { intake: { triggerReaction: intakeConfig.triggerReaction, wake: () => slackChannelIntake!.wake() } } : {}),
   });

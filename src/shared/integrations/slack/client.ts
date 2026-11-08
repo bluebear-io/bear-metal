@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { Integration } from "../base.js";
 import type { PullRequestRef } from "../github/types.js";
 import type { Logger } from "../../logger.js";
@@ -89,8 +90,8 @@ export class SlackReactionError extends Error {
 }
 
 export class SlackThreadReplyRejectedError extends Error {
-  constructor(message: string, readonly code?: string) {
-    super(message);
+  constructor(message: string, readonly code?: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = "SlackThreadReplyRejectedError";
   }
 }
@@ -122,12 +123,23 @@ export class SlackReadClient {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) query.set(key, String(value));
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    const response = await this.fetchImpl(`${this.apiBaseUrl}/${method}${suffix}`, {
-      headers: { Authorization: `Bearer ${this.token}` },
-      signal: options.signal,
-    });
-    if (!response.ok) throw new Error(`Slack API request failed: ${response.status} ${response.statusText}`.trim());
-    return response.json();
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await this.fetchImpl(`${this.apiBaseUrl}/${method}${suffix}`, {
+        headers: { Authorization: `Bearer ${this.token}` }, signal: options.signal,
+      });
+      if (response.status === 429 && attempt < 3) {
+        const header = response.headers.get("retry-after");
+        const seconds = header === null ? NaN : Number(header);
+        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 120) {
+          throw new Error(`Slack API ${method} rate limited with invalid or excessive Retry-After`);
+        }
+        await response.body?.cancel();
+        await delay(seconds * 1000, undefined, { signal: options.signal });
+        continue;
+      }
+      if (!response.ok) throw new Error(`Slack API request failed: ${response.status} ${response.statusText}`.trim());
+      return response.json();
+    }
   }
 
   async downloadFile(url: string, options: { signal?: AbortSignal; maxRedirects?: number } = {}): Promise<Response> {
@@ -310,7 +322,12 @@ export class SlackIntegration implements Integration {
       body: bytes,
     });
     if (!transfer.ok) throw new Error(`Slack file upload HTTP ${transfer.status}`);
-    await this.assertWritable(channel);
+    try {
+      await this.assertWritable(channel);
+    } catch (err) {
+      this.logger.warn({ err, channel, fileId: upload.file_id }, "Slack upload transferred but not completed; channel write authorization failed");
+      throw err;
+    }
     const completion = await this.fetchImpl(`${this.apiBaseUrl}/files.completeUploadExternal`, {
       method: "POST",
       headers: {

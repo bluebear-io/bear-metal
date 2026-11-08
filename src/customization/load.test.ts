@@ -21,6 +21,11 @@ const valid = () => ({
 });
 
 describe("configuration validation", () => {
+  it("rejects unknown Slack and customization fields instead of disabling intake", () => {
+    const slack = { notificationChannel: "C1", getBotToken: () => "token", obsoletePolicy: {} };
+    expect(() => validateBearMetalConfig({ ...valid(), slack })).toThrow("Unknown config.slack field: obsoletePolicy");
+    expect(() => validateTaskCustomization({ llm: { provider: "anthropic", model: "m" }, buildWorkspace: async () => {}, obsoletePolicy: {} })).toThrow("Unknown customizeTask result field: obsoletePolicy");
+  });
   it("requires the bootstrap variable", async () => await expect(loadBearMetalConfig({})).rejects.toThrow("BEAR_METAL_CONFIG_FILE"));
   it("loads JavaScript and native TypeScript modules", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-config-test-")); paths.push(dir);

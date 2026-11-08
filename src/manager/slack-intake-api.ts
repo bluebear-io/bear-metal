@@ -98,15 +98,17 @@ export class SlackIntakeApi {
     };
   }
 
-  /** Top-level messages with `oldest < ts <= latest`. */
-  async readHistory(channelId: string, oldest: string, latest: string): Promise<SlackIntakeMessage[]> {
-    const messages: SlackIntakeMessage[] = [];
-    await this.paginate("conversations.history", { channel: channelId, oldest, latest, inclusive: true, limit: 200 }, (response) => {
-      for (const message of this.messagesOf(response, "conversations.history")) {
-        if (compareSlackTs(message.ts, oldest) > 0 && compareSlackTs(message.ts, latest) <= 0) messages.push(message);
-      }
-    });
-    return messages.sort((a, b) => compareSlackTs(a.ts, b.ts));
+  /** Slack returns history newest first; callers must finish all pages before advancing a time cursor. */
+  async *historyPages(channelId: string, oldest: string, latest: string): AsyncGenerator<SlackIntakeMessage[]> {
+    for await (const page of this.pages("conversations.history", { channel: channelId, oldest, latest, inclusive: true, limit: 100 })) {
+      yield this.messagesOf(page, "conversations.history").filter((message) => compareSlackTs(message.ts, oldest) > 0 && compareSlackTs(message.ts, latest) <= 0);
+    }
+  }
+
+  async *threadPages(channelId: string, threadTs: string, latest: string): AsyncGenerator<SlackIntakeMessage[]> {
+    for await (const page of this.pages("conversations.replies", { channel: channelId, ts: threadTs, latest, inclusive: true, limit: 100 })) {
+      yield this.messagesOf(page, "conversations.replies").filter((message) => compareSlackTs(message.ts, latest) <= 0);
+    }
   }
 
   async readThread(channelId: string, threadTs: string): Promise<SlackIntakeMessage[]> {
@@ -154,6 +156,10 @@ export class SlackIntakeApi {
   }
 
   private async paginate(method: string, params: Record<string, string | number | boolean>, onPage: (response: unknown) => void): Promise<void> {
+    for await (const response of this.pages(method, params)) onPage(response);
+  }
+
+  private async *pages(method: string, params: Record<string, string | number | boolean>): AsyncGenerator<unknown> {
     let cursor: string | undefined;
     const seen = new Set<string>();
     do {
@@ -161,7 +167,7 @@ export class SlackIntakeApi {
         ok?: boolean; error?: string; has_more?: boolean; response_metadata?: { next_cursor?: string };
       };
       if (!response.ok) throw new Error(`Slack ${method} failed: ${response.error ?? "unknown error"}`);
-      onPage(response);
+      yield response;
       cursor = response.response_metadata?.next_cursor || undefined;
       if (response.has_more && !cursor) throw new Error(`Slack ${method} has more results but no pagination cursor`);
       if (cursor && seen.has(cursor)) throw new Error(`Slack ${method} pagination repeated a cursor`);

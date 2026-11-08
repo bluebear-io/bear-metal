@@ -76,6 +76,38 @@ describe("Slack coordinator", () => {
       expect(await db.isSlackThreadFollowing(key)).toBe(false);
     } finally { await coordinator.stop(); await db.close(); }
   });
+  it("terminates queued reactions when a channel becomes read-only and logs suspension", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    await db.unsubscribeSlackThread(key, "100.1");
+    const { api, replies } = makeApi([]);
+    const logger = createLogger({ name: "test", level: "silent" });
+    const warn = vi.spyOn(logger, "warn");
+    const coordinator = makeCoordinator({ db, api, logger, runAgent: vi.fn(async () => {}), isReadOnlyChannel: async () => true });
+    try {
+      await coordinator.wake(key);
+      expect(await db.listSlackPendingThreads()).toEqual([]);
+      expect(await db.listSlackUnsubscribeReactions(key, true)).toEqual([expect.objectContaining({ state: "failed", error: "read_only_channel" })]);
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ key, queuedReactions: 1 }), expect.stringContaining("Suspending"));
+      expect(replies).toEqual([]);
+      expect(api.react).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await db.close(); }
+  });
+  it("retains pending work on classification failure without attempting failure replies", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api } = makeApi([]);
+    const logger = createLogger({ name: "test", level: "silent" });
+    const error = vi.spyOn(logger, "error");
+    const coordinator = makeCoordinator({ db, api, logger, runAgent: vi.fn(async () => {}), isReadOnlyChannel: async () => { throw new Error("unavailable"); } });
+    try {
+      await coordinator.wake(key);
+      expect(api.reply).not.toHaveBeenCalled();
+      expect(api.readThread).not.toHaveBeenCalled();
+      expect(await db.listSlackPendingThreads()).toEqual([key]);
+      expect(error).toHaveBeenCalledOnce();
+    } finally { await coordinator.stop(); await db.close(); }
+  });
   it("logs a failed archived-channel suspension and retries it without rejecting wake", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
