@@ -55,20 +55,17 @@ describe("configuration validation", () => {
   });
   it("validates intake policy returned by customizeTask", () => {
     const intake = { channelNamePattern: /^support-.+$/, triggerReaction: "ticket", ownerEmail: "owner@example.com",
-      sweepIntervalMs: 3600000, initialLookbackMs: 7200000, readOnlyChannels: true,
-      isEligibleReactor: () => true, reactionInstructions: "Track the flagged request.", sweepInstructions: "Find unresolved requests." };
+      readOnlyChannels: true,
+      isEligibleReactor: () => true, reactionInstructions: "Track the flagged request." };
     const withIntake = (overrides: object) => ({ llm: { provider: "anthropic", model: "model" }, buildWorkspace: async () => {}, slackChannelIntake: { ...intake, ...overrides } });
-    expect(validateTaskCustomization(withIntake({})).slackChannelIntake?.sweepIntervalMs).toBe(3600000);
+    expect(validateTaskCustomization(withIntake({})).slackChannelIntake?.triggerReaction).toBe("ticket");
     expect(() => validateTaskCustomization(withIntake({ channelNamePattern: "support-" }))).toThrow("RegExp");
     expect(() => validateTaskCustomization(withIntake({ channelNamePattern: /support-/g }))).toThrow("g or y");
     expect(() => validateTaskCustomization(withIntake({ triggerReaction: ":ticket:" }))).toThrow("emoji name");
     expect(() => validateTaskCustomization(withIntake({ ownerEmail: "owner" }))).toThrow("email");
-    for (const field of ["sweepIntervalMs", "initialLookbackMs"]) {
-      expect(() => validateTaskCustomization(withIntake({ [field]: 0 }))).toThrow(field);
-    }
     expect(() => validateTaskCustomization(withIntake({ readOnlyChannels: undefined }))).toThrow("readOnlyChannels");
     expect(() => validateTaskCustomization(withIntake({ isEligibleReactor: undefined }))).toThrow("isEligibleReactor");
-    expect(() => validateTaskCustomization(withIntake({ sweepInstructions: "" }))).toThrow("sweepInstructions");
+    expect(() => validateTaskCustomization(withIntake({ reactionInstructions: "" }))).toThrow("reactionInstructions");
   });
   it("resolves optional intake exclusively through the startup customization call", async () => {
     const buildWorkspace = vi.fn(async () => {});
@@ -84,8 +81,8 @@ describe("configuration validation", () => {
 
   it("requires a signing secret when the customization enables intake", async () => {
     const policy = { channelNamePattern: /^support-/, triggerReaction: "ticket", ownerEmail: "owner@example.com",
-      sweepIntervalMs: 3600000, initialLookbackMs: 7200000, readOnlyChannels: true,
-      isEligibleReactor: () => true, reactionInstructions: "Track request.", sweepInstructions: "Review requests." };
+      readOnlyChannels: true,
+      isEligibleReactor: () => true, reactionInstructions: "Track request." };
     const config = { ...valid(), slack: { notificationChannel: "C1", getBotToken: () => "token" },
       customizeTask: async () => ({ llm: { provider: "anthropic" as const, model: "model" }, buildWorkspace: async () => {}, slackChannelIntake: policy }) };
     await expect(resolveSlackChannelIntakePolicy(config)).rejects.toThrow("getSigningSecret");

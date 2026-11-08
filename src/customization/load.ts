@@ -108,17 +108,14 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
   }
   if (customization.slackChannelIntake !== undefined) {
     const intake = object(customization.slackChannelIntake, "customizeTask result.slackChannelIntake");
-    rejectUnknownFields(intake, ["channelNamePattern", "triggerReaction", "ownerEmail", "sweepIntervalMs", "initialLookbackMs", "readOnlyChannels", "isEligibleReactor", "reactionInstructions", "sweepInstructions"], "slackChannelIntake");
+    rejectUnknownFields(intake, ["channelNamePattern", "triggerReaction", "ownerEmail", "readOnlyChannels", "isEligibleReactor", "reactionInstructions"], "slackChannelIntake");
     if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("slackChannelIntake.channelNamePattern must be a RegExp");
     if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) throw new Error("slackChannelIntake.channelNamePattern must not use the g or y flag");
     if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "slackChannelIntake.triggerReaction"))) throw new Error("slackChannelIntake.triggerReaction must be an emoji name without colons");
     if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "slackChannelIntake.ownerEmail"))) throw new Error("slackChannelIntake.ownerEmail must be an email address");
-    positiveInteger(intake.sweepIntervalMs, "slackChannelIntake.sweepIntervalMs");
-    positiveInteger(intake.initialLookbackMs, "slackChannelIntake.initialLookbackMs");
     if (typeof intake.readOnlyChannels !== "boolean") throw new Error("slackChannelIntake.readOnlyChannels must be a boolean");
     callable(intake.isEligibleReactor, "slackChannelIntake.isEligibleReactor");
     nonEmptyString(intake.reactionInstructions, "slackChannelIntake.reactionInstructions");
-    nonEmptyString(intake.sweepInstructions, "slackChannelIntake.sweepInstructions");
   }
   if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
   if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");

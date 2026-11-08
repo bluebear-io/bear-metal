@@ -7,9 +7,8 @@ import { LinearRefusedError } from "../shared/integrations/linear/client.js";
 import { createLogger } from "../shared/logger.js";
 import type { runSlackAgent } from "../worker/slack-agent.js";
 import { SLACK_INTAKE_REACTION_MAX_ATTEMPTS, SlackIntake } from "./slack-intake.js";
-import { slackTsFromMs, type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
+import { type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
 
-const DAY = 24 * 60 * 60 * 1000;
 const RETRY_BASE = 5 * 60 * 1000;
 const DUE = "9999-12-31T00:00:00.000Z";
 const NOW = Date.UTC(2026, 10, 5, 12);
@@ -18,10 +17,6 @@ type AgentInput = Parameters<typeof runSlackAgent>[0];
 
 function message(ts: string, user: string, text: string, extra: Partial<SlackIntakeMessage> = {}): SlackIntakeMessage {
   return { ts, threadTs: null, user, text, replyCount: 0, fileCount: 0, ...extra };
-}
-
-function ts(offsetMs: number): string {
-  return slackTsFromMs(NOW + offsetMs);
 }
 
 class FakeSlack {
@@ -35,9 +30,7 @@ class FakeSlack {
     UGUEST: { id: "UGUEST", name: "Gus Guest", teamId: "T1", isBot: false, deleted: false, guest: true },
     UEXTERNAL: { id: "UEXTERNAL", name: "Casey External", teamId: "TEXTERNAL", isBot: false, deleted: false, guest: false },
   };
-  history: Record<string, SlackIntakeMessage[]> = {};
   threads: Record<string, SlackIntakeMessage[]> = {};
-  historyCalls: Array<{ channelId: string; oldest: string; latest: string }> = [];
 
   listChannels = async () => this.channels;
   getChannel = async (id: string) => {
@@ -50,19 +43,6 @@ class FakeSlack {
     if (!user) throw new Error(`unknown user ${id}`);
     return user;
   };
-  readHistory = async (channelId: string, oldest: string, latest: string) => {
-    this.historyCalls.push({ channelId, oldest, latest });
-    return this.history[channelId] ?? [];
-  };
-  readThread = async (channelId: string, threadTs: string) => this.threads[`${channelId}/${threadTs}`] ?? [];
-  async *historyPages(channelId: string, oldest: string, latest: string) {
-    const messages = await this.readHistory(channelId, oldest, latest);
-    for (let i = 0; i < messages.length; i += 15) yield messages.slice(i, i + 15);
-  }
-  async *threadPages(channelId: string, threadTs: string, _latest: string) {
-    const messages = await this.readThread(channelId, threadTs);
-    for (let i = 0; i < messages.length; i += 15) yield messages.slice(i, i + 15);
-  }
   readMessageThread = async (channelId: string, messageTs: string) => {
     for (const [key, messages] of Object.entries(this.threads)) {
       if (key.startsWith(`${channelId}/`) && messages.some((candidate) => candidate.ts === messageTs)) {
@@ -126,9 +106,9 @@ describe("Slack channel intake", () => {
     agent = vi.fn(async () => {});
     now = NOW;
     policy = { channelNamePattern: /^support-.+$/, triggerReaction: "ticket", ownerEmail: "owner@example.com",
-      sweepIntervalMs: DAY, initialLookbackMs: DAY, readOnlyChannels: true,
+      readOnlyChannels: true,
       isEligibleReactor: (user, workspaceId) => user.teamId === workspaceId && !user.isBot && !user.deleted && !user.guest,
-      reactionInstructions: "Track the flagged request.", sweepInstructions: "Find unresolved engineering requests." };
+      reactionInstructions: "Track the flagged request." };
     intake = new SlackIntake({
       db, api: slack, linear, github: { getInstallationToken: async () => "token" },
       config: { customizeTask: async () => ({ llm: { provider: "anthropic", model: "m" }, buildWorkspace: async () => {}, ticketLabels: ["signal:slack"] }) } as unknown as BearMetalConfig,
@@ -145,6 +125,16 @@ describe("Slack channel intake", () => {
   afterEach(async () => {
     await intake.stop();
     await db.close();
+  });
+
+  it("polls queued reactions on startup without discovering or scanning channels", async () => {
+    const listChannels = vi.spyOn(slack, "listChannels");
+    const process = vi.spyOn(intake, "processReactions");
+    intake.start();
+    await vi.waitFor(() => expect(process).toHaveBeenCalled());
+    await intake.stop();
+    expect(listChannels).not.toHaveBeenCalled();
+    expect(agent).not.toHaveBeenCalled();
   });
 
   const reaction = (overrides: Partial<{ channelId: string; messageTs: string; reactorUserId: string }> = {}) => ({
@@ -202,7 +192,7 @@ describe("Slack channel intake", () => {
     expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
-  it("does not create a second ticket for repeated reactions or a message a sweep already ticketed", async () => {
+  it("does not create a second ticket for repeated reactions", async () => {
     seedThread();
     agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("100.2")); });
     expect(await db.recordSlackIntakeReaction(reaction())).toBe(true);
@@ -217,10 +207,9 @@ describe("Slack channel intake", () => {
 
   it("lets a reaction defer to an existing ticket in the same thread for the same request", async () => {
     seedThread();
-    // The sweep path claims the thread root; the later reaction on the reply refers to the same request.
-    const sweep = await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.1", threadTs: "100.1", trigger: "sweep", title: "Export audit logs" });
-    await db.attachSlackIntakeTicket(sweep.ticket, { id: "issue-9", identifier: "DEN-9", url: "https://linear.app/issue/DEN-9" });
-    await db.markSlackIntakeTicketDelegated(sweep.ticket);
+    const prior = await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.1", threadTs: "100.1", trigger: "reaction", title: "Export audit logs" });
+    await db.attachSlackIntakeTicket(prior.ticket, { id: "issue-9", identifier: "DEN-9", url: "https://linear.app/issue/DEN-9" });
+    await db.markSlackIntakeTicketDelegated(prior.ticket);
     agent.mockImplementation(async ({ tools, prompt }) => {
       expect(prompt).toContain("\"ticket\":\"DEN-9\"");
       await expect(call(tools, "report_already_tracked", { sourceTs: "100.9", reason: "x" })).rejects.toThrow("No delegated intake ticket");
@@ -234,7 +223,7 @@ describe("Slack channel intake", () => {
 
   it("requires acknowledgement of every existing thread ticket and a distinct request reason", async () => {
     seedThread();
-    const existing = (await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.1", threadTs: "100.1", trigger: "sweep", title: "CSV export" })).ticket;
+    const existing = (await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.1", threadTs: "100.1", trigger: "reaction", title: "CSV export" })).ticket;
     await db.attachSlackIntakeTicket(existing, { id: "issue-9", identifier: "DEN-9", url: "https://linear.app/issue/DEN-9" });
     await db.markSlackIntakeTicketDelegated(existing);
     agent.mockImplementation(async ({ tools }) => {
@@ -327,7 +316,7 @@ describe("Slack channel intake", () => {
 
   it("refuses to recreate a ticket whose earlier creation outcome is unknown", async () => {
     seedThread();
-    await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2", threadTs: "100.1", trigger: "sweep", title: "t" });
+    await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2", threadTs: "100.1", trigger: "reaction", title: "t" });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
     expect(agent).not.toHaveBeenCalled();
@@ -349,28 +338,6 @@ describe("Slack channel intake", () => {
     expect(linear.listSlackTicketDestinations).toHaveBeenCalledTimes(1);
   });
 
-  it("uses custom channel selection, timing, instructions and task context", async () => {
-    policy.channelNamePattern = /^engineering$/;
-    policy.sweepIntervalMs = 2 * 60 * 60 * 1000;
-    policy.initialLookbackMs = 7 * DAY;
-    policy.sweepInstructions = "Only track release automation requests.";
-    slack.history.CENG = [message(ts(-60000), "UMEMBER", "Please automate release notes")];
-    agent.mockImplementation(async ({ task, prompt, tools }) => {
-      expect(task.slackChannelIntake).toBe("sweep");
-      expect(prompt).toContain(policy.sweepInstructions);
-      expect(prompt).not.toContain("BlueBear");
-      await call(tools, "finish_review", { summary: "Reviewed." });
-    });
-    await intake.sweepIfDue();
-    expect(slack.historyCalls).toEqual([{ channelId: "CENG", oldest: ts(-7 * DAY), latest: ts(0) }]);
-    now += policy.sweepIntervalMs - 1;
-    await intake.sweepIfDue();
-    expect(slack.historyCalls).toHaveLength(1);
-    now += 1;
-    await intake.sweepIfDue();
-    expect(slack.historyCalls[1]).toEqual({ channelId: "CENG", oldest: ts(0), latest: ts(policy.sweepIntervalMs) });
-  });
-
   it("honors the deployment's async reactor authorization and reaction instructions", async () => {
     seedThread();
     policy.isEligibleReactor = async (user) => user.id === "UEXTERNAL";
@@ -385,107 +352,4 @@ describe("Slack channel intake", () => {
     expect(linear.created).toHaveLength(1);
   });
 
-  it("sweeps only joined selected channels over the last 24 hours on the first run, then from the previous sweep", async () => {
-    slack.history.CACME = [message(ts(-2 * 60 * 60 * 1000), "UEXTERNAL", "Thanks, all good!")];
-    slack.history.CENG = [message(ts(-60 * 1000), "UMEMBER", "please fix the build")];
-    agent.mockImplementation(async ({ tools }) => { await call(tools, "finish_review", { summary: "No engineering work requested." }); });
-
-    await intake.sweepIfDue();
-    expect(slack.historyCalls).toEqual([{ channelId: "CACME", oldest: ts(-DAY), latest: ts(0) }]);
-    expect(agent).toHaveBeenCalledTimes(1);
-    expect(linear.created).toEqual([]);
-
-    now = NOW + DAY - 1;
-    await intake.sweepIfDue();
-    expect(slack.historyCalls).toHaveLength(1);
-
-    now = NOW + DAY;
-    slack.history.CACME = [];
-    await intake.sweepIfDue();
-    expect(slack.historyCalls[1]).toEqual({ channelId: "CACME", oldest: ts(0), latest: ts(DAY) });
-    expect(agent).toHaveBeenCalledTimes(1);
-  });
-
-  it("creates sweep tickets for actionable requests and skips sources it already ticketed", async () => {
-    const root = ts(-60 * 60 * 1000);
-    const reply = ts(-30 * 60 * 1000);
-    slack.history.CACME = [message(root, "UEXTERNAL", "SSO login fails for our EU tenant", { replyCount: 1 })];
-    slack.threads[`CACME/${root}`] = [
-      message(root, "UEXTERNAL", "SSO login fails for our EU tenant", { replyCount: 1 }),
-      message(reply, "UMEMBER", "Looking into it", { threadTs: root }),
-    ];
-    agent.mockImplementation(async ({ tools, prompt }) => {
-      expect(prompt).toContain("SSO login fails");
-      await expect(call(tools, "create_intake_ticket", ticketArgs("1.0"))).rejects.toThrow("not an eligible source");
-      await call(tools, "create_intake_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
-      await call(tools, "create_intake_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
-      await expect(call(tools, "create_intake_ticket", ticketArgs(reply, "Investigate EU SSO"))).rejects.toThrow("at most one ticket per thread");
-      await call(tools, "finish_review", { summary: "One SSO bug." });
-    });
-    await intake.sweep(NOW);
-    expect(linear.created).toHaveLength(1);
-    expect(linear.created[0]!.description).toContain("- Intake: Scheduled channel sweep");
-    expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: root })).toMatchObject({ state: "delegated", threadTs: root, trigger: "sweep" });
-
-    await db.setSlackIntakeSweepCursor("T1", "CACME", ts(-DAY));
-    agent.mockReset();
-    agent.mockImplementation(async ({ tools, prompt }) => {
-      expect(prompt).toContain("\"ticket\":\"DEN-1\"");
-      await call(tools, "create_intake_ticket", ticketArgs(root, "Fix SSO login for EU tenants"));
-      await expect(call(tools, "create_intake_ticket", ticketArgs(reply, "Fix SSO login again"))).rejects.toThrow("already has intake ticket DEN-1");
-      await call(tools, "finish_review", { summary: "Already tracked." });
-    });
-    await intake.sweep(NOW + 1000);
-    expect(linear.created).toHaveLength(1);
-  });
-
-  it("bounds every sweep prompt and reviews all pages before advancing the cursor", async () => {
-    const root = ts(-60000);
-    const messages = Array.from({ length: 70 }, (_, index) => message(ts(-60000 + index), "UEXTERNAL", "x".repeat(4000), { threadTs: root }));
-    slack.history.CACME = [{ ...messages[0]!, replyCount: 69 }];
-    slack.threads[`CACME/${root}`] = messages;
-    const sizes: number[] = [];
-    const reviewed = new Set<string>();
-    agent.mockImplementation(async ({ tools, task, prompt }) => {
-      sizes.push(Buffer.byteLength(prompt));
-      const payload = JSON.parse(task.request!);
-      for (const thread of payload.threads) for (const message of thread.messages) reviewed.add(message.ts);
-      await call(tools, "finish_review", { summary: "Reviewed this batch." });
-    });
-    await intake.sweep(NOW);
-    expect(sizes.length).toBeGreaterThan(1);
-    expect(Math.max(...sizes)).toBeLessThan(70000);
-    expect([...reviewed].sort()).toEqual(messages.map((message) => message.ts).sort());
-    expect(await db.getSlackIntakeSweepCursor("T1", "CACME")).toBe(ts(0));
-  });
-  it("does not advance the cursor when a later batch fails", async () => {
-    const root = ts(-60000);
-    const messages = Array.from({ length: 40 }, (_, index) => message(ts(-60000 + index), "UEXTERNAL", "x".repeat(4000), { threadTs: root }));
-    slack.history.CACME = [{ ...messages[0]!, replyCount: 39 }];
-    slack.threads[`CACME/${root}`] = messages;
-    let batches = 0;
-    agent.mockImplementation(async ({ tools }) => {
-      batches += 1;
-      if (batches === 2) throw new Error("Second batch failed");
-      await call(tools, "finish_review", { summary: "Reviewed." });
-    });
-    await intake.sweep(NOW);
-    expect(batches).toBe(2);
-    expect(await db.getSlackIntakeSweepCursor("T1", "CACME")).toBeNull();
-  });
-  it("does not skip an uncertain create or advance past its thread", async () => {
-    const root = ts(-1000);
-    slack.history.CACME = [message(root, "UEXTERNAL", "Please fix this")];
-    await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", threadTs: root, sourceTs: root, trigger: "sweep", title: "Uncertain" });
-    await intake.sweep(NOW);
-    expect(await db.getSlackIntakeSweepCursor("T1", "CACME")).toBeNull();
-    expect(agent).not.toHaveBeenCalled();
-    expect(linear.created).toEqual([]);
-  });
-  it("keeps a channel's cursor when its review fails so the next sweep covers it again", async () => {
-    slack.history.CACME = [message(ts(-1000), "UEXTERNAL", "Can you add dark mode?")];
-    await intake.sweep(NOW);
-    expect(await db.getSlackIntakeSweepCursor("T1", "CACME")).toBeNull();
-    expect(await db.getSlackIntakeLastSweep("T1")).toBe(new Date(NOW).toISOString());
-  });
 });

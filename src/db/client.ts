@@ -226,7 +226,7 @@ export interface SlackIntakeSource {
 
 export interface SlackIntakeTicket extends SlackIntakeSource {
   threadTs: string;
-  trigger: "reaction" | "sweep";
+  trigger: "reaction";
   state: "creating" | "created" | "delegated" | "failed";
   title: string;
   ticketId: string | null;
@@ -291,7 +291,7 @@ interface SlackIntakeTicketRow {
 }
 
 function rowToSlackIntakeTicket(row: SlackIntakeTicketRow): SlackIntakeTicket {
-  if (row.intake_trigger !== "reaction" && row.intake_trigger !== "sweep") throw new Error(`Invalid Slack intake trigger for ${row.channel_id}/${row.source_ts}: ${row.intake_trigger}`);
+  if (row.intake_trigger !== "reaction") throw new Error(`Invalid Slack intake trigger for ${row.channel_id}/${row.source_ts}: ${row.intake_trigger}`);
   if (row.state !== "creating" && row.state !== "created" && row.state !== "delegated" && row.state !== "failed") {
     throw new Error(`Invalid Slack intake state for ${row.channel_id}/${row.source_ts}: ${row.state}`);
   }
@@ -796,10 +796,6 @@ export interface DbClient {
   failSlackIntakeTicket(source: SlackIntakeSource, error: string): Promise<void>;
   getSlackIntakeTicket(source: SlackIntakeSource): Promise<SlackIntakeTicket | null>;
   listSlackIntakeThreadTickets(workspaceId: string, channelId: string, threadTs: string[]): Promise<SlackIntakeTicket[]>;
-  getSlackIntakeSweepCursor(workspaceId: string, channelId: string): Promise<string | null>;
-  setSlackIntakeSweepCursor(workspaceId: string, channelId: string, sweptUntilTs: string): Promise<void>;
-  getSlackIntakeLastSweep(workspaceId: string): Promise<string | null>;
-  recordSlackIntakeSweep(workspaceId: string, completedAt: string): Promise<void>;
 
   upsertTicketDiscovered(ticket: TicketInput): Promise<void>;
   setTicketStatus(ticketId: string, status: BmStatus, notify?: boolean): Promise<void>;
@@ -2219,38 +2215,6 @@ export class SqlDbClient implements DbClient {
       [workspaceId, channelId, ...threadTs],
     );
     return rows.map(rowToSlackIntakeTicket);
-  }
-
-  async getSlackIntakeSweepCursor(workspaceId: string, channelId: string): Promise<string | null> {
-    const rows = await this.query<{ swept_until_ts: string }>(
-      `SELECT swept_until_ts FROM slack_intake_channel_sweeps WHERE workspace_id = ? AND channel_id = ?`,
-      [workspaceId, channelId],
-    );
-    return rows[0]?.swept_until_ts ?? null;
-  }
-
-  async setSlackIntakeSweepCursor(workspaceId: string, channelId: string, sweptUntilTs: string): Promise<void> {
-    await this.run(
-      `INSERT INTO slack_intake_channel_sweeps (workspace_id, channel_id, swept_until_ts, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT (workspace_id, channel_id) DO UPDATE SET swept_until_ts = excluded.swept_until_ts, updated_at = excluded.updated_at`,
-      [workspaceId, channelId, sweptUntilTs, this.clock.nowIso()],
-    );
-  }
-
-  async getSlackIntakeLastSweep(workspaceId: string): Promise<string | null> {
-    const rows = await this.query<{ completed_at: string }>(
-      `SELECT completed_at FROM slack_intake_sweep_runs WHERE workspace_id = ?`,
-      [workspaceId],
-    );
-    return rows[0]?.completed_at ?? null;
-  }
-
-  async recordSlackIntakeSweep(workspaceId: string, completedAt: string): Promise<void> {
-    await this.run(
-      `INSERT INTO slack_intake_sweep_runs (workspace_id, completed_at) VALUES (?, ?)
-       ON CONFLICT (workspace_id) DO UPDATE SET completed_at = excluded.completed_at`,
-      [workspaceId, completedAt],
-    );
   }
 
   async upsertTicketDiscovered(ticket: TicketInput): Promise<void> {

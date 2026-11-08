@@ -10,12 +10,9 @@ import type { GitHubIntegration } from "../shared/integrations/github/client.js"
 import { isLinearRejection, type LinearIntegration } from "../shared/integrations/linear/client.js";
 import type { Logger } from "../shared/logger.js";
 import { runSlackAgent } from "../worker/slack-agent.js";
-import { compareSlackTs, slackTsFromMs, type SlackIntakeApi, type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
+import { type SlackIntakeApi, type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
 
-const SWEEP_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_PAYLOAD_TEXT = 4_000;
-const MAX_SWEEP_BATCH_BYTES = 48_000;
-const MAX_SWEEP_BATCH_MESSAGES = 100;
 export const SLACK_INTAKE_REACTION_MAX_ATTEMPTS = 5;
 const REACTION_RETRY_BASE_MS = 5 * 60 * 1000;
 
@@ -28,7 +25,7 @@ class NonRetryableIntakeError extends Error {}
 interface IntakeRun {
   trigger: SlackIntakeTicket["trigger"];
   channel: SlackIntakeChannel;
-  reactor?: SlackIntakeUser;
+  reactor: SlackIntakeUser;
   /** Human messages the agent may cite as a ticket source, mapped to their thread. */
   sources: Map<string, { threadTs: string; message: SlackIntakeMessage }>;
   created: SlackIntakeTicket[];
@@ -62,20 +59,15 @@ function reactionPrompt(payload: string, instructions: string): string {
   return `${instructions} Read the target message in its thread context. Before creating a distinct request in an already tracked thread, acknowledge every existing ticket using acknowledgedSourceTs and explain distinctRequestReason. Call create_intake_ticket exactly once for the target message, unless an existing ticket covers the same outcome; then call report_already_tracked. ${SHARED_RULES}\n${payload}`;
 }
 
-function sweepPrompt(payload: string, instructions: string): string {
-  return `${instructions} The payload may contain only a slice of a thread. Use slack_read to check surrounding context and later resolutions before deciding a request needs work. Create at most one ticket per thread using create_intake_ticket. Do not duplicate existing tickets. After reviewing every request, call finish_review exactly once with a summary, including when no ticket is needed. ${SHARED_RULES}\n${payload}`;
-}
-
 export class SlackIntake {
   private readonly queue = new PQueue({ concurrency: 1 });
   private reactionTimer: NodeJS.Timeout | undefined;
-  private sweepTimer: NodeJS.Timeout | undefined;
   private reactionsQueued = false;
   private stopping = false;
 
   constructor(private readonly input: {
     db: DbClient;
-    api: Pick<SlackIntakeApi, "listChannels" | "getChannel" | "getUser" | "historyPages" | "threadPages" | "readMessageThread" | "getPermalink">;
+    api: Pick<SlackIntakeApi, "getChannel" | "getUser" | "readMessageThread" | "getPermalink">;
     linear: IntakeLinear;
     github: Pick<GitHubIntegration, "getInstallationToken">;
     config: BearMetalConfig;
@@ -92,17 +84,13 @@ export class SlackIntake {
   start(): void {
     this.stopping = false;
     this.wake();
-    this.scheduleSweepCheck();
     this.reactionTimer = setInterval(() => this.wake(), this.input.pollIntervalMs);
-    this.sweepTimer = setInterval(() => this.scheduleSweepCheck(), Math.min(SWEEP_CHECK_INTERVAL_MS, this.input.intake.sweepIntervalMs));
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
     if (this.reactionTimer) clearInterval(this.reactionTimer);
-    if (this.sweepTimer) clearInterval(this.sweepTimer);
     this.reactionTimer = undefined;
-    this.sweepTimer = undefined;
     await this.queue.onIdle();
   }
 
@@ -148,46 +136,8 @@ export class SlackIntake {
     await this.input.db.retrySlackIntakeReaction(reaction, String(err), nextAttemptAt);
   }
 
-  async sweepIfDue(): Promise<void> {
-    const now = this.now();
-    const last = await this.input.db.getSlackIntakeLastSweep(this.input.workspaceId);
-    if (last !== null) {
-      const lastMs = Date.parse(last);
-      if (!Number.isFinite(lastMs)) throw new Error(`Invalid last Slack intake sweep time: ${last}`);
-      if (now - lastMs < this.input.intake.sweepIntervalMs) return;
-    }
-    await this.sweep(now);
-  }
-
-  async sweep(nowMs: number): Promise<void> {
-    const latest = slackTsFromMs(nowMs);
-    const channels = (await this.input.api.listChannels()).filter((channel) => this.matchesChannel(channel.name));
-    const unreadable = channels.filter((channel) => !channel.isMember);
-    if (unreadable.length > 0) {
-      this.input.logger.warn({ channels: unreadable.map((channel) => channel.name) }, "Slack intake cannot read channels the bot has not joined");
-    }
-    let failed = 0;
-    for (const channel of channels.filter((candidate) => candidate.isMember)) {
-      if (this.stopping) return;
-      try {
-        await this.sweepChannel(channel, latest, nowMs);
-      } catch (err) {
-        failed += 1;
-        this.input.logger.error({ err, channel: channel.name, channelId: channel.id }, "Slack intake channel sweep failed; its messages are retried in the next sweep");
-      }
-    }
-    await this.input.db.recordSlackIntakeSweep(this.input.workspaceId, new Date(nowMs).toISOString());
-    this.input.logger.info({ channels: channels.length, failed }, "Slack intake sweep finished");
-  }
-
   private now(): number {
     return (this.input.now ?? Date.now)();
-  }
-
-  private scheduleSweepCheck(): void {
-    if (this.stopping) return;
-    void this.queue.add(() => this.sweepIfDue())
-      .catch((err) => this.input.logger.error({ err }, "Slack intake sweep failed"));
   }
 
   private async processReaction(reaction: SlackIntakeReaction): Promise<{ state: "processed" | "ignored"; reason: string | null }> {
@@ -255,77 +205,6 @@ export class SlackIntake {
     return { state: "processed", reason: alreadyTracked ? `Already tracked by ${alreadyTracked.ticketIdentifier}` : null };
   }
 
-  private async sweepChannel(channel: SlackIntakeChannel, latest: string, nowMs: number): Promise<void> {
-    const oldest = await this.input.db.getSlackIntakeSweepCursor(this.input.workspaceId, channel.id)
-      ?? slackTsFromMs(nowMs - this.input.intake.initialLookbackMs);
-    for await (const roots of this.input.api.historyPages(channel.id, oldest, latest)) {
-      for (const root of roots) {
-        const existing = await this.input.db.listSlackIntakeThreadTickets(this.input.workspaceId, channel.id, [root.ts]);
-        const unresolved = existing.find((ticket) => ticket.state === "creating");
-        if (unresolved) throw this.unresolvedCreation(unresolved);
-        if (existing.some((ticket) => ticket.state === "delegated")) continue;
-        const pages = root.replyCount > 0
-          ? this.input.api.threadPages(channel.id, root.ts, latest)
-          : (async function* () { yield [root]; })();
-        let messages: SlackIntakeMessage[] = [];
-        let size = 0;
-        for await (const page of pages) {
-          for (const message of page.filter((candidate) => isHumanMessage(candidate, this.input.botUserId))) {
-            const cost = Buffer.byteLength(JSON.stringify(payloadMessage(message, root.ts)));
-            if (messages.length > 0 && (size + cost > MAX_SWEEP_BATCH_BYTES || messages.length >= MAX_SWEEP_BATCH_MESSAGES)) {
-              await this.reviewSweepBatch(channel, root.ts, messages, oldest, latest, true);
-              messages = [];
-              size = 0;
-            }
-            messages.push(message);
-            size += cost;
-          }
-        }
-        if (messages.length > 0) await this.reviewSweepBatch(channel, root.ts, messages, oldest, latest, false);
-      }
-    }
-    await this.input.db.setSlackIntakeSweepCursor(this.input.workspaceId, channel.id, latest);
-  }
-
-  private async reviewSweepBatch(channel: SlackIntakeChannel, threadTs: string, messages: SlackIntakeMessage[], oldest: string, latest: string, hasMore: boolean): Promise<void> {
-    const threads = [{ threadTs, messages }];
-    const sources = new Map(messages.map((message) => [message.ts, { threadTs, message }]));
-    const tickets = await this.input.db.listSlackIntakeThreadTickets(this.input.workspaceId, channel.id, threads.map((thread) => thread.threadTs));
-    const run: IntakeRun = { trigger: "sweep", channel, sources, created: [] };
-    let summary: string | undefined;
-    const payload = JSON.stringify({
-      channel: { id: channel.id, name: channel.name },
-      window: { oldest, latest },
-      partialThread: true, hasMore,
-      threads: threads.map((thread) => ({ threadTs: thread.threadTs, messages: thread.messages.map((message) => payloadMessage(message, thread.threadTs)) })),
-      existingTickets: tickets.map(payloadTicket),
-    });
-    const latestSource = [...sources.keys()].sort(compareSlackTs).at(-1)!;
-    const tools = [
-      ...this.ticketTools(run),
-      defineTool({
-        name: "finish_review",
-        label: "Finish channel review",
-        description: "Call exactly once after deciding on every request in the payload, including when no request needs a ticket.",
-        parameters: Type.Object({ summary: Type.String({ minLength: 1, maxLength: 2_000, description: "Short summary of the requests found and why each did or did not get a ticket." }) }),
-        execute: async (_id, params) => {
-          if (summary !== undefined) throw new Error("Channel review was already finished");
-          summary = params.summary;
-          return { content: [{ type: "text", text: "Review recorded." }], details: {} };
-        },
-      }),
-    ];
-    await this.runAgent({
-      task: { type: "coordinator", id: randomUUID(), trigger: "slack", slackChannelIntake: run.trigger, request: payload, slack: { workspaceId: this.input.workspaceId, channelId: channel.id, threadTs: sources.get(latestSource)!.threadTs, sourceTs: latestSource } },
-      tools,
-      prompt: sweepPrompt(payload, this.input.intake.sweepInstructions),
-      output: () => ({ decision: summary, tickets: run.created.map(payloadTicket) }),
-      validateOutcome: async () => {
-        if (summary === undefined) throw new Error(`Intake agent did not finish reviewing #${channel.name}`);
-      },
-    });
-  }
-
   private async runAgent(run: Pick<Parameters<typeof runSlackAgent>[0], "task" | "tools" | "prompt" | "output" | "validateOutcome">): Promise<void> {
     await (this.input.runAgent ?? runSlackAgent)({
       ...run,
@@ -378,18 +257,15 @@ export class SlackIntake {
     if (!entry) throw new Error(`Message ${args.sourceTs} is not an eligible source in this intake run`);
     const source: SlackIntakeSource = { workspaceId: this.input.workspaceId, channelId: run.channel.id, sourceTs: args.sourceTs };
     await this.validateDestination(run, args);
-    if (run.trigger === "sweep") await this.requireUntrackedThread(source, entry.threadTs);
-    else {
-      const existing = (await this.input.db.listSlackIntakeThreadTickets(source.workspaceId, source.channelId, [entry.threadTs]))
-        .filter((ticket) => ticket.sourceTs !== source.sourceTs && (ticket.state !== "failed" || ticket.ticketId !== null));
-      if (existing.some((ticket) => ticket.state !== "delegated")) throw new Error("Thread has an unresolved intake ticket; finish it before creating another");
-      if (existing.length > 0) {
-        const acknowledged = args.acknowledgedSourceTs ?? [];
-        if (acknowledged.length !== existing.length || existing.some((ticket) => !acknowledged.includes(ticket.sourceTs))) {
-          throw new Error("Must acknowledge every existing thread ticket before creating another request");
-        }
-        if (!args.distinctRequestReason?.trim()) throw new Error("Must explain the distinct request or report_already_tracked");
+    const existing = (await this.input.db.listSlackIntakeThreadTickets(source.workspaceId, source.channelId, [entry.threadTs]))
+      .filter((ticket) => ticket.sourceTs !== source.sourceTs && (ticket.state !== "failed" || ticket.ticketId !== null));
+    if (existing.some((ticket) => ticket.state !== "delegated")) throw new Error("Thread has an unresolved intake ticket; finish it before creating another");
+    if (existing.length > 0) {
+      const acknowledged = args.acknowledgedSourceTs ?? [];
+      if (acknowledged.length !== existing.length || existing.some((ticket) => !acknowledged.includes(ticket.sourceTs))) {
+        throw new Error("Must acknowledge every existing thread ticket before creating another request");
       }
+      if (!args.distinctRequestReason?.trim()) throw new Error("Must explain the distinct request or report_already_tracked");
     }
     const { ticket: claimedTicket, claimed } = await this.input.db.claimSlackIntakeTicket({ ...source, threadTs: entry.threadTs, trigger: run.trigger, title: args.title });
     if (claimedTicket.state === "delegated") return claimedTicket;
@@ -464,21 +340,10 @@ export class SlackIntake {
     }
   }
 
-  /** Sweeps run without a person in the loop, so they create at most one intake ticket per thread. */
-  private async requireUntrackedThread(source: SlackIntakeSource, threadTs: string): Promise<void> {
-    const tickets = await this.input.db.listSlackIntakeThreadTickets(source.workspaceId, source.channelId, [threadTs]);
-    const other = tickets.find((ticket) => ticket.sourceTs !== source.sourceTs && (ticket.state !== "failed" || ticket.ticketId !== null));
-    if (other) {
-      throw new Error(`Thread ${threadTs} already has intake ticket ${other.ticketIdentifier ?? `for message ${other.sourceTs}`}; a sweep creates at most one ticket per thread, and an eligible user can react to request another`);
-    }
-  }
-
   private async ticketDescription(run: IntakeRun, message: SlackIntakeMessage, args: { request: string; conversationContext: string; expectedOutcome: string }): Promise<string> {
     const permalink = await this.input.api.getPermalink(run.channel.id, message.ts);
     const author = await this.input.api.getUser(message.user!);
-    const intake = run.trigger === "reaction"
-      ? `\`:${this.input.intake.triggerReaction}:\` reaction by ${run.reactor!.name}`
-      : "Scheduled channel sweep";
+    const intake = `\`:${this.input.intake.triggerReaction}:\` reaction by ${run.reactor.name}`;
     return [
       "## Request", args.request.trim(), "",
       "## Conversation context", args.conversationContext.trim(), "",

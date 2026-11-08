@@ -73,12 +73,9 @@ export interface SlackChannelIntakePolicy {
   channelNamePattern: RegExp;
   triggerReaction: string;
   ownerEmail: string;
-  sweepIntervalMs: number;
-  initialLookbackMs: number;
   readOnlyChannels: boolean;
   isEligibleReactor: (user: Readonly<SlackIntakeReactor>, workspaceId: string) => boolean | Promise<boolean>;
   reactionInstructions: string;
-  sweepInstructions: string;
 }
 
 export interface SlackIntakeReactor {
@@ -97,7 +94,7 @@ export interface Task {
   readonly id: string;
   readonly type: "coding" | "coordinator" | "research";
   readonly request?: string;
-  readonly slackChannelIntake?: "configure" | "reaction" | "sweep";
+  readonly slackChannelIntake?: "configure" | "reaction";
   readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
   readonly identifier?: string;
   readonly title?: string;

@@ -427,18 +427,16 @@ All intake policy comes from `customizeTask`. At startup, when Slack is configur
 | --- | --- |
 | `channelNamePattern` | Non-stateful `RegExp` selecting channel names, such as `/^support-.+$/` |
 | `triggerReaction` | Emoji name without colons |
-| `sweepIntervalMs` | Positive interval between sweeps |
-| `initialLookbackMs` | Positive history window for a channel's first sweep |
 | `ownerEmail` | Linear user assigned intake tickets |
 | `isEligibleReactor(user, workspaceId)` | Boolean or async Boolean authorization decision using the verified Slack user |
-| `reactionInstructions` / `sweepInstructions` | Instructions defining what work should become a ticket |
+| `reactionInstructions` | Instructions defining what work should become a ticket |
 | `readOnlyChannels` | Block messages, replies, reactions, files and notification fallbacks to selected channels; mentions cannot activate conversational handling there |
 
-Reaction and sweep agent tasks call `customizeTask` normally with `slackChannelIntake: "reaction"` or `"sweep"`, so their model, workspace, limits and additional instructions can also be customized. Keep workspace-specific names, ownership and task-selection rules in your customization module.
+Reaction agent tasks call `customizeTask` normally with `slackChannelIntake: "reaction"`, so their model, workspace, limits and additional instructions can also be customized. Keep workspace-specific names, ownership and task-selection rules in your customization module.
 
 Intake requires the interactive bot setup, the `reaction_added` subscription, and membership in selected channels. Channels the bot has not joined are logged and skipped. Return `slackChannelIntake` from `customizeTask`; placing it in the top-level Slack configuration is rejected. Unsupported fields in Slack configuration, task customization, or intake policy are rejected rather than silently ignored.
 
-Each reaction targets one message; sweeps create at most one intake ticket per thread. Tickets include the request, context, expected outcome and original Slack source. For a distinct reaction request in an already tracked thread, the agent must explicitly acknowledge the existing tickets and record why the request differs. Sweeps review bounded batches and advance the channel cursor only after all batches succeed. Later sweeps resume from the last successful channel cursor. New replies on threads whose first message is older than the sweep window are not reviewed; use the reaction for those requests.
+Intake runs only when an eligible user adds the configured reaction to a message in a selected channel. It reads that message's thread and creates a ticket with the request, context, expected outcome and original Slack source. For a distinct request in an already tracked thread, the agent must explicitly acknowledge the existing tickets and record why the request differs. No background channel discovery or scheduled conversation review runs.
 
 An uncertain ticket-creation result fails visibly rather than risking a duplicate. Intake itself has no Slack-writing tools. When `readOnlyChannels` is enabled, the shared writer also enforces silence for other bot flows, and channel lookup failures block outgoing writes. Events are recorded before channel classification; unavailable channels retain pending work for a later poll without sending failure replies. Suspending a read-only channel logs retained work and marks queued unsubscribe reactions as blocked.
 

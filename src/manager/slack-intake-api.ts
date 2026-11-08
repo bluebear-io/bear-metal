@@ -44,27 +44,8 @@ export function compareSlackTs(a: string, b: string): number {
   return Number(aSeconds) - Number(bSeconds) || Number(aMicros.padEnd(6, "0")) - Number(bMicros.padEnd(6, "0"));
 }
 
-export function slackTsFromMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) throw new Error(`Invalid time for a Slack timestamp: ${ms}`);
-  const whole = Math.floor(ms);
-  return `${Math.floor(whole / 1000)}.${String((whole % 1000) * 1000).padStart(6, "0")}`;
-}
-
 export class SlackIntakeApi {
   constructor(private readonly client: Pick<SlackReadClient, "call">) {}
-
-  async listChannels(): Promise<SlackIntakeChannel[]> {
-    const channels: SlackIntakeChannel[] = [];
-    await this.paginate("conversations.list", { types: "public_channel,private_channel", exclude_archived: true, limit: 200 }, (response) => {
-      const page = (response as { channels?: Array<{ id?: string; name?: string; is_member?: boolean }> }).channels;
-      if (!Array.isArray(page)) throw new Error("Slack conversations.list omitted channels");
-      for (const channel of page) {
-        if (!channel.id || !channel.name) throw new Error("Slack conversations.list returned a channel without id or name");
-        channels.push({ id: channel.id, name: channel.name, isMember: channel.is_member === true });
-      }
-    });
-    return channels;
-  }
 
   async getChannel(channelId: string): Promise<SlackIntakeChannel> {
     const response = await this.client.call("conversations.info", { channel: channelId }) as {
@@ -96,19 +77,6 @@ export class SlackIntakeApi {
       deleted: user.deleted === true,
       guest: user.is_restricted === true || user.is_ultra_restricted === true,
     };
-  }
-
-  /** Slack returns history newest first; callers must finish all pages before advancing a time cursor. */
-  async *historyPages(channelId: string, oldest: string, latest: string): AsyncGenerator<SlackIntakeMessage[]> {
-    for await (const page of this.pages("conversations.history", { channel: channelId, oldest, latest, inclusive: true, limit: 100 })) {
-      yield this.messagesOf(page, "conversations.history").filter((message) => compareSlackTs(message.ts, oldest) > 0 && compareSlackTs(message.ts, latest) <= 0);
-    }
-  }
-
-  async *threadPages(channelId: string, threadTs: string, latest: string): AsyncGenerator<SlackIntakeMessage[]> {
-    for await (const page of this.pages("conversations.replies", { channel: channelId, ts: threadTs, latest, inclusive: true, limit: 100 })) {
-      yield this.messagesOf(page, "conversations.replies").filter((message) => compareSlackTs(message.ts, latest) <= 0);
-    }
   }
 
   async readThread(channelId: string, threadTs: string): Promise<SlackIntakeMessage[]> {

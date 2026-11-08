@@ -410,7 +410,7 @@ CREATE TABLE IF NOT EXISTS slack_intake_tickets (
   channel_id TEXT NOT NULL,
   source_ts TEXT NOT NULL,
   thread_ts TEXT NOT NULL,
-  intake_trigger TEXT NOT NULL CHECK (intake_trigger IN ('reaction', 'sweep')),
+  intake_trigger TEXT NOT NULL CHECK (intake_trigger = 'reaction'),
   state TEXT NOT NULL CHECK (state IN ('creating', 'created', 'delegated', 'failed')),
   title TEXT NOT NULL,
   ticket_id TEXT,
@@ -423,16 +423,3 @@ CREATE TABLE IF NOT EXISTS slack_intake_tickets (
 );
 CREATE INDEX IF NOT EXISTS slack_intake_tickets_thread ON slack_intake_tickets (workspace_id, channel_id, thread_ts);
 CREATE INDEX IF NOT EXISTS slack_intake_tickets_ticket ON slack_intake_tickets (ticket_id);
-
-CREATE TABLE IF NOT EXISTS slack_intake_channel_sweeps (
-  workspace_id TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  swept_until_ts TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (workspace_id, channel_id)
-);
-
-CREATE TABLE IF NOT EXISTS slack_intake_sweep_runs (
-  workspace_id TEXT PRIMARY KEY NOT NULL,
-  completed_at TEXT NOT NULL
-);
