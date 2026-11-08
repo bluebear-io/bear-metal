@@ -98,6 +98,11 @@ describe("configuration validation", () => {
     for (const tool of ["edit", "write", "commit_changes"]) {
       expect(() => validateTaskCustomization(customization(["read", tool]))).toThrow(`customizeTask result.tools: ${tool} needs push_for_review, or the workspace is deleted with the changes`);
     }
+    for (const tool of ["edit", "write"]) {
+      expect(() => validateTaskCustomization(customization(["read", tool, "push_for_review"]))).toThrow(`customizeTask result.tools: ${tool} needs bash or commit_changes to commit the changes`);
+      expect(validateTaskCustomization(customization(["read", tool, "bash", "push_for_review"])).tools).toContain(tool);
+      expect(validateTaskCustomization(customization(["read", tool, "commit_changes", "push_for_review"])).tools).toContain(tool);
+    }
   });
   it("accepts any Bedrock ARN as modelArn and rejects any other use of it", () => {
     const customization = (llm: Record<string, unknown>) => ({ llm, buildWorkspace() {} });

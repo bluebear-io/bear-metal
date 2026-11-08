@@ -117,6 +117,10 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
     if (changing !== undefined && !tools.includes("push_for_review")) {
       throw new Error(`customizeTask result.tools: ${changing} needs push_for_review, or the workspace is deleted with the changes`);
     }
+    const editing = tools.find((tool) => tool === "edit" || tool === "write");
+    if (editing !== undefined && !tools.includes("bash") && !tools.includes("commit_changes")) {
+      throw new Error(`customizeTask result.tools: ${editing} needs bash or commit_changes to commit the changes`);
+    }
   }
   return value as TaskCustomization;
 }
