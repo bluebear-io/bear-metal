@@ -76,7 +76,7 @@ export function createSlackEventsRouter(input: {
       }
       const event = payload.event;
       const trigger = input.reactionTrigger;
-      if (trigger && event?.type === "reaction_added" && event.reaction === trigger.emoji && event.item?.type === "message") {
+      if (trigger && event?.type === "reaction_added" && event.reaction?.split("::")[0] === trigger.emoji && event.item?.type === "message") {
         if (!payload.team_id || !event.user || !event.item.channel || !event.item.ts) {
           throw new Error("Slack reaction event omitted workspace, user, channel, or message timestamp");
         }

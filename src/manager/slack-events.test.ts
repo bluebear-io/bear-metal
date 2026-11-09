@@ -168,7 +168,8 @@ describe("Slack event intake", () => {
       expect((await send(reaction("UBOT"))).status).toBe(200);
       expect((await send(reaction("UMEMBER", "eyes"))).status).toBe(200);
       expect((await send(reaction("UMEMBER", "bear_paw_seen", "file"))).status).toBe(200);
-      expect(handle).toHaveBeenCalledTimes(1);
+      expect((await send(reaction("UMEMBER", "bear_paw_seen::skin-tone-3"))).status).toBe(200);
+      expect(handle).toHaveBeenCalledTimes(2);
       expect(handle).toHaveBeenCalledWith({ workspaceId: "T1", channelId: "C1", messageTs: "600.1", userId: "UMEMBER" });
       expect(await db.hasSlackThread({ workspaceId: "T1", channelId: "C1", threadTs: "600.1" })).toBe(false);
       expect(wake).not.toHaveBeenCalled();

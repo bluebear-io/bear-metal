@@ -30,7 +30,8 @@ describe("Slack thread reader", () => {
   it("reads the whole thread around a flagged reply with its permalink", async () => {
     const call = vi.fn(async (method: string, args: Record<string, unknown>) => {
       if (method === "chat.getPermalink") return { ok: true, permalink: "https://slack.example/p1" };
-      if (args.limit === 1) return { ok: true, messages: [{ ts: "100.2", thread_ts: "100.0" }] };
+      // Given a reply's ts, Slack returns the thread from its parent, so limit 1 yields the parent.
+      if (args.limit === 1) return { ok: true, messages: [{ ts: "100.0", thread_ts: "100.0" }] };
       return { ok: true, messages: [{ ts: "100.0", user: "U0", text: "root" }, { ts: "100.2", user: "U1", text: "please fix" }] };
     });
     const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
