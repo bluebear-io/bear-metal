@@ -120,6 +120,11 @@ describe("Slack event intake", () => {
       expect(await db.listSlackPendingMessages(thread)).toEqual(["400.1", "400.4"]);
       expect(wake).toHaveBeenCalledTimes(2);
       expect(authorizeUser).not.toHaveBeenCalledWith("UBOT");
+
+      authorizeUser.mockClear();
+      await send({ type: "message", channel: "C9", ts: "700.1", user: "UMEMBER" });
+      await send({ type: "message", subtype: "message_changed", channel: "C9", ts: "700.2", message: { ts: "700.1", user: "UMEMBER", text: "Unfollowed edit" } });
+      expect(authorizeUser).not.toHaveBeenCalled();
     } finally {
       await db.close();
     }

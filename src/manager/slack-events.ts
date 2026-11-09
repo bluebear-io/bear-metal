@@ -112,13 +112,13 @@ export function createSlackEventsRouter(input: {
           res.sendStatus(200);
           return;
         }
-        if (!await authorized(edited.user, event.channel)) {
-          res.sendStatus(200);
-          return;
-        }
         const key: SlackThreadKey = {
           workspaceId: payload.team_id, channelId: event.channel, threadTs: edited.thread_ts ?? event.thread_ts ?? edited.ts,
         };
+        if (!await input.db.hasSlackThread(key) || !await authorized(edited.user, event.channel)) {
+          res.sendStatus(200);
+          return;
+        }
         const inserted = await input.db.recordSlackEdit(key, event.ts, edited.ts, edited.user, edited.text);
         res.sendStatus(200);
         if (inserted) void input.wake(key).catch((err) => input.logger.error({ err, key }, "Slack thread wake failed"));
