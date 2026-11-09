@@ -123,8 +123,13 @@ describe("Slack event intake", () => {
 
       authorizeUser.mockClear();
       await send({ type: "message", channel: "C9", ts: "700.1", user: "UMEMBER" });
-      await send({ type: "message", subtype: "message_changed", channel: "C9", ts: "700.2", message: { ts: "700.1", user: "UMEMBER", text: "Unfollowed edit" } });
+      await send({ type: "message", channel: "C9", ts: "700.2", thread_ts: "700.1", user: "UMEMBER" });
+      await send({ type: "message", subtype: "message_changed", channel: "C9", ts: "700.3", message: { ts: "700.1", user: "UMEMBER", text: "Unfollowed edit" } });
       expect(authorizeUser).not.toHaveBeenCalled();
+
+      await db.followSlackThread({ workspaceId: "T1", channelId: "C8", threadTs: "800.0" }, "800.0");
+      await send({ type: "message", subtype: "message_changed", channel: "C8", ts: "800.2", message: { ts: "800.1", thread_ts: "800.0", user: "UMEMBER", text: "Edit before the activation row exists" } });
+      expect(authorizeUser).toHaveBeenCalledWith("UMEMBER");
     } finally {
       await db.close();
     }

@@ -115,7 +115,7 @@ export function createSlackEventsRouter(input: {
         const key: SlackThreadKey = {
           workspaceId: payload.team_id, channelId: event.channel, threadTs: edited.thread_ts ?? event.thread_ts ?? edited.ts,
         };
-        if (!await input.db.hasSlackThread(key) || !await authorized(edited.user, event.channel)) {
+        if (!await input.db.isSlackThreadFollowing(key) || !await authorized(edited.user, event.channel)) {
           res.sendStatus(200);
           return;
         }
@@ -137,7 +137,7 @@ export function createSlackEventsRouter(input: {
         threadTs: event.thread_ts ?? event.ts,
       };
       const activates = event.type === "app_mention" || (event.type === "message" && event.channel_type === "im");
-      if (!activates && !event.thread_ts && !await input.db.hasSlackThread(key)) {
+      if (!activates && !await input.db.isSlackThreadFollowing(key)) {
         res.sendStatus(200);
         return;
       }
