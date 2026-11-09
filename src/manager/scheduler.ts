@@ -70,6 +70,10 @@ const HUMAN_TAKEOVER_LINEAR_COMMENT =
   "Detected a commit on the PR branch made after bear-metal's last push, indicating a human takeover. " +
   "Releasing this ticket to avoid stepping on the human's work. Re-delegate to bear-metal if you'd like me to resume.";
 
+const UNASSIGNED_TICKET_COMMENT =
+  "Bear Metal needs an assignee on this ticket: the assignee is the BlueBear owner of the session that works on it. " +
+  "Assign someone and re-delegate to bear-metal to start it.";
+
 export interface TicketHandler {
   handle(ctx: TicketContext, trigger: RunTrigger): Promise<WorkOutcome>;
 }
@@ -199,7 +203,10 @@ export class Scheduler {
       logger,
     );
 
-    const toDispatch = [...refreshed, ...admitted];
+    const toDispatch = [
+      ...await refuseUnassigned(refreshed, (item) => item.context.ticket, linear, logger),
+      ...admitted,
+    ];
     const eligible = await enforceIterationLimit(toDispatch, db, linear, logger, this.deps.maxIterations, this.deps.slack);
     await dispatchTickets(eligible, handler, this.queue, this.inFlight, logger);
 
@@ -685,7 +692,13 @@ async function admitNewTickets(
     ...tracked.map((slot) => slot.ticketId),
     ...waitingIds.filter((id) => !candidateIds.has(id)),
   ]);
-  const admitted = selectAdmissions(candidates, (id) => excludedIds.has(id), free);
+  const assigned = await refuseUnassigned(
+    candidates.filter((ticket) => !excludedIds.has(ticket.id)),
+    (ticket) => ticket,
+    linear,
+    logger,
+  );
+  const admitted = selectAdmissions(assigned, (id) => excludedIds.has(id), free);
   const waitingIdSet = new Set(waitingIds);
   const contexts: DispatchItem[] = [];
   for (const ticket of admitted) {
@@ -713,6 +726,33 @@ async function admitNewTickets(
     contexts.push({ context, trigger: "new" });
   }
   return contexts;
+}
+
+/**
+ * Comments on and undelegates every ticket without an assignee. Undelegating drops the ticket from
+ * findDelegatedTickets and parks a tracked slot, so the refusal comment is posted once.
+ */
+async function refuseUnassigned<T>(
+  items: T[],
+  ticketOf: (item: T) => Ticket,
+  linear: LinearSource,
+  logger: Logger,
+): Promise<T[]> {
+  const assigned: T[] = [];
+  for (const item of items) {
+    const ticket = ticketOf(item);
+    if (ticket.assignee) {
+      assigned.push(item);
+      continue;
+    }
+    logger.warn({ ticket: ticket.identifier }, "ticket has no assignee; refusing and handing back");
+    try {
+      await linear.commentAndHandBack(ticket.id, UNASSIGNED_TICKET_COMMENT);
+    } catch (err) {
+      logger.error({ err, ticket: ticket.identifier }, "failed to refuse unassigned ticket; will retry next poll");
+    }
+  }
+  return assigned;
 }
 
 async function dispatchTickets(

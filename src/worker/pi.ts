@@ -46,6 +46,12 @@ const logger = createLogger({
 // still record the untruncated length in `outputSize` so the UI can flag truncated payloads.
 const MAX_TOOL_CALL_RESULT_CHARS = 8_000;
 
+function requireOwnerEmail(issue: WorkerInputContext["ticket"]["issue"]): string {
+  if (!issue.assignee) throw new Error(`Ticket ${issue.identifier} has no assignee to own its session`);
+  if (!issue.assignee.email) throw new Error(`Cannot read the email of ticket ${issue.identifier}'s assignee ${issue.assignee.id}`);
+  return issue.assignee.email;
+}
+
 export async function runPiWorker(input: {
   signal?: AbortSignal;
   context: WorkerInputContext;
@@ -76,6 +82,7 @@ export async function runPiWorker(input: {
   pullRequestLabels?: readonly string[];
 }): Promise<DispatchResult> {
   input.signal?.throwIfAborted();
+  const ownerEmail = requireOwnerEmail(input.context.ticket.issue);
   let decision: DispatchResult | undefined;
   const workspaceRoot = input.context.cloneScript.agentWorkdir;
 
@@ -380,7 +387,7 @@ export async function runPiWorker(input: {
       ...stateCustomTools,
       ...agentTools,
     ],
-    ownerEmail: input.context.ticket.issue.assignee?.email,
+    ownerEmail,
   });
   const session = runtime.session;
   const unsubscribe = session.subscribe((event) => {

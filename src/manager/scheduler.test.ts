@@ -311,6 +311,29 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(2);
   });
 
+  it("refuses an unassigned delegated ticket once: comments, undelegates and never dispatches it", async () => {
+    const db = await makeDb();
+    const delegated = [makeTicket("unassigned", { assignee: null }), makeTicket("assigned")];
+    const linear = new FakeLinear(delegated);
+    const recordRefusal = linear.commentAndHandBack.bind(linear);
+    linear.commentAndHandBack = async (ticketId, body) => {
+      await recordRefusal(ticketId, body);
+      delegated.splice(delegated.findIndex((ticket) => ticket.id === ticketId), 1);
+    };
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), db, handler, concurrency: 2 });
+
+    await scheduler.tick();
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(linear.commentAndHandBackCalls).toEqual([
+      { ticketId: "unassigned", body: expect.stringContaining("Bear Metal needs an assignee on this ticket") },
+    ]);
+    expect(handler.handled.map((ctx) => ctx.ticket.id)).toEqual(["assigned"]);
+    expect(await db.countTracked()).toBe(1);
+  });
+
   it("admits higher-priority tickets first when concurrency is limited", async () => {
     const db = await makeDb();
     // Linear may return tickets in any order; prove the scheduler reorders by priority

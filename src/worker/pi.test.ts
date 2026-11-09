@@ -986,7 +986,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
         teamKey: "ABC",
-        assignee: { id: "creator" },
+        assignee: { id: "creator", email: "creator@example.com" },
         delegate: { id: "user-1" },
         priority: 0,
       },
