@@ -39,7 +39,6 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
     if (slack.intake !== undefined) {
       callable(slack.getSigningSecret, "config.slack.getSigningSecret");
       const intake = object(slack.intake, "config.slack.intake");
-      rejectUnknownFields(intake, ["channelNamePattern", "triggerReaction", "ownerEmail", "isEligibleReactor", "reactionInstructions"], "config.slack.intake");
       if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("config.slack.intake.channelNamePattern must be a RegExp");
       if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) throw new Error("config.slack.intake.channelNamePattern must not use the g or y flag");
       if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "config.slack.intake.triggerReaction"))) throw new Error("config.slack.intake.triggerReaction must be an emoji name without colons");
@@ -149,10 +148,4 @@ function stringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
   for (const [index, entry] of value.entries()) nonEmptyString(entry, `${field}[${index}]`);
   return value as string[];
-}
-
-function rejectUnknownFields(value: Record<string, unknown>, allowed: readonly string[], field: string): void {
-  for (const key of Object.keys(value)) {
-    if (!allowed.includes(key)) throw new Error(`Unknown ${field} field: ${key}. Supported fields: ${allowed.join(", ")}`);
-  }
 }

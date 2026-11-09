@@ -56,11 +56,11 @@ describe("configuration validation", () => {
     const withIntake = (overrides: object) => ({ ...config, slack: { notificationChannel: "C1", getBotToken: () => "token", getSigningSecret: () => "secret", intake: { ...intake, ...overrides } } });
     expect(validateBearMetalConfig(withIntake({})).slack?.intake).toEqual(intake);
     expect(config.customizeTask).not.toHaveBeenCalled();
+    expect(() => validateBearMetalConfig(withIntake({ extra: true }))).not.toThrow();
     for (const [field, value, error] of [
       ["channelNamePattern", "support-", "RegExp"], ["channelNamePattern", /support-/g, "g or y"],
       ["triggerReaction", ":ticket:", "emoji name"], ["ownerEmail", "owner", "email"],
       ["isEligibleReactor", undefined, "isEligibleReactor"], ["reactionInstructions", "", "reactionInstructions"],
-      ["extra", true, "Unknown config.slack.intake field"],
     ] as const) expect(() => validateBearMetalConfig(withIntake({ [field]: value }))).toThrow(error);
     const missingSecret = withIntake({});
     expect(() => validateBearMetalConfig({ ...missingSecret, slack: { ...missingSecret.slack, getSigningSecret: undefined } })).toThrow("getSigningSecret");
