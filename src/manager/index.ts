@@ -3,7 +3,7 @@ import "dotenv/config";
 import { SqlDbClient } from "../db/client.js";
 import { AgentToolGateway } from "../agent-tools/gateway.js";
 import { createAgentToolHandlers } from "../agent-tools/handlers.js";
-import { loadBearMetalConfig, resolveSlackChannelIntakePolicy, resolveSecret } from "../customization/load.js";
+import { loadBearMetalConfig, resolveSecret } from "../customization/load.js";
 import { DEFAULT_CI_DEFERRAL_MAX_MS, DEFAULT_DATABASE_URL, DEFAULT_MAX_ITERATIONS } from "../customization/types.js";
 import {
   AppTokenProvider,
@@ -25,7 +25,6 @@ import { SlackThreadApi } from "./slack-thread-api.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 import { SlackResearchWorker } from "./slack-research.js";
 import { SlackIntake } from "./slack-intake.js";
-import { SlackIntakeApi } from "./slack-intake-api.js";
 
 const runtimeConfig = loadConfig();
 const logger = createLogger({ level: runtimeConfig.logLevel, name: "manager", pretty: runtimeConfig.logPretty });
@@ -102,7 +101,7 @@ const agentToolHandlers = createAgentToolHandlers({
 const agentToolGateway = Object.keys(agentToolHandlers).length > 0
   ? new AgentToolGateway({ handlers: agentToolHandlers, logger })
   : undefined;
-const intakeConfig = await resolveSlackChannelIntakePolicy(customizationConfig);
+const intakeConfig = customizationConfig.slack?.intake;
 const slackToken = customizationConfig.slack
   ? await resolveSecret(customizationConfig.slack.getBotToken, "config.slack.getBotToken result")
   : undefined;
@@ -111,7 +110,6 @@ const slack =
     ? new SlackIntegration({
       token: slackToken,
       channel: customizationConfig.slack.notificationChannel,
-      readOnlyChannelPattern: intakeConfig?.readOnlyChannels ? intakeConfig.channelNamePattern : undefined,
       logger: createLogger({ level: runtimeConfig.logLevel, name: "slack", pretty: runtimeConfig.logPretty }),
     })
     : undefined;
@@ -155,7 +153,6 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     db, api: threadApi, linear, github, config: customizationConfig, gateway: slackGateway, logger, botUserId: auth.user_id,
     pollIntervalMs: runtimeConfig.pollIntervalMs,
     wakeResearch: () => slackResearch?.wake(),
-    isReadOnlyChannel: (channel) => slack.isReadOnlyChannel(channel),
   });
   slackResearch = new SlackResearchWorker({
     db, github, config: customizationConfig, gateway: slackGateway, logger,
@@ -164,7 +161,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
   });
   if (intakeConfig) {
     slackChannelIntake = new SlackIntake({
-      db, api: new SlackIntakeApi(slackRead), linear, github, config: customizationConfig, intake: intakeConfig,
+      db, api: threadApi, linear, github, config: customizationConfig, intake: intakeConfig,
       workspaceId: auth.team_id, botUserId: auth.user_id, gateway: slackGateway, logger,
       pollIntervalMs: runtimeConfig.pollIntervalMs,
     });

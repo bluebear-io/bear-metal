@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
-import { validateTaskCustomization } from "../customization/load.js";
+import { SlackTicketTools } from "./slack-ticket-tools.js";
 import type { BearMetalConfig, Task } from "../customization/types.js";
 import type { DbClient, NewSlackTask, SlackCoordinationReply, SlackTaskRecord, SlackThreadKey } from "../db/client.js";
 import { slackReplyKey } from "../db/client.js";
@@ -49,7 +49,6 @@ export class SlackCoordinator {
     logger: Logger;
     pollIntervalMs: number;
     wakeResearch: () => void;
-    isReadOnlyChannel?: (channel: string) => Promise<boolean>;
     runAgent?: typeof runSlackAgent;
   }) {}
 
@@ -112,19 +111,6 @@ export class SlackCoordinator {
     return run;
   }
 
-  private async applyTicketLabelsAfterCreate(taskId: string, ticketIssueId: string, request: string): Promise<void> {
-    try {
-      const customization = validateTaskCustomization(await this.input.config.customizeTask({
-        type: "coding", id: taskId, trigger: "slack", request,
-      }));
-      if (!customization.ticketLabels?.length) return;
-      const missing = await this.input.linear.addLabelsByName(ticketIssueId, customization.ticketLabels);
-      if (missing.length) this.input.logger.warn({ missing, ticketIssueId }, "ticket labels not found in Linear");
-    } catch (err) {
-      this.input.logger.warn({ err, ticketIssueId }, "failed to apply ticket labels");
-    }
-  }
-
   private async deliverUnsubscribeReactions(key: SlackThreadKey, attempted: Set<string>): Promise<void> {
     for (const reaction of await this.input.db.listSlackUnsubscribeReactions(key)) {
       if (attempted.has(reaction.sourceTs)) continue;
@@ -142,23 +128,6 @@ export class SlackCoordinator {
   }
 
   private async runThread(key: SlackThreadKey): Promise<void> {
-    let readOnly: boolean | undefined;
-    try {
-      readOnly = await this.input.isReadOnlyChannel?.(key.channelId);
-    } catch (err) {
-      throw new SlackThreadReplyRejectedError("Slack channel classification failed; retaining work without sending replies", "channel_classification_failed", { cause: err });
-    }
-    if (readOnly) {
-      const pending = await this.input.db.listSlackPendingMessages(key);
-      const queued = await this.input.db.listSlackUnsubscribeReactions(key);
-      const tasks = await this.input.db.listSlackThreadTasks(key);
-      this.input.logger.warn({ key, pendingMessages: pending.length, queuedReactions: queued.length, retainedTasks: tasks.length }, "Suspending read-only Slack channel; pending coordination retained and outgoing reactions blocked");
-      for (const reaction of queued) {
-        await this.input.db.failSlackUnsubscribeReaction(key, reaction.sourceTs, "read_only_channel", true);
-      }
-      await this.input.db.suspendSlackChannel(key.workspaceId, key.channelId);
-      return;
-    }
     const attemptedReactions = new Set<string>();
     for (;;) {
       await this.deliverUnsubscribeReactions(key, attemptedReactions);
@@ -312,6 +281,7 @@ export class SlackCoordinator {
   }
 
   private createTools(key: SlackThreadKey, pending: string[], resultTaskId?: string, decisions?: Set<string>, sourceUsers?: Map<string, string>, onReviewDeferred?: () => void, queueReply?: (reply: CoordinationReply) => void, onUnsubscribe?: (sourceTs: string) => void, requiredResponses: Set<string> = new Set()): ToolDefinition[] {
+    const tickets = new SlackTicketTools(this.input.linear, this.input.config, this.input.logger);
     let resultDetailsRead = false;
     const clarificationReplies = new Map<string, string>();
     const deferReviewIfPending = async () => {
@@ -349,9 +319,7 @@ export class SlackCoordinator {
         return { task, created: false };
       }
       try {
-        const ticket = await this.input.linear.createSlackCodingTicket({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId, assigneeId });
-        await this.input.db.attachSlackTicket(task.id, ticket.id, ticket.url);
-        await this.applyTicketLabelsAfterCreate(task.id, ticket.id, args.description);
+        const ticket = await tickets.create({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId, assigneeId }, task.id, (created) => this.input.db.attachSlackTicket(task.id, created.id, created.url));
         // Delegating before attachment lets the scheduler create a second row for this ticket.
         if (task.delegateToBearMetal) await this.input.linear.delegateSlackCodingTicket(ticket.id);
         const updated = await getTask(task.id);
@@ -439,16 +407,7 @@ export class SlackCoordinator {
       })];
     }
     return [
-      defineTool({
-        name: "list_ticket_destinations",
-        label: "List Linear destinations",
-        description: "Mandatory lookup before supplying teamId, projectId, or cycleId to create_ticket or coding update_task. Returns Linear teams, projects with teamIds, and cycles with teamId and dates. Use only IDs returned by this tool, never IDs inferred from memory or unrelated entities. Takes no arguments.",
-        parameters: Type.Object({}),
-        execute: async () => ({
-          content: [{ type: "text", text: JSON.stringify(await this.input.linear.listSlackTicketDestinations()) }],
-          details: {},
-        }),
-      }),
+      tickets.listDestinations,
       getThreadTask,
       defineTool({
         name: "get_message_revision",
@@ -628,9 +587,7 @@ export class SlackCoordinator {
               if (next.task.state === "failed") await this.input.db.resumeSlackTicketReplacement(next.task.id);
               let replacement = await getTask(next.task.id);
               if (replacement.state === "queued") {
-                const ticket = await this.input.linear.createSlackCodingTicket(codingInput);
-                await this.input.db.attachSlackTicket(replacement.id, ticket.id, ticket.url);
-                await this.applyTicketLabelsAfterCreate(replacement.id, ticket.id, codingInput.description);
+                await tickets.create(codingInput, replacement.id, (created) => this.input.db.attachSlackTicket(replacement.id, created.id, created.url));
                 replacement = await getTask(replacement.id);
               }
               if (replacement.state !== "awaiting_coordination" || !replacement.ticketId || !replacement.ticketUrl) {

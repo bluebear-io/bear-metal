@@ -26,6 +26,7 @@ export interface BearMetalConfig {
     notificationChannel: string;
     getBotToken: SecretGetter;
     getSigningSecret?: SecretGetter;
+    intake?: SlackChannelIntakePolicy;
   };
   agentIntegrations?: {
     github?: {
@@ -73,7 +74,6 @@ export interface SlackChannelIntakePolicy {
   channelNamePattern: RegExp;
   triggerReaction: string;
   ownerEmail: string;
-  readOnlyChannels: boolean;
   isEligibleReactor: (user: Readonly<SlackIntakeReactor>, workspaceId: string) => boolean | Promise<boolean>;
   reactionInstructions: string;
 }
@@ -94,7 +94,7 @@ export interface Task {
   readonly id: string;
   readonly type: "coding" | "coordinator" | "research";
   readonly request?: string;
-  readonly slackChannelIntake?: "configure" | "reaction";
+  readonly slackChannelIntake?: "reaction";
   readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
   readonly identifier?: string;
   readonly title?: string;
@@ -153,7 +153,6 @@ export interface TaskPullRequest {
 }
 
 export interface TaskCustomization {
-  slackChannelIntake?: SlackChannelIntakePolicy;
   /** `modelArn` (amazon-bedrock only) calls this ARN, which must resolve to the same model as `model`, for example a tagged inference profile. */
   llm: { provider: LlmProvider; model: string; modelArn?: string };
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;

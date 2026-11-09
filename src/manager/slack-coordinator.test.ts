@@ -45,12 +45,10 @@ function makeCoordinator(input: {
   runAgent: NonNullable<ConstructorParameters<typeof SlackCoordinator>[0]["runAgent"]>;
   linear?: Partial<LinearIntegration>;
   wakeResearch?: () => void;
-  isReadOnlyChannel?: (channel: string) => Promise<boolean>;
   logger?: ReturnType<typeof createLogger>;
 }) {
   return new SlackCoordinator({
     db: input.db, api: input.api,
-    isReadOnlyChannel: input.isReadOnlyChannel,
     botUserId: "UBOT",
     linear: { findUserIdByEmail: async () => "linear-user-1", ...input.linear } as LinearIntegration,
     github: { getInstallationToken: async () => "token" } as ConstructorParameters<typeof SlackCoordinator>[0]["github"],
@@ -61,53 +59,6 @@ function makeCoordinator(input: {
 }
 
 describe("Slack coordinator", () => {
-  it("suspends previously queued read-only channel work without responses or reactions", async () => {
-    const db = await makeDb();
-    await db.recordSlackMessage(key, "100.1");
-    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> help" }]);
-    const runAgent = vi.fn(async () => {});
-    const coordinator = makeCoordinator({ db, api, runAgent, isReadOnlyChannel: async () => true });
-    try {
-      await coordinator.wake(key);
-      expect(runAgent).not.toHaveBeenCalled();
-      expect(api.react).not.toHaveBeenCalled();
-      expect(api.replyResearch).not.toHaveBeenCalled();
-      expect(replies).toEqual([]);
-      expect(await db.isSlackThreadFollowing(key)).toBe(false);
-    } finally { await coordinator.stop(); await db.close(); }
-  });
-  it("terminates queued reactions when a channel becomes read-only and logs suspension", async () => {
-    const db = await makeDb();
-    await db.recordSlackMessage(key, "100.1");
-    await db.unsubscribeSlackThread(key, "100.1");
-    const { api, replies } = makeApi([]);
-    const logger = createLogger({ name: "test", level: "silent" });
-    const warn = vi.spyOn(logger, "warn");
-    const coordinator = makeCoordinator({ db, api, logger, runAgent: vi.fn(async () => {}), isReadOnlyChannel: async () => true });
-    try {
-      await coordinator.wake(key);
-      expect(await db.listSlackPendingThreads()).toEqual([]);
-      expect(await db.listSlackUnsubscribeReactions(key, true)).toEqual([expect.objectContaining({ state: "failed", error: "read_only_channel" })]);
-      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ key, queuedReactions: 1 }), expect.stringContaining("Suspending"));
-      expect(replies).toEqual([]);
-      expect(api.react).not.toHaveBeenCalled();
-    } finally { await coordinator.stop(); await db.close(); }
-  });
-  it("retains pending work on classification failure without attempting failure replies", async () => {
-    const db = await makeDb();
-    await db.recordSlackMessage(key, "100.1");
-    const { api } = makeApi([]);
-    const logger = createLogger({ name: "test", level: "silent" });
-    const error = vi.spyOn(logger, "error");
-    const coordinator = makeCoordinator({ db, api, logger, runAgent: vi.fn(async () => {}), isReadOnlyChannel: async () => { throw new Error("unavailable"); } });
-    try {
-      await coordinator.wake(key);
-      expect(api.reply).not.toHaveBeenCalled();
-      expect(api.readThread).not.toHaveBeenCalled();
-      expect(await db.listSlackPendingThreads()).toEqual([key]);
-      expect(error).toHaveBeenCalledOnce();
-    } finally { await coordinator.stop(); await db.close(); }
-  });
   it("logs a failed archived-channel suspension and retries it without rejecting wake", async () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");

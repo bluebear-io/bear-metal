@@ -70,3 +70,28 @@ describe("Slack thread reader", () => {
     expect(messages.map((message) => message.ts)).toEqual(["100.2", "100.3"]);
   });
 });
+
+describe("Reaction thread context", () => {
+  it("reads every page of the reacted thread", async () => {
+    const call = vi.fn()
+      .mockResolvedValueOnce({ ok: true, messages: [{ ts: "100.0", user: "U1", text: "request" }], response_metadata: { next_cursor: "next" } })
+      .mockResolvedValueOnce({ ok: true, messages: [{ ts: "200.0", thread_ts: "100.0", user: "U2", text: "context" }] });
+    const result = await new SlackThreadApi({ call }, {} as never).readMessageThread("C1", "100.0");
+    expect(result.threadTs).toBe("100.0");
+    expect(result.messages.map(message => message.text)).toEqual(["request", "context"]);
+    expect(call.mock.calls[1]![1]).toMatchObject({ cursor: "next", ts: "100.0" });
+  });
+  it("resolves a reacted reply to its root and reads the complete thread", async () => {
+    const call = vi.fn()
+      .mockResolvedValueOnce({ ok: true, messages: [{ ts: "100.1", thread_ts: "100.0", user: "U2", text: "request" }] })
+      .mockResolvedValueOnce({ ok: true, messages: [{ ts: "100.0", user: "U1", text: "context" }, { ts: "100.1", thread_ts: "100.0", user: "U2", text: "request" }] });
+    const result = await new SlackThreadApi({ call }, {} as never).readMessageThread("C1", "100.1");
+    expect(result.threadTs).toBe("100.0");
+    expect(result.messages.map(message => message.text)).toEqual(["context", "request"]);
+    expect(call.mock.calls[1]![1]).toMatchObject({ ts: "100.0", oldest: "0" });
+  });
+  it("rejects incomplete pagination rather than returning partial thread context", async () => {
+    const call = vi.fn().mockResolvedValue({ ok: true, has_more: true, messages: [{ ts: "100.0", user: "U1", text: "request" }] });
+    await expect(new SlackThreadApi({ call }, {} as never).readMessageThread("C1", "100.0")).rejects.toThrow("no pagination cursor");
+  });
+});

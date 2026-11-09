@@ -1,4 +1,3 @@
-import { setTimeout as delay } from "node:timers/promises";
 import type { Integration } from "../base.js";
 import type { PullRequestRef } from "../github/types.js";
 import type { Logger } from "../../logger.js";
@@ -13,7 +12,6 @@ export interface SlackIntegrationOptions {
   logger: Logger;
   /** Optional fetch implementation; defaults to global fetch. */
   fetchImpl?: typeof fetch;
-  readOnlyChannelPattern?: RegExp;
 }
 
 export type PullRequestNotificationKind = "opened" | "updated" | "validation_delayed";
@@ -90,8 +88,8 @@ export class SlackReactionError extends Error {
 }
 
 export class SlackThreadReplyRejectedError extends Error {
-  constructor(message: string, readonly code?: string, options?: ErrorOptions) {
-    super(message, options);
+  constructor(message: string, readonly code?: string) {
+    super(message);
     this.name = "SlackThreadReplyRejectedError";
   }
 }
@@ -123,23 +121,12 @@ export class SlackReadClient {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) query.set(key, String(value));
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    for (let attempt = 0; ; attempt += 1) {
-      const response = await this.fetchImpl(`${this.apiBaseUrl}/${method}${suffix}`, {
-        headers: { Authorization: `Bearer ${this.token}` }, signal: options.signal,
-      });
-      if (response.status === 429 && attempt < 3) {
-        const header = response.headers.get("retry-after");
-        const seconds = header === null ? NaN : Number(header);
-        if (!Number.isFinite(seconds) || seconds < 0 || seconds > 120) {
-          throw new Error(`Slack API ${method} rate limited with invalid or excessive Retry-After`);
-        }
-        await response.body?.cancel();
-        await delay(seconds * 1000, undefined, { signal: options.signal });
-        continue;
-      }
-      if (!response.ok) throw new Error(`Slack API request failed: ${response.status} ${response.statusText}`.trim());
-      return response.json();
-    }
+    const response = await this.fetchImpl(`${this.apiBaseUrl}/${method}${suffix}`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+      signal: options.signal,
+    });
+    if (!response.ok) throw new Error(`Slack API request failed: ${response.status} ${response.statusText}`.trim());
+    return response.json();
   }
 
   async downloadFile(url: string, options: { signal?: AbortSignal; maxRedirects?: number } = {}): Promise<Response> {
@@ -177,7 +164,6 @@ export class SlackIntegration implements Integration {
   private readonly apiBaseUrl: string;
   private readonly logger: Logger;
   private readonly fetchImpl: typeof fetch;
-  private readonly readOnlyChannelPattern?: RegExp;
 
   constructor(options: SlackIntegrationOptions) {
     if (!options.token) {
@@ -191,32 +177,6 @@ export class SlackIntegration implements Integration {
     this.apiBaseUrl = options.apiBaseUrl ?? DEFAULT_API_BASE_URL;
     this.logger = options.logger;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    if (options.readOnlyChannelPattern?.global || options.readOnlyChannelPattern?.sticky) {
-      throw new Error("Read-only channel pattern cannot be stateful");
-    }
-    this.readOnlyChannelPattern = options.readOnlyChannelPattern;
-  }
-
-  async isReadOnlyChannel(channel: string): Promise<boolean> {
-    const pattern = this.readOnlyChannelPattern;
-    if (!pattern) return false;
-    if (/^[DU][A-Z0-9]+$/.test(channel)) return false;
-    if (!/^[CG][A-Z0-9]+$/.test(channel)) return pattern.test(channel.replace(/^#/, ""));
-    const reader = new SlackReadClient({ token: this.token, apiBaseUrl: this.apiBaseUrl, fetchImpl: this.fetchImpl });
-    const response = await reader.call("conversations.info", { channel }) as {
-      ok?: boolean; error?: string; channel?: { id?: string; name?: string };
-    };
-    if (!response.ok || response.channel?.id !== channel || !response.channel.name) {
-      throw new Error(`Cannot classify Slack channel ${channel}: ${response.error ?? "missing channel identity or name"}`);
-    }
-    return pattern.test(response.channel.name);
-  }
-
-  private async assertWritable(channel: string): Promise<void> {
-    if (await this.isReadOnlyChannel(channel)) {
-      this.logger.warn({ channel }, "Blocked Slack write to read-only channel");
-      throw new SlackThreadReplyRejectedError(`Slack channel ${channel} is read-only`, "read_only_channel");
-    }
   }
 
   async notifyPullRequest(notification: PullRequestNotification): Promise<void> {
@@ -263,7 +223,6 @@ export class SlackIntegration implements Integration {
 
   async addReaction(channel: string, sourceTs: string, name: string): Promise<void> {
     if (!channel || !sourceTs || !name) throw new Error("Slack reaction requires channel, source timestamp, and emoji name");
-    await this.assertWritable(channel);
     const response = await this.fetchImpl(`${this.apiBaseUrl}/reactions.add`, {
       method: "POST",
       headers: { "Content-Type": "application/json; charset=utf-8", Authorization: `Bearer ${this.token}` },
@@ -278,7 +237,6 @@ export class SlackIntegration implements Integration {
 
   async postThreadMessage(channel: string, threadTs: string, text: string, blocks?: Array<Record<string, unknown>>): Promise<string> {
     if (!channel || !threadTs || !text.trim()) throw new Error("Slack thread reply requires channel, thread timestamp, and text");
-    await this.assertWritable(channel);
     const response = await this.fetchImpl(`${this.apiBaseUrl}/chat.postMessage`, {
       method: "POST",
       headers: {
@@ -299,7 +257,6 @@ export class SlackIntegration implements Integration {
 
   async postThreadMarkdownFile(channel: string, threadTs: string, comment: string, markdown: string): Promise<void> {
     if (!channel || !threadTs || !comment.trim() || !markdown.trim()) throw new Error("Slack Markdown file reply requires a channel, thread timestamp, comment, and content");
-    await this.assertWritable(channel);
     const bytes = new TextEncoder().encode(markdown);
     const request = await this.fetchImpl(`${this.apiBaseUrl}/files.getUploadURLExternal`, {
       method: "POST",
@@ -322,12 +279,6 @@ export class SlackIntegration implements Integration {
       body: bytes,
     });
     if (!transfer.ok) throw new Error(`Slack file upload HTTP ${transfer.status}`);
-    try {
-      await this.assertWritable(channel);
-    } catch (err) {
-      this.logger.warn({ err, channel, fileId: upload.file_id }, "Slack upload transferred but not completed; channel write authorization failed");
-      throw err;
-    }
     const completion = await this.fetchImpl(`${this.apiBaseUrl}/files.completeUploadExternal`, {
       method: "POST",
       headers: {
@@ -399,7 +350,6 @@ export class SlackIntegration implements Integration {
   }
 
   private async postMessage(channel: string, text: string, logCtx: PostLogContext): Promise<void> {
-    await this.assertWritable(channel);
     // Never log `text` (message body) or the bearer token — logCtx carries only ids/kinds.
     this.logger.info({ ...logCtx, stage: "attempting" }, "slack chat.postMessage attempt");
     let response: Response;

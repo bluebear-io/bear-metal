@@ -401,7 +401,7 @@ Notifications and the coding-agent read-only app require none of these subscript
 | `message.groups` | `groups:history` | Receive subsequent private-channel messages, edits and deletions in followed threads |
 | `message.im` | `im:history` | Receive one-to-one DM requests, threaded replies, edits and deletions |
 | `message.mpim` | `mpim:history` | Receive group-DM message events; [Slack's event reference](https://docs.slack.dev/reference/events/message.mpim/) describes this separate conversation type |
-| `reaction_added` | `reactions:read` | Receive intake reactions; needed only when `customizeTask` enables Slack intake |
+| `reaction_added` | `reactions:read` | Receive intake reactions; needed only when `config.slack.intake` is configured |
 
 Group DMs are not treated as one-to-one DMs: `message.mpim` alone does not activate an unfollowed conversation. Only `app_mention` events and one-to-one `message.im` events activate following; ordinary messages are processed only in already-followed threads.
 
@@ -419,26 +419,13 @@ Ask Bear Metal to stop bothering or following a thread to unsubscribe. The harne
 
 When Slack rejects a reply with `is_archived`, coordination stops durably for all followed threads in that workspace's channel. The rejection is logged; tasks and research are retained, no reply is marked delivered, and no unsubscribe reaction is generated. If saving the suspension fails, the database error is logged and a later poll retries the pending reply. After unarchiving, a new mention resumes its thread from the new message. Other reply failures retain their existing retry or uncertain-delivery handling.
 
-#### Channel intake through customizeTask
+#### Emoji-triggered channel intake
 
-All intake policy comes from `customizeTask`. At startup, when Slack is configured, Bear Metal calls it with `type: "coordinator"`, `trigger: "slack"`, and `slackChannelIntake: "configure"`. Return an optional `slackChannelIntake` policy alongside the normal model and workspace customization. Omitting the policy disables intake; the configuration call does not start an agent or build a workspace. The policy is resolved once per manager startup, so restart after changing it.
+Configure `slack.intake` in your Bear Metal configuration with `channelNamePattern` (a non-stateful RegExp), `triggerReaction` (emoji name without colons), `ownerEmail` (Linear assignee), `isEligibleReactor(user, workspaceId)` (Boolean or async Boolean authorization), and `reactionInstructions`. Workspace-specific settings belong in your deployment configuration.
 
-| Policy field | Purpose |
-| --- | --- |
-| `channelNamePattern` | Non-stateful `RegExp` selecting channel names, such as `/^support-.+$/` |
-| `triggerReaction` | Emoji name without colons |
-| `ownerEmail` | Linear user assigned intake tickets |
-| `isEligibleReactor(user, workspaceId)` | Boolean or async Boolean authorization decision using the verified Slack user |
-| `reactionInstructions` | Instructions defining what work should become a ticket |
-| `readOnlyChannels` | Block messages, replies, reactions, files and notification fallbacks to selected channels; mentions cannot activate conversational handling there |
+Intake requires the interactive bot setup, a signing secret, the `reaction_added` subscription, and membership in selected channels. An eligible reaction reads the message's thread and creates a contextual ticket delegated to Bear Metal, or identifies an existing thread ticket covering the request. Repeated reactions and creation retries reuse the same issue identity. No scheduled channel review runs.
 
-Reaction agent tasks call `customizeTask` normally with `slackChannelIntake: "reaction"`, so their model, workspace, limits and additional instructions can also be customized. Keep workspace-specific names, ownership and task-selection rules in your customization module.
-
-Intake requires the interactive bot setup, the `reaction_added` subscription, and membership in selected channels. Channels the bot has not joined are logged and skipped. Return `slackChannelIntake` from `customizeTask`; placing it in the top-level Slack configuration is rejected. Unsupported fields in Slack configuration, task customization, or intake policy are rejected rather than silently ignored.
-
-Intake runs only when an eligible user adds the configured reaction to a message in a selected channel. It reads that message's thread and creates a ticket with the request, context, expected outcome and original Slack source. For a distinct request in an already tracked thread, the agent must explicitly acknowledge the existing tickets and record why the request differs. No background channel discovery or scheduled conversation review runs.
-
-An uncertain ticket-creation result fails visibly rather than risking a duplicate. Intake itself has no Slack-writing tools. When `readOnlyChannels` is enabled, the shared writer also enforces silence for other bot flows, and channel lookup failures block outgoing writes. Events are recorded before channel classification; unavailable channels retain pending work for a later poll without sending failure replies. Suspending a read-only channel logs retained work and marks queued unsubscribe reactions as blocked.
+Reaction agent tasks pass `slackChannelIntake: "reaction"` to `customizeTask` so the model, workspace, limits and instructions remain customizable. Intake itself does not post Slack replies; normal mentions and other bot flows retain their existing behavior.
 
 Workers retain every PR associated with a ticket across iterations, including PRs in repositories that were not pushed again. Slack notifications list every PR in each opened, updated, or validation-delayed group.
 

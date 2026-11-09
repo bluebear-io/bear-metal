@@ -3,6 +3,7 @@ import type { SlackThreadKey } from "../db/client.js";
 
 export interface SlackThreadMessage {
   ts: string;
+  threadTs?: string;
   user: string | null;
   botId?: string;
   subtype?: string;
@@ -11,8 +12,74 @@ export interface SlackThreadMessage {
   blockCount?: number;
 }
 
+export interface SlackIntakeChannel {
+  id: string;
+  name: string;
+  isMember: boolean;
+}
+
+export interface SlackIntakeUser {
+  id: string;
+  name: string;
+  teamId: string | null;
+  isBot: boolean;
+  deleted: boolean;
+  guest: boolean;
+}
+
 export class SlackThreadApi {
-  constructor(private readonly readClient: SlackReadClient, private readonly writer: SlackIntegration) {}
+  constructor(private readonly readClient: Pick<SlackReadClient, "call">, private readonly writer: SlackIntegration) {}
+
+  async getChannel(channelId: string): Promise<SlackIntakeChannel> {
+    const response = await this.readClient.call("conversations.info", { channel: channelId }) as {
+      ok?: boolean; error?: string; channel?: { id?: string; name?: string; is_member?: boolean };
+    };
+    if (!response.ok || response.channel?.id !== channelId || !response.channel.name) {
+      throw new Error(`Slack conversations.info failed for ${channelId}: ${response.error ?? "missing channel name"}`);
+    }
+    return { id: channelId, name: response.channel.name, isMember: response.channel.is_member === true };
+  }
+
+  async getUser(userId: string): Promise<SlackIntakeUser> {
+    const response = await this.readClient.call("users.info", { user: userId }) as {
+      ok?: boolean; error?: string;
+      user?: {
+        id?: string; name?: string; real_name?: string; team_id?: string; is_bot?: boolean; deleted?: boolean;
+        is_restricted?: boolean; is_ultra_restricted?: boolean; profile?: { real_name?: string; display_name?: string };
+      };
+    };
+    const user = response.user;
+    if (!response.ok || !user || user.id !== userId) throw new Error(`Slack users.info failed for ${userId}: ${response.error ?? "user mismatch"}`);
+    const name = user.profile?.real_name || user.real_name || user.profile?.display_name || user.name;
+    if (!name) throw new Error(`Slack user ${userId} has no name`);
+    return {
+      id: userId,
+      name,
+      teamId: user.team_id ?? null,
+      isBot: user.is_bot === true,
+      deleted: user.deleted === true,
+      guest: user.is_restricted === true || user.is_ultra_restricted === true,
+    };
+  }
+
+  async getPermalink(channelId: string, messageTs: string): Promise<string> {
+    const response = await this.readClient.call("chat.getPermalink", { channel: channelId, message_ts: messageTs }) as {
+      ok?: boolean; error?: string; permalink?: string;
+    };
+    if (!response.ok || !response.permalink) throw new Error(`Slack chat.getPermalink failed for ${channelId}/${messageTs}: ${response.error ?? "missing permalink"}`);
+    return response.permalink;
+  }
+
+  async readMessageThread(channelId: string, messageTs: string): Promise<{ threadTs: string; messages: SlackThreadMessage[] }> {
+    const key = { channelId, threadTs: messageTs };
+    const first = await this.readThread(key, "0");
+    const target = first.find((message) => message.ts === messageTs);
+    if (!target) throw new Error(`Slack message ${channelId}/${messageTs} was not found`);
+    const threadTs = target.threadTs ?? target.ts;
+    const messages = threadTs === messageTs || first.some((message) => message.ts === threadTs)
+      ? first : await this.readThread({ ...key, threadTs }, "0");
+    return { threadTs, messages };
+  }
 
   async getUserEmail(userId: string): Promise<string> {
     const response = await this.readClient.call("users.info", { user: userId }) as {
@@ -24,7 +91,7 @@ export class SlackThreadApi {
     return response.user.profile.email;
   }
 
-  async readThread(key: SlackThreadKey, oldest: string, latest?: string): Promise<SlackThreadMessage[]> {
+  async readThread(key: Omit<SlackThreadKey, "workspaceId"> & { workspaceId?: string }, oldest: string, latest?: string): Promise<SlackThreadMessage[]> {
     const messages: SlackThreadMessage[] = [];
     let cursor: string | undefined;
     const seenCursors = new Set<string>();
@@ -40,7 +107,7 @@ export class SlackThreadApi {
       }) as {
         ok?: boolean;
         error?: string;
-        messages?: Array<{ ts?: string; user?: string; bot_id?: string; subtype?: string; text?: string; files?: unknown[]; blocks?: unknown[] }>;
+        messages?: Array<{ thread_ts?: string; ts?: string; user?: string; bot_id?: string; subtype?: string; text?: string; files?: unknown[]; blocks?: unknown[] }>;
         has_more?: boolean;
         response_metadata?: { next_cursor?: string };
       };
@@ -50,7 +117,7 @@ export class SlackThreadApi {
       for (const message of response.messages) {
         if (!message.ts) throw new Error("Slack thread reply omitted timestamp");
         messages.push({
-          ts: message.ts, user: message.user ?? null, botId: message.bot_id, subtype: message.subtype, text: message.text ?? "",
+          ts: message.ts, ...(message.thread_ts ? { threadTs: message.thread_ts } : {}), user: message.user ?? null, botId: message.bot_id, subtype: message.subtype, text: message.text ?? "",
           fileCount: message.files?.length ?? 0, blockCount: message.blocks?.length ?? 0,
         });
       }

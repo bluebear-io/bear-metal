@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BearMetalConfig, SlackChannelIntakePolicy } from "../customization/types.js";
-import { InvalidInputLinearError } from "@linear/sdk";
 import { SqlDbClient } from "../db/client.js";
-import { LinearRefusedError } from "../shared/integrations/linear/client.js";
 import { createLogger } from "../shared/logger.js";
 import type { runSlackAgent } from "../worker/slack-agent.js";
 import { SLACK_INTAKE_REACTION_MAX_ATTEMPTS, SlackIntake } from "./slack-intake.js";
-import { type SlackIntakeChannel, type SlackIntakeMessage, type SlackIntakeUser } from "./slack-intake-api.js";
+import { type SlackIntakeChannel, type SlackThreadMessage, type SlackIntakeUser } from "./slack-thread-api.js";
 
 const RETRY_BASE = 5 * 60 * 1000;
 const DUE = "9999-12-31T00:00:00.000Z";
@@ -15,8 +13,8 @@ const NOW = Date.UTC(2026, 10, 5, 12);
 
 type AgentInput = Parameters<typeof runSlackAgent>[0];
 
-function message(ts: string, user: string, text: string, extra: Partial<SlackIntakeMessage> = {}): SlackIntakeMessage {
-  return { ts, threadTs: null, user, text, replyCount: 0, fileCount: 0, ...extra };
+function message(ts: string, user: string, text: string, extra: Partial<SlackThreadMessage> = {}): SlackThreadMessage {
+  return { ts, user, text, fileCount: 0, ...extra };
 }
 
 class FakeSlack {
@@ -30,7 +28,7 @@ class FakeSlack {
     UGUEST: { id: "UGUEST", name: "Gus Guest", teamId: "T1", isBot: false, deleted: false, guest: true },
     UEXTERNAL: { id: "UEXTERNAL", name: "Casey External", teamId: "TEXTERNAL", isBot: false, deleted: false, guest: false },
   };
-  threads: Record<string, SlackIntakeMessage[]> = {};
+  threads: Record<string, SlackThreadMessage[]> = {};
 
   listChannels = async () => this.channels;
   getChannel = async (id: string) => {
@@ -55,13 +53,17 @@ class FakeSlack {
 }
 
 class FakeLinear {
-  created: Array<{ teamId: string; title: string; description: string; assigneeId?: string }> = [];
+  created: Array<{ id?: string; teamId: string; title: string; description: string; assigneeId?: string }> = [];
   delegated: string[] = [];
   labeled: Array<{ ticketId: string; labels: readonly string[] }> = [];
-  createSlackCodingTicket = vi.fn(async (input: { teamId: string; title: string; description: string; assigneeId?: string }) => {
+  createSlackCodingTicket = vi.fn(async (input: { id?: string; teamId: string; title: string; description: string; assigneeId?: string }) => {
     this.created.push(input);
     const n = this.created.length;
-    return { id: `issue-${n}`, identifier: `DEN-${n}`, url: `https://linear.app/issue/DEN-${n}` };
+    return { id: input.id!, identifier: `DEN-${n}`, url: `https://linear.app/issue/DEN-${n}` };
+  });
+  getTicket = vi.fn(async (id: string, _allowMissing?: true): Promise<any> => {
+    const index = this.created.findIndex((ticket) => ticket.id === id);
+    return index < 0 ? null : { id, identifier: `DEN-${index + 1}`, url: `https://linear.app/issue/DEN-${index + 1}` };
   });
   delegateSlackCodingTicket = vi.fn(async (id: string) => { this.delegated.push(id); });
   findUserIdByEmail = vi.fn(async (email: string) => {
@@ -83,7 +85,7 @@ async function call(tools: ToolDefinition[], name: string, params: object) {
 }
 
 const ticketArgs = (sourceTs: string, title = "Export audit logs as CSV") => ({
-  sourceTs, teamId: "team-1", title,
+  teamId: "team-1", title,
   request: "Please let us export audit logs as CSV.",
   conversationContext: "Acme's compliance team exports logs weekly.",
   expectedOutcome: "Audit logs page offers a CSV download.",
@@ -106,7 +108,6 @@ describe("Slack channel intake", () => {
     agent = vi.fn(async () => {});
     now = NOW;
     policy = { channelNamePattern: /^support-.+$/, triggerReaction: "ticket", ownerEmail: "owner@example.com",
-      readOnlyChannels: true,
       isEligibleReactor: (user, workspaceId) => user.teamId === workspaceId && !user.isBot && !user.deleted && !user.guest,
       reactionInstructions: "Track the flagged request." };
     intake = new SlackIntake({
@@ -143,7 +144,7 @@ describe("Slack channel intake", () => {
 
   function seedThread() {
     slack.threads["CACME/100.1"] = [
-      message("100.1", "UEXTERNAL", "Our auditors want logs.", { replyCount: 2 }),
+      message("100.1", "UEXTERNAL", "Our auditors want logs."),
       message("100.2", "UEXTERNAL", "Can you add CSV export for audit logs?", { threadTs: "100.1" }),
       message("100.3", "UBOT", "bot noise", { threadTs: "100.1" }),
     ];
@@ -155,7 +156,7 @@ describe("Slack channel intake", () => {
       expect(task).toMatchObject({ type: "coordinator", slack: { channelId: "CACME", threadTs: "100.1", sourceTs: "100.2" } });
       expect(prompt).toContain("\"targetMessageTs\":\"100.2\"");
       expect(prompt).not.toContain("bot noise");
-      await call(tools, "create_intake_ticket", ticketArgs("100.2"));
+      await call(tools, "create_ticket", ticketArgs("100.2"));
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
@@ -170,10 +171,10 @@ describe("Slack channel intake", () => {
     expect(created.description).toContain("- Channel: #support-acme");
     expect(created.description).toContain("- Requested by: Casey External (Slack user `UEXTERNAL`)");
     expect(created.description).toContain("- Intake: `:ticket:` reaction by Dana Member");
-    expect(linear.delegated).toEqual(["issue-1"]);
-    expect(linear.labeled).toEqual([{ ticketId: "issue-1", labels: ["signal:slack"] }]);
-    expect(await db.hasSlackLinkedTicket("issue-1")).toBe(true);
-    expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toMatchObject({ state: "delegated", ticketIdentifier: "DEN-1", trigger: "reaction" });
+    expect(linear.delegated).toEqual([linear.created[0]!.id]);
+    expect(linear.labeled).toEqual([{ ticketId: linear.created[0]!.id, labels: ["signal:slack"] }]);
+    expect(await db.hasSlackLinkedTicket(linear.created[0]!.id!)).toBe(true);
+    expect(await db.listSlackIntakeThreadTickets("T1", "CACME", "100.1")).toEqual([{ identifier: "DEN-1", url: "https://linear.app/issue/DEN-1" }]);
     expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
@@ -194,7 +195,7 @@ describe("Slack channel intake", () => {
 
   it("does not create a second ticket for repeated reactions", async () => {
     seedThread();
-    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("100.2")); });
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_ticket", ticketArgs("100.2")); });
     expect(await db.recordSlackIntakeReaction(reaction())).toBe(true);
     expect(await db.recordSlackIntakeReaction(reaction())).toBe(false);
     await intake.processReactions();
@@ -207,36 +208,22 @@ describe("Slack channel intake", () => {
 
   it("lets a reaction defer to an existing ticket in the same thread for the same request", async () => {
     seedThread();
-    const prior = await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.1", threadTs: "100.1", trigger: "reaction", title: "Export audit logs" });
-    await db.attachSlackIntakeTicket(prior.ticket, { id: "issue-9", identifier: "DEN-9", url: "https://linear.app/issue/DEN-9" });
-    await db.markSlackIntakeTicketDelegated(prior.ticket);
+    const prior = reaction({ messageTs: "100.1" });
+    await db.recordSlackIntakeReaction(prior);
+    await db.reserveSlackIntakeIssueId(prior, "100.1");
+    await db.completeSlackIntakeTicket(prior, { identifier: "DEN-9", url: "https://linear.app/issue/DEN-9" });
+    await db.finishSlackIntakeReaction(prior, "processed", null);
     agent.mockImplementation(async ({ tools, prompt }) => {
-      expect(prompt).toContain("\"ticket\":\"DEN-9\"");
-      await expect(call(tools, "report_already_tracked", { sourceTs: "100.9", reason: "x" })).rejects.toThrow("No delegated intake ticket");
-      await call(tools, "report_already_tracked", { sourceTs: "100.1", reason: "Same CSV export request" });
+      expect(prompt).toContain("\"identifier\":\"DEN-9\"");
+      await expect(call(tools, "report_already_tracked", { identifier: "DEN-0", reason: "x" })).rejects.toThrow("No existing thread ticket");
+      await call(tools, "report_already_tracked", { identifier: "DEN-9", reason: "Same CSV export request" });
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
     expect(linear.created).toEqual([]);
-    expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toBeNull();
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
-  it("requires acknowledgement of every existing thread ticket and a distinct request reason", async () => {
-    seedThread();
-    const existing = (await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.1", threadTs: "100.1", trigger: "reaction", title: "CSV export" })).ticket;
-    await db.attachSlackIntakeTicket(existing, { id: "issue-9", identifier: "DEN-9", url: "https://linear.app/issue/DEN-9" });
-    await db.markSlackIntakeTicketDelegated(existing);
-    agent.mockImplementation(async ({ tools }) => {
-      await expect(call(tools, "create_intake_ticket", ticketArgs("100.2"))).rejects.toThrow("acknowledge");
-      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), acknowledgedSourceTs: ["missing"], distinctRequestReason: "Different outcome" })).rejects.toThrow("acknowledge");
-      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), acknowledgedSourceTs: ["100.1"], distinctRequestReason: " " })).rejects.toThrow("distinct");
-      await call(tools, "create_intake_ticket", { ...ticketArgs("100.2", "Add SSO"), acknowledgedSourceTs: ["100.1"], distinctRequestReason: "SSO authentication is separate from CSV export." });
-    });
-    await db.recordSlackIntakeReaction(reaction());
-    await intake.processReactions();
-    expect(linear.created).toHaveLength(1);
-    expect(linear.created[0]!.description).toContain("SSO authentication is separate from CSV export.");
-  });
   it("retries a reaction with backoff and fails it visibly after the last attempt", async () => {
     seedThread();
     await db.recordSlackIntakeReaction(reaction());
@@ -257,7 +244,7 @@ describe("Slack channel intake", () => {
     slack.threads["CACME/400.1"] = [message("400.1", "UEXTERNAL", "Please add SSO")];
     vi.spyOn(db, "retrySlackIntakeReaction").mockRejectedValueOnce(new Error("database unavailable"));
     agent.mockImplementationOnce(async () => { throw new Error("agent crashed"); });
-    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("400.1", "Add SSO")); });
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_ticket", ticketArgs("400.1", "Add SSO")); });
     await db.recordSlackIntakeReaction(reaction());
     await db.recordSlackIntakeReaction(reaction({ messageTs: "400.1" }));
     await intake.processReactions();
@@ -270,67 +257,50 @@ describe("Slack channel intake", () => {
     seedThread();
     linear.listSlackTicketDestinations.mockRejectedValueOnce(new Error("rate limited"));
     agent.mockImplementation(async ({ tools }) => {
-      await expect(call(tools, "create_intake_ticket", ticketArgs("100.2"))).rejects.toThrow("rate limited");
-      await call(tools, "create_intake_ticket", ticketArgs("100.2"));
+      await expect(call(tools, "create_ticket", ticketArgs("100.2"))).rejects.toThrow("rate limited");
+      await call(tools, "create_ticket", ticketArgs("100.2"));
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
     expect(linear.created).toHaveLength(1);
-    expect(linear.delegated).toEqual(["issue-1"]);
+    expect(linear.delegated).toEqual([linear.created[0]!.id]);
   });
 
-  it.each([
-    ["an SDK rejection", () => new InvalidInputLinearError({ message: "Linear rejected the issue" })],
-    ["an unsuccessful mutation payload", () => new LinearRefusedError("Linear did not create the coding ticket")],
-  ])("retries a Linear creation refused with %s on the next attempt without duplicating it", async (_name, refusal) => {
+  it("retries a rejected create using the same reserved id", async () => {
     seedThread();
-    linear.createSlackCodingTicket.mockRejectedValueOnce(refusal());
-    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_intake_ticket", ticketArgs("100.2")); });
+    linear.createSlackCodingTicket.mockRejectedValueOnce(new Error("temporarily unavailable"));
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_ticket", ticketArgs("100.2")); });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
-    expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toMatchObject({ state: "failed", ticketId: null });
     now += RETRY_BASE;
     await intake.processReactions();
+    const ids = linear.createSlackCodingTicket.mock.calls.map(([input]) => input.id);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(ids[1]).toBe(ids[0]);
     expect(linear.created).toHaveLength(1);
-    expect(linear.delegated).toEqual(["issue-1"]);
     expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
-  it("keeps an unknown-outcome Linear creation unresolved instead of creating it again", async () => {
+  it("records a new reactor when an ignored request is triggered again", async () => {
     seedThread();
-    linear.createSlackCodingTicket.mockRejectedValueOnce(new Error("socket hang up"));
-    let error: unknown;
-    agent.mockImplementation(async ({ tools }) => {
-      error = await call(tools, "create_intake_ticket", ticketArgs("100.2")).catch((err: unknown) => err);
-    });
-    await db.recordSlackIntakeReaction(reaction());
-    await intake.processReactions();
-    expect(String(error)).toContain("unresolved ticket creation");
-    expect(await db.getSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2" })).toMatchObject({ state: "creating", ticketId: null });
-    now += RETRY_BASE;
-    await intake.processReactions();
-    expect(agent).toHaveBeenCalledTimes(1);
-    expect(linear.createSlackCodingTicket).toHaveBeenCalledTimes(1);
-    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
-  });
-
-  it("refuses to recreate a ticket whose earlier creation outcome is unknown", async () => {
-    seedThread();
-    await db.claimSlackIntakeTicket({ workspaceId: "T1", channelId: "CACME", sourceTs: "100.2", threadTs: "100.1", trigger: "reaction", title: "t" });
-    await db.recordSlackIntakeReaction(reaction());
+    await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UEXTERNAL" }));
     await intake.processReactions();
     expect(agent).not.toHaveBeenCalled();
-    expect(linear.created).toEqual([]);
-    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+    expect(await db.recordSlackIntakeReaction(reaction())).toBe(true);
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_ticket", ticketArgs("100.2")); });
+    await intake.processReactions();
+    expect(linear.created).toHaveLength(1);
+    expect(linear.created[0]!.description).toContain("Dana Member");
   });
 
   it("rejects Linear destinations that list_ticket_destinations did not return for the team", async () => {
     seedThread();
     agent.mockImplementation(async ({ tools }) => {
-      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), teamId: "team-x" })).rejects.toThrow("teamId team-x");
-      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), teamId: "team-2", projectId: "project-1" })).rejects.toThrow("projectId project-1");
-      await expect(call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), cycleId: "cycle-2" })).rejects.toThrow("cycleId cycle-2");
-      await call(tools, "create_intake_ticket", { ...ticketArgs("100.2"), projectId: "project-1" });
+      await expect(call(tools, "create_ticket", { ...ticketArgs("100.2"), teamId: "team-x" })).rejects.toThrow("teamId team-x");
+      await expect(call(tools, "create_ticket", { ...ticketArgs("100.2"), teamId: "team-2", projectId: "project-1" })).rejects.toThrow("projectId project-1");
+      await expect(call(tools, "create_ticket", { ...ticketArgs("100.2"), cycleId: "cycle-2" })).rejects.toThrow("cycleId cycle-2");
+      await call(tools, "create_ticket", { ...ticketArgs("100.2"), projectId: "project-1" });
     });
     await db.recordSlackIntakeReaction(reaction());
     await intake.processReactions();
@@ -345,11 +315,56 @@ describe("Slack channel intake", () => {
     agent.mockImplementation(async ({ task, prompt, tools }) => {
       expect(task.slackChannelIntake).toBe("reaction");
       expect(prompt).toContain(policy.reactionInstructions);
-      await call(tools, "create_intake_ticket", ticketArgs("100.2"));
+      await call(tools, "create_ticket", ticketArgs("100.2"));
     });
     await db.recordSlackIntakeReaction(reaction({ reactorUserId: "UEXTERNAL" }));
     await intake.processReactions();
     expect(linear.created).toHaveLength(1);
+  });
+
+  it("adopts the created ticket when delegation needs retrying", async () => {
+    seedThread();
+    linear.delegateSlackCodingTicket.mockRejectedValueOnce(new Error("delegation unavailable"));
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_ticket", ticketArgs("100.2")); });
+    await db.recordSlackIntakeReaction(reaction());
+    await intake.processReactions();
+    now += RETRY_BASE;
+    await intake.processReactions();
+    expect(linear.createSlackCodingTicket).toHaveBeenCalledTimes(1);
+    expect(linear.delegateSlackCodingTicket.mock.calls.map(([id]) => id)).toEqual([linear.created[0]!.id, linear.created[0]!.id]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+  });
+
+  it("does not rerun the agent after a completed ticket when queue completion needs retrying", async () => {
+    seedThread();
+    vi.spyOn(db, "finishSlackIntakeReaction").mockRejectedValueOnce(new Error("database unavailable"));
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_ticket", ticketArgs("100.2")); });
+    await db.recordSlackIntakeReaction(reaction());
+    await intake.processReactions();
+    now += RETRY_BASE;
+    await intake.processReactions();
+    expect(agent).toHaveBeenCalledTimes(1);
+    expect(linear.created).toHaveLength(1);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
+  });
+
+  it("reuses the reserved issue id after an uncertain create", async () => {
+    seedThread();
+    let persisted: { id: string; identifier: string; url: string } | null = null;
+    Object.assign(linear, { getTicket: vi.fn(async () => persisted) });
+    linear.createSlackCodingTicket.mockImplementation(async (input) => {
+      persisted = { id: (input as { id: string }).id, identifier: "DEN-99", url: "https://linear.app/issue/DEN-99" };
+      throw new Error("response lost after creation");
+    });
+    agent.mockImplementation(async ({ tools }) => { await call(tools, "create_ticket", ticketArgs("100.2")); });
+    await db.recordSlackIntakeReaction(reaction());
+    await intake.processReactions();
+    now += RETRY_BASE;
+    await intake.processReactions();
+    expect(linear.createSlackCodingTicket).toHaveBeenCalledTimes(1);
+    expect(persisted!.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(linear.delegated).toEqual([persisted!.id]);
+    expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([]);
   });
 
 });

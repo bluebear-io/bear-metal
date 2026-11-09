@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   builtWith: [] as string[],
   userFn: vi.fn(),
   issueFn: vi.fn(),
+  issuesFn: vi.fn(),
   createIssueFn: vi.fn(),
   usersFn: vi.fn(),
   teamsFn: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock("@linear/sdk", () => {
     user(id: string) {
       return h.userFn(this.accessToken, id);
     }
+    issues(input: Record<string, unknown>) { return h.issuesFn(this.accessToken, input); }
     issue(id: string) {
       return h.issueFn(this.accessToken, id);
     }
@@ -167,6 +169,25 @@ describe("LinearIntegration Slack ticket creation", () => {
 });
 
 describe("LinearIntegration getTicket", () => {
+  it("looks up a reserved id without treating lookup errors as absence", async () => {
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    h.issuesFn.mockResolvedValueOnce({ nodes: [] });
+    await expect(linear.getTicket("reserved-id", true)).resolves.toBeNull();
+    expect(h.issuesFn).toHaveBeenCalledWith("tok", { filter: { id: { eq: "reserved-id" } }, first: 1 });
+    h.issuesFn.mockResolvedValueOnce({ nodes: [{ id: "reserved-id", identifier: "DEN-1", url: "url" }] });
+    await expect(linear.getTicket("reserved-id", true)).resolves.toEqual({ id: "reserved-id", identifier: "DEN-1", url: "url" });
+    h.issuesFn.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(linear.getTicket("reserved-id", true)).rejects.toThrow("unavailable");
+  });
+
+  it("passes the reserved UUID to Linear issue creation", async () => {
+    const id = "aeb62dfa-103a-43c2-bd13-839e002b0320";
+    h.createIssueFn.mockResolvedValue({ success: true, issue: Promise.resolve({ id, identifier: "DEN-1", url: "url" }) });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    await expect(linear.createSlackCodingTicket({ id, teamId: "team", title: "Title", description: "Description" })).resolves.toMatchObject({ id });
+    expect(h.createIssueFn).toHaveBeenCalledWith("tok", { id, teamId: "team", title: "Title", description: "Description" });
+  });
+
   it("retrieves the complete ticket in exactly one Linear request", async () => {
     h.rawRequestFn.mockResolvedValue({
       data: {

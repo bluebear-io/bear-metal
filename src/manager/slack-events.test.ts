@@ -121,7 +121,7 @@ describe("Slack event intake", () => {
     }
   });
 
-  it("records each member's intake reaction once and ignores other reactions", async () => {
+  it("records one intake request per message and ignores other reactions", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     const wakeIntake = vi.fn();
@@ -141,8 +141,9 @@ describe("Slack event intake", () => {
       expect((await send(reaction)).status).toBe(200);
       expect((await send({ ...reaction, reaction: "eyes" })).status).toBe(200);
       expect((await send({ ...reaction, item: { type: "file", file: "F1" } })).status).toBe(200);
+      expect((await send({ ...reaction, user: "U2" })).status).toBe(200);
       const [pending] = await db.listPendingSlackIntakeReactions(DUE);
-      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([{ workspaceId: "T1", channelId: "C1", messageTs: "400.1", reactorUserId: "U1", attempts: 0 }]);
+      expect(await db.listPendingSlackIntakeReactions(DUE)).toEqual([{ workspaceId: "T1", channelId: "C1", messageTs: "400.1", reactorUserId: "U1", attempts: 0, ticketIdentifier: null }]);
       expect(wakeIntake).toHaveBeenCalledTimes(1);
 
       await db.finishSlackIntakeReaction(pending!, "ignored", "bot not in channel");

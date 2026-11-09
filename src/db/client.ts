@@ -214,25 +214,15 @@ export interface SlackIntakeReaction {
 }
 
 export interface PendingSlackIntakeReaction extends SlackIntakeReaction {
-  /** Failed processing attempts so far. */
   attempts: number;
-}
-
-export interface SlackIntakeSource {
-  workspaceId: string;
-  channelId: string;
-  sourceTs: string;
-}
-
-export interface SlackIntakeTicket extends SlackIntakeSource {
-  threadTs: string;
-  trigger: "reaction";
-  state: "creating" | "created" | "delegated" | "failed";
-  title: string;
-  ticketId: string | null;
   ticketIdentifier: string | null;
-  ticketUrl: string | null;
-  error: string | null;
+}
+
+export type SlackIntakeSource = Pick<SlackIntakeReaction, "workspaceId" | "channelId" | "messageTs">;
+
+export interface SlackIntakeTicket {
+  identifier: string;
+  url: string;
 }
 
 export interface SlackMessageEdit {
@@ -274,32 +264,6 @@ export interface NewSlackTask {
   request: string;
   quote?: string;
   delegateToBearMetal?: boolean;
-}
-
-interface SlackIntakeTicketRow {
-  workspace_id: string;
-  channel_id: string;
-  source_ts: string;
-  thread_ts: string;
-  intake_trigger: string;
-  state: string;
-  title: string;
-  ticket_id: string | null;
-  ticket_identifier: string | null;
-  ticket_url: string | null;
-  error: string | null;
-}
-
-function rowToSlackIntakeTicket(row: SlackIntakeTicketRow): SlackIntakeTicket {
-  if (row.intake_trigger !== "reaction") throw new Error(`Invalid Slack intake trigger for ${row.channel_id}/${row.source_ts}: ${row.intake_trigger}`);
-  if (row.state !== "creating" && row.state !== "created" && row.state !== "delegated" && row.state !== "failed") {
-    throw new Error(`Invalid Slack intake state for ${row.channel_id}/${row.source_ts}: ${row.state}`);
-  }
-  return {
-    workspaceId: row.workspace_id, channelId: row.channel_id, sourceTs: row.source_ts, threadTs: row.thread_ts,
-    trigger: row.intake_trigger, state: row.state, title: row.title, ticketId: row.ticket_id,
-    ticketIdentifier: row.ticket_identifier, ticketUrl: row.ticket_url, error: row.error,
-  };
 }
 
 function rowToSlackTask(row: TaskRow): SlackTaskRecord {
@@ -790,12 +754,9 @@ export interface DbClient {
   retrySlackIntakeReaction(reaction: PendingSlackIntakeReaction, reason: string, nextAttemptAt: string): Promise<void>;
   finishSlackIntakeReaction(reaction: SlackIntakeReaction, state: "processed" | "ignored" | "failed", reason: string | null): Promise<void>;
   /** Claims a source message for ticket creation; `claimed` is false when another attempt already owns it. */
-  claimSlackIntakeTicket(input: SlackIntakeSource & { threadTs: string; trigger: SlackIntakeTicket["trigger"]; title: string }): Promise<{ ticket: SlackIntakeTicket; claimed: boolean }>;
-  attachSlackIntakeTicket(source: SlackIntakeSource, ticket: { id: string; identifier: string; url: string }): Promise<void>;
-  markSlackIntakeTicketDelegated(source: SlackIntakeSource): Promise<void>;
-  failSlackIntakeTicket(source: SlackIntakeSource, error: string): Promise<void>;
-  getSlackIntakeTicket(source: SlackIntakeSource): Promise<SlackIntakeTicket | null>;
-  listSlackIntakeThreadTickets(workspaceId: string, channelId: string, threadTs: string[]): Promise<SlackIntakeTicket[]>;
+  reserveSlackIntakeIssueId(source: SlackIntakeSource, threadTs: string): Promise<string>;
+  completeSlackIntakeTicket(source: SlackIntakeSource, ticket: SlackIntakeTicket): Promise<void>;
+  listSlackIntakeThreadTickets(workspaceId: string, channelId: string, threadTs: string): Promise<SlackIntakeTicket[]>;
 
   upsertTicketDiscovered(ticket: TicketInput): Promise<void>;
   setTicketStatus(ticketId: string, status: BmStatus, notify?: boolean): Promise<void>;
@@ -2044,7 +2005,7 @@ export class SqlDbClient implements DbClient {
   async hasSlackLinkedTicket(ticketIssueId: string): Promise<boolean> {
     const rows = await this.query<{ one: number }>(
       `SELECT 1 AS one FROM tasks WHERE ticket_id = ? AND slack_workspace_id IS NOT NULL
-       UNION ALL SELECT 1 AS one FROM slack_intake_tickets WHERE ticket_id = ? LIMIT 1`,
+       UNION ALL SELECT 1 AS one FROM slack_intake_requests WHERE linear_issue_id = ? LIMIT 1`,
       [ticketIssueId, ticketIssueId],
     );
     return rows.length > 0;
@@ -2112,109 +2073,78 @@ export class SqlDbClient implements DbClient {
   async recordSlackIntakeReaction(reaction: SlackIntakeReaction): Promise<boolean> {
     const now = this.clock.nowIso();
     const result = await this.run(
-      `INSERT INTO slack_intake_reactions (workspace_id, channel_id, message_ts, reactor_user_id, state, created_at, updated_at)
+      `INSERT INTO slack_intake_requests (workspace_id, channel_id, message_ts, reactor_user_id, state, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'pending', ?, ?)
-       ON CONFLICT (workspace_id, channel_id, message_ts, reactor_user_id) DO UPDATE SET
-         state = 'pending', reason = NULL, attempts = 0, next_attempt_at = NULL, updated_at = excluded.updated_at
-       WHERE slack_intake_reactions.state IN ('ignored', 'failed')`,
+       ON CONFLICT (workspace_id, channel_id, message_ts) DO UPDATE SET
+         state = 'pending', reason = NULL, attempts = 0, next_attempt_at = NULL,
+         reactor_user_id = excluded.reactor_user_id, updated_at = excluded.updated_at
+       WHERE slack_intake_requests.state IN ('ignored', 'failed')`,
       [reaction.workspaceId, reaction.channelId, reaction.messageTs, reaction.reactorUserId, now, now],
     );
     return result.changes === 1;
   }
 
   async listPendingSlackIntakeReactions(dueAt: string): Promise<PendingSlackIntakeReaction[]> {
-    const rows = await this.query<{ workspace_id: string; channel_id: string; message_ts: string; reactor_user_id: string; attempts: number | string }>(
-      `SELECT workspace_id, channel_id, message_ts, reactor_user_id, attempts FROM slack_intake_reactions
+    const rows = await this.query<{ workspace_id: string; channel_id: string; message_ts: string; reactor_user_id: string; attempts: number | string; ticket_identifier: string | null }>(
+      `SELECT workspace_id, channel_id, message_ts, reactor_user_id, attempts, ticket_identifier FROM slack_intake_requests
        WHERE state = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?) ORDER BY created_at ASC, message_ts ASC`,
       [dueAt],
     );
     return rows.map((row) => ({
-      workspaceId: row.workspace_id, channelId: row.channel_id, messageTs: row.message_ts, reactorUserId: row.reactor_user_id, attempts: Number(row.attempts),
+      workspaceId: row.workspace_id, channelId: row.channel_id, messageTs: row.message_ts,
+      reactorUserId: row.reactor_user_id, attempts: Number(row.attempts), ticketIdentifier: row.ticket_identifier,
     }));
   }
 
   async retrySlackIntakeReaction(reaction: PendingSlackIntakeReaction, reason: string, nextAttemptAt: string): Promise<void> {
     const result = await this.run(
-      `UPDATE slack_intake_reactions SET attempts = attempts + 1, reason = ?, next_attempt_at = ?, updated_at = ?
-       WHERE workspace_id = ? AND channel_id = ? AND message_ts = ? AND reactor_user_id = ? AND state = 'pending' AND attempts = ?`,
-      [reason, nextAttemptAt, this.clock.nowIso(), reaction.workspaceId, reaction.channelId, reaction.messageTs, reaction.reactorUserId, reaction.attempts],
+      `UPDATE slack_intake_requests SET attempts = attempts + 1, reason = ?, next_attempt_at = ?, updated_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND message_ts = ? AND state = 'pending' AND attempts = ?`,
+      [reason, nextAttemptAt, this.clock.nowIso(), reaction.workspaceId, reaction.channelId, reaction.messageTs, reaction.attempts],
     );
-    if (result.changes !== 1) throw new Error(`Cannot schedule a retry for Slack intake reaction ${reaction.channelId}/${reaction.messageTs} by ${reaction.reactorUserId}`);
+    if (result.changes !== 1) throw new Error(`Cannot schedule a retry for Slack intake reaction ${reaction.channelId}/${reaction.messageTs}`);
   }
 
   async finishSlackIntakeReaction(reaction: SlackIntakeReaction, state: "processed" | "ignored" | "failed", reason: string | null): Promise<void> {
     const result = await this.run(
-      `UPDATE slack_intake_reactions SET state = ?, reason = ?, updated_at = ?
-       WHERE workspace_id = ? AND channel_id = ? AND message_ts = ? AND reactor_user_id = ? AND state = 'pending'`,
-      [state, reason, this.clock.nowIso(), reaction.workspaceId, reaction.channelId, reaction.messageTs, reaction.reactorUserId],
+      `UPDATE slack_intake_requests SET state = ?, reason = ?, updated_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND message_ts = ? AND state = 'pending'`,
+      [state, reason, this.clock.nowIso(), reaction.workspaceId, reaction.channelId, reaction.messageTs],
     );
-    if (result.changes !== 1) throw new Error(`Cannot finish Slack intake reaction ${reaction.channelId}/${reaction.messageTs} by ${reaction.reactorUserId}`);
+    if (result.changes !== 1) throw new Error(`Cannot finish Slack intake reaction ${reaction.channelId}/${reaction.messageTs}`);
   }
 
-  async claimSlackIntakeTicket(input: SlackIntakeSource & { threadTs: string; trigger: SlackIntakeTicket["trigger"]; title: string }): Promise<{ ticket: SlackIntakeTicket; claimed: boolean }> {
-    if (!input.title.trim()) throw new Error("Slack intake ticket requires a title");
-    const now = this.clock.nowIso();
-    const inserted = await this.run(
-      `INSERT INTO slack_intake_tickets (workspace_id, channel_id, source_ts, thread_ts, intake_trigger, state, title, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'creating', ?, ?, ?)
-       ON CONFLICT (workspace_id, channel_id, source_ts) DO NOTHING`,
-      [input.workspaceId, input.channelId, input.sourceTs, input.threadTs, input.trigger, input.title, now, now],
-    );
-    // A failed attempt is retried: before Linear accepted the ticket it is re-created; afterwards only delegation resumes.
-    const resumed = inserted.changes === 1 ? inserted : await this.run(
-      `UPDATE slack_intake_tickets SET state = CASE WHEN ticket_id IS NULL THEN 'creating' ELSE 'created' END,
-       title = CASE WHEN ticket_id IS NULL THEN ? ELSE title END, error = NULL, updated_at = ?
-       WHERE workspace_id = ? AND channel_id = ? AND source_ts = ? AND state = 'failed'`,
-      [input.title, now, input.workspaceId, input.channelId, input.sourceTs],
-    );
-    const ticket = await this.getSlackIntakeTicket(input);
-    if (!ticket) throw new Error(`Slack intake ticket ${input.channelId}/${input.sourceTs} disappeared after claim`);
-    return { ticket, claimed: resumed.changes === 1 };
-  }
-
-  async attachSlackIntakeTicket(source: SlackIntakeSource, ticket: { id: string; identifier: string; url: string }): Promise<void> {
+  async reserveSlackIntakeIssueId(source: SlackIntakeSource, threadTs: string): Promise<string> {
     const result = await this.run(
-      `UPDATE slack_intake_tickets SET state = 'created', ticket_id = ?, ticket_identifier = ?, ticket_url = ?, updated_at = ?
-       WHERE workspace_id = ? AND channel_id = ? AND source_ts = ? AND state = 'creating' AND ticket_id IS NULL`,
-      [ticket.id, ticket.identifier, ticket.url, this.clock.nowIso(), source.workspaceId, source.channelId, source.sourceTs],
+      `UPDATE slack_intake_requests SET linear_issue_id = COALESCE(linear_issue_id, ?), thread_ts = ?, updated_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND message_ts = ? AND state = 'pending'`,
+      [randomUUID(), threadTs, this.clock.nowIso(), source.workspaceId, source.channelId, source.messageTs],
     );
-    if (result.changes !== 1) throw new Error(`Cannot attach ticket to Slack intake ${source.channelId}/${source.sourceTs}`);
+    if (result.changes !== 1) throw new Error(`Cannot reserve issue for Slack intake ${source.channelId}/${source.messageTs}`);
+    const rows = await this.query<{ linear_issue_id: string }>(
+      `SELECT linear_issue_id FROM slack_intake_requests WHERE workspace_id = ? AND channel_id = ? AND message_ts = ?`,
+      [source.workspaceId, source.channelId, source.messageTs],
+    );
+    if (!rows[0]?.linear_issue_id) throw new Error("Slack intake issue reservation disappeared");
+    return rows[0].linear_issue_id;
   }
 
-  async markSlackIntakeTicketDelegated(source: SlackIntakeSource): Promise<void> {
+  async completeSlackIntakeTicket(source: SlackIntakeSource, ticket: SlackIntakeTicket): Promise<void> {
     const result = await this.run(
-      `UPDATE slack_intake_tickets SET state = 'delegated', updated_at = ?
-       WHERE workspace_id = ? AND channel_id = ? AND source_ts = ? AND state = 'created'`,
-      [this.clock.nowIso(), source.workspaceId, source.channelId, source.sourceTs],
+      `UPDATE slack_intake_requests SET ticket_identifier = ?, ticket_url = ?, updated_at = ?
+       WHERE workspace_id = ? AND channel_id = ? AND message_ts = ? AND state = 'pending' AND linear_issue_id IS NOT NULL`,
+      [ticket.identifier, ticket.url, this.clock.nowIso(), source.workspaceId, source.channelId, source.messageTs],
     );
-    if (result.changes !== 1) throw new Error(`Cannot mark Slack intake ${source.channelId}/${source.sourceTs} delegated`);
+    if (result.changes !== 1) throw new Error(`Cannot complete Slack intake ${source.channelId}/${source.messageTs}`);
   }
 
-  async failSlackIntakeTicket(source: SlackIntakeSource, error: string): Promise<void> {
-    const result = await this.run(
-      `UPDATE slack_intake_tickets SET state = 'failed', error = ?, updated_at = ?
-       WHERE workspace_id = ? AND channel_id = ? AND source_ts = ? AND state IN ('creating', 'created')`,
-      [error, this.clock.nowIso(), source.workspaceId, source.channelId, source.sourceTs],
+  async listSlackIntakeThreadTickets(workspaceId: string, channelId: string, threadTs: string): Promise<SlackIntakeTicket[]> {
+    const rows = await this.query<{ ticket_identifier: string; ticket_url: string }>(
+      `SELECT ticket_identifier, ticket_url FROM slack_intake_requests
+       WHERE workspace_id = ? AND channel_id = ? AND thread_ts = ? AND ticket_identifier IS NOT NULL ORDER BY message_ts ASC`,
+      [workspaceId, channelId, threadTs],
     );
-    if (result.changes !== 1) throw new Error(`Cannot fail Slack intake ${source.channelId}/${source.sourceTs}`);
-  }
-
-  async getSlackIntakeTicket(source: SlackIntakeSource): Promise<SlackIntakeTicket | null> {
-    const rows = await this.query<SlackIntakeTicketRow>(
-      `SELECT * FROM slack_intake_tickets WHERE workspace_id = ? AND channel_id = ? AND source_ts = ?`,
-      [source.workspaceId, source.channelId, source.sourceTs],
-    );
-    return rows[0] ? rowToSlackIntakeTicket(rows[0]) : null;
-  }
-
-  async listSlackIntakeThreadTickets(workspaceId: string, channelId: string, threadTs: string[]): Promise<SlackIntakeTicket[]> {
-    if (threadTs.length === 0) return [];
-    const rows = await this.query<SlackIntakeTicketRow>(
-      `SELECT * FROM slack_intake_tickets WHERE workspace_id = ? AND channel_id = ?
-       AND thread_ts IN (${threadTs.map(() => "?").join(", ")}) ORDER BY source_ts ASC`,
-      [workspaceId, channelId, ...threadTs],
-    );
-    return rows.map(rowToSlackIntakeTicket);
+    return rows.map((row) => ({ identifier: row.ticket_identifier, url: row.ticket_url }));
   }
 
   async upsertTicketDiscovered(ticket: TicketInput): Promise<void> {

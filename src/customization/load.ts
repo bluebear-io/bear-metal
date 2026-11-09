@@ -33,10 +33,20 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
   callable(github.getPrivateKey, "config.github.getPrivateKey");
   if (config.slack !== undefined) {
     const slack = object(config.slack, "config.slack");
-    rejectUnknownFields(slack, ["notificationChannel", "getBotToken", "getSigningSecret"], "config.slack");
     nonEmptyString(slack.notificationChannel, "config.slack.notificationChannel");
     callable(slack.getBotToken, "config.slack.getBotToken");
     if (slack.getSigningSecret !== undefined) callable(slack.getSigningSecret, "config.slack.getSigningSecret");
+    if (slack.intake !== undefined) {
+      callable(slack.getSigningSecret, "config.slack.getSigningSecret");
+      const intake = object(slack.intake, "config.slack.intake");
+      rejectUnknownFields(intake, ["channelNamePattern", "triggerReaction", "ownerEmail", "isEligibleReactor", "reactionInstructions"], "config.slack.intake");
+      if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("config.slack.intake.channelNamePattern must be a RegExp");
+      if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) throw new Error("config.slack.intake.channelNamePattern must not use the g or y flag");
+      if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "config.slack.intake.triggerReaction"))) throw new Error("config.slack.intake.triggerReaction must be an emoji name without colons");
+      if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "config.slack.intake.ownerEmail"))) throw new Error("config.slack.intake.ownerEmail must be an email address");
+      callable(intake.isEligibleReactor, "config.slack.intake.isEligibleReactor");
+      nonEmptyString(intake.reactionInstructions, "config.slack.intake.reactionInstructions");
+    }
   }
   if (config.agentIntegrations !== undefined) {
     const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");
@@ -86,7 +96,6 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
 
 export function validateTaskCustomization(value: unknown): TaskCustomization {
   const customization = object(value, "customizeTask result");
-  rejectUnknownFields(customization, ["slackChannelIntake", "llm", "buildWorkspace", "additionalSystemPrompt", "limits", "ticketLabels", "pullRequestLabels"], "customizeTask result");
   const llm = object(customization.llm, "customizeTask result.llm");
   nonEmptyString(llm.provider, "customizeTask result.llm.provider");
   if (!PROVIDERS.has(llm.provider as LlmProvider)) throw new Error(`customizeTask result.llm.provider: unsupported provider ${llm.provider}`);
@@ -105,17 +114,6 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
     const limits = object(customization.limits, "customizeTask result.limits");
     if (limits.maxDurationMs !== undefined) positiveInteger(limits.maxDurationMs, "customizeTask result.limits.maxDurationMs");
     if (limits.maxTokens !== undefined) positiveInteger(limits.maxTokens, "customizeTask result.limits.maxTokens");
-  }
-  if (customization.slackChannelIntake !== undefined) {
-    const intake = object(customization.slackChannelIntake, "customizeTask result.slackChannelIntake");
-    rejectUnknownFields(intake, ["channelNamePattern", "triggerReaction", "ownerEmail", "readOnlyChannels", "isEligibleReactor", "reactionInstructions"], "slackChannelIntake");
-    if (!(intake.channelNamePattern instanceof RegExp)) throw new Error("slackChannelIntake.channelNamePattern must be a RegExp");
-    if (intake.channelNamePattern.global || intake.channelNamePattern.sticky) throw new Error("slackChannelIntake.channelNamePattern must not use the g or y flag");
-    if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(intake.triggerReaction, "slackChannelIntake.triggerReaction"))) throw new Error("slackChannelIntake.triggerReaction must be an emoji name without colons");
-    if (!/^[^@\s]+@[^@\s]+$/.test(nonEmptyString(intake.ownerEmail, "slackChannelIntake.ownerEmail"))) throw new Error("slackChannelIntake.ownerEmail must be an email address");
-    if (typeof intake.readOnlyChannels !== "boolean") throw new Error("slackChannelIntake.readOnlyChannels must be a boolean");
-    callable(intake.isEligibleReactor, "slackChannelIntake.isEligibleReactor");
-    nonEmptyString(intake.reactionInstructions, "slackChannelIntake.reactionInstructions");
   }
   if (customization.ticketLabels !== undefined) stringArray(customization.ticketLabels, "customizeTask result.ticketLabels");
   if (customization.pullRequestLabels !== undefined) stringArray(customization.pullRequestLabels, "customizeTask result.pullRequestLabels");
@@ -153,19 +151,8 @@ function stringArray(value: unknown, field: string): string[] {
   return value as string[];
 }
 
-export async function resolveSlackChannelIntakePolicy(config: BearMetalConfig) {
-  if (!config.slack) return undefined;
-  const customization = validateTaskCustomization(await config.customizeTask({
-    type: "coordinator", id: "slack-intake-configuration", trigger: "slack", slackChannelIntake: "configure",
-  }));
-  if (customization.slackChannelIntake && !config.slack.getSigningSecret) {
-    throw new Error("customizeTask slackChannelIntake requires config.slack.getSigningSecret");
-  }
-  return customization.slackChannelIntake;
-}
-
 function rejectUnknownFields(value: Record<string, unknown>, allowed: readonly string[], field: string): void {
   for (const key of Object.keys(value)) {
-    if (!allowed.includes(key)) throw new Error(`Unknown ${field} field: ${key}. Supported fields: ${allowed.join(", ")}. Intake policy belongs in customizeTask.slackChannelIntake`);
+    if (!allowed.includes(key)) throw new Error(`Unknown ${field} field: ${key}. Supported fields: ${allowed.join(", ")}`);
   }
 }

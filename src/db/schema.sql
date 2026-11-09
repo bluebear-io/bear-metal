@@ -390,36 +390,23 @@ DROP INDEX IF EXISTS slack_delivery_action;
 CREATE UNIQUE INDEX slack_delivery_action ON slack_reply_deliveries
   (workspace_id, channel_id, thread_ts, source_ts, request_index) WHERE reply_kind NOT IN ('task_cancel', 'failure');
 
-CREATE TABLE IF NOT EXISTS slack_intake_reactions (
+CREATE TABLE IF NOT EXISTS slack_intake_requests (
   workspace_id TEXT NOT NULL,
   channel_id TEXT NOT NULL,
   message_ts TEXT NOT NULL,
+  thread_ts TEXT,
   reactor_user_id TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processed', 'ignored', 'failed')),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'processed', 'ignored', 'failed')),
   reason TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (workspace_id, channel_id, message_ts, reactor_user_id)
-);
-CREATE INDEX IF NOT EXISTS slack_intake_reactions_pending ON slack_intake_reactions (state, created_at);
-
-CREATE TABLE IF NOT EXISTS slack_intake_tickets (
-  workspace_id TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  source_ts TEXT NOT NULL,
-  thread_ts TEXT NOT NULL,
-  intake_trigger TEXT NOT NULL CHECK (intake_trigger = 'reaction'),
-  state TEXT NOT NULL CHECK (state IN ('creating', 'created', 'delegated', 'failed')),
-  title TEXT NOT NULL,
-  ticket_id TEXT,
+  linear_issue_id TEXT,
   ticket_identifier TEXT,
   ticket_url TEXT,
-  error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (workspace_id, channel_id, source_ts)
+  PRIMARY KEY (workspace_id, channel_id, message_ts)
 );
-CREATE INDEX IF NOT EXISTS slack_intake_tickets_thread ON slack_intake_tickets (workspace_id, channel_id, thread_ts);
-CREATE INDEX IF NOT EXISTS slack_intake_tickets_ticket ON slack_intake_tickets (ticket_id);
+CREATE INDEX IF NOT EXISTS slack_intake_requests_pending ON slack_intake_requests (state, next_attempt_at);
+CREATE INDEX IF NOT EXISTS slack_intake_requests_thread ON slack_intake_requests (workspace_id, channel_id, thread_ts);
+CREATE INDEX IF NOT EXISTS slack_intake_requests_issue ON slack_intake_requests (linear_issue_id);
