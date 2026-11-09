@@ -133,6 +133,8 @@ For coding and research runs, Bear Metal creates `workspacePath`, calls `buildWo
 
 Slack research agents receive `bash` alongside `read`, `grep`, `find`, and `ls`, using the same workspace command guard as coding agents. Coordinators retain read-only file tools. Research shell commands inherit the worker environment, including deployment-provided AWS credentials; actual AWS access depends on the task role and network permissions.
 
+`customizeTask` may return `tools`, a list of agent tool names (`AGENT_TOOL_CHOICES` in the canonical source) that narrows what the agent receives; omitted, each task type keeps the defaults above. The list never widens a task type's set: Slack research never gains `edit`, `write` or `commit_changes`. The tools that end or hand back a task (`respond_to_ticket_reporter` and the PR comment tools) are always kept; `push_for_review` is kept only when listed. Coding tasks get `commit_changes` only when it is listed: it switches to the named task branch (creating it), stages every change and commits, so a task without `bash` can still commit. An unknown name, or `edit`, `write` or `commit_changes` without `push_for_review` (the workspace is deleted at the end of the task), fails the task, as does `edit` or `write` without `bash` or `commit_changes` (no way to commit). The prompt tells the agent which tools it has.
+
 Agent shell commands use a dedicated cache-only `HOME` under `~/.bear-metal/cache-home`; it survives task workspace cleanup and is separate from the service user's normal home and temporary Git credentials. The workspace command guard is not an operating-system sandbox, so deployments must still isolate the worker process from host secrets.
 
 ## Environment variables

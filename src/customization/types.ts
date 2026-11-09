@@ -141,7 +141,19 @@ export interface TaskCustomization {
   limits?: { maxDurationMs?: number; maxTokens?: number };
   ticketLabels?: readonly string[];
   pullRequestLabels?: readonly string[];
+  /**
+   * The agent tools this task may use; omitted keeps the default set. It only narrows: a tool the
+   * task type does not offer stays unavailable. The tools that end or hand back a task are always kept.
+   */
+  tools?: readonly AgentToolChoice[];
 }
+
+export const AGENT_TOOL_CHOICES = [
+  "read", "grep", "find", "ls", "edit", "write", "bash",
+  "commit_changes", "push_for_review",
+  "github_read", "linear_read", "slack_read", "web_get", "github_dispatch",
+] as const;
+export type AgentToolChoice = (typeof AGENT_TOOL_CHOICES)[number];
 
 export interface ResolvedLlm {
   provider: LlmProvider;
