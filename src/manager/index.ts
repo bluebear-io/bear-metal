@@ -22,6 +22,7 @@ import { Scheduler } from "./scheduler.js";
 import { ManagerTicketHandler } from "./ticket-handler.js";
 import { createSlackEventsRouter } from "./slack-events.js";
 import { SlackThreadApi } from "./slack-thread-api.js";
+import { createReactionIntake } from "./slack-reaction-intake.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 import { SlackResearchWorker } from "./slack-research.js";
 
@@ -141,6 +142,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
   const threadApi = new SlackThreadApi(slackRead, slack);
   const workspaceId = auth.team_id;
   const authorizeSlackUser = customizationConfig.slack.authorizeUser;
+  const reactionTrigger = customizationConfig.slack.reactionTrigger;
   const slackGatewayHandlers = createAgentToolHandlers({
     github: agentGithub,
     linear: agentLinearTokenProvider,
@@ -170,6 +172,12 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
         const allowed = await authorizeSlackUser(await threadApi.getUser(userId), workspaceId);
         if (typeof allowed !== "boolean") throw new Error("config.slack.authorizeUser must return a boolean");
         return allowed;
+      },
+    } : {}),
+    ...(reactionTrigger ? {
+      reactionTrigger: {
+        emoji: reactionTrigger.emoji,
+        handle: createReactionIntake({ trigger: reactionTrigger, api: threadApi, linear, config: customizationConfig, logger }),
       },
     } : {}),
   });

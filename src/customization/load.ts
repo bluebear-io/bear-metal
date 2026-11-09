@@ -40,6 +40,14 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
     callable(slack.getBotToken, "config.slack.getBotToken");
     if (slack.getSigningSecret !== undefined) callable(slack.getSigningSecret, "config.slack.getSigningSecret");
     if (slack.authorizeUser !== undefined) callable(slack.authorizeUser, "config.slack.authorizeUser");
+    if (slack.reactionTrigger !== undefined) {
+      const trigger = object(slack.reactionTrigger, "config.slack.reactionTrigger");
+      if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(trigger.emoji, "config.slack.reactionTrigger.emoji"))) {
+        throw new Error("config.slack.reactionTrigger.emoji must be an emoji name without colons");
+      }
+      nonEmptyString(trigger.teamId, "config.slack.reactionTrigger.teamId");
+      if (trigger.projectId !== undefined) nonEmptyString(trigger.projectId, "config.slack.reactionTrigger.projectId");
+    }
   }
   if (config.agentIntegrations !== undefined) {
     const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");

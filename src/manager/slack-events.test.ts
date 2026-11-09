@@ -144,6 +144,39 @@ describe("Slack event intake", () => {
     }
   });
 
+  it("quietly hands configured reactions from authorized users to the reaction intake", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const wake = vi.fn(async () => {});
+    const handle = vi.fn(async () => {});
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({
+      db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }), wake,
+      authorizeUser: async (userId) => userId === "UMEMBER",
+      reactionTrigger: { emoji: "bear_paw_seen", handle },
+    }));
+    const send = async (event: object) => {
+      const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
+      return request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text);
+    };
+    const reaction = (user: string, name = "bear_paw_seen", itemType = "message") =>
+      ({ type: "reaction_added", user, reaction: name, item: { type: itemType, channel: "C1", ts: "600.1" }, item_user: "U2" });
+    try {
+      expect((await send(reaction("UMEMBER"))).status).toBe(200);
+      expect((await send(reaction("UGUEST"))).status).toBe(200);
+      expect((await send(reaction("UBOT"))).status).toBe(200);
+      expect((await send(reaction("UMEMBER", "eyes"))).status).toBe(200);
+      expect((await send(reaction("UMEMBER", "bear_paw_seen", "file"))).status).toBe(200);
+      expect(handle).toHaveBeenCalledTimes(1);
+      expect(handle).toHaveBeenCalledWith({ workspaceId: "T1", channelId: "C1", messageTs: "600.1", userId: "UMEMBER" });
+      expect(await db.hasSlackThread({ workspaceId: "T1", channelId: "C1", threadTs: "600.1" })).toBe(false);
+      expect(wake).not.toHaveBeenCalled();
+    } finally {
+      await db.close();
+    }
+  });
+
   it("activates every threaded DM and rejects unsigned requests", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();

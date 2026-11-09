@@ -365,7 +365,16 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     await this.withClient((client) => client.createComment({ issueId: ticketId, body }));
   }
 
+  async findIssue(id: string): Promise<{ id: string; url: string } | null> {
+    return this.withClient(async (client) => {
+      const page = await client.issues({ filter: { id: { eq: id } }, first: 1 });
+      const issue = page.nodes[0];
+      return issue ? { id: issue.id, url: issue.url } : null;
+    });
+  }
+
   async createSlackCodingTicket(input: {
+    id?: string;
     teamId: string;
     projectId?: string;
     title: string;
@@ -378,6 +387,7 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     }
     return this.withClient(async (client) => {
       const result = await client.createIssue({
+        ...(input.id ? { id: input.id } : {}),
         teamId: input.teamId,
         ...(input.projectId ? { projectId: input.projectId } : {}),
         title: input.title,

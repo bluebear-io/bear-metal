@@ -56,6 +56,15 @@ describe("configuration validation", () => {
     expect(validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: () => true } }).slack?.authorizeUser).toBeDefined();
     expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: true } })).toThrow("config.slack.authorizeUser");
   });
+  it("validates the optional Slack reaction trigger", () => {
+    const config = valid();
+    const slack = { notificationChannel: "C1", getBotToken: () => "token" };
+    const trigger = { emoji: "bear_paw_seen", teamId: "team-1" };
+    expect(validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: trigger } }).slack?.reactionTrigger).toEqual(trigger);
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, emoji: ":bear_paw_seen:" } } })).toThrow("without colons");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { emoji: "bear_paw_seen" } } })).toThrow("config.slack.reactionTrigger.teamId");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, projectId: "" } } })).toThrow("config.slack.reactionTrigger.projectId");
+  });
   it("accepts a frozen agent Linear config without mutating it", () => {
     const config = valid();
     config.agentIntegrations!.linear = Object.freeze(config.agentIntegrations!.linear!);

@@ -377,6 +377,7 @@ The table lists the complete scope set for the main app with all supported Slack
 | `mpim:read` | Discover group-DM conversations and read their basic information |
 | `files:read` | Search and download Slack files for coordinator/research context |
 | `files:write` | Upload full research results as Markdown attachments when a summary is provided for an answer longer than 500 characters; [Slack upload APIs require this scope](https://docs.slack.dev/reference/methods/files.getUploadURLExternal/) |
+| `reactions:read` | Receive `reaction_added` for the optional reaction trigger |
 | `reactions:write` | Add the 👍 acknowledgment after unsubscribe; [required by `reactions.add`](https://docs.slack.dev/reference/methods/reactions.add/) |
 | `users:read` | Read user profiles/lists and resolve a Slack requester's identity for ticket creation |
 | `users:read.email` | Read requester email for Slack-to-Linear ticket assignment and look up a ticket requester's Slack user for DM notifications |
@@ -402,11 +403,14 @@ Notifications and the coding-agent read-only app require none of these subscript
 | `message.channels` | `channels:history` | Receive subsequent public-channel messages, edits and deletions in followed threads |
 | `message.groups` | `groups:history` | Receive subsequent private-channel messages, edits and deletions in followed threads |
 | `message.im` | `im:history` | Receive one-to-one DM requests, threaded replies, edits and deletions |
+| `reaction_added` | `reactions:read` | Optional: turn a message into a delegated ticket when someone adds `slack.reactionTrigger.emoji` |
 | `message.mpim` | `mpim:history` | Receive group-DM message events; [Slack's event reference](https://docs.slack.dev/reference/events/message.mpim/) describes this separate conversation type |
 
 Group DMs are not treated as one-to-one DMs: `message.mpim` alone does not activate an unfollowed conversation. Only `app_mention` events and one-to-one `message.im` events activate following; ordinary messages are processed only in already-followed threads.
 
 Every human DM, including a threaded reply, behaves like an explicit channel mention and receives a response or action. A top-level DM starts its own thread; a threaded DM follows its existing thread. In channels, an `@Bear Metal` mention starts following the thread. Ordinary messages in followed channel threads can be silently ignored when they need no Bear Metal action, including conversation addressed to others. Explicit mentions and DMs cannot be ignored. The coordinator can answer simple questions and casual messages directly, without a task or added reply wrapper, and asks for clarification when needed.
+
+With `slack.reactionTrigger: { emoji, teamId, projectId? }`, reacting to a message with that emoji (name without colons) quietly creates a Linear ticket in `teamId` with the message, its thread and a link back. Bear Metal assigns the ticket to the person who reacted, delegates it to itself and posts nothing to Slack. Reacting again to the same message reuses its ticket. Failures are only logged; remove and re-add the reaction to retry. The bot must be a member of the channel, and `slack.authorizeUser` applies to the reacting user. The reacting user's Slack email must match exactly one Linear user.
 
 Before supplying team, project, or cycle IDs, the coordinator must call `list_ticket_destinations` and use only IDs returned there. The lookup includes teams, projects and paginated cycles with their owning teams and dates. IDs must never be inferred from memory or unrelated entities. Unrecovered task-tool failures are reported through `direct_answer`; successful creation, work, or delegation must be confirmed by tool results.
 
