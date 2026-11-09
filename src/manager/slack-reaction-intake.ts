@@ -28,7 +28,7 @@ export function reactionIssueId(reaction: Pick<SlackReaction, "workspaceId" | "c
 }
 
 export function ticketTitle(text: string): string {
-  const line = text.split("\n").map((part) => part.replace(/<[^>|]*\|([^>]*)>/g, "$1").replace(/<[^>]*>/g, "").replace(/[<>]/g, "").trim()).find(Boolean) ?? "";
+  const line = text.split("\n").map((part) => part.replace(/<[^<>|]*\|([^<>]*)>/g, "$1").replace(/[<>]/g, "").trim()).find(Boolean) ?? "";
   const title = line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS - 1)}…` : line;
   return title ? `[Slack] ${title}` : "[Slack] Flagged request";
 }

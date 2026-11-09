@@ -71,8 +71,8 @@ describe("Slack reaction intake", () => {
   });
 
   it("builds a readable title from the first non-empty line", () => {
-    expect(ticketTitle("\n<@U1> please <https://x.dev|update the docs>")).toBe("[Slack] please update the docs");
-    expect(ticketTitle("<<b>script>alert(1)")).toBe("[Slack] scriptalert(1)");
+    expect(ticketTitle("\n<@U1> please <https://x.dev|update the docs>")).toBe("[Slack] @U1 please update the docs");
+    expect(ticketTitle("<<b>script>alert(1)")).toBe("[Slack] bscriptalert(1)");
     expect(ticketTitle("")).toBe("[Slack] Flagged request");
     expect(ticketTitle("x".repeat(200)).length).toBe("[Slack] ".length + 80);
   });
