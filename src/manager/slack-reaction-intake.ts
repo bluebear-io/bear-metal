@@ -28,7 +28,7 @@ export function reactionIssueId(reaction: Pick<SlackReaction, "workspaceId" | "c
 }
 
 export function ticketTitle(text: string): string {
-  const line = text.split("\n").map((part) => part.replace(/<[^>|]*\|([^>]*)>/g, "$1").replace(/<[^>]*>/g, "").trim()).find(Boolean) ?? "";
+  const line = text.split("\n").map((part) => part.replace(/<[^>|]*\|([^>]*)>/g, "$1").replace(/<[^>]*>/g, "").replace(/[<>]/g, "").trim()).find(Boolean) ?? "";
   const title = line.length > MAX_TITLE_CHARS ? `${line.slice(0, MAX_TITLE_CHARS - 1)}…` : line;
   return title ? `[Slack] ${title}` : "[Slack] Flagged request";
 }
@@ -70,7 +70,7 @@ export function createReactionIntake(input: {
       const assigneeId = await input.linear.findUserIdByEmail(await input.api.getUserEmail(reaction.userId));
       const description = ticketDescription(messages, reaction.messageTs, permalink, reaction.channelId, threadTs);
       issue = await input.linear.createSlackCodingTicket({
-        id, teamId: input.trigger.teamId, projectId: input.trigger.projectId, title: ticketTitle(flagged.text), description, assigneeId,
+        id, teamId: input.trigger.linearTeamId, projectId: input.trigger.linearProjectId, title: ticketTitle(flagged.text), description, assigneeId,
       });
       await applyTicketLabels(input, id, issue.id, description);
     }

@@ -26,13 +26,8 @@ export interface BearMetalConfig {
     notificationChannel: string;
     getBotToken: SecretGetter;
     getSigningSecret?: SecretGetter;
-    /** Return false to ignore this user's mentions, DMs, thread replies and edits. Omit to accept every workspace user. */
     authorizeUser?: (user: Readonly<SlackUser>, workspaceId: string) => boolean | Promise<boolean>;
-    /**
-     * Reacting to a message with `emoji` (name without colons) quietly turns it into a Linear ticket in `teamId`,
-     * assigned to the reacting user and delegated to Bear Metal. Bear Metal posts nothing to Slack for it.
-     */
-    reactionTrigger?: { emoji: string; teamId: string; projectId?: string };
+    reactionTrigger?: { emoji: string; linearTeamId: string; linearProjectId?: string };
   };
   agentIntegrations?: {
     github?: {
@@ -78,7 +73,6 @@ export interface BearMetalConfig {
 
 export interface SlackUser {
   readonly id: string;
-  /** The user's home workspace; differs from the bot's workspace for Slack Connect users. */
   readonly teamId: string | null;
   readonly isBot: boolean;
   readonly deleted: boolean;

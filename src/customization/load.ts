@@ -45,8 +45,8 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
       if (!/^[a-z0-9_+'-]+$/.test(nonEmptyString(trigger.emoji, "config.slack.reactionTrigger.emoji"))) {
         throw new Error("config.slack.reactionTrigger.emoji must be an emoji name without colons");
       }
-      nonEmptyString(trigger.teamId, "config.slack.reactionTrigger.teamId");
-      if (trigger.projectId !== undefined) nonEmptyString(trigger.projectId, "config.slack.reactionTrigger.projectId");
+      nonEmptyString(trigger.linearTeamId, "config.slack.reactionTrigger.linearTeamId");
+      if (trigger.linearProjectId !== undefined) nonEmptyString(trigger.linearProjectId, "config.slack.reactionTrigger.linearProjectId");
     }
   }
   if (config.agentIntegrations !== undefined) {

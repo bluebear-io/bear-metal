@@ -25,7 +25,7 @@ function setup(existing: { id: string; url: string } | null = null) {
   };
   const customizeTask = vi.fn(async () => ({ llm: { provider: "anthropic", model: "m" }, buildWorkspace: async () => {}, ticketLabels: ["signal:slack"] }));
   const intake = createReactionIntake({
-    trigger: { emoji: "bear_paw_seen", teamId: "team-1", projectId: "project-1" },
+    trigger: { emoji: "bear_paw_seen", linearTeamId: "team-1", linearProjectId: "project-1" },
     api, linear, config: { customizeTask } as never, logger: createLogger({ name: "test", level: "silent" }),
   });
   return { intake, linear, api, customizeTask };
@@ -72,6 +72,7 @@ describe("Slack reaction intake", () => {
 
   it("builds a readable title from the first non-empty line", () => {
     expect(ticketTitle("\n<@U1> please <https://x.dev|update the docs>")).toBe("[Slack] please update the docs");
+    expect(ticketTitle("<<b>script>alert(1)")).toBe("[Slack] scriptalert(1)");
     expect(ticketTitle("")).toBe("[Slack] Flagged request");
     expect(ticketTitle("x".repeat(200)).length).toBe("[Slack] ".length + 80);
   });

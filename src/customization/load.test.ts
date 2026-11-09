@@ -59,11 +59,11 @@ describe("configuration validation", () => {
   it("validates the optional Slack reaction trigger", () => {
     const config = valid();
     const slack = { notificationChannel: "C1", getBotToken: () => "token" };
-    const trigger = { emoji: "bear_paw_seen", teamId: "team-1" };
+    const trigger = { emoji: "bear_paw_seen", linearTeamId: "team-1" };
     expect(validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: trigger } }).slack?.reactionTrigger).toEqual(trigger);
     expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, emoji: ":bear_paw_seen:" } } })).toThrow("without colons");
-    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { emoji: "bear_paw_seen" } } })).toThrow("config.slack.reactionTrigger.teamId");
-    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, projectId: "" } } })).toThrow("config.slack.reactionTrigger.projectId");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { emoji: "bear_paw_seen" } } })).toThrow("config.slack.reactionTrigger.linearTeamId");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, linearProjectId: "" } } })).toThrow("config.slack.reactionTrigger.linearProjectId");
   });
   it("accepts a frozen agent Linear config without mutating it", () => {
     const config = valid();
