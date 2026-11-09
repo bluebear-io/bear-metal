@@ -1,5 +1,6 @@
 import type { SlackReadClient, SlackIntegration } from "../shared/integrations/slack/client.js";
 import type { SlackThreadKey } from "../db/client.js";
+import type { SlackUser } from "../customization/types.js";
 
 export interface SlackThreadMessage {
   ts: string;
@@ -22,6 +23,24 @@ export class SlackThreadApi {
       throw new Error(`Cannot resolve Slack email for ${userId}: ${response.error ?? "missing user email"}`);
     }
     return response.user.profile.email;
+  }
+
+  async getUser(userId: string): Promise<SlackUser> {
+    const response = await this.readClient.call("users.info", { user: userId }) as {
+      ok?: boolean; error?: string;
+      user?: { id?: string; team_id?: string; is_bot?: boolean; deleted?: boolean; is_restricted?: boolean; is_ultra_restricted?: boolean };
+    };
+    if (!response.ok || response.user?.id !== userId) {
+      throw new Error(`Cannot resolve Slack user ${userId}: ${response.error ?? "missing user"}`);
+    }
+    const user = response.user;
+    return {
+      id: userId,
+      teamId: user.team_id ?? null,
+      isBot: user.is_bot === true,
+      deleted: user.deleted === true,
+      guest: user.is_restricted === true || user.is_ultra_restricted === true,
+    };
   }
 
   async readThread(key: SlackThreadKey, oldest: string, latest?: string): Promise<SlackThreadMessage[]> {

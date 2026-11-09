@@ -9,6 +9,24 @@ describe("Slack thread reader", () => {
     await expect(api.getUserEmail("U1")).resolves.toBe("user@example.com");
     expect(call).toHaveBeenCalledWith("users.info", { user: "U1" });
   });
+  it("maps Slack guests and other-workspace users for authorization", async () => {
+    const users: Record<string, object> = {
+      UMEMBER: { id: "UMEMBER", team_id: "T1" },
+      UGUEST: { id: "UGUEST", team_id: "T1", is_restricted: true },
+      USINGLE: { id: "USINGLE", team_id: "T1", is_ultra_restricted: true },
+      UEXT: { id: "UEXT", team_id: "T2" },
+      UGONE: { id: "UGONE", team_id: "T1", deleted: true, is_bot: true },
+    };
+    const call = vi.fn(async (_method: string, args: { user: string }) => ({ ok: true, user: users[args.user] }));
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(api.getUser("UMEMBER")).resolves.toEqual({ id: "UMEMBER", teamId: "T1", isBot: false, deleted: false, guest: false });
+    await expect(api.getUser("UGUEST")).resolves.toMatchObject({ guest: true });
+    await expect(api.getUser("USINGLE")).resolves.toMatchObject({ guest: true });
+    await expect(api.getUser("UEXT")).resolves.toMatchObject({ teamId: "T2" });
+    await expect(api.getUser("UGONE")).resolves.toMatchObject({ isBot: true, deleted: true });
+    const failing = new SlackThreadApi({ call: async () => ({ ok: false, error: "user_not_found" }) } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(failing.getUser("UX")).rejects.toThrow("user_not_found");
+  });
   it("bounds an edited message read to its original timestamp", async () => {
     const call = vi.fn(async () => ({ ok: true, messages: [{ ts: "100.1", user: "U1", text: "edited" }] }));
     const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);

@@ -139,6 +139,8 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
   const auth = await slackRead.call("auth.test") as { ok?: boolean; user_id?: string; team_id?: string; error?: string };
   if (!auth.ok || !auth.user_id || !auth.team_id) throw new Error(`Slack auth.test failed: ${auth.error ?? "missing user_id or team_id"}`);
   const threadApi = new SlackThreadApi(slackRead, slack);
+  const workspaceId = auth.team_id;
+  const authorizeSlackUser = customizationConfig.slack.authorizeUser;
   const slackGatewayHandlers = createAgentToolHandlers({
     github: agentGithub,
     linear: agentLinearTokenProvider,
@@ -163,6 +165,13 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     workspaceId: auth.team_id,
     logger,
     wake: (key) => slackCoordinator!.wake(key),
+    ...(authorizeSlackUser ? {
+      authorizeUser: async (userId: string) => {
+        const allowed = await authorizeSlackUser(await threadApi.getUser(userId), workspaceId);
+        if (typeof allowed !== "boolean") throw new Error("config.slack.authorizeUser must return a boolean");
+        return allowed;
+      },
+    } : {}),
   });
 }
 if (runtimeConfig.runMode === "slack_only" && (!slackCoordinator || !slackResearch || !slackEvents)) {

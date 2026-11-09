@@ -94,6 +94,56 @@ describe("Slack event intake", () => {
     }
   });
 
+  it("drops mentions, DMs, thread replies and edits from unauthorized users without following their threads", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const wake = vi.fn(async () => {});
+    const authorizeUser = vi.fn(async (userId: string) => userId === "UMEMBER");
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({ db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }), wake, authorizeUser }));
+    const send = async (event: object) => {
+      const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event });
+      return request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text);
+    };
+    const thread = { workspaceId: "T1", channelId: "C1", threadTs: "400.0" };
+    try {
+      expect((await send({ type: "app_mention", channel: "C1", ts: "400.0", user: "UGUEST" })).status).toBe(200);
+      expect((await send({ type: "message", channel_type: "im", channel: "D1", ts: "401.0", user: "UGUEST" })).status).toBe(200);
+      expect(await db.hasSlackThread(thread)).toBe(false);
+      expect(await db.hasSlackThread({ workspaceId: "T1", channelId: "D1", threadTs: "401.0" })).toBe(false);
+
+      await send({ type: "app_mention", channel: "C1", ts: "400.1", thread_ts: "400.0", user: "UMEMBER" });
+      await send({ type: "message", channel: "C1", ts: "400.2", thread_ts: "400.0", user: "UGUEST" });
+      await send({ type: "message", subtype: "message_changed", channel: "C1", ts: "400.3", message: { ts: "400.1", thread_ts: "400.0", user: "UGUEST", text: "Hijacked" } });
+      await send({ type: "message", channel: "C1", ts: "400.4", thread_ts: "400.0", user: "UMEMBER" });
+      expect(await db.listSlackPendingMessages(thread)).toEqual(["400.1", "400.4"]);
+      expect(wake).toHaveBeenCalledTimes(2);
+      expect(authorizeUser).not.toHaveBeenCalledWith("UBOT");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("fails the event instead of acting when authorization cannot be resolved", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    const app = express();
+    app.use("/slack", createSlackEventsRouter({
+      db, signingSecret: secret, botUserId: "UBOT", workspaceId: "T1", logger: createLogger({ name: "test", level: "silent" }), wake: async () => {},
+      authorizeUser: async () => { throw new Error("users.info failed"); },
+    }));
+    app.use(((_err, _req, res, _next) => { res.sendStatus(500); }) as express.ErrorRequestHandler);
+    const { text, timestamp, signature } = signed({ type: "event_callback", team_id: "T1", event: { type: "app_mention", channel: "C1", ts: "500.0", user: "U1" } });
+    try {
+      expect((await request(app).post("/slack/events").set("Content-Type", "application/json")
+        .set("X-Slack-Request-Timestamp", timestamp).set("X-Slack-Signature", signature).send(text)).status).toBe(500);
+      expect(await db.hasSlackThread({ workspaceId: "T1", channelId: "C1", threadTs: "500.0" })).toBe(false);
+    } finally {
+      await db.close();
+    }
+  });
+
   it("activates every threaded DM and rejects unsigned requests", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();

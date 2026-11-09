@@ -49,6 +49,13 @@ describe("configuration validation", () => {
     const config = valid();
     expect(() => validateBearMetalConfig({ ...config, agentIntegrations: { ...config.agentIntegrations, slack: {} } })).toThrow("config.agentIntegrations.slack.getBotToken");
   });
+  it("validates the optional Slack user authorization hook", () => {
+    const config = valid();
+    const slack = { notificationChannel: "C1", getBotToken: () => "token" };
+    expect(validateBearMetalConfig({ ...config, slack }).slack?.authorizeUser).toBeUndefined();
+    expect(validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: () => true } }).slack?.authorizeUser).toBeDefined();
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: true } })).toThrow("config.slack.authorizeUser");
+  });
   it("accepts a frozen agent Linear config without mutating it", () => {
     const config = valid();
     config.agentIntegrations!.linear = Object.freeze(config.agentIntegrations!.linear!);

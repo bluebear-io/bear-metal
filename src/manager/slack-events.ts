@@ -36,7 +36,13 @@ export function createSlackEventsRouter(input: {
   workspaceId: string;
   logger: Logger;
   wake: (key: SlackThreadKey) => Promise<void>;
+  authorizeUser?: (userId: string) => Promise<boolean>;
 }): Router {
+  const authorized = async (userId: string, channelId: string): Promise<boolean> => {
+    if (!input.authorizeUser || await input.authorizeUser(userId)) return true;
+    input.logger.warn({ userId, channelId }, "Slack user not authorized; message ignored");
+    return false;
+  };
   if (!input.signingSecret || !input.botUserId || !input.workspaceId) throw new Error("Slack events require signing secret, bot user ID, and workspace ID");
   const router = Router();
   router.post("/events", raw({ type: "application/json", limit: "1mb" }), async (req, res, next) => {
@@ -87,6 +93,10 @@ export function createSlackEventsRouter(input: {
           res.sendStatus(200);
           return;
         }
+        if (!await authorized(edited.user, event.channel)) {
+          res.sendStatus(200);
+          return;
+        }
         const key: SlackThreadKey = {
           workspaceId: payload.team_id, channelId: event.channel, threadTs: edited.thread_ts ?? event.thread_ts ?? edited.ts,
         };
@@ -109,6 +119,10 @@ export function createSlackEventsRouter(input: {
       };
       const activates = event.type === "app_mention" || (event.type === "message" && event.channel_type === "im");
       if (!activates && !event.thread_ts && !await input.db.hasSlackThread(key)) {
+        res.sendStatus(200);
+        return;
+      }
+      if (!await authorized(event.user, event.channel)) {
         res.sendStatus(200);
         return;
       }
