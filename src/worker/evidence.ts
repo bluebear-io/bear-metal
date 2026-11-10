@@ -75,8 +75,11 @@ export async function readEvidenceFile(workspaceRoot: string, path: string): Pro
       throw new Error(`Evidence file is ${stats.size} bytes; the limit is ${MAX_EVIDENCE_BYTES} bytes: ${path}`);
     }
     const data = new Uint8Array(stats.size);
-    const { bytesRead } = await handle.read(data, 0, stats.size, 0);
-    if (bytesRead !== stats.size) throw new Error(`Evidence file changed while reading: ${path}`);
+    for (let offset = 0; offset < stats.size; ) {
+      const { bytesRead } = await handle.read(data, offset, stats.size - offset, offset);
+      if (bytesRead === 0) throw new Error(`Evidence file changed while reading: ${path}`);
+      offset += bytesRead;
+    }
     if (!type.matches(data)) throw new Error(`Evidence file content is not ${type.contentType}: ${path}`);
     return { filename: basename(target), contentType: type.contentType, data };
   } finally {
