@@ -1,4 +1,5 @@
-import { open, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath, stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 import { resolveExistingPathInWorkspace } from "./workspace-guard.js";
 
@@ -14,10 +15,28 @@ const startsWith = (head: Uint8Array, bytes: readonly number[], offset = 0) =>
   bytes.every((byte, index) => head[offset + index] === byte);
 
 const PNG: EvidenceType = { contentType: "image/png", matches: (h) => startsWith(h, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) };
-const JPEG: EvidenceType = { contentType: "image/jpeg", matches: (h) => startsWith(h, [0xff, 0xd8, 0xff]) };
-// WebM is an EBML container; MP4 has an `ftyp` box at byte 4.
+// JPEG must open with SOI and end with EOI.
+const JPEG: EvidenceType = {
+  contentType: "image/jpeg",
+  matches: (h) => startsWith(h, [0xff, 0xd8, 0xff]) && startsWith(h, [0xff, 0xd9], h.length - 2),
+};
 const WEBM: EvidenceType = { contentType: "video/webm", matches: (h) => startsWith(h, [0x1a, 0x45, 0xdf, 0xa3]) };
-const MP4: EvidenceType = { contentType: "video/mp4", matches: (h) => startsWith(h, [0x66, 0x74, 0x79, 0x70], 4) };
+const MP4: EvidenceType = { contentType: "video/mp4", matches: hasLeadingFtypBox };
+
+const FTYP = [0x66, 0x74, 0x79, 0x70];
+const MP4_FTYP_SEARCH_BYTES = 4096;
+
+// ISO-BMFF allows boxes such as `free`/`skip` before `ftyp`, so walk the leading boxes by their 32-bit sizes.
+function hasLeadingFtypBox(h: Uint8Array): boolean {
+  let offset = 0;
+  while (offset + 8 <= h.length && offset < MP4_FTYP_SEARCH_BYTES) {
+    if (startsWith(h, FTYP, offset + 4)) return true;
+    const size = ((h[offset]! << 24) | (h[offset + 1]! << 16) | (h[offset + 2]! << 8) | h[offset + 3]!) >>> 0;
+    if (size < 8) return false;
+    offset += size;
+  }
+  return false;
+}
 
 export const EVIDENCE_TYPES: Readonly<Record<string, EvidenceType>> = {
   ".png": PNG,
@@ -42,16 +61,22 @@ export async function readEvidenceFile(workspaceRoot: string, path: string): Pro
   }
   const root = await realpath(workspaceRoot);
   const target = await resolveExistingPathInWorkspace(root, resolve(root, path));
-  const handle = await open(target, "r");
+  // O_NOFOLLOW plus the identity check reject a file or parent directory swapped for a symlink after the containment check.
+  const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stats = await handle.stat();
+    const [currentTarget, currentStats] = await Promise.all([realpath(target), stat(target)]);
+    if (currentTarget !== target || currentStats.dev !== stats.dev || currentStats.ino !== stats.ino) {
+      throw new Error(`Evidence path changed while opening: ${path}`);
+    }
     if (!stats.isFile()) throw new Error(`Evidence path is not a regular file: ${path}`);
     if (stats.size === 0) throw new Error(`Evidence file is empty: ${path}`);
     if (stats.size > MAX_EVIDENCE_BYTES) {
       throw new Error(`Evidence file is ${stats.size} bytes; the limit is ${MAX_EVIDENCE_BYTES} bytes: ${path}`);
     }
-    const data = new Uint8Array(await handle.readFile());
-    if (data.byteLength !== stats.size) throw new Error(`Evidence file changed while reading: ${path}`);
+    const data = new Uint8Array(stats.size);
+    const { bytesRead } = await handle.read(data, 0, stats.size, 0);
+    if (bytesRead !== stats.size) throw new Error(`Evidence file changed while reading: ${path}`);
     if (!type.matches(data)) throw new Error(`Evidence file content is not ${type.contentType}: ${path}`);
     return { filename: basename(target), contentType: type.contentType, data };
   } finally {

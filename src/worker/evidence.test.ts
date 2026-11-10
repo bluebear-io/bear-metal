@@ -7,6 +7,8 @@ import { MAX_EVIDENCE_BYTES, readEvidenceFile } from "./evidence.js";
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 const WEBM_BYTES = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81]);
 const MP4_BYTES = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
+const MP4_FREE_FIRST_BYTES = new Uint8Array([0, 0, 0, 0x08, 0x66, 0x72, 0x65, 0x65, ...MP4_BYTES]);
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0xff, 0xd9]);
 
 let workspace: string;
 
@@ -23,6 +25,19 @@ describe("readEvidenceFile", () => {
     await expect(readEvidenceFile(workspace, "shot.png")).resolves.toEqual({ filename: "shot.png", contentType: "image/png", data: PNG_BYTES });
     await expect(readEvidenceFile(workspace, join(workspace, "clip.webm"))).resolves.toMatchObject({ contentType: "video/webm" });
     await expect(readEvidenceFile(workspace, "clip.mp4")).resolves.toMatchObject({ contentType: "video/mp4" });
+  });
+
+  it("accepts an MP4 whose ftyp box follows another box and a JPEG ending in EOI", async () => {
+    await writeFile(join(workspace, "free-first.mp4"), MP4_FREE_FIRST_BYTES);
+    await writeFile(join(workspace, "shot.jpg"), JPEG_BYTES);
+
+    await expect(readEvidenceFile(workspace, "free-first.mp4")).resolves.toMatchObject({ contentType: "video/mp4" });
+    await expect(readEvidenceFile(workspace, "shot.jpg")).resolves.toMatchObject({ contentType: "image/jpeg" });
+  });
+
+  it("rejects a JPEG signature without an end-of-image marker", async () => {
+    await writeFile(join(workspace, "truncated.jpg"), JPEG_BYTES.subarray(0, 6));
+    await expect(readEvidenceFile(workspace, "truncated.jpg")).rejects.toThrow("Evidence file content is not image/jpeg");
   });
 
   it("rejects file types that are not screenshots or videos", async () => {
