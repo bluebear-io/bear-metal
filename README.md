@@ -293,6 +293,8 @@ The agent must be a full Linear workspace member, not a guest.
 
 The agent can call `respond_to_ticket_reporter` during both initial work and PR iterations when it needs human input. The tool posts the blocker to Linear and removes Bear Metal delegation. The scheduler sends the needs-input notification when Slack is configured and stops scheduling the ticket until it is re-delegated, even if PR checks remain failed.
 
+Coding agents can also call `attach_ticket_evidence` to upload a screenshot or video from the workspace (`.png`, `.jpg`, `.jpeg`, `.webm` or `.mp4`, up to 50 MiB) and attach it to the task's ticket. It uses the first app, so that app needs the `write` scope. Uploaded files stay private to the Linear workspace: the returned asset URL opens only for signed-in Linear members. A `tools` list returned by `customizeTask` must name `attach_ticket_evidence` to keep it.
+
 ### Anthropic
 
 Create a key in the [Anthropic Console](https://console.anthropic.com), register `llmProviders.anthropic.getApiKey`, and select `{ provider: "anthropic", model: "..." }` from `customizeTask`.

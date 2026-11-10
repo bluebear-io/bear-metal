@@ -172,6 +172,11 @@ const GET_TICKET_ATTACHMENTS_QUERY = `
   }
 `;
 
+export interface UploadedTicketFile {
+  attachmentId: string;
+  assetUrl: string;
+}
+
 /** Workflow-state types that mean a ticket needs no further work; never admitted. */
 const TERMINAL_STATE_TYPES = ["completed", "canceled"];
 
@@ -363,6 +368,39 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
 
   async leaveComment(ticketId: string, body: string): Promise<void> {
     await this.withClient((client) => client.createComment({ issueId: ticketId, body }));
+  }
+
+  /**
+   * Uploads a file to Linear's private storage and attaches it to the issue. The returned asset URL is
+   * permanent but needs a Linear login to open; the pre-signed upload URL expires and is never returned.
+   */
+  async attachFileToTicket(
+    ticketId: string,
+    file: { filename: string; contentType: string; data: Uint8Array; title: string; subtitle?: string },
+  ): Promise<UploadedTicketFile> {
+    return this.withClient(async (client) => {
+      const payload = await client.fileUpload(file.contentType, file.filename, file.data.byteLength);
+      if (!payload.success || !payload.uploadFile) {
+        throw new Error(`Linear did not prepare an upload for ${file.filename}`);
+      }
+      const { uploadUrl, assetUrl, headers: uploadHeaders } = payload.uploadFile;
+      const headers = new Headers({ "Content-Type": file.contentType, "Cache-Control": "public, max-age=31536000" });
+      for (const { key, value } of uploadHeaders) headers.set(key, value);
+      const response = await fetch(uploadUrl, { method: "PUT", headers, body: file.data });
+      if (!response.ok) {
+        throw new Error(`Uploading ${file.filename} to Linear storage failed: HTTP ${response.status}`);
+      }
+      const result = await client.createAttachment({
+        issueId: ticketId,
+        title: file.title,
+        url: assetUrl,
+        ...(file.subtitle ? { subtitle: file.subtitle } : {}),
+      });
+      if (!result.success) throw new Error(`Linear did not attach ${file.filename} to ${ticketId}`);
+      const attachmentId = result.attachmentId;
+      if (!attachmentId) throw new Error(`Linear attachment response for ${file.filename} omitted the attachment id`);
+      return { attachmentId, assetUrl };
+    });
   }
 
   async findIssue(id: string): Promise<{ id: string; url: string } | null> {

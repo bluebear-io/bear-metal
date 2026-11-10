@@ -160,7 +160,7 @@ export interface TaskCustomization {
 
 export const AGENT_TOOL_CHOICES = [
   "read", "grep", "find", "ls", "edit", "write", "bash",
-  "commit_changes", "push_for_review",
+  "commit_changes", "push_for_review", "attach_ticket_evidence",
   "github_read", "linear_read", "slack_read", "web_get", "github_dispatch",
 ] as const;
 export type AgentToolChoice = (typeof AGENT_TOOL_CHOICES)[number];

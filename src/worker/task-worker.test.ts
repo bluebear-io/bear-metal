@@ -321,6 +321,7 @@ function makeIntegrations() {
       moveTicketToInProgress: vi.fn(),
       moveTicketToInReview: vi.fn(),
       commentAndHandBack: vi.fn(),
+      attachFileToTicket: vi.fn(),
       getUserEmail: vi.fn().mockResolvedValue(null),
     },
   };

@@ -193,7 +193,7 @@ function makeIntegrations(options: { ticket?: WorkerInputContext["ticket"]; pull
       getInstallationToken: vi.fn(async () => "github-token"), getBotIdentity: vi.fn(async () => ({ login: "bear-metal", id: "bot", numericId: 1, userNumericId: 1 })), getPullRequestContext: vi.fn(async () => options.pullRequest), resolveReviewThread: vi.fn(), replyToReviewThread: vi.fn(), leaveComment: vi.fn(), getDefaultBranch: vi.fn(), createPullRequest: vi.fn(),
     },
     linear: {
-      getTicketContext: vi.fn(async () => options.ticket ?? makeTicketContext()), getTicketAttachments: vi.fn(async () => []), getAccessToken: vi.fn(async () => "linear-token"), moveTicketToInProgress: vi.fn(async () => { state.calls.push("in-progress"); }), moveTicketToInReview: vi.fn(), commentAndHandBack: vi.fn(), getUserEmail: vi.fn(async () => null), addLabelsByName: vi.fn(async (_id: string, _names: readonly string[]) => [] as string[]),
+      getTicketContext: vi.fn(async () => options.ticket ?? makeTicketContext()), getTicketAttachments: vi.fn(async () => []), getAccessToken: vi.fn(async () => "linear-token"), moveTicketToInProgress: vi.fn(async () => { state.calls.push("in-progress"); }), moveTicketToInReview: vi.fn(), commentAndHandBack: vi.fn(), attachFileToTicket: vi.fn(), getUserEmail: vi.fn(async () => null), addLabelsByName: vi.fn(async (_id: string, _names: readonly string[]) => [] as string[]),
     },
     commentStore: options.commentStore,
   };
