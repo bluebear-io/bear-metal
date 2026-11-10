@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   userFn: vi.fn(),
   issueFn: vi.fn(),
   createIssueFn: vi.fn(),
+  issuesFn: vi.fn(),
   usersFn: vi.fn(),
   teamsFn: vi.fn(),
   projectsFn: vi.fn(),
@@ -33,6 +34,9 @@ vi.mock("@linear/sdk", () => {
     }
     issue(id: string) {
       return h.issueFn(this.accessToken, id);
+    }
+    issues(input: Record<string, unknown>) {
+      return h.issuesFn(this.accessToken, input);
     }
     createIssue(input: Record<string, unknown>) {
       return h.createIssueFn(this.accessToken, input);
@@ -110,6 +114,7 @@ beforeEach(() => {
   h.userFn.mockReset();
   h.issueFn.mockReset();
   h.createIssueFn.mockReset();
+  h.issuesFn.mockReset();
   h.usersFn.mockReset();
   h.teamsFn.mockReset();
   h.projectsFn.mockReset();
@@ -145,6 +150,16 @@ describe("LinearIntegration Slack ticket creation", () => {
     const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
     await linear.createSlackCodingTicket({ teamId: "team-1", title: "Title", description: "Description", assigneeId: "user-1" });
     expect(h.createIssueFn).toHaveBeenCalledWith("tok", expect.objectContaining({ assigneeId: "user-1" }));
+  });
+  it("creates a ticket with a caller-chosen ID and finds it by that ID", async () => {
+    h.createIssueFn.mockResolvedValue({ success: true, issue: Promise.resolve({ id: "fixed-id", url: "https://linear.app/issue/DEN-2", identifier: "DEN-2" }) });
+    const linear = new LinearIntegration({ tokenProvider: fakeProvider() });
+    await linear.createSlackCodingTicket({ id: "fixed-id", teamId: "team-1", title: "Title", description: "Description" });
+    expect(h.createIssueFn).toHaveBeenCalledWith("tok", expect.objectContaining({ id: "fixed-id" }));
+    h.issuesFn.mockResolvedValueOnce({ nodes: [{ id: "fixed-id", url: "https://linear.app/issue/DEN-2" }] }).mockResolvedValueOnce({ nodes: [] });
+    await expect(linear.findIssue("fixed-id")).resolves.toEqual({ id: "fixed-id", url: "https://linear.app/issue/DEN-2" });
+    await expect(linear.findIssue("missing")).resolves.toBeNull();
+    expect(h.issuesFn).toHaveBeenCalledWith("tok", { filter: { id: { eq: "fixed-id" } }, first: 1 });
   });
   it("removes delegation while canceling the ticket", async () => {
     const update = vi.fn(async () => ({ success: true }));

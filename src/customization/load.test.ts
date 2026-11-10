@@ -49,6 +49,22 @@ describe("configuration validation", () => {
     const config = valid();
     expect(() => validateBearMetalConfig({ ...config, agentIntegrations: { ...config.agentIntegrations, slack: {} } })).toThrow("config.agentIntegrations.slack.getBotToken");
   });
+  it("validates the optional Slack user authorization hook", () => {
+    const config = valid();
+    const slack = { notificationChannel: "C1", getBotToken: () => "token" };
+    expect(validateBearMetalConfig({ ...config, slack }).slack?.authorizeUser).toBeUndefined();
+    expect(validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: () => true } }).slack?.authorizeUser).toBeDefined();
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: true } })).toThrow("config.slack.authorizeUser");
+  });
+  it("validates the optional Slack reaction trigger", () => {
+    const config = valid();
+    const slack = { notificationChannel: "C1", getBotToken: () => "token" };
+    const trigger = { emoji: "bear_paw_seen", linearTeamId: "team-1" };
+    expect(validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: trigger } }).slack?.reactionTrigger).toEqual(trigger);
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, emoji: ":bear_paw_seen:" } } })).toThrow("without colons");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { emoji: "bear_paw_seen" } } })).toThrow("config.slack.reactionTrigger.linearTeamId");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, linearProjectId: "" } } })).toThrow("config.slack.reactionTrigger.linearProjectId");
+  });
   it("accepts a frozen agent Linear config without mutating it", () => {
     const config = valid();
     config.agentIntegrations!.linear = Object.freeze(config.agentIntegrations!.linear!);

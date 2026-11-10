@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Router, raw } from "express";
 import type { DbClient, SlackThreadKey } from "../db/client.js";
 import type { Logger } from "../shared/logger.js";
+import type { SlackReaction } from "./slack-reaction-intake.js";
 
 interface SlackEventEnvelope {
   type: string;
@@ -17,6 +18,8 @@ interface SlackEventEnvelope {
     thread_ts?: string;
     user?: string;
     bot_id?: string;
+    reaction?: string;
+    item?: { type?: string; channel?: string; ts?: string };
     message?: { ts?: string; thread_ts?: string; user?: string; bot_id?: string; text?: string; subtype?: string };
   };
 }
@@ -36,7 +39,14 @@ export function createSlackEventsRouter(input: {
   workspaceId: string;
   logger: Logger;
   wake: (key: SlackThreadKey) => Promise<void>;
+  authorizeUser?: (userId: string) => Promise<boolean>;
+  reactionTrigger?: { emoji: string; handle: (reaction: SlackReaction) => Promise<void> };
 }): Router {
+  const authorized = async (userId: string, channelId: string): Promise<boolean> => {
+    if (!input.authorizeUser || await input.authorizeUser(userId)) return true;
+    input.logger.warn({ userId, channelId }, "Slack user not authorized; message ignored");
+    return false;
+  };
   if (!input.signingSecret || !input.botUserId || !input.workspaceId) throw new Error("Slack events require signing secret, bot user ID, and workspace ID");
   const router = Router();
   router.post("/events", raw({ type: "application/json", limit: "1mb" }), async (req, res, next) => {
@@ -65,6 +75,21 @@ export function createSlackEventsRouter(input: {
         return;
       }
       const event = payload.event;
+      const trigger = input.reactionTrigger;
+      if (trigger && event?.type === "reaction_added" && event.reaction?.split("::")[0] === trigger.emoji && event.item?.type === "message") {
+        if (!payload.team_id || !event.user || !event.item.channel || !event.item.ts) {
+          throw new Error("Slack reaction event omitted workspace, user, channel, or message timestamp");
+        }
+        if (event.user === input.botUserId || !await authorized(event.user, event.item.channel)) {
+          res.sendStatus(200);
+          return;
+        }
+        const reaction: SlackReaction = { workspaceId: payload.team_id, channelId: event.item.channel, messageTs: event.item.ts, userId: event.user };
+        res.sendStatus(200);
+        // Quiet by design: failures are logged, never posted to Slack. Removing and re-adding the reaction retries.
+        void trigger.handle(reaction).catch((err) => input.logger.error({ err, reaction }, "Slack reaction intake failed"));
+        return;
+      }
       if (!event || (event.type !== "app_mention" && event.type !== "message")) {
         res.sendStatus(200);
         return;
@@ -90,6 +115,10 @@ export function createSlackEventsRouter(input: {
         const key: SlackThreadKey = {
           workspaceId: payload.team_id, channelId: event.channel, threadTs: edited.thread_ts ?? event.thread_ts ?? edited.ts,
         };
+        if (!await input.db.isSlackThreadFollowing(key) || !await authorized(edited.user, event.channel)) {
+          res.sendStatus(200);
+          return;
+        }
         const inserted = await input.db.recordSlackEdit(key, event.ts, edited.ts, edited.user, edited.text);
         res.sendStatus(200);
         if (inserted) void input.wake(key).catch((err) => input.logger.error({ err, key }, "Slack thread wake failed"));
@@ -108,7 +137,11 @@ export function createSlackEventsRouter(input: {
         threadTs: event.thread_ts ?? event.ts,
       };
       const activates = event.type === "app_mention" || (event.type === "message" && event.channel_type === "im");
-      if (!activates && !event.thread_ts && !await input.db.hasSlackThread(key)) {
+      if (!activates && !await input.db.isSlackThreadFollowing(key)) {
+        res.sendStatus(200);
+        return;
+      }
+      if (!await authorized(event.user, event.channel)) {
         res.sendStatus(200);
         return;
       }

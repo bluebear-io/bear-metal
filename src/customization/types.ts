@@ -26,6 +26,8 @@ export interface BearMetalConfig {
     notificationChannel: string;
     getBotToken: SecretGetter;
     getSigningSecret?: SecretGetter;
+    authorizeUser?: (user: Readonly<SlackUser>, workspaceId: string) => boolean | Promise<boolean>;
+    reactionTrigger?: { emoji: string; linearTeamId: string; linearProjectId?: string };
   };
   agentIntegrations?: {
     github?: {
@@ -67,6 +69,14 @@ export interface BearMetalConfig {
     google: { getApiKey: SecretGetter };
   }>;
   customizeTask: (task: Task) => TaskCustomization | Promise<TaskCustomization>;
+}
+
+export interface SlackUser {
+  readonly id: string;
+  readonly teamId: string | null;
+  readonly isBot: boolean;
+  readonly deleted: boolean;
+  readonly guest: boolean;
 }
 
 export type TaskStatusCategory = "backlog" | "unstarted" | "started" | "completed" | "canceled";

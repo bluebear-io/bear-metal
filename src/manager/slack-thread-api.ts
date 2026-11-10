@@ -1,5 +1,6 @@
 import type { SlackReadClient, SlackIntegration } from "../shared/integrations/slack/client.js";
 import type { SlackThreadKey } from "../db/client.js";
+import type { SlackUser } from "../customization/types.js";
 
 export interface SlackThreadMessage {
   ts: string;
@@ -22,6 +23,39 @@ export class SlackThreadApi {
       throw new Error(`Cannot resolve Slack email for ${userId}: ${response.error ?? "missing user email"}`);
     }
     return response.user.profile.email;
+  }
+
+  async getUser(userId: string): Promise<SlackUser> {
+    const response = await this.readClient.call("users.info", { user: userId }) as {
+      ok?: boolean; error?: string;
+      user?: { id?: string; team_id?: string; is_bot?: boolean; deleted?: boolean; is_restricted?: boolean; is_ultra_restricted?: boolean };
+    };
+    if (!response.ok || response.user?.id !== userId) {
+      throw new Error(`Cannot resolve Slack user ${userId}: ${response.error ?? "missing user"}`);
+    }
+    const user = response.user;
+    return {
+      id: userId,
+      teamId: user.team_id ?? null,
+      isBot: user.is_bot === true,
+      deleted: user.deleted === true,
+      guest: user.is_restricted === true || user.is_ultra_restricted === true,
+    };
+  }
+
+  /** The thread containing `messageTs`, whether it is the root or a reply. */
+  async readMessageThread(workspaceId: string, channelId: string, messageTs: string): Promise<{ threadTs: string; messages: SlackThreadMessage[]; permalink: string }> {
+    const lookup = await this.readClient.call("conversations.replies", { channel: channelId, ts: messageTs, limit: 1, inclusive: true }) as {
+      ok?: boolean; error?: string; messages?: Array<{ ts?: string; thread_ts?: string }>;
+    };
+    const first = lookup.ok ? lookup.messages?.[0] : undefined;
+    if (!first?.ts) throw new Error(`Slack conversations.replies failed for ${channelId}/${messageTs}: ${lookup.error ?? "missing message"}`);
+    const threadTs = first.thread_ts ?? messageTs;
+    const messages = await this.readThread({ workspaceId, channelId, threadTs }, threadTs);
+    if (!messages.some((message) => message.ts === messageTs)) throw new Error(`Slack message ${channelId}/${messageTs} not found in its thread`);
+    const link = await this.readClient.call("chat.getPermalink", { channel: channelId, message_ts: messageTs }) as { ok?: boolean; error?: string; permalink?: string };
+    if (!link.ok || !link.permalink) throw new Error(`Slack chat.getPermalink failed: ${link.error ?? "missing permalink"}`);
+    return { threadTs, messages, permalink: link.permalink };
   }
 
   async readThread(key: SlackThreadKey, oldest: string, latest?: string): Promise<SlackThreadMessage[]> {

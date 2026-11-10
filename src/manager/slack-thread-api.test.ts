@@ -9,6 +9,36 @@ describe("Slack thread reader", () => {
     await expect(api.getUserEmail("U1")).resolves.toBe("user@example.com");
     expect(call).toHaveBeenCalledWith("users.info", { user: "U1" });
   });
+  it("maps Slack guests and other-workspace users for authorization", async () => {
+    const users: Record<string, object> = {
+      UMEMBER: { id: "UMEMBER", team_id: "T1" },
+      UGUEST: { id: "UGUEST", team_id: "T1", is_restricted: true },
+      USINGLE: { id: "USINGLE", team_id: "T1", is_ultra_restricted: true },
+      UEXT: { id: "UEXT", team_id: "T2" },
+      UGONE: { id: "UGONE", team_id: "T1", deleted: true, is_bot: true },
+    };
+    const call = vi.fn(async (_method: string, args: { user: string }) => ({ ok: true, user: users[args.user] }));
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(api.getUser("UMEMBER")).resolves.toEqual({ id: "UMEMBER", teamId: "T1", isBot: false, deleted: false, guest: false });
+    await expect(api.getUser("UGUEST")).resolves.toMatchObject({ guest: true });
+    await expect(api.getUser("USINGLE")).resolves.toMatchObject({ guest: true });
+    await expect(api.getUser("UEXT")).resolves.toMatchObject({ teamId: "T2" });
+    await expect(api.getUser("UGONE")).resolves.toMatchObject({ isBot: true, deleted: true });
+    const failing = new SlackThreadApi({ call: async () => ({ ok: false, error: "user_not_found" }) } as unknown as SlackReadClient, {} as SlackIntegration);
+    await expect(failing.getUser("UX")).rejects.toThrow("user_not_found");
+  });
+  it("reads the whole thread around a flagged reply with its permalink", async () => {
+    const call = vi.fn(async (method: string, args: Record<string, unknown>) => {
+      if (method === "chat.getPermalink") return { ok: true, permalink: "https://slack.example/p1" };
+      // Given a reply's ts, Slack returns the thread from its parent, so limit 1 yields the parent.
+      if (args.limit === 1) return { ok: true, messages: [{ ts: "100.0", thread_ts: "100.0" }] };
+      return { ok: true, messages: [{ ts: "100.0", user: "U0", text: "root" }, { ts: "100.2", user: "U1", text: "please fix" }] };
+    });
+    const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
+    const result = await api.readMessageThread("T1", "C1", "100.2");
+    expect(result).toEqual({ threadTs: "100.0", permalink: "https://slack.example/p1", messages: [expect.objectContaining({ ts: "100.0" }), expect.objectContaining({ ts: "100.2", text: "please fix" })] });
+    expect(call).toHaveBeenCalledWith("conversations.replies", expect.objectContaining({ channel: "C1", ts: "100.0", oldest: "100.0" }));
+  });
   it("bounds an edited message read to its original timestamp", async () => {
     const call = vi.fn(async () => ({ ok: true, messages: [{ ts: "100.1", user: "U1", text: "edited" }] }));
     const api = new SlackThreadApi({ call } as unknown as SlackReadClient, {} as SlackIntegration);
