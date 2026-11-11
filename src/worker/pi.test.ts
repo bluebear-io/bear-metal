@@ -104,6 +104,20 @@ describe("runPiWorker", () => {
     expect(piMock.sessionAbort).toHaveBeenCalledOnce();
   });
 
+  it("checkpoints invalid provider usage instead of throwing from the event listener", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    piMock.sessionAbort.mockClear();
+    piMock.runTools.mockImplementationOnce(async () => {
+      piMock.tokens = { input: NaN, output: 5, cacheWrite: 0, cacheRead: 0, total: NaN };
+      for (const listener of piMock.listeners) listener({ type: "turn_end" });
+    });
+    const result = await runPiWorker({ context: makeContext(), github: makeGithub(), linear: makeLinear(), gitEnv: {},
+      maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "test", llmModelArn: null });
+    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit" });
+    expect(result.checkpoint).toBeDefined();
+    expect(piMock.sessionAbort).toHaveBeenCalledOnce();
+  });
+
   it("does not stop for cache reads alone", async () => {
     const { runPiWorker } = await import("./pi.js");
     piMock.sessionAbort.mockClear();

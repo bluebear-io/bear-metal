@@ -101,7 +101,7 @@ export async function saveCheckpoint(input: {
 }
 
 export async function restoreCheckpoint(workspaceRoot: string, checkpoint: Checkpoint, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
-  if (!checkpointPushed(checkpoint)) throw new Error(`Checkpoint not fully pushed; recover retained workspace ${checkpoint.workspaceRoot}`);
+  if (!checkpoint.repositories.length) throw new Error(`Checkpoint has no repositories; recover retained workspace ${checkpoint.workspaceRoot}`);
   const root = await realpath(workspaceRoot);
   for (const repo of [...checkpoint.repositories].reverse()) {
     signal?.throwIfAborted();

@@ -65,7 +65,7 @@ const MAX_TOOL_CALL_RESULT_CHARS = 8_000;
 export async function runPiWorker(input: {
   signal?: AbortSignal;
   assertLease?: () => Promise<void>;
-  onInterrupted?: () => void;
+  onInterrupted?: (reason: "token_limit" | "timeout") => void;
   context: WorkerInputContext;
   github: WorkerGitHub;
   linear: WorkerLinear;
@@ -530,10 +530,16 @@ export async function runPiWorker(input: {
   let shutdownError: string | null = null;
   const checkTokenLimit = () => {
     if (limitHitReason) return;
-    const tokens = freshTokens(session.getSessionStats().tokens);
+    let tokens: number;
+    try {
+      tokens = freshTokens(session.getSessionStats().tokens);
+    } catch (error) {
+      logger.error({ error, ticketId: input.context.ticketId }, "invalid provider usage; stopping and checkpointing because the token budget cannot be verified");
+      tokens = input.maxWorkerTokens;
+    }
     if (tokens < input.maxWorkerTokens) return;
     stopReason = "token_limit";
-    input.onInterrupted?.();
+    input.onInterrupted?.("token_limit");
     limitHitReason = `fresh token limit of ${input.maxWorkerTokens.toLocaleString()} reached (${tokens.toLocaleString()} used)`;
     session.setAutoCompactionEnabled(false);
     session.setAutoRetryEnabled(false);
@@ -563,7 +569,7 @@ export async function runPiWorker(input: {
   const timeoutHandle = setTimeout(() => {
     if (!limitHitReason) {
       stopReason = "timeout";
-      input.onInterrupted?.();
+      input.onInterrupted?.("timeout");
       limitHitReason = `time limit of ${input.maxWorkerTimeMs / 60_000} minutes reached`;
       logger.warn({ ticketId: input.context.ticketId }, "time limit reached; aborting session");
       sessionStop.abort(new Error(limitHitReason));

@@ -7,7 +7,7 @@ import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
-import { checkpointPushed, restoreCheckpoint, type Checkpoint } from "./checkpoint.js";
+import { checkpointPushed, saveCheckpoint, restoreCheckpoint, type Checkpoint } from "./checkpoint.js";
 import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
@@ -57,9 +57,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const { state, ticketId, integrations, prs } = input;
   validateDispatchInputs(state, ticketId, prs);
   input.signal?.throwIfAborted();
-  if (input.checkpoint && !checkpointPushed(input.checkpoint)) {
-    throw new Error(`Checkpoint not fully pushed; recover retained workspace ${input.checkpoint.workspaceRoot}`);
-  }
 
   const { github, linear, commentStore } = integrations;
   const workspaceDir = resolve(workspaceForTicket(ticketId), randomUUID());
@@ -172,13 +169,27 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   };
 
     if (input.checkpoint) {
-      await restoreCheckpoint(cloneScript.agentWorkdir, input.checkpoint, gitEnv, input.signal);
+      try {
+        await input.assertLease?.();
+        if (!checkpointPushed(input.checkpoint) && (input.checkpoint.repositories.length === 0 || input.checkpoint.repositories.some((repo) => !repo.commit))) {
+          input.checkpoint = await saveCheckpoint({ workspaceRoot: input.checkpoint.workspaceRoot,
+            branch: ticket.issue.branchName, ticketId, gitEnv, signal: input.signal, assertLease: input.assertLease });
+          context.checkpoint = input.checkpoint;
+        }
+        await restoreCheckpoint(cloneScript.agentWorkdir, input.checkpoint, gitEnv, input.signal);
+      } catch (error) {
+        input.signal?.throwIfAborted();
+        await input.assertLease?.();
+        logger.error({ error, ticketId }, "checkpoint recovery failed; returning for operator recovery");
+        return { status: "pending", prs, outcome: "interrupted", stopReason: "token_limit",
+          checkpoint: { ...input.checkpoint, error: String(error) } };
+      }
     }
     const result = await runPiWorker({
       context, github, linear, commentStore, gitEnv, agentToolGateway: input.agentToolGateway,
       signal: input.signal,
       assertLease: input.assertLease,
-      onInterrupted: () => { retainWorkspace = true; },
+      onInterrupted: (reason) => { retainWorkspace ||= reason === "token_limit"; },
       runId: input.runId,
       systemPrompt: customization.additionalSystemPrompt,
       pullRequestLabels: customization.pullRequestLabels,
@@ -194,7 +205,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       llmModelArn: llm.modelArn,
       prs,
     });
-    retainWorkspace ||= result.outcome === "interrupted";
+    retainWorkspace ||= result.outcome === "interrupted" && result.stopReason === "token_limit";
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {

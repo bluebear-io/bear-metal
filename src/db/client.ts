@@ -2425,7 +2425,7 @@ export class SqlDbClient implements DbClient {
   async getLatestCheckpoint(ticketId: string): Promise<Checkpoint | undefined> {
     const rows = await this.query<{ result_json: string }>(
       `SELECT result_json FROM tasks WHERE ticket_id = ? AND task_type = 'coding' AND result_json IS NOT NULL
-         AND (stop_reason = 'token_limit' OR result_status = 'done')
+         AND (stop_reason = 'token_limit' OR result_status = 'done' OR (stop_reason = 'completed' AND result_status = 'pending'))
        ORDER BY created_at DESC, id DESC LIMIT 1`, [ticketId]);
     if (!rows[0]) return undefined;
     validateStoredDispatchResult(rows[0].result_json);
@@ -2438,7 +2438,7 @@ export class SqlDbClient implements DbClient {
     const now = this.clock.nowIso();
     const update = await this.run(
       `UPDATE tasks SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?,
-         run_status = ?, stop_reason = ?, ended_at = ?, usage_json = ?,
+         run_status = ?, stop_reason = ?, ended_at = ?, usage_json = COALESCE(?, usage_json),
          prompt_tokens = COALESCE(?, prompt_tokens), completion_tokens = COALESCE(?, completion_tokens),
          model_name = COALESCE(?, model_name), provider = COALESCE(?, provider)
        WHERE id = ? AND worker_id IS NOT NULL AND result_status IS NULL${workerId === undefined ? "" : " AND worker_id = ?"}${reclaimCount === undefined ? "" : " AND reclaim_count = ?"}`,

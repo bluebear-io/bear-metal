@@ -9,7 +9,7 @@ const state = vi.hoisted(() => ({ calls: [] as string[], piInputs: [] as any[], 
 vi.mock("./pi.js", () => ({
   runPiWorker: async (input: any) => {
     state.calls.push("pi"); state.piInputs.push(input);
-    if (state.interrupt) input.onInterrupted();
+    if (state.interrupt) input.onInterrupted("token_limit");
     if (state.throwPi) throw new Error("pi failed");
     return { status: "pending", prs: [] };
   },

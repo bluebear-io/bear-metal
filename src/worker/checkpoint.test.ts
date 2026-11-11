@@ -98,7 +98,12 @@ describe("checkpoint integration", () => {
     expect(checkpoint.repositories[0]?.pushed).toBe(false);
     expect(checkpoint.repositories[0]?.error).toContain("checkpoint-rejected");
     expect(await readFile(join(workspace, "new.txt"), "utf8")).toBe("unsaved work");
-    await expect(restoreCheckpoint(workspace, checkpoint, env)).rejects.toThrow("not fully pushed");
+    await expect(restoreCheckpoint(workspace, checkpoint, env)).rejects.toThrow();
+    await rm(hook);
+    const repaired = await saveCheckpoint({ workspaceRoot: workspace, branch: "feature/den-4880", ticketId: "DEN-4880", gitEnv: env });
+    expect(repaired.repositories[0]?.pushed).toBe(true);
+    // Stored push failure is stale after manual repair; restoration verifies the actual remote.
+    await restoreCheckpoint(workspace, failure === "push" ? checkpoint : repaired, env);
   });
 
   it("does not commit or push when lease verification fails", async () => {
