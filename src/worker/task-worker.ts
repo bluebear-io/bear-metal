@@ -1,3 +1,4 @@
+import { redactSensitiveText } from "../agent-tools/transport.js";
 import { randomUUID } from "node:crypto";
 import PQueue from "p-queue";
 import type { BearMetalConfig } from "../customization/types.js";
@@ -84,7 +85,7 @@ export class TaskWorker {
       void this.queue.add(() => this.runTask(task)).catch(async (err) => {
         if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
         this.logger.error({ err, taskId: task.id, ticketId: task.ticketId, workerId: this.workerId }, "SQL task failed");
-        if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount }, err instanceof WorkerSessionError ? err.usage : undefined)) return;
+        if (!await this.db.upsertRunCrashed(task.id, redactSensitiveText(String(err)), { workerId: this.workerId, reclaimCount: task.reclaimCount }, err instanceof WorkerSessionError ? err.usage : undefined)) return;
         void this.db.recordEvent({
           id: randomUUID(),
           ticketId: task.ticketId,
@@ -92,7 +93,7 @@ export class TaskWorker {
           workerId: this.workerId,
           source: "worker",
           type: "worker_crashed",
-          summary: String(err),
+          summary: redactSensitiveText(String(err)),
           payloadJson: null,
           createdAt: new Date().toISOString(),
         });
@@ -221,7 +222,7 @@ export class TaskWorker {
     } catch (err) {
       if (controller.signal.aborted) return;
       if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
-      if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount }, err instanceof WorkerSessionError ? err.usage : undefined)) return;
+      if (!await this.db.upsertRunCrashed(task.id, redactSensitiveText(String(err)), { workerId: this.workerId, reclaimCount: task.reclaimCount }, err instanceof WorkerSessionError ? err.usage : undefined)) return;
       void this.db.recordEvent({
         id: randomUUID(),
         ticketId: task.ticketId,
@@ -229,7 +230,7 @@ export class TaskWorker {
         workerId: this.workerId,
         source: "worker",
         type: "worker_crashed",
-        summary: String(err),
+        summary: redactSensitiveText(String(err)),
         payloadJson: null,
         createdAt: new Date().toISOString(),
       });

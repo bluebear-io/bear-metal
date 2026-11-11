@@ -148,7 +148,7 @@ describe("TaskWorker", () => {
     const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => {
-      throw new Error("boom");
+      throw new Error("fetch failed: ssh://user:crash-password@host/repo");
     });
     const worker = new TaskWorker({
       logger,
@@ -175,6 +175,8 @@ describe("TaskWorker", () => {
     expect(db.upsertRunCrashedCalls.length).toBeGreaterThanOrEqual(1);
     expect(db.upsertRunCrashedCalls[0]).toEqual(expect.objectContaining({ taskId: "task-1" }));
     expect(db.upsertRunCrashedCalls[0]).toEqual(expect.objectContaining({ lease: { workerId: "worker-1", reclaimCount: 0 } }));
+    expect(JSON.stringify(db.upsertRunCrashedCalls)).not.toContain("crash-password");
+    expect(JSON.stringify(db.upsertRunCrashedCalls)).toContain("REDACTED");
     expect(db.markCrashedCalls).toEqual([{ taskId: "task-1", workerId: "worker-1", maxReclaims: 5 }]);
   });
 

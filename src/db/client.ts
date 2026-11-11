@@ -1,4 +1,4 @@
-import type { DispatchResult as WorkerDispatchResult } from "../worker/types.js";
+import type { DispatchResult } from "../worker/types.js";
 import type { Checkpoint } from "../worker/checkpoint.js";
 import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -317,7 +317,7 @@ export interface PullRequestRef {
   number: number;
 }
 
-export type DispatchResult = WorkerDispatchResult;
+export type { DispatchResult } from "../worker/types.js";
 
 export interface DispatchTaskInput {
   state: DispatchState;
@@ -874,17 +874,7 @@ function validateStoredDispatchResult(value: string): void {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("result_json must be an object");
   const result = parsed as Record<string, unknown>;
   if (result.status !== "pending" && result.status !== "done") throw new Error(`Invalid dispatch result status: ${String(result.status)}`);
-  if (result.outcome !== undefined && result.outcome !== "interrupted") throw new Error("Invalid dispatch outcome");
-  if (result.outcome === "interrupted") {
-    if (result.status !== "pending" || (result.stopReason !== "token_limit" && result.stopReason !== "timeout")) {
-      throw new Error("Interrupted dispatch must be pending with an explicit limit reason");
-    }
-    if (result.stopReason === "token_limit" && (!result.checkpoint || typeof result.checkpoint !== "object")) {
-      throw new Error("Token-limit interruption is missing its checkpoint result");
-    }
-  } else if (result.stopReason !== undefined || result.checkpoint !== undefined) {
-    throw new Error("Only interrupted dispatches can have a stop reason or checkpoint");
-  }
+  validateDispatchInterruption(result);
   if (result.notifyOnComplete !== undefined && typeof result.notifyOnComplete !== "boolean") throw new Error("notifyOnComplete must be a boolean");
   if (result.prs !== undefined) {
     if (!Array.isArray(result.prs)) throw new Error("prs must be an array");
@@ -893,6 +883,28 @@ function validateStoredDispatchResult(value: string): void {
     if (result.pr !== null) validateStoredPullRequestRef(result.pr);
   } else {
     throw new Error("result_json is missing prs");
+  }
+}
+
+function validateDispatchInterruption(result: Record<string, unknown>): void {
+  if (result.outcome === undefined) {
+    if (result.stopReason !== undefined || result.checkpoint !== undefined) {
+      throw new Error("Only interrupted dispatches can have a stop reason or checkpoint");
+    }
+    return;
+  }
+  if (result.outcome !== "interrupted") throw new Error("Invalid dispatch outcome");
+  if (result.status !== "pending") throw new Error("Interrupted dispatch must be pending with an explicit limit reason");
+  switch (result.stopReason) {
+    case "timeout":
+      return;
+    case "token_limit":
+      if (!result.checkpoint || typeof result.checkpoint !== "object" || Array.isArray(result.checkpoint)) {
+        throw new Error("Token-limit interruption is missing its checkpoint result");
+      }
+      return;
+    default:
+      throw new Error("Interrupted dispatch must be pending with an explicit limit reason");
   }
 }
 
@@ -2423,6 +2435,7 @@ export class SqlDbClient implements DbClient {
   }
 
   async getLatestCheckpoint(ticketId: string): Promise<Checkpoint | undefined> {
+    // Completed handbacks supersede checkpoints; crashed retries do not.
     const rows = await this.query<{ result_json: string }>(
       `SELECT result_json FROM tasks WHERE ticket_id = ? AND task_type = 'coding' AND result_json IS NOT NULL
          AND (stop_reason = 'token_limit' OR result_status = 'done' OR (stop_reason = 'completed' AND result_status = 'pending'))

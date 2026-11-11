@@ -41,13 +41,13 @@ export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerProm
   const taskInstructions = isNew
     ? [
         "1. Read the codebase to understand context.",
-        "2. Create a branch following the repository's branching strategy.",
+        context.checkpoint ? "2. Continue on the restored checkpoint branches; preserve saved changes." : "2. Create a branch following the repository's branching strategy.",
         "3. Implement the changes following the repository standards.",
         "4. Commit your changes via git, then call `push_for_review` to push and open the PR.",
         "   OR call `respond_to_ticket_reporter` if you are blocked.",
       ]
     : [
-        "1. Check out the existing PR branch.",
+        context.checkpoint ? "1. Continue on the restored checkpoint branches; preserve saved changes." : "1. Check out the existing PR branch.",
         "2. If any PR context has `mergeable: false`, the head branch conflicts with its base. Rebase / merge the base branch into the PR head, resolve the conflicts.",
         "3. For each failed check: read the code and logs, find the root cause, fix it.",
         "4. For each open comment: read the context and respond using the tools above.",
@@ -84,11 +84,7 @@ export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerProm
     ...finishToolsSection,
     "",
     `## Steps for this ${isNew ? "new task" : "PR iteration"}`,
-    ...(context.checkpoint ? [
-      "Resume the restored checkpoint branches in the task context. The prior run was interrupted at its token limit; it did not complete the task.",
-      "Inspect the saved changes and ticket discussion to determine remaining work. Preserve completed preparation; do not create fresh branches or reset to the default branch.",
-      "Finish implementation and validation, then use the finish tools above.",
-    ] : taskInstructions),
+    ...taskInstructions,
     "",
     "## Rules",
     "- Use the Linear and GitHub context below as the sole source of truth.",

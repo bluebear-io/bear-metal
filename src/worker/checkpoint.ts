@@ -67,7 +67,10 @@ export async function saveCheckpoint(input: {
       const run = (args: string[]) => git(root, args, input.gitEnv, input.signal);
       try {
         const remote = (await run(["remote", "get-url", "origin"])).stdout.trim();
-        if (URL.canParse(remote) && (new URL(remote).password || (/^https?:/.test(remote) && new URL(remote).username))) throw new Error("Origin URL contains credentials; refusing to persist it");
+        const url = URL.canParse(remote) ? new URL(remote) : null;
+        if (url?.password || (url?.protocol.match(/^https?:$/) && url.username)) {
+          throw new Error("Origin URL contains credentials; refusing to persist it");
+        }
         saved.remote = remote;
         const current = (await run(["branch", "--show-current"])).stdout.trim();
         if (!current) throw new Error("Cannot checkpoint a detached HEAD");
@@ -123,7 +126,10 @@ export async function restoreCheckpoint(workspaceRoot: string, checkpoint: Check
 }
 
 export function checkpointMessage(checkpoint: Checkpoint): string {
-  const lines = checkpoint.repositories.map((repo) => `${repo.path}: branch ${repo.branch ?? "unknown"}, commit ${repo.commit ?? "not committed"}, ${repo.pushed ? "pushed" : `NOT pushed: ${repo.error ?? "not attempted"}`}`);
+  const lines = checkpoint.repositories.map((repo) => {
+    const outcome = repo.pushed ? "pushed" : `NOT pushed: ${repo.error ?? "not attempted"}`;
+    return `${repo.path}: branch ${repo.branch ?? "unknown"}, commit ${repo.commit ?? "not committed"}, ${outcome}`;
+  });
   if (checkpoint.error) lines.push(checkpoint.error);
   if (!checkpointPushed(checkpoint)) lines.push(`Workspace retained at ${checkpoint.workspaceRoot}. Recover it before re-delegating.`);
   return lines.join("\n");
