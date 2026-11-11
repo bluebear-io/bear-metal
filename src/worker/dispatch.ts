@@ -1,3 +1,4 @@
+import { redactSensitiveText } from "../agent-tools/transport.js";
 import { mkdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -172,17 +173,19 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       try {
         await input.assertLease?.();
         if (!checkpointPushed(input.checkpoint) && (input.checkpoint.repositories.length === 0 || input.checkpoint.repositories.some((repo) => !repo.commit))) {
-          input.checkpoint = await saveCheckpoint({ workspaceRoot: input.checkpoint.workspaceRoot,
+          const previousMessage = input.checkpoint.lastAssistantMessage;
+          const resaved = await saveCheckpoint({ workspaceRoot: input.checkpoint.workspaceRoot,
             branch: ticket.issue.branchName, ticketId, gitEnv, signal: input.signal, assertLease: input.assertLease });
+          input.checkpoint = { ...resaved, lastAssistantMessage: previousMessage };
           context.checkpoint = input.checkpoint;
         }
         await restoreCheckpoint(cloneScript.agentWorkdir, input.checkpoint, gitEnv, input.signal);
       } catch (error) {
         input.signal?.throwIfAborted();
         await input.assertLease?.();
-        logger.error({ error, ticketId }, "checkpoint recovery failed; returning for operator recovery");
+        logger.error({ error: redactSensitiveText(String(error)), ticketId }, "checkpoint recovery failed; returning for operator recovery");
         return { status: "pending", prs, outcome: "interrupted", stopReason: "token_limit",
-          checkpoint: { ...input.checkpoint, error: String(error) } };
+          checkpoint: { ...input.checkpoint, error: redactSensitiveText(String(error)) } };
       }
     }
     const result = await runPiWorker({

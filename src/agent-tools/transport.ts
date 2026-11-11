@@ -269,19 +269,21 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
 
 function redactMessage(message: string): string {
   return redactCredentialText(message
+    .replace(/(https?:\/\/)[^\s/<>]+@/gi, "$1[REDACTED]@")
     .replace(/(authorization\s*[:=]\s*)(?:bearer\s+)?\S+/gi, "$1[REDACTED]")
     .replace(/(token|secret|signature|private.?key)(\s*[:=]\s*)\S+/gi, "$1$2[REDACTED]"));
 }
 
 function redactString(value: string): string {
+  const sanitized = redactMessage(value);
   try {
-    const url = new URL(value);
+    const url = new URL(sanitized);
     for (const key of url.searchParams.keys()) {
       if (SENSITIVE_QUERY_KEYS.test(key)) url.searchParams.set(key, "[REDACTED]");
     }
     return url.toString();
   } catch {
-    return redactMessage(value);
+    return sanitized;
   }
 }
 
