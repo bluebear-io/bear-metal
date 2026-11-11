@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   cyclesFn: vi.fn(),
   workflowStatesFn: vi.fn(),
   rawRequestFn: vi.fn(),
+  fileUploadFn: vi.fn(),
+  createAttachmentFn: vi.fn(),
   AuthErr: class AuthenticationLinearError extends Error {},
 }));
 
@@ -49,6 +51,12 @@ vi.mock("@linear/sdk", () => {
     cycles(input: Record<string, unknown>) { return h.cyclesFn(this.accessToken, input); }
     workflowStates(input: Record<string, unknown>) {
       return h.workflowStatesFn(this.accessToken, input);
+    }
+    fileUpload(contentType: string, filename: string, size: number) {
+      return h.fileUploadFn(this.accessToken, contentType, filename, size);
+    }
+    createAttachment(input: Record<string, unknown>) {
+      return h.createAttachmentFn(this.accessToken, input);
     }
   }
   return { LinearClient, AuthenticationLinearError: h.AuthErr };
@@ -121,6 +129,9 @@ beforeEach(() => {
   h.cyclesFn.mockReset();
   h.workflowStatesFn.mockReset();
   h.rawRequestFn.mockReset();
+  h.fileUploadFn.mockReset();
+  h.createAttachmentFn.mockReset();
+  vi.unstubAllGlobals();
 });
 
 describe("LinearIntegration Slack ticket creation", () => {
@@ -439,5 +450,64 @@ describe("LinearIntegration token handling", () => {
     await expect(linear.getUserEmail("u1")).rejects.toThrow("boom");
     expect(provider.invalidate).not.toHaveBeenCalled();
     expect(h.userFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("LinearIntegration.attachFileToTicket", () => {
+  const file = { filename: "dashboard.png", contentType: "image/png", data: new Uint8Array([1, 2, 3]), title: "Dashboard", subtitle: "Bear Metal evidence" };
+  const uploadFile = {
+    uploadUrl: "https://storage.example/signed?expires=1",
+    assetUrl: "https://uploads.linear.app/org/asset/dashboard.png",
+    headers: [{ key: "x-goog-meta-owner", value: "org" }],
+  };
+
+  it("uploads with Linear's signed headers, attaches the permanent asset URL, and never returns the signed URL", async () => {
+    h.fileUploadFn.mockResolvedValue({ success: true, uploadFile });
+    h.createAttachmentFn.mockResolvedValue({ success: true, attachmentId: "attachment-1" });
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await new LinearIntegration({ tokenProvider: fakeProvider() }).attachFileToTicket("DEN-1", file);
+
+    expect(result).toEqual({ attachmentId: "attachment-1", assetUrl: uploadFile.assetUrl });
+    expect(h.fileUploadFn).toHaveBeenCalledWith("tok", "image/png", "dashboard.png", 3);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(uploadFile.uploadUrl);
+    expect(init.method).toBe("PUT");
+    expect(init.body).toBe(file.data);
+    const headers = init.headers as Headers;
+    expect(headers.get("content-type")).toBe("image/png");
+    expect(headers.get("x-goog-meta-owner")).toBe("org");
+    expect(h.createAttachmentFn).toHaveBeenCalledWith("tok", {
+      issueId: "DEN-1", title: "Dashboard", url: uploadFile.assetUrl, subtitle: "Bear Metal evidence",
+    });
+  });
+
+  it("fails without attaching when the storage upload is rejected", async () => {
+    h.fileUploadFn.mockResolvedValue({ success: true, uploadFile });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 403 })));
+
+    await expect(new LinearIntegration({ tokenProvider: fakeProvider() }).attachFileToTicket("DEN-1", file))
+      .rejects.toThrow("Uploading dashboard.png to Linear storage failed: HTTP 403");
+    expect(h.createAttachmentFn).not.toHaveBeenCalled();
+  });
+
+  it("fails when Linear does not prepare an upload", async () => {
+    h.fileUploadFn.mockResolvedValue({ success: false, uploadFile: null });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new LinearIntegration({ tokenProvider: fakeProvider() }).attachFileToTicket("DEN-1", file))
+      .rejects.toThrow("Linear did not prepare an upload for dashboard.png");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails when Linear does not create the attachment", async () => {
+    h.fileUploadFn.mockResolvedValue({ success: true, uploadFile });
+    h.createAttachmentFn.mockResolvedValue({ success: false });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 200 })));
+
+    await expect(new LinearIntegration({ tokenProvider: fakeProvider() }).attachFileToTicket("DEN-1", file))
+      .rejects.toThrow("Linear did not attach dashboard.png to DEN-1");
   });
 });

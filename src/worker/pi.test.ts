@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -525,7 +525,61 @@ describe("runPiWorker", () => {
       gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
     });
 
-    expect(names).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls", "respond_to_ticket_reporter", "push_for_review"]);
+    expect(names).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls", "respond_to_ticket_reporter", "push_for_review", "attach_ticket_evidence"]);
+  });
+
+  it("attaches a workspace screenshot to the task's Linear ticket and returns durable references", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
+    await mkdir(join(workspaceRoot, "evidence"), { recursive: true });
+    await writeFile(join(workspaceRoot, "evidence", "dashboard.png"), png);
+    const linear = makeLinear();
+    linear.attachFileToTicket.mockResolvedValue({ attachmentId: "attachment-1", assetUrl: "https://uploads.linear.app/org/asset" });
+    let output = "";
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      const result = await executeTool(customTools, "attach_ticket_evidence", { path: "evidence/dashboard.png", title: "Dashboard loaded" }) as { content: Array<{ text: string }> };
+      output = result.content[0]!.text;
+      await executeTool(customTools, "respond_to_ticket_reporter", { text: "Done." });
+    });
+
+    await runPiWorker({
+      context: makeContext({ state: "new" }),
+      github: makeGithub(),
+      linear,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
+    });
+
+    expect(linear.attachFileToTicket).toHaveBeenCalledWith("ABC-1", {
+      filename: "dashboard.png",
+      contentType: "image/png",
+      data: png,
+      title: "Dashboard loaded",
+      subtitle: "Bear Metal evidence: dashboard.png",
+    });
+    expect(output).toContain("Ticket: https://linear.app/your-workspace/issue/ABC-1/build-thing");
+    expect(output).toContain("Linear attachment id: attachment-1");
+    expect(output).toContain("https://uploads.linear.app/org/asset");
+  });
+
+  it("refuses to attach a file that is not a supported screenshot or video", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    await writeFile(join(workspaceRoot, "notes.txt"), "hello");
+    const linear = makeLinear();
+    let error: unknown;
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      error = await executeTool(customTools, "attach_ticket_evidence", { path: "notes.txt", title: "Notes" }).catch((err: unknown) => err);
+      await executeTool(customTools, "respond_to_ticket_reporter", { text: "Done." });
+    });
+
+    await runPiWorker({
+      context: makeContext({ state: "new" }),
+      github: makeGithub(),
+      linear,
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
+    });
+
+    expect(error).toMatchObject({ message: expect.stringContaining('Unsupported evidence file type ".txt"') });
+    expect(linear.attachFileToTicket).not.toHaveBeenCalled();
   });
 
   it("gives a role only its tools plus the hand-back tool, and tells it so", async () => {
@@ -1096,6 +1150,7 @@ function makeLinear() {
     moveTicketToInProgress: vi.fn(),
     moveTicketToInReview: vi.fn(),
     commentAndHandBack: vi.fn(),
+    attachFileToTicket: vi.fn(),
     getUserEmail: vi.fn().mockResolvedValue(null),
   };
 }

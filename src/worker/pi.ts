@@ -23,6 +23,7 @@ import type {
   WorkerLinear,
 } from "./types.js";
 import { resolveSessionModel } from "./model.js";
+import { EVIDENCE_TYPES, MAX_EVIDENCE_BYTES, readEvidenceFile } from "./evidence.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
 import { untilStopped } from "./until-stopped.js";
@@ -353,6 +354,42 @@ export async function runPiWorker(input: {
     },
   });
 
+  const attachTicketEvidence = defineTool({
+    name: "attach_ticket_evidence",
+    label: "Attach ticket evidence",
+    description: `Upload a screenshot or video from the workspace to this task's Linear ticket as an attachment. Allowed: ${Object.keys(EVIDENCE_TYPES).join(", ")}, up to ${MAX_EVIDENCE_BYTES / 1024 / 1024} MiB. Returns durable references for the PR body.`,
+    parameters: Type.Object({
+      path: Type.String({ description: "Workspace path of the screenshot or video." }),
+      title: Type.String({ description: "Attachment title describing what the file shows." }),
+    }),
+    execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
+      const title = params.title.trim();
+      if (!title) throw new Error("attach_ticket_evidence needs a non-empty title");
+      const file = await readEvidenceFile(workspaceRoot, params.path);
+      input.signal?.throwIfAborted();
+      const issue = input.context.ticket.issue;
+      logger.debug({ ticketId: input.context.ticketId, contentType: file.contentType, size: file.data.byteLength }, "pi tool: attach_ticket_evidence");
+      const uploaded = await input.linear.attachFileToTicket(input.context.ticketId, {
+        ...file,
+        title,
+        subtitle: `Bear Metal evidence: ${file.filename}`,
+      });
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `Attached ${file.filename} (${file.contentType}, ${file.data.byteLength} bytes) to ${issue.identifier} as "${title}".`,
+            `Ticket: ${issue.url}`,
+            `Linear attachment id: ${uploaded.attachmentId}`,
+            `Asset URL (permanent, opens for signed-in Linear members): ${uploaded.assetUrl}`,
+          ].join("\n"),
+        }],
+        details: { ...uploaded, ticketUrl: issue.url },
+      };
+    },
+  });
+
   const modelRuntime = await ModelRuntime.create();
   if (input.llmApiKey) {
     await modelRuntime.setRuntimeApiKey(input.llmProvider, input.llmApiKey);
@@ -363,8 +400,8 @@ export async function runPiWorker(input: {
 
   const isNew = input.context.state === "new";
   const stateCustomTools = isNew
-    ? [respondToTicketReporter, pushForReview]
-    : [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
+    ? [respondToTicketReporter, pushForReview, attachTicketEvidence]
+    : [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview, attachTicketEvidence];
   const agentTools = input.agentToolGateway
     ? createAgentGatewayTools(input.agentToolGateway, {
         taskId: input.context.ticketId,

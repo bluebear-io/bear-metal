@@ -5,6 +5,7 @@ import type {
   PullRequestNotification,
   ReviewThread,
   BotIdentity,
+  UploadedTicketFile,
 } from "../shared/index.js";
 import type { AgentToolAuditRecord } from "../agent-tools/types.js";
 
@@ -88,6 +89,10 @@ export interface WorkerLinear {
   moveTicketToInProgress(ticketId: string): Promise<void>;
   moveTicketToInReview(ticketId: string): Promise<void>;
   commentAndHandBack(ticketId: string, body: string): Promise<void>;
+  attachFileToTicket(
+    ticketId: string,
+    file: { filename: string; contentType: string; data: Uint8Array; title: string; subtitle?: string },
+  ): Promise<UploadedTicketFile>;
   getUserEmail(userId: string): Promise<string | null>;
   addLabelsByName?(ticketId: string, names: readonly string[]): Promise<string[]>;
 }

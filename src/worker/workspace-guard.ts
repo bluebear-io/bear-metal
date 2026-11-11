@@ -114,6 +114,11 @@ export function assertRepoRootInWorkspace(workspaceRoot: string, repoRoot: strin
   return assertPathInWorkspace(workspaceRoot, repoRoot);
 }
 
+/** Resolves symlinks first, so a link inside the workspace cannot expose a file outside it. */
+export function resolveExistingPathInWorkspace(workspaceRoot: string, candidate: string): Promise<string> {
+  return assertExistingPathInWorkspace(workspaceRoot, candidate);
+}
+
 export function validateWorkspaceBashCommand(command: string, workspaceRoot: string): void {
   if (command.includes("\0")) {
     throw new Error("Bash command contains a NUL byte");

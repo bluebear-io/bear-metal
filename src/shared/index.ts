@@ -13,6 +13,7 @@ export type { Integration, CommentCapable } from "./integrations/base.js";
 export {
   LinearIntegration,
   type LinearIntegrationOptions,
+  type UploadedTicketFile,
 } from "./integrations/linear/client.js";
 export {
   AppTokenProvider,
