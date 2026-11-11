@@ -13,7 +13,7 @@ describe("worker lease fencing", () => {
     try {
       const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
       await db.acquireNext("worker");
-      const usage = { inputTokens: 10, cacheReadTokens: 1000, cacheWriteTokens: 5, freshTokens: 20, promptTokens: 1015, completionTokens: 5, modelName: "test", provider: "test" };
+      const usage = { cacheReadTokens: 1000, cacheWriteTokens: 5, promptTokens: 1015, completionTokens: 5, modelName: "test", provider: "test" };
       await db.upsertRunCrashed(task.id, "model aborted", { workerId: "worker", reclaimCount: 0 }, usage);
       expect((await db.getAgentRunDetail(task.id))?.run).toMatchObject({ status: "crashed", error: "model aborted", usage, promptTokens: 1015 });
       await db.complete(task.id, { status: "pending", prs: [] }, "worker", 0);
@@ -29,9 +29,8 @@ describe("worker lease fencing", () => {
       await db.upsertRunStarted(task.id, "worker", new Date().toISOString());
       const checkpoint = { workspaceRoot: "/retained", error: null, repositories: [{ path: ".", remote: "remote", branch: "feature/abc-1", commit: "a".repeat(40), pushed: true, error: null }] };
       const result = { status: "pending" as const, prs: [], outcome: "interrupted" as const, stopReason: "token_limit" as const, checkpoint,
-        usage: { promptTokens: 105, completionTokens: 2, inputTokens: 3, cacheReadTokens: 100, cacheWriteTokens: 2, freshTokens: 7, modelName: "test", provider: "test" } };
+        usage: { promptTokens: 105, completionTokens: 2, cacheReadTokens: 100, cacheWriteTokens: 2, modelName: "test", provider: "test" } };
       await db.complete(task.id, result, "worker", 0);
-      await db.upsertRunSucceeded(task.id, null);
       const detail = await db.getAgentRunDetail(task.id);
       expect(detail?.run).toMatchObject({ status: "interrupted", stopReason: "token_limit", promptTokens: 105, completionTokens: 2 });
       expect(JSON.parse(detail!.run.resultJson!)).toEqual(result);
@@ -169,7 +168,6 @@ async function addRun(db: SqlDbClient, ticketIssueId: string, ticketId: string, 
   const task = await db.enqueue(input);
   await db.upsertRunStarted(task.id, workerId, new Date("2026-06-09T10:00:00.000Z").toISOString());
   if (stopReason === "completed") {
-    await db.upsertRunSucceeded(task.id, null);
     await db.complete(task.id, { status: "done", prs: [] });
   } else if (stopReason === "crash") {
     await db.upsertRunCrashed(task.id, "worker crashed", { workerId, reclaimCount: 0 });

@@ -127,9 +127,8 @@ describe("runPiWorker extensions", () => {
     }];
     const result = await runWorker(workspaceRoot, root, { maxWorkerTokens: 20, gitEnv });
     expect(harness.modelCalls).toBe(1);
-    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit", usage: { freshTokens: 20, cacheReadTokens: 5000 } });
+    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit", usage: { cacheReadTokens: 5000 } });
     expect(result.checkpoint?.repositories).toMatchObject([{ pushed: true, error: null }]);
-    expect(result.checkpoint?.lastAssistantMessage).toContain("implementation still needs review");
     await expect(stat(join(workspaceRoot, "after-limit.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await git("show", "HEAD:shutdown.txt")).stdout).toBe("quiesced");
     expect(await readFile(join(workspaceRoot, "prepared.txt"), "utf8")).toBe("finished preparation");

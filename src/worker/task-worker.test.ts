@@ -17,7 +17,7 @@ describe("TaskWorker", () => {
     const input = { state: "new" as const, ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" as const };
     const task = await db.enqueue(input);
     const checkpoint = { workspaceRoot: "/retained", repositories: [], error: "commit rejected" };
-    const usage = { promptTokens: 1020, completionTokens: 5, inputTokens: 10, cacheReadTokens: 1000, cacheWriteTokens: 10, freshTokens: 25, modelName: "test", provider: "test" };
+    const usage = { promptTokens: 1020, completionTokens: 5, cacheReadTokens: 1000, cacheWriteTokens: 10, modelName: "test", provider: "test" };
     const integrations = makeIntegrations();
     integrations.linear.commentAndHandBack = vi.fn(async () => {
       const persisted = await db.getAgentRunDetail(task.id);
@@ -63,7 +63,6 @@ describe("TaskWorker", () => {
       await worker.stop();
     }
     expect(db.completed).toEqual([]);
-    expect(db.upsertRunSucceededCalls).toEqual([]);
     expect(db.upsertRunCrashedCalls).toEqual([]);
     expect(db.markCrashedCalls).toEqual([]);
   });
@@ -140,7 +139,6 @@ describe("TaskWorker", () => {
     expect(db.upsertRunStartedCalls).toEqual([
       expect.objectContaining({ taskId: "task-1", workerId: "worker-1" }),
     ]);
-    expect(db.upsertRunSucceededCalls).toEqual([]);
     expect(db.upsertRunCrashedCalls).toHaveLength(0);
   });
 
@@ -250,7 +248,6 @@ class FakeDb {
   completed: Array<{ taskId: string; result: DispatchResult }> = [];
   heartbeats: Array<{ taskId: string; workerId: string }> = [];
   upsertRunStartedCalls: object[] = [];
-  upsertRunSucceededCalls: Array<{ taskId: string; usage: object | null }> = [];
   upsertRunCrashedCalls: object[] = [];
   markCrashedCalls: Array<{ taskId: string; workerId: string; maxReclaims: number }> = [];
   private task: TaskRecord | null;
@@ -306,9 +303,6 @@ class FakeDb {
     this.upsertRunStartedCalls.push({ taskId, workerId, workerStartedAt });
   }
 
-  async upsertRunSucceeded(taskId: string, usage?: object | null): Promise<void> {
-    this.upsertRunSucceededCalls.push({ taskId, usage: usage ?? null });
-  }
 
   async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number }): Promise<boolean> {
     this.upsertRunCrashedCalls.push({ taskId, error, lease });

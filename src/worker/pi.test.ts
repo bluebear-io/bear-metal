@@ -9,6 +9,7 @@ type TestTool = { name: string; parameters?: unknown; execute: (id: string, para
 
 const piMock = vi.hoisted(() => ({
   listeners: [] as Array<(event: { type: string }) => void>,
+  agentListeners: [] as Array<(event: { type: string }) => void>,
   tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   sessionAbort: vi.fn(async () => {}),
   runtimeDispose: vi.fn(async () => {}),
@@ -73,7 +74,7 @@ vi.mock("./pi-runtime.js", async (importOriginal) => ({
   createPiSessionRuntime: async (input: { customTools: TestTool[] }) => ({
     session: {
       subscribe: (listener: (event: { type: string }) => void) => { piMock.listeners.push(listener); return () => {}; },
-      agent: { streamFunction: vi.fn(), subscribe: () => () => {} },
+      agent: { streamFunction: vi.fn(), subscribe: (listener: (event: { type: string }) => void) => { piMock.agentListeners.push(listener); return () => {}; } },
       model: { name: "test", provider: "anthropic" },
       getSessionStats: () => ({ tokens: piMock.tokens }),
       setAutoCompactionEnabled: vi.fn(), setAutoRetryEnabled: vi.fn(), clearQueue: vi.fn(),
@@ -92,14 +93,14 @@ describe("runPiWorker", () => {
     const { runPiWorker } = await import("./pi.js");
     piMock.runTools.mockImplementationOnce(async () => {
       piMock.tokens = { input: 10, output: 5, cacheWrite: 5, cacheRead: 1000, total: 1020 };
-      for (const listener of piMock.listeners) listener({ type: "turn_end", message: { role: "user" } } as { type: string });
-      for (const listener of piMock.listeners) listener({ type: "turn_end", message: { role: "user" } } as { type: string });
+      for (const listener of piMock.agentListeners) listener({ type: "message_end", message: { role: "assistant" } } as { type: string });
+      for (const listener of piMock.agentListeners) listener({ type: "message_end", message: { role: "assistant" } } as { type: string });
       throw new Error("session aborted");
     });
     const result = await runPiWorker({ context: makeContext(), github: makeGithub(), linear: makeLinear(), gitEnv: {},
       maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "test", llmModelArn: null });
     expect(result).toMatchObject({ status: "pending", outcome: "interrupted", stopReason: "token_limit",
-      usage: { promptTokens: 1015, completionTokens: 5, inputTokens: 10, cacheReadTokens: 1000, cacheWriteTokens: 5, freshTokens: 20 } });
+      usage: { promptTokens: 1015, completionTokens: 5, cacheReadTokens: 1000, cacheWriteTokens: 5 } });
     expect(result.checkpoint?.error).toContain("No Git repositories");
     expect(piMock.sessionAbort).toHaveBeenCalledOnce();
   });
@@ -109,7 +110,7 @@ describe("runPiWorker", () => {
     piMock.sessionAbort.mockClear();
     piMock.runTools.mockImplementationOnce(async () => {
       piMock.tokens = { input: NaN, output: 5, cacheWrite: 0, cacheRead: 0, total: NaN };
-      for (const listener of piMock.listeners) listener({ type: "turn_end" });
+      for (const listener of piMock.agentListeners) listener({ type: "message_end", message: { role: "assistant" } } as { type: string });
     });
     const result = await runPiWorker({ context: makeContext(), github: makeGithub(), linear: makeLinear(), gitEnv: {},
       maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "test", llmModelArn: null });

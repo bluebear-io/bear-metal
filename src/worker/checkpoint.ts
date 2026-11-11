@@ -14,7 +14,6 @@ export interface RepositoryCheckpoint {
 
 export interface Checkpoint {
   workspaceRoot: string;
-  lastAssistantMessage?: string;
   repositories: RepositoryCheckpoint[];
   error: string | null;
 }
@@ -51,11 +50,8 @@ export async function saveCheckpoint(input: {
   signal?: AbortSignal;
   assertLease?: () => Promise<void>;
 }): Promise<Checkpoint> {
-  const checkLease = async () => {
-    input.signal?.throwIfAborted();
-    await input.assertLease?.();
-    input.signal?.throwIfAborted();
-  };
+  // assertLease checks the abort signal itself.
+  const checkLease = async () => input.assertLease ? input.assertLease() : input.signal?.throwIfAborted();
   await checkLease();
   const checkpoint: Checkpoint = { workspaceRoot: input.workspaceRoot, repositories: [], error: null };
   try {
@@ -77,12 +73,9 @@ export async function saveCheckpoint(input: {
         saved.branch = current === "main" || current === "master" ? input.branch : current;
         if (!saved.branch || saved.branch === "main" || saved.branch === "master") throw new Error("Checkpoint requires a task branch");
         await run(["check-ref-format", "--branch", saved.branch]);
-        await checkLease();
         if (current !== saved.branch) await run(["switch", "-c", saved.branch]);
         if ((await run(["status", "--porcelain"])).stdout.trim()) {
-          await checkLease();
           await run(["add", "-A"]);
-          await checkLease();
           // Git hooks and signing remain enabled; failed safeguards retain the workspace.
           await run(["commit", "-m", `chore(checkpoint): [${input.ticketId}] save unfinished work at token limit`]);
         }

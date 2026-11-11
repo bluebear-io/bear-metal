@@ -69,25 +69,31 @@ describe("dispatch customization boundary", () => {
     return { retained, remote, env, git, built, config };
   }
 
-  it.each(["commit", "push"])("recovers a failed %s checkpoint through dispatch", async (failure) => {
+  it("recovers a failed-push checkpoint after the branch is pushed manually", async () => {
     const f = await recoveryFixture();
-    const hook = failure === "commit" ? join(f.retained, ".git/hooks/pre-commit") : join(f.remote, "hooks/pre-receive");
+    const hook = join(f.remote, "hooks/pre-receive");
     await writeFile(hook, "#!/bin/sh\nexit 1\n"); await chmod(hook, 0o755);
     const checkpoint = await saveCheckpoint({ workspaceRoot: f.retained, branch: "branch", ticketId: "ABC-1", gitEnv: f.env });
-    checkpoint.lastAssistantMessage = "Continue with validation";
     await rm(hook);
-    if (failure === "push") {
-      await f.git(f.retained, "push", "origin", "branch");
-      // Remote verification must not try to save the retained workspace again.
-      await writeFile(join(f.retained, "later.txt"), "must remain uncommitted");
-    }
+    await f.git(f.retained, "push", "origin", "branch");
+    await writeFile(join(f.retained, "later.txt"), "must remain uncommitted");
     const assertLease = vi.fn(async () => {});
     await dispatch(f.config, { checkpoint, assertLease });
     expect(state.piInputs).toHaveLength(1);
-    expect(state.piInputs[0].context.checkpoint.lastAssistantMessage).toBe("Continue with validation");
     expect(assertLease).toHaveBeenCalled();
-    expect(await readFile(join(f.retained, "work.txt"), "utf8")).toBe("unfinished");
-    if (failure === "push") expect((await f.git(f.retained, "status", "--porcelain")).stdout).toContain("later.txt");
+    expect((await f.git(f.retained, "status", "--porcelain")).stdout).toContain("later.txt");
+  });
+
+  it("hands back a failed-commit checkpoint without retrying the commit", async () => {
+    const f = await recoveryFixture();
+    const hook = join(f.retained, ".git/hooks/pre-commit");
+    await writeFile(hook, "#!/bin/sh\nexit 1\n"); await chmod(hook, 0o755);
+    const checkpoint = await saveCheckpoint({ workspaceRoot: f.retained, branch: "branch", ticketId: "ABC-1", gitEnv: f.env });
+    await rm(hook);
+    const result = await dispatch(f.config, { checkpoint, assertLease: async () => {} });
+    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit" });
+    expect(state.piInputs).toHaveLength(0);
+    expect((await f.git(f.retained, "status", "--porcelain")).stdout).toContain("work.txt");
   });
 
   it("hands back recovery failure with a redacted error and removes only the fresh workspace", async () => {

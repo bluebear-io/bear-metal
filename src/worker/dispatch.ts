@@ -8,7 +8,7 @@ import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
-import { checkpointPushed, saveCheckpoint, restoreCheckpoint, type Checkpoint } from "./checkpoint.js";
+import { restoreCheckpoint, type Checkpoint } from "./checkpoint.js";
 import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
@@ -172,13 +172,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     if (input.checkpoint) {
       try {
         await input.assertLease?.();
-        if (!checkpointPushed(input.checkpoint) && (input.checkpoint.repositories.length === 0 || input.checkpoint.repositories.some((repo) => !repo.commit))) {
-          const previousMessage = input.checkpoint.lastAssistantMessage;
-          const resaved = await saveCheckpoint({ workspaceRoot: input.checkpoint.workspaceRoot,
-            branch: ticket.issue.branchName, ticketId, gitEnv, signal: input.signal, assertLease: input.assertLease });
-          input.checkpoint = { ...resaved, lastAssistantMessage: previousMessage };
-          context.checkpoint = input.checkpoint;
-        }
         await restoreCheckpoint(cloneScript.agentWorkdir, input.checkpoint, gitEnv, input.signal);
       } catch (error) {
         input.signal?.throwIfAborted();
@@ -208,7 +201,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       llmModelArn: llm.modelArn,
       prs,
     });
-    retainWorkspace ||= result.outcome === "interrupted" && result.stopReason === "token_limit";
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {

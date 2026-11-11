@@ -650,10 +650,8 @@ export interface TicketInput {
 
 
 export interface RunUsage {
-  inputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
-  freshTokens?: number;
   promptTokens: number;
   completionTokens: number;
   modelName: string;
@@ -755,7 +753,6 @@ export interface DbClient {
   listDeliveredPrNotifications(taskId: string): Promise<Set<string>>;
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
-  upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
   upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }, usage?: RunUsage | null): Promise<boolean>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
@@ -871,6 +868,10 @@ function validateStoredDispatchResult(value: string): void {
   } catch (err) {
     throw new Error(`result_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
+  validateDispatchResult(parsed);
+}
+
+function validateDispatchResult(parsed: unknown): void {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("result_json must be an object");
   const result = parsed as Record<string, unknown>;
   if (result.status !== "pending" && result.status !== "done") throw new Error(`Invalid dispatch result status: ${String(result.status)}`);
@@ -886,25 +887,11 @@ function validateStoredDispatchResult(value: string): void {
   }
 }
 
-function validateDispatchInterruption(result: Record<string, unknown>): void {
-  if (result.outcome === undefined) {
-    if (result.stopReason !== undefined || result.checkpoint !== undefined) {
-      throw new Error("Only interrupted dispatches can have a stop reason or checkpoint");
-    }
-    return;
-  }
-  if (result.outcome !== "interrupted") throw new Error("Invalid dispatch outcome");
-  if (result.status !== "pending") throw new Error("Interrupted dispatch must be pending with an explicit limit reason");
-  switch (result.stopReason) {
-    case "timeout":
-      return;
-    case "token_limit":
-      if (!result.checkpoint || typeof result.checkpoint !== "object" || Array.isArray(result.checkpoint)) {
-        throw new Error("Token-limit interruption is missing its checkpoint result");
-      }
-      return;
-    default:
-      throw new Error("Interrupted dispatch must be pending with an explicit limit reason");
+function validateDispatchInterruption(r: Record<string, unknown>): void {
+  const hasCheckpoint = typeof r.checkpoint === "object" && r.checkpoint !== null && !Array.isArray(r.checkpoint);
+  if (r.outcome === undefined ? r.stopReason !== undefined || r.checkpoint !== undefined
+    : r.outcome !== "interrupted" || r.status !== "pending" || !(r.stopReason === "timeout" || (r.stopReason === "token_limit" && hasCheckpoint))) {
+    throw new Error("Invalid interrupted dispatch: outcome, pending status, stop reason, and token-limit checkpoint must agree");
   }
 }
 
@@ -2225,20 +2212,6 @@ export class SqlDbClient implements DbClient {
     );
   }
 
-  async upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void> {
-    const now = this.clock.nowIso();
-    await this.run(
-      `UPDATE tasks SET run_status = 'succeeded', stop_reason = 'completed',
-         ended_at = ?, prompt_tokens = COALESCE(?, prompt_tokens),
-         completion_tokens = COALESCE(?, completion_tokens),
-         model_name = COALESCE(?, model_name),
-         provider = COALESCE(?, provider),
-         updated_at = ?
-       WHERE id = ? AND COALESCE(run_status, '') != 'interrupted'`,
-      [now, usage?.promptTokens ?? null, usage?.completionTokens ?? null,
-       usage?.modelName ?? null, usage?.provider ?? null, now, taskId],
-    );
-  }
 
   async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }, usage?: RunUsage | null): Promise<boolean> {
     const now = this.clock.nowIso();
@@ -2447,7 +2420,7 @@ export class SqlDbClient implements DbClient {
   }
 
   async complete(taskId: string, result: DispatchResult, workerId?: string, reclaimCount?: number): Promise<void> {
-    validateStoredDispatchResult(JSON.stringify(result));
+    validateDispatchResult(result);
     const now = this.clock.nowIso();
     const update = await this.run(
       `UPDATE tasks SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?,

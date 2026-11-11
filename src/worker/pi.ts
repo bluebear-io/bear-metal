@@ -28,7 +28,7 @@ import { buildWorkerPrompt } from "./prompts.js";
 import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
 import { WorkerSessionError } from "./session-error.js";
 import { freshTokens } from "./token-budget.js";
-import { saveCheckpoint } from "./checkpoint.js";
+import { saveCheckpoint, type Checkpoint } from "./checkpoint.js";
 import { untilStopped } from "./until-stopped.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 import type {
@@ -447,7 +447,6 @@ export async function runPiWorker(input: {
   const toolCalls: DispatchToolCall[] = [];
   const pendingArgs = new Map<string, { args: unknown; thought: string | null; startedAt: number }>();
   let currentThought: string | null = null;
-  let lastAssistantMessage: string | undefined;
   let toolCallSequence = 0;
   const runtime = await createPiSessionRuntime({
     cwd: workspaceRoot,
@@ -513,7 +512,6 @@ export async function runPiWorker(input: {
           .map((b) => (b as { text: string }).text)
           .join("\n").trim();
         currentThought = text || null;
-        if (text) lastAssistantMessage = redactTraceText(text);
         if (text) logger.debug({ text }, "pi assistant output");
       }
     } else if (event.type === "agent_end") {
@@ -550,9 +548,6 @@ export async function runPiWorker(input: {
       logger.error({ error, ticketId: input.context.ticketId }, "token-limit abort failed");
     });
   };
-  const unsubscribeLimits = session.subscribe((event) => {
-    if (event.type === "turn_end") checkTokenLimit();
-  });
   // Agent listeners run after the session has persisted message_end usage, before tool execution.
   const unsubscribeUsage = session.agent.subscribe((event) => {
     if (event.type === "message_end" && event.message.role === "assistant") checkTokenLimit();
@@ -621,10 +616,8 @@ export async function runPiWorker(input: {
       const model = session.model;
       if (model && (stats.tokens.input + stats.tokens.output + stats.tokens.cacheRead + stats.tokens.cacheWrite > 0)) {
         usage = {
-          inputTokens: stats.tokens.input,
           cacheReadTokens: stats.tokens.cacheRead,
           cacheWriteTokens: stats.tokens.cacheWrite,
-          freshTokens: freshTokens(stats.tokens),
           promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
           completionTokens: stats.tokens.output,
           modelName: model.name,
@@ -637,7 +630,6 @@ export async function runPiWorker(input: {
     }
     input.signal?.removeEventListener("abort", onLeaseAbort);
     clearTimeout(timeoutHandle);
-    unsubscribeLimits();
     unsubscribeUsage();
     if (limitAbort) await limitAbort;
     const transcriptPath = resolve(workspaceDir, "session.jsonl");
@@ -659,7 +651,7 @@ export async function runPiWorker(input: {
   input.signal?.throwIfAborted();
   if (sessionFailure && !stopReason) throw new WorkerSessionError(sessionFailure.error, usage);
   if (stopReason) {
-    let checkpoint: import("./checkpoint.js").Checkpoint | undefined;
+    let checkpoint: Checkpoint | undefined;
     if (stopReason === "token_limit") {
       if (shutdownError) {
         checkpoint = { workspaceRoot, repositories: [], error: `Session shutdown failed: ${shutdownError}` };
@@ -678,7 +670,6 @@ export async function runPiWorker(input: {
         }
       }
     }
-    if (checkpoint && lastAssistantMessage) checkpoint.lastAssistantMessage = lastAssistantMessage;
     return { status: "pending", prs: mergePrs(input.context.prs, collectedPrs), outcome: "interrupted", stopReason,
       checkpoint, ...(usage ? { usage } : {}), toolCalls };
   }

@@ -11,7 +11,7 @@ describe("agent run API", () => {
     try {
       const task = await db.enqueue({ state: "new", ticketId: "DEN-1", ticketIssueId: "lin-1", prs: [], trigger: "new" });
       await db.acquireNext("worker");
-      const usage = { promptTokens: 1003, completionTokens: 2, inputTokens: 1, cacheReadTokens: 1000, cacheWriteTokens: 2, freshTokens: 5, modelName: "test", provider: "test" };
+      const usage = { promptTokens: 1003, completionTokens: 2, cacheReadTokens: 1000, cacheWriteTokens: 2, modelName: "test", provider: "test" };
       await db.complete(task.id, { status: "pending", prs: [], outcome: "interrupted", stopReason: "token_limit", usage,
         checkpoint: { workspaceRoot: "/retained", repositories: [], error: "push failed" } }, "worker", 0);
       const app = createApp(db, 5, { getTicketAssignees: async () => new Map() } as unknown as LinearSource);
