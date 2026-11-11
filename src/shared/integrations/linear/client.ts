@@ -17,7 +17,7 @@ interface GetTicketResponse {
     url: string;
     branchName: string;
     priority: number;
-    assignee: { id: string } | null;
+    assignee: { id: string; email: string | null } | null;
     delegate: { id: string } | null;
     createdAt: string;
     updatedAt: string;
@@ -99,7 +99,7 @@ const GET_TICKET_QUERY = `
       url
       branchName
       priority
-      assignee { id }
+      assignee { id email }
       delegate { id }
       createdAt
       updatedAt

@@ -554,15 +554,15 @@ async function refreshTrackedTickets(
         continue;
       }
 
-      // Checked before any write, so a failed hand-back leaves the slot as it was and the next poll
-      // reaches the same decision and retries it.
+      // The slot is released before the hand-back: if the hand-back fails, the ticket is still
+      // delegated and untracked, so admission refuses it again on the next poll.
       if (decision.dispatch && slot.latestTask.resultStatus !== null) {
         const owner = await checkOwner(ticket, linear);
         if (owner !== "owned") {
-          await handBackWithoutOwner(ticket, owner, linear, logger);
-          await db.setTicketStatus(ticket.id, "waiting_for_human");
           await db.setSlotStatus(slot.ticketId!, "released");
+          await db.setTicketStatus(ticket.id, "waiting_for_human");
           ciDeferralStartedAt.delete(ticket.id);
+          await handBackWithoutOwner(ticket, owner, linear, logger);
           continue;
         }
       }

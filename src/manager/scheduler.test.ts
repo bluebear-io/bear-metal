@@ -350,10 +350,11 @@ describe("Scheduler.tick", () => {
     expect(handler.handled.map((ctx) => ctx.ticket.id)).toEqual(["assigned"]);
   });
 
-  it("refuses a tracked ticket that lost its assignee before re-dispatching it, retrying a failed hand-back", async () => {
+  it("refuses a tracked ticket that lost its assignee before re-dispatching it; admission retries a failed hand-back", async () => {
     const db = await makeDb();
     await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
-    const linear = new FakeLinear([], { A: makeTicket("a", { assignee: null }) });
+    const unassigned = makeTicket("a", { assignee: null });
+    const linear = new FakeLinear([unassigned], { A: unassigned });
     const recordRefusal = linear.commentAndHandBack.bind(linear);
     let failNext = true;
     linear.commentAndHandBack = async (ticketId, body) => {
@@ -373,10 +374,9 @@ describe("Scheduler.tick", () => {
     });
 
     await scheduler.tick();
-    expect(await db.countTracked()).toBe(1);
-    await scheduler.tick();
     await scheduler.stop();
 
+    expect(failNext).toBe(false);
     expect(linear.commentAndHandBackCalls).toEqual([
       { ticketId: "a", body: expect.stringContaining("Bear Metal needs an assignee on this ticket") },
     ]);
