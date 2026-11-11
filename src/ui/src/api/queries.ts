@@ -9,7 +9,6 @@ import {
   fetchEventPayload,
   fetchTicketDetail,
   fetchTicketFilters,
-  fetchTickets,
   fetchToolCallDetail,
   fetchWorkers,
   type SummaryRange,
@@ -17,7 +16,7 @@ import {
 
 export const useAgentRunDetail = (id: string) =>
   useQuery({ queryKey: ["agent-run", id], queryFn: () => fetchAgentRunDetail(id), refetchInterval: 5000 });
-import type { TaskListQuery, TicketListQuery } from "./types.js";
+import type { TaskListQuery } from "./types.js";
 
 export const useTasks = (query: TaskListQuery = {}) => useInfiniteQuery({
   queryKey: ["tasks", query],
@@ -26,21 +25,6 @@ export const useTasks = (query: TaskListQuery = {}) => useInfiniteQuery({
   getNextPageParam: (lastPage) => lastPage.page * lastPage.pageSize < lastPage.total ? lastPage.page + 1 : undefined,
   refetchInterval: 5000,
 });
-
-export const useTickets = (query: TicketListQuery = {}) => {
-  return useInfiniteQuery({
-    queryKey: ["tickets", query],
-    initialPageParam: query.page ?? 1,
-    queryFn: ({ pageParam }) => fetchTickets({ ...query, page: Number(pageParam) }),
-    getNextPageParam: (lastPage) => {
-      const loaded = lastPage.page * lastPage.pageSize;
-      return loaded < lastPage.total ? lastPage.page + 1 : undefined;
-    },
-  });
-};
-
-export const useTicketFilterOptions = () =>
-  useQuery({ queryKey: ["tickets", "filters"], queryFn: () => fetchTicketFilters() });
 
 export const useTaskFilterOptions = () => useQuery({
   queryKey: ["tickets", "filters"],

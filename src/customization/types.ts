@@ -26,6 +26,8 @@ export interface BearMetalConfig {
     notificationChannel: string;
     getBotToken: SecretGetter;
     getSigningSecret?: SecretGetter;
+    authorizeUser?: (user: Readonly<SlackUser>, workspaceId: string) => boolean | Promise<boolean>;
+    reactionTrigger?: { emoji: string; linearTeamId: string; linearProjectId?: string };
   };
   agentIntegrations?: {
     github?: {
@@ -67,6 +69,14 @@ export interface BearMetalConfig {
     google: { getApiKey: SecretGetter };
   }>;
   customizeTask: (task: Task) => TaskCustomization | Promise<TaskCustomization>;
+}
+
+export interface SlackUser {
+  readonly id: string;
+  readonly teamId: string | null;
+  readonly isBot: boolean;
+  readonly deleted: boolean;
+  readonly guest: boolean;
 }
 
 export type TaskStatusCategory = "backlog" | "unstarted" | "started" | "completed" | "canceled";
@@ -141,7 +151,19 @@ export interface TaskCustomization {
   limits?: { maxDurationMs?: number; maxTokens?: number };
   ticketLabels?: readonly string[];
   pullRequestLabels?: readonly string[];
+  /**
+   * The agent tools this task may use; omitted keeps the default set. It only narrows: a tool the
+   * task type does not offer stays unavailable. The tools that end or hand back a task are always kept.
+   */
+  tools?: readonly AgentToolChoice[];
 }
+
+export const AGENT_TOOL_CHOICES = [
+  "read", "grep", "find", "ls", "edit", "write", "bash",
+  "commit_changes", "push_for_review",
+  "github_read", "linear_read", "slack_read", "web_get", "github_dispatch",
+] as const;
+export type AgentToolChoice = (typeof AGENT_TOOL_CHOICES)[number];
 
 export interface ResolvedLlm {
   provider: LlmProvider;

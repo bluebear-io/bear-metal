@@ -1,9 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { narrowTools } from "../customization/tools.js";
+import type { AgentToolChoice } from "../customization/types.js";
 import {
   push,
+  commitAll,
   createLogger,
   getCurrentBranch,
   getRemoteRef,
@@ -33,6 +36,15 @@ import type {
 import { SLACK_READ_OPERATIONS } from "../agent-tools/slack-read.js";
 import { redactCredentials, redactSensitiveText } from "../agent-tools/transport.js";
 import { redactTraceText, traceText } from "./trace.js";
+
+// Tools that end or hand back a task; a role's tool list never removes them, or the task could not finish.
+const HAND_BACK_TOOLS: ReadonlySet<string> = new Set([
+  "respond_to_ticket_reporter",
+  "agree_with_github_message",
+  "disagree_with_github_message",
+  "respond_to_comment_writer",
+  "mark_github_message_completed",
+]);
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -80,6 +92,8 @@ export async function runPiWorker(input: {
   llmModel: string;
   llmModelArn: string | null;
   pullRequestLabels?: readonly string[];
+  /** From `customizeTask`; narrows the agent's tools. Undefined keeps the default set. */
+  allowedTools?: readonly AgentToolChoice[];
 }): Promise<DispatchResult> {
   input.signal?.throwIfAborted();
   const ownerEmail = requireOwnerEmail(input.context.ticket.issue);
@@ -275,6 +289,23 @@ export async function runPiWorker(input: {
     },
   });
 
+  const commitChanges = defineTool({
+    name: "commit_changes",
+    label: "Commit changes",
+    description: "Switch to the task branch (creating it when missing), stage every change in the repository, and commit it.",
+    parameters: Type.Object({
+      repoRoot: Type.String({ description: "Absolute path to the git repository root containing the changes." }),
+      branch: Type.String({ description: "Task branch to commit on, following the repository's branching strategy. Never main or master." }),
+      message: Type.String({ description: "Commit message following the repository's commit convention." }),
+    }),
+    execute: async (_toolCallId, params) => {
+      input.signal?.throwIfAborted();
+      const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
+      const sha = await commitAll(repoRoot, params.branch, params.message, input.gitEnv);
+      return { content: [{ type: "text", text: `Committed ${sha} on ${params.branch}.` }], details: { sha } };
+    },
+  });
+
   const pushForReview = defineTool({
     name: "push_for_review",
     label: "Push for review",
@@ -306,7 +337,6 @@ export async function runPiWorker(input: {
         collectedPrs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
         input.context.prs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
         null;
-      const isNewPr = existingPr === null;
       input.signal?.throwIfAborted();
       const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote, signal: input.signal }));
       input.signal?.throwIfAborted();
@@ -338,29 +368,7 @@ export async function runPiWorker(input: {
   }
   const model = resolveSessionModel(modelRuntime, { provider: input.llmProvider, model: input.llmModel, modelArn: input.llmModelArn });
 
-  const agentsMd = await readAgentsMd(workspaceRoot);
-  const prompt = buildWorkerPrompt(input.context, {
-    repoRoot: workspaceRoot,
-    agentsMd,
-    customSystemPrompt: input.systemPrompt ?? undefined,
-    hasAgentTools: input.agentToolGateway !== undefined,
-  });
-  input.onTraceEvent?.("prompt", { text: redactTraceText(prompt) });
-  const workspaceDir = input.context.cloneScript.workspaceDir;
-  const guardedTools = createWorkspaceGuardedTools(workspaceRoot, input.gitEnv);
-
-  input.onAgentStarted?.({
-    state: input.context.state,
-    ticket: input.context.ticket,
-    pullRequests: input.context.pullRequests,
-    prs: input.prs ?? [],
-    prompt,
-  });
-
   const isNew = input.context.state === "new";
-  const stateTools = isNew
-    ? (["respond_to_ticket_reporter", "push_for_review"] as const)
-    : (["respond_to_ticket_reporter", "agree_with_github_message", "disagree_with_github_message", "respond_to_comment_writer", "mark_github_message_completed", "push_for_review"] as const);
   const stateCustomTools = isNew
     ? [respondToTicketReporter, pushForReview]
     : [respondToTicketReporter, agreeWithGithubMessage, disagreeWithGithubMessage, respondToCommentWriter, markGithubMessageCompleted, pushForReview];
@@ -371,6 +379,33 @@ export async function runPiWorker(input: {
         workspaceRoot,
       }, input.signal)
     : [];
+  const allTools = [
+    ...createWorkspaceGuardedTools(workspaceRoot, input.gitEnv),
+    ...(input.allowedTools?.includes("commit_changes") ? [commitChanges] : []),
+    ...stateCustomTools,
+    ...agentTools,
+  ];
+  const customTools = narrowTools(allTools, input.allowedTools, HAND_BACK_TOOLS);
+  const toolNames = customTools.map((tool) => tool.name);
+
+  const agentsMd = await readAgentsMd(workspaceRoot);
+  const prompt = buildWorkerPrompt(input.context, {
+    repoRoot: workspaceRoot,
+    agentsMd,
+    customSystemPrompt: input.systemPrompt ?? undefined,
+    hasAgentTools: agentTools.some((tool) => toolNames.includes(tool.name)),
+    allowedTools: input.allowedTools === undefined ? undefined : toolNames,
+  });
+  input.onTraceEvent?.("prompt", { text: redactTraceText(prompt) });
+  const workspaceDir = input.context.cloneScript.workspaceDir;
+
+  input.onAgentStarted?.({
+    state: input.context.state,
+    ticket: input.context.ticket,
+    pullRequests: input.context.pullRequests,
+    prs: input.prs ?? [],
+    prompt,
+  });
 
   let usage: DispatchUsage | null = null;
   const toolCalls: DispatchToolCall[] = [];
@@ -381,12 +416,8 @@ export async function runPiWorker(input: {
     cwd: workspaceRoot,
     modelRuntime,
     model,
-    tools: ["read", "bash", "edit", "write", "grep", "find", "ls", ...stateTools, ...agentTools.map((tool) => tool.name)],
-    customTools: [
-      ...guardedTools,
-      ...stateCustomTools,
-      ...agentTools,
-    ],
+    tools: toolNames,
+    customTools,
     ownerEmail,
   });
   const session = runtime.session;
@@ -573,87 +604,6 @@ export async function runPiWorker(input: {
   return toolCalls.length > 0 ? { ...withUsage, toolCalls } : withUsage;
 }
 
-/**
- * Walk the pi session message history and build a flat, ordered list of tool calls. Each
- * assistant `tool_use` block becomes a step; its matching user `tool_result` block (paired by
- * id) supplies the result body and status. Assistant text emitted in the same turn as a
- * tool_use is attached as the step's `thoughtText`.
- *
- * The function is defensive about shape because the upstream message format isn't typed in
- * this file: malformed entries are skipped rather than crashing the worker.
- */
-function extractToolCalls(messages: ReadonlyArray<unknown>): DispatchToolCall[] {
-  // Pass 1: index results by id. SDK uses role:"toolResult"; Anthropic wire format uses role:"user" + tool_result blocks.
-  const resultsById = new Map<string, { text: string; status: "ok" | "error" }>();
-  for (const msg of messages) {
-    if (!isRecord(msg)) continue;
-
-    if (msg.role === "toolResult") {
-      const id = typeof msg.toolCallId === "string" ? msg.toolCallId : null;
-      if (!id) continue;
-      const text = renderResultContent((msg as { content: unknown }).content);
-      const status: "ok" | "error" = msg.isError === true ? "error" : "ok";
-      resultsById.set(id, { text, status });
-      continue;
-    }
-
-    if (msg.role === "user") {
-      for (const block of contentBlocks(msg as { content: unknown })) {
-        if (!isRecord(block) || block.type !== "tool_result") continue;
-        const id = typeof block.tool_use_id === "string" ? block.tool_use_id : null;
-        if (!id) continue;
-        const text = renderResultContent(block.content);
-        const status: "ok" | "error" = block.is_error === true ? "error" : "ok";
-        resultsById.set(id, { text, status });
-      }
-    }
-  }
-
-  // Pass 2: emit steps in order. SDK uses type:"toolCall"+arguments; wire format uses type:"tool_use"+input.
-  const steps: DispatchToolCall[] = [];
-  let sequence = 0;
-  for (const msg of messages) {
-    if (!isRecord(msg) || msg.role !== "assistant") continue;
-    const blocks = contentBlocks(msg as { content: unknown });
-    const thought = blocks
-      .filter((b) => isRecord(b) && b.type === "text" && typeof b.text === "string" && b.text.length > 0)
-      .map((b) => (b as { text: string }).text)
-      .join("\n")
-      .trim() || null;
-    for (const block of blocks) {
-      if (!isRecord(block)) continue;
-      if (block.type !== "toolCall" && block.type !== "tool_use") continue;
-      const id = typeof block.id === "string" && block.id.length > 0
-        ? block.id
-        : `tc_${sequence}`;
-      const toolName = typeof block.name === "string" ? block.name : "unknown";
-      const args = block.arguments !== undefined ? block.arguments : block.input;
-      const argsJson = safeStringify(args);
-      const result = resultsById.get(id) ?? null;
-      const rawResult = result?.text ?? null;
-      const outputSize = rawResult === null ? null : rawResult.length;
-      const truncated = rawResult === null
-        ? null
-        : rawResult.length > MAX_TOOL_CALL_RESULT_CHARS
-          ? `${rawResult.slice(0, MAX_TOOL_CALL_RESULT_CHARS)}… [truncated, ${rawResult.length - MAX_TOOL_CALL_RESULT_CHARS} more chars]`
-          : rawResult;
-      steps.push({
-        id,
-        sequence,
-        toolName,
-        argsJson,
-        resultText: truncated,
-        resultStatus: result === null ? "unknown" : result.status,
-        outputSize,
-        thoughtText: thought,
-        createdAt: Date.now(),
-      });
-      sequence += 1;
-    }
-  }
-  return steps;
-}
-
 /** Render a `tool_result.content` value to a flat string. Accepts either a string or an array of text blocks. */
 function renderResultContent(content: unknown): string {
   if (typeof content === "string") return content;
@@ -675,10 +625,6 @@ function renderResultContent(content: unknown): string {
 
 function contentBlocks(msg: { content: unknown }): unknown[] {
   return Array.isArray(msg.content) ? msg.content : [];
-}
-
-function isMessage(v: unknown): v is { role: string; content: unknown } {
-  return isRecord(v) && typeof v.role === "string";
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

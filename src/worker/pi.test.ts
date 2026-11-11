@@ -23,6 +23,7 @@ const piMock = vi.hoisted(() => ({
 
 const gitMock = vi.hoisted(() => ({
   push: vi.fn(async () => {}),
+  commitAll: vi.fn(async () => "abc123"),
   getCurrentBranch: vi.fn(async () => "feature/abc-1"),
   getRemoteRef: vi.fn(async () => ({ owner: "acme", repo: "widgets" })),
 }));
@@ -41,6 +42,7 @@ vi.mock("../shared/index.js", async (importOriginal) => {
   return {
     ...actual,
     push: gitMock.push,
+    commitAll: gitMock.commitAll,
     getCurrentBranch: gitMock.getCurrentBranch,
     getRemoteRef: gitMock.getRemoteRef,
   };
@@ -506,6 +508,74 @@ describe("runPiWorker", () => {
     expect(registeredNames).not.toContain("agree_with_github_message");
     expect(registeredNames).not.toContain("disagree_with_github_message");
     expect(registeredNames).not.toContain("respond_to_comment_writer");
+  });
+
+  it("keeps today's tools and no commit tool when the task has no tool list", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    let names: string[] = [];
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      names = customTools.map((tool) => tool.name);
+      await executeTool(customTools, "respond_to_ticket_reporter", { text: "Blocked." });
+    });
+
+    await runPiWorker({
+      context: makeContext({ state: "new" }),
+      github: makeGithub(),
+      linear: makeLinear(),
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
+    });
+
+    expect(names).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls", "respond_to_ticket_reporter", "push_for_review"]);
+  });
+
+  it("gives a role only its tools plus the hand-back tool, and tells it so", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    let names: string[] = [];
+    let prompt = "";
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      names = customTools.map((tool) => tool.name);
+      await executeTool(customTools, "respond_to_ticket_reporter", { text: "Findings." });
+    });
+
+    await runPiWorker({
+      context: makeContext({ state: "new" }),
+      github: makeGithub(),
+      linear: makeLinear(),
+      agentToolGateway: { availableTools: () => ["github_read", "linear_read", "web_get", "github_dispatch"], execute: vi.fn() },
+      allowedTools: ["read", "grep", "linear_read"],
+      onAgentStarted: (payload) => { prompt = payload.prompt; },
+      gitEnv: {}, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
+    });
+
+    expect(names).toEqual(["read", "grep", "respond_to_ticket_reporter", "linear_read"]);
+    expect(prompt).toContain("Your role allows only these tools: read, grep, respond_to_ticket_reporter, linear_read.");
+    expect(prompt).toContain("finish by calling `respond_to_ticket_reporter`");
+  });
+
+  it("lets a role without a shell commit through commit_changes and push for review", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    let names: string[] = [];
+    let prompt = "";
+    piMock.runTools.mockImplementationOnce(async (customTools: TestTool[]) => {
+      names = customTools.map((tool) => tool.name);
+      await executeTool(customTools, "commit_changes", { repoRoot: workspaceRoot, branch: "feat/ABC-1/cleanup", message: "chore: clean up" });
+      await executeTool(customTools, "push_for_review", { repoRoot: workspaceRoot, prTitle: "Clean up", prBody: "Body" });
+    });
+
+    const result = await runPiWorker({
+      context: makeContext({ state: "new", prs: [{ owner: "acme", repo: "widgets", number: 7 }] }),
+      github: makeGithub(),
+      linear: makeLinear(),
+      allowedTools: ["read", "edit", "write", "commit_changes", "push_for_review"],
+      onAgentStarted: (payload) => { prompt = payload.prompt; },
+      gitEnv: { GIT_AUTHOR_NAME: "bot" }, maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "claude-opus-4-7", llmModelArn: null,
+    });
+
+    expect(names).not.toContain("bash");
+    expect(names).toEqual(expect.arrayContaining(["commit_changes", "push_for_review"]));
+    expect(gitMock.commitAll).toHaveBeenCalledWith(expect.any(String), "feat/ABC-1/cleanup", "chore: clean up", { GIT_AUTHOR_NAME: "bot" });
+    expect(prompt).toContain("You have no shell");
+    expect(result.status).toBe("done");
   });
 
   it("registers agent gateway tools, delegates calls with run identity, and marks results as untrusted", async () => {

@@ -169,6 +169,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       runId: input.runId,
       systemPrompt: customization.additionalSystemPrompt,
       pullRequestLabels: customization.pullRequestLabels,
+      allowedTools: customization.tools,
       onAgentStarted: input.onAgentStarted,
       onToolCallProgress: input.onToolCallProgress,
       onTraceEvent: input.onTraceEvent,

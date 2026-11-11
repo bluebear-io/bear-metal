@@ -49,6 +49,22 @@ describe("configuration validation", () => {
     const config = valid();
     expect(() => validateBearMetalConfig({ ...config, agentIntegrations: { ...config.agentIntegrations, slack: {} } })).toThrow("config.agentIntegrations.slack.getBotToken");
   });
+  it("validates the optional Slack user authorization hook", () => {
+    const config = valid();
+    const slack = { notificationChannel: "C1", getBotToken: () => "token" };
+    expect(validateBearMetalConfig({ ...config, slack }).slack?.authorizeUser).toBeUndefined();
+    expect(validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: () => true } }).slack?.authorizeUser).toBeDefined();
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: true } })).toThrow("config.slack.authorizeUser");
+  });
+  it("validates the optional Slack reaction trigger", () => {
+    const config = valid();
+    const slack = { notificationChannel: "C1", getBotToken: () => "token" };
+    const trigger = { emoji: "bear_paw_seen", linearTeamId: "team-1" };
+    expect(validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: trigger } }).slack?.reactionTrigger).toEqual(trigger);
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, emoji: ":bear_paw_seen:" } } })).toThrow("without colons");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { emoji: "bear_paw_seen" } } })).toThrow("config.slack.reactionTrigger.linearTeamId");
+    expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, reactionTrigger: { ...trigger, linearProjectId: "" } } })).toThrow("config.slack.reactionTrigger.linearProjectId");
+  });
   it("accepts a frozen agent Linear config without mutating it", () => {
     const config = valid();
     config.agentIntegrations!.linear = Object.freeze(config.agentIntegrations!.linear!);
@@ -88,6 +104,21 @@ describe("configuration validation", () => {
   });
   it("requires an explicit supported customization shape", () => {
     expect(() => validateTaskCustomization({ llm: { provider: "anthropic", model: "model" }, buildWorkspace() {}, limits: { maxTokens: 0 } })).toThrow("maxTokens");
+  });
+  it("accepts only known agent tool names", () => {
+    const customization = (tools: unknown) => ({ llm: { provider: "anthropic", model: "model" }, buildWorkspace() {}, tools });
+    expect(validateTaskCustomization(customization(["read", "commit_changes", "push_for_review"])).tools).toEqual(["read", "commit_changes", "push_for_review"]);
+    expect(validateTaskCustomization(customization([])).tools).toEqual([]);
+    expect(() => validateTaskCustomization(customization(["read", "rm_rf"]))).toThrow("customizeTask result.tools: unknown tool rm_rf");
+    expect(() => validateTaskCustomization(customization("read"))).toThrow("customizeTask result.tools must be an array");
+    for (const tool of ["edit", "write", "commit_changes"]) {
+      expect(() => validateTaskCustomization(customization(["read", tool]))).toThrow(`customizeTask result.tools: ${tool} needs push_for_review, or the workspace is deleted with the changes`);
+    }
+    for (const tool of ["edit", "write"]) {
+      expect(() => validateTaskCustomization(customization(["read", tool, "push_for_review"]))).toThrow(`customizeTask result.tools: ${tool} needs bash or commit_changes to commit the changes`);
+      expect(validateTaskCustomization(customization(["read", tool, "bash", "push_for_review"])).tools).toContain(tool);
+      expect(validateTaskCustomization(customization(["read", tool, "commit_changes", "push_for_review"])).tools).toContain(tool);
+    }
   });
   it("accepts any Bedrock ARN as modelArn and rejects any other use of it", () => {
     const customization = (llm: Record<string, unknown>) => ({ llm, buildWorkspace() {} });
