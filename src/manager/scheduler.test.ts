@@ -239,6 +239,30 @@ class FakeSlack {
 }
 
 describe("Scheduler.tick stale-task recovery", () => {
+  it("waits for removal and re-delegation after interruption even with actionable PR feedback", async () => {
+    const db = await makeDb();
+    const ticket = makeTicket("a");
+    const task = await db.enqueue({ state: "iteration", ticketId: ticket.identifier, prs: [prRef()], trigger: "new", ticketIssueId: ticket.id });
+    await db.acquireNext("worker");
+    await db.complete(task.id, { status: "pending", prs: [prRef()], outcome: "interrupted", stopReason: "token_limit",
+      checkpoint: { workspaceRoot: "/retained", error: "push rejected", repositories: [] } });
+    await db.setTicketStatus(ticket.id, "waiting_for_human");
+    const delegated: Ticket[] = [];
+    const handler = new RecordingHandler(db);
+    const github = new FakeGitHub({ status: status(openPr(), true, true) });
+    const scheduler = buildScheduler({ db, linear: new FakeLinear(delegated, { [ticket.id]: ticket }), github, handler, concurrency: 1 });
+    await scheduler.tick();
+    expect(handler.handled).toHaveLength(0);
+    ticket.delegate = null;
+    await scheduler.tick();
+    expect(handler.handled).toHaveLength(0);
+    ticket.delegate = { id: "user-1" };
+    delegated.push(ticket);
+    await scheduler.tick();
+    await scheduler.stop();
+    expect(handler.handled).toHaveLength(1);
+  });
+
   it("finalizes a stale abandoned run and records its crash", async () => {
     const db = await makeDb();
     const ticket = makeTicket("a");

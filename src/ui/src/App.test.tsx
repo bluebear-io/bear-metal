@@ -23,6 +23,21 @@ describe("App", () => {
     document.documentElement.classList.remove("dark");
   });
 
+  it("shows interrupted coding work without claiming completion", async () => {
+    const detail = await fetchAgentRunDetail("coord-1");
+    vi.mocked(fetchAgentRunDetail).mockResolvedValueOnce({ ...detail, run: {
+      ...detail.run, id: "coding-1", type: "coding", status: "interrupted", stopReason: "token_limit", slackState: null,
+      resultJson: JSON.stringify({ status: "pending", outcome: "interrupted", checkpoint: { repositories: [{ branch: "feature/task", commit: "saved-sha", pushed: true }] } }),
+    }, trace: [] });
+    renderWithProviders(<App />, "/tasks/run/coding-1");
+    expect(await screen.findAllByText("interrupted")).not.toHaveLength(0);
+    expect(screen.getByText("Stop reason")).toBeVisible();
+    expect(screen.getByText("Ended")).toBeVisible();
+    expect(screen.queryByText("Completed")).not.toBeInTheDocument();
+    expect(screen.queryByText("succeeded")).not.toBeInTheDocument();
+    expect(screen.getByText(/saved-sha/)).toBeVisible();
+  });
+
   it("renders nav and the tasks page at root", async () => {
     renderWithProviders(<App />, "/");
 

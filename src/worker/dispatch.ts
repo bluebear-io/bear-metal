@@ -7,6 +7,7 @@ import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
+import { checkpointPushed, restoreCheckpoint, type Checkpoint } from "./checkpoint.js";
 import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
@@ -27,6 +28,8 @@ const logger = createLogger({
 
 export interface DispatchInput {
   signal?: AbortSignal;
+  assertLease?: () => Promise<void>;
+  checkpoint?: Checkpoint;
   state: DispatchState;
   ticketId: string;
   ticketIssueId?: string;
@@ -54,6 +57,9 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   const { state, ticketId, integrations, prs } = input;
   validateDispatchInputs(state, ticketId, prs);
   input.signal?.throwIfAborted();
+  if (input.checkpoint && !checkpointPushed(input.checkpoint)) {
+    throw new Error(`Checkpoint not fully pushed; recover retained workspace ${input.checkpoint.workspaceRoot}`);
+  }
 
   const { github, linear, commentStore } = integrations;
   const workspaceDir = resolve(workspaceForTicket(ticketId), randomUUID());
@@ -118,6 +124,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return r;
   });
 
+  let retainWorkspace = false;
   try {
   input.signal?.throwIfAborted();
   const linearAccessToken = await linear.getAccessToken();
@@ -135,6 +142,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     pullRequests,
     cloneScript,
     evidenceAttachments,
+    checkpoint: input.checkpoint,
   };
 
   input.signal?.throwIfAborted();
@@ -163,9 +171,14 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     GIT_COMMITTER_EMAIL: botEmail,
   };
 
+    if (input.checkpoint) {
+      await restoreCheckpoint(cloneScript.agentWorkdir, input.checkpoint, gitEnv, input.signal);
+    }
     const result = await runPiWorker({
       context, github, linear, commentStore, gitEnv, agentToolGateway: input.agentToolGateway,
       signal: input.signal,
+      assertLease: input.assertLease,
+      onInterrupted: () => { retainWorkspace = true; },
       runId: input.runId,
       systemPrompt: customization.additionalSystemPrompt,
       pullRequestLabels: customization.pullRequestLabels,
@@ -181,11 +194,12 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       llmModelArn: llm.modelArn,
       prs,
     });
+    retainWorkspace ||= result.outcome === "interrupted";
     logger.info({ ticketId, status: result.status }, "pi worker session completed");
     return result;
   } finally {
     await rm(cloneScript.netrcDir, { recursive: true, force: true });
-    try {
+    if (!retainWorkspace) try {
       await rm(cloneScript.workspaceDir, { recursive: true, force: true });
       logger.info({ ticketId, workspaceDir: cloneScript.workspaceDir }, "removed task workspace");
     } catch (error) {

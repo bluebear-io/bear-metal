@@ -104,7 +104,8 @@ const TaskSummary = ({ run }: { run: AgentRunSummary }) => {
       <div><dt className="text-xs font-medium uppercase text-text-muted">Status</dt>
         <dd className="mt-1"><StatusBadge status={run.slackState ?? run.status} /></dd></div>
       <Field label="Started" value={formatDateTime(run.startedAt ?? run.createdAt)} />
-      <Field label="Completed" value={formatDateTime(run.endedAt)} />
+      <Field label="Ended" value={formatDateTime(run.endedAt)} />
+      <Field label="Stop reason" value={run.stopReason?.replaceAll("_", " ") ?? "—"} />
       <Field label="Model" value={run.modelName ?? "—"} />
       <Field label="Provider" value={run.provider ?? "—"} />
       {run.ticketUrl && <div><dt className="text-xs font-medium uppercase text-text-muted">Ticket</dt>

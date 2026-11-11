@@ -30,7 +30,7 @@ export const useTaskFilterOptions = () => useQuery({
   queryKey: ["tickets", "filters"],
   queryFn: () => fetchTicketFilters(),
   select: (filters) => ({ ...filters, statuses: [...filters.bmStatuses, "queued", "running", "awaiting_coordination",
-    "approved", "posting", "coordinated", "canceled", "succeeded", "dispatched", "timed_out", "crashed"] }),
+    "approved", "posting", "coordinated", "canceled", "succeeded", "dispatched", "timed_out", "crashed", "interrupted"] }),
 });
 
 export const useTicketDetail = (id: string) =>

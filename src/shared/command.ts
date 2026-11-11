@@ -12,11 +12,13 @@ export async function runCommand(
     cwd: string;
     env?: NodeJS.ProcessEnv;
     timeoutMs: number;
+    signal?: AbortSignal;
   },
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
+      signal: options.signal,
       env: options.env ?? process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });

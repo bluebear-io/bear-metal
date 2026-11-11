@@ -389,3 +389,5 @@ UPDATE slack_unsubscribe_reactions SET state = 'posted' WHERE posted = 1 AND sta
 DROP INDEX IF EXISTS slack_delivery_action;
 CREATE UNIQUE INDEX slack_delivery_action ON slack_reply_deliveries
   (workspace_id, channel_id, thread_ts, source_ts, request_index) WHERE reply_kind NOT IN ('task_cancel', 'failure');
+
+ALTER TABLE tasks ADD COLUMN usage_json TEXT;

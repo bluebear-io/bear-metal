@@ -8,6 +8,39 @@ import { SqlDbClient, type BmStatus, type DispatchTaskInput, type TicketInput } 
 
 const dbPaths: string[] = [];
 describe("worker lease fencing", () => {
+  it("persists available usage when a model session throws", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("worker");
+      const usage = { inputTokens: 10, cacheReadTokens: 1000, cacheWriteTokens: 5, freshTokens: 20, promptTokens: 1015, completionTokens: 5, modelName: "test", provider: "test" };
+      await db.upsertRunCrashed(task.id, "model aborted", { workerId: "worker", reclaimCount: 0 }, usage);
+      expect((await db.getAgentRunDetail(task.id))?.run).toMatchObject({ status: "crashed", error: "model aborted", usage, promptTokens: 1015 });
+    } finally { await db.close(); }
+  });
+
+  it("atomically persists interruption, usage and checkpoint without a later success overwrite", async () => {
+    const db = await makeDb();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" });
+      await db.acquireNext("worker");
+      await db.upsertRunStarted(task.id, "worker", new Date().toISOString());
+      const checkpoint = { workspaceRoot: "/retained", error: null, repositories: [{ path: ".", remote: "remote", branch: "feature/abc-1", commit: "a".repeat(40), pushed: true, error: null }] };
+      const result = { status: "pending" as const, prs: [], outcome: "interrupted" as const, stopReason: "token_limit" as const, checkpoint,
+        usage: { promptTokens: 105, completionTokens: 2, inputTokens: 3, cacheReadTokens: 100, cacheWriteTokens: 2, freshTokens: 7, modelName: "test", provider: "test" } };
+      await db.complete(task.id, result, "worker", 0);
+      await db.upsertRunSucceeded(task.id, null);
+      const detail = await db.getAgentRunDetail(task.id);
+      expect(detail?.run).toMatchObject({ status: "interrupted", stopReason: "token_limit", promptTokens: 105, completionTokens: 2 });
+      expect(JSON.parse(detail!.run.resultJson!)).toEqual(result);
+      expect(await db.getLatestCheckpoint("lin_1")).toEqual(checkpoint);
+      const retry = await db.enqueue({ state: "new", ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "delegated_back" });
+      await db.acquireNext("retry-worker");
+      await db.markCrashed(retry.id, "retry-worker", 1, 0);
+      expect(await db.getLatestCheckpoint("lin_1")).toEqual(checkpoint);
+      await expect(db.complete(task.id, { status: "done", prs: [] }, "worker", 0)).rejects.toThrow();
+    } finally { await db.close(); }
+  });
   it("finalizes an abandoned run without changing its released pending result", async () => {
     const db = await makeDb();
     try {

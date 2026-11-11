@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BearMetalConfig } from "../customization/types.js";
 import type { WorkerInputContext } from "./types.js";
 
-const state = vi.hoisted(() => ({ calls: [] as string[], piInputs: [] as any[], tasks: [] as any[], downloadedAttachments: [] as any[], throwPi: false }));
+const state = vi.hoisted(() => ({ calls: [] as string[], piInputs: [] as any[], tasks: [] as any[], downloadedAttachments: [] as any[], throwPi: false, interrupt: false }));
 vi.mock("./pi.js", () => ({
   runPiWorker: async (input: any) => {
     state.calls.push("pi"); state.piInputs.push(input);
+    if (state.interrupt) input.onInterrupted();
     if (state.throwPi) throw new Error("pi failed");
     return { status: "pending", prs: [] };
   },
@@ -25,9 +26,17 @@ describe("dispatch customization boundary", () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "bear-metal-dispatch-test-"));
     process.env.BEAR_METAL_WORKSPACE_DIR = root;
-    state.calls.length = 0; state.piInputs.length = 0; state.tasks.length = 0; state.downloadedAttachments.length = 0; state.throwPi = false;
+    state.calls.length = 0; state.piInputs.length = 0; state.tasks.length = 0; state.downloadedAttachments.length = 0; state.throwPi = false; state.interrupt = false;
   });
   afterEach(async () => { delete process.env.BEAR_METAL_WORKSPACE_DIR; await rm(root, { recursive: true, force: true }); });
+
+  it("retains interrupted work even if shutdown or checkpointing throws", async () => {
+    state.interrupt = true;
+    state.throwPi = true;
+    await expect(dispatch(makeConfig())).rejects.toThrow("pi failed");
+    expect((await stat(state.piInputs[0].context.cloneScript.workspaceDir)).isDirectory()).toBe(true);
+    await expect(stat(state.piInputs[0].context.cloneScript.netrcDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 
   it("customizes before building and passes exact provider, model, prompt, and limits to Pi", async () => {
     const config = makeConfig();

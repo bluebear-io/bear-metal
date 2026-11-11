@@ -478,6 +478,11 @@ async function refreshTrackedTickets(
         }
         continue;
       }
+      if (slot.latestTask.result?.outcome === "interrupted" && slot.slotStatus === "active"
+        && ticket.delegate?.id === agentId && !isTerminalLinearTicket(ticket)) {
+        // Finalization precedes Linear handback; do not redispatch in that gap or after a failed handback.
+        continue;
+      }
       const knownPrs = knownPrsForSlot(slot);
       const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, db, logger, shouldRetryCi);
       if (decision.remove) {

@@ -85,7 +85,7 @@ export interface TaskListResponse {
 export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
-export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
+export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed" | "interrupted";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
 export interface Ticket {
   id: string;
@@ -105,7 +105,7 @@ export interface Ticket {
   assigneeName: string | null;
 }
 
-export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error";
+export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error" | "token_limit";
 
 export interface LatestRunSummary {
   id: string;

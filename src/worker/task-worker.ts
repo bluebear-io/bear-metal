@@ -8,6 +8,8 @@ import type { DbClient, TaskRecord } from "../db/client.js";
 import { dispatch, type DispatchInput, type DispatchResult } from "./dispatch.js";
 import type { WorkerIntegrations } from "./types.js";
 import { generateWorkerName } from "./worker-name.js";
+import { WorkerSessionError } from "./session-error.js";
+import { checkpointMessage } from "./checkpoint.js";
 import { AgentTraceWriter } from "./trace.js";
 
 export type DispatchRunner = (input: DispatchInput) => Promise<DispatchResult>;
@@ -82,7 +84,7 @@ export class TaskWorker {
       void this.queue.add(() => this.runTask(task)).catch(async (err) => {
         if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
         this.logger.error({ err, taskId: task.id, ticketId: task.ticketId, workerId: this.workerId }, "SQL task failed");
-        if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount })) return;
+        if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount }, err instanceof WorkerSessionError ? err.usage : undefined)) return;
         void this.db.recordEvent({
           id: randomUUID(),
           ticketId: task.ticketId,
@@ -158,6 +160,14 @@ export class TaskWorker {
     try {
       result = await this.runDispatch({
         signal: controller.signal,
+        assertLease: async () => {
+          controller.signal.throwIfAborted();
+          if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) {
+            controller.abort(new Error(`Task lease lost: ${task.id}`));
+            controller.signal.throwIfAborted();
+          }
+        },
+        checkpoint: await this.db.getLatestCheckpoint(task.ticketId!),
         ...task.input!,
         runId: task.id,
         hasSlackLinkedTicket: (issueId) => this.db.hasSlackLinkedTicket(issueId),
@@ -211,7 +221,7 @@ export class TaskWorker {
     } catch (err) {
       if (controller.signal.aborted) return;
       if (!await this.db.heartbeat(task.id, this.workerId, task.reclaimCount)) return;
-      if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount })) return;
+      if (!await this.db.upsertRunCrashed(task.id, String(err), { workerId: this.workerId, reclaimCount: task.reclaimCount }, err instanceof WorkerSessionError ? err.usage : undefined)) return;
       void this.db.recordEvent({
         id: randomUUID(),
         ticketId: task.ticketId,
@@ -243,6 +253,17 @@ export class TaskWorker {
       throw err;
     }
 
+    if (task.ticketId && result.outcome === "interrupted") {
+      await this.db.setTicketStatus(task.ticketId, "waiting_for_human");
+      const saved = result.checkpoint ? `\n\n${checkpointMessage(result.checkpoint)}` : "";
+      try {
+        await this.integrations.linear.commentAndHandBack(task.ticketId,
+          `Stopped automatically: ${result.stopReason === "token_limit" ? "fresh token limit reached" : "time limit reached"}. Work is unfinished.${saved}\n\nReview progress and re-delegate to continue.`);
+      } catch (error) {
+        this.logger.error({ error, taskId: task.id }, "interruption saved but Linear handback failed");
+        throw error;
+      }
+    }
     if (task.ticketId) {
       if (result.status === "pending") {
         if (this.agentId) {
@@ -264,8 +285,7 @@ export class TaskWorker {
       }
     }
 
-    // Fire-and-forget: complete() already released the slot; crashes here only lose dashboard supplementary data.
-    void this.db.upsertRunSucceeded(task.id, result.usage ?? null);
+    // Terminal state is durable; these writes only add dashboard detail.
     if (result.toolCalls && result.toolCalls.length > 0) {
       void this.db.upsertToolCalls(task.id, JSON.stringify(result.toolCalls));
     }

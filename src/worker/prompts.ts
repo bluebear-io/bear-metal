@@ -84,7 +84,11 @@ export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerProm
     ...finishToolsSection,
     "",
     `## Steps for this ${isNew ? "new task" : "PR iteration"}`,
-    ...taskInstructions,
+    ...(context.checkpoint ? [
+      "Resume the restored checkpoint branches in the task context. The prior run was interrupted at its token limit; it did not complete the task.",
+      "Inspect the saved changes and ticket discussion to determine remaining work. Preserve completed preparation; do not create fresh branches or reset to the default branch.",
+      "Finish implementation and validation, then use the finish tools above.",
+    ] : taskInstructions),
     "",
     "## Rules",
     "- Use the Linear and GitHub context below as the sole source of truth.",
