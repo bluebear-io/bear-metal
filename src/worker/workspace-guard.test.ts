@@ -119,7 +119,7 @@ describe("workspace guard", () => {
       "aws logs describe-log-groups --log-group-name-prefix=/aws/lambda/dev-blueden-",
       "aws logs filter-log-events --log-group-name '/aws/vendedlogs/states/dev-pipeline' | head",
       "AWS_ACCESS_KEY_ID=x AWS_SESSION_TOKEN=y aws logs tail /aws/lambda/prod-blueden-bff > out.txt",
-      "cd repo && aws logs get-log-events --log-group-name /aws/lambda/dev-blueden-bff --log-stream-name s",
+      "aws logs get-log-events --log-group-name /aws/lambda/dev-blueden-bff --log-stream-name s | jq .",
       'AWS_REGION="us-east-1" AWS_PROFILE=\'prod\' aws logs tail /aws/lambda/prod-blueden-bff',
     ];
     for (const command of allowed) {
@@ -146,6 +146,12 @@ describe("workspace guard", () => {
       'FOO="; aws logs tail" /aws/lambda/x',
       "FOO=a'; aws logs tail' /aws/lambda/x",
       "FOO=\\; aws logs tail /aws/lambda/x",
+      'aws() { mkdir -p "$3"; }; aws logs tail /aws/lambda/x',
+      "function aws { mkdir -p $3; }\naws logs tail /aws/lambda/x",
+      "shopt -s expand_aliases\nalias aws='mkdir -p'\naws logs tail /aws/lambda/x",
+      "PATH=.:/usr/bin aws logs tail /aws/lambda/x",
+      "env PATH=. aws logs tail /aws/lambda/x",
+      "export PATH=.; aws logs tail /aws/lambda/x",
     ];
     for (const command of notLogGroupNames) {
       expect(() => validateWorkspaceBashCommand(command, root), command).toThrow(/outside workspace/);
