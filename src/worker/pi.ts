@@ -654,7 +654,7 @@ export async function runPiWorker(input: {
     let checkpoint: Checkpoint | undefined;
     if (stopReason === "token_limit") {
       if (shutdownError) {
-        checkpoint = { workspaceRoot, repositories: [], error: `Session shutdown failed: ${shutdownError}` };
+        checkpoint = { workspaceRoot, repositories: [], error: redactSensitiveText(`Session shutdown failed: ${shutdownError}`) };
       } else {
         try {
           await input.assertLease?.();
