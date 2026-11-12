@@ -7,7 +7,7 @@ afterEach(() => { process.env = { ...saved }; });
 describe("manager infrastructure config", () => {
   it("loads infrastructure defaults without legacy customization variables", () => {
     process.env = {};
-    expect(loadConfig()).toEqual({ workerConcurrency: 5, pollIntervalMs: 60_000, backendPort: 3100, logLevel: "info", logPretty: false, testTicketId: null, apiOnly: false, runMode: "normal", taskHeartbeatIntervalMs: 30_000, taskStaleAfterMs: 300_000, taskMaxReclaims: 3 });
+    expect(loadConfig()).toEqual({ workerConcurrency: 5, factoryConcurrency: 2, pollIntervalMs: 60_000, backendPort: 3100, logLevel: "info", logPretty: false, testTicketId: null, apiOnly: false, runMode: "normal", taskHeartbeatIntervalMs: 30_000, taskStaleAfterMs: 300_000, taskMaxReclaims: 3 });
   });
   it("rejects invalid positive infrastructure values", () => {
     process.env.WORKER_CONCURRENCY = "0";

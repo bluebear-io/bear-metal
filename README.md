@@ -123,7 +123,7 @@ The same module may be `.mts`; use the canonical source above as the typing refe
 
 ## Task customization
 
-`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, or a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
+`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references, or a factory task with `type: "factory"` and a `factory` spec (role, grants, repository, base SHA, scratch branch, owner). Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
 
 The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt`, independent duration/token limits, and optional `ticketLabels` / `pullRequestLabels` (label names the harness adds to the linked Linear ticket and to PRs it creates or updates; failures are logged only). Coding tasks may include `trigger: "slack" | "linear"` when known. See the canonical source for the exact nested DTO and return shapes. `maxTokens` counts fresh tokens (uncached input, cache writes and output); cache reads don't count.
 
@@ -133,9 +133,20 @@ For coding and research runs, Bear Metal creates `workspacePath`, calls `buildWo
 
 Slack research agents receive `bash` alongside `read`, `grep`, `find`, and `ls`, using the same workspace command guard as coding agents. Coordinators retain read-only file tools. Research shell commands inherit the worker environment, including deployment-provided AWS credentials; actual AWS access depends on the task role and network permissions.
 
-`customizeTask` may return `tools`, a list of agent tool names (`AGENT_TOOL_CHOICES` in the canonical source) that narrows what the agent receives; omitted, each task type keeps the defaults above. The list never widens a task type's set: Slack research never gains `edit`, `write` or `commit_changes`. The tools that end or hand back a task (`respond_to_ticket_reporter` and the PR comment tools) are always kept; `push_for_review` is kept only when listed. Coding tasks get `commit_changes` only when it is listed: it switches to the named task branch (creating it), stages every change and commits, so a task without `bash` can still commit. An unknown name, or `edit`, `write` or `commit_changes` without `push_for_review` (the workspace is deleted at the end of the task), fails the task, as does `edit` or `write` without `bash` or `commit_changes` (no way to commit). The prompt tells the agent which tools it has.
+`customizeTask` may return `tools`, a list of agent tool names (`AGENT_TOOL_CHOICES` in the canonical source) that narrows what the agent receives; omitted, each task type keeps the defaults above. The list never widens a task type's set: Slack research never gains `edit`, `write` or `commit_changes`. The tools that end or hand back a task (`respond_to_ticket_reporter` and the PR comment tools) are always kept; `push_for_review` is kept only when listed. Coding tasks get `commit_changes` only when it is listed: it switches to the named task branch (creating it), stages every change and commits, so a task without `bash` can still commit. An unknown name, or `edit`, `write` or `commit_changes` without `push_for_review` (the workspace is deleted at the end of the task), fails the task, as does `edit` or `write` without `bash` or `commit_changes` (no way to commit). Factory tasks never get `commit_changes` or `push_for_review`; list `push_scratch` instead, which satisfies both rules. The prompt tells the agent which tools it has.
 
 Agent shell commands use a dedicated cache-only `HOME` under `~/.bear-metal/cache-home`; it survives task workspace cleanup and is separate from the service user's normal home and temporary Git credentials. The workspace command guard is not an operating-system sandbox, so deployments must still isolate the worker process from host secrets.
+
+## Factory tasks
+
+With `factory` configured (`getSigningSecret`, `artifactBucket`, `capabilities`), Bear Metal serves a task API under `/factory` for an external workflow orchestrator. Every request, GETs included, is signed with Slack's `v0` HMAC scheme over the raw body, in the `X-Factory-Request-Timestamp` and `X-Factory-Signature` headers; expose the path only to the orchestrator.
+
+- `POST /factory/tasks` returns `202` and the task id. The body (`FactoryTaskRequest` in [`src/factory/task.ts`](src/factory/task.ts)) requires an `owner` email, reported as the session owner. `idempotencyKey` is `attemptId:fencingToken`: the same key and body return the same task, the same key with another body is `409`, a higher token supersedes the attempt's older task, and a lower one is `409`.
+- `GET /factory/tasks/:id` returns the status (`queued`, `running`, `succeeded`, `failed`, `timeout`, `budget`, `canceled`, `superseded`) and the result.
+- `POST /factory/tasks/:id/cancel` stops the task; its later output is discarded.
+- `GET /factory/capabilities` returns `capabilities` for the orchestrator's fit check.
+
+The task stops itself at `deadline` (`timeout`) or at `maxTokens` fresh tokens (`budget`). It pushes only to `scratchBranch` through `push_scratch`; its shell has no Git credentials, and it never comments, posts or opens pull requests: outward actions come back as requested `effects` in the result. The transcript and diff go to `staging/<task id>/` in `artifactBucket`, with the keys in the result. Factory tasks run in their own `FACTORY_CONCURRENCY` slots. A task running when Bear Metal restarts fails; the orchestrator retries it.
 
 ## Environment variables
 
@@ -145,6 +156,7 @@ Bear Metal itself reads only these deployment and process settings:
 |---|---:|---|---|
 | `BEAR_METAL_CONFIG_FILE` | yes | — | Trusted configuration module path |
 | `WORKER_CONCURRENCY` | no | `5` | Maximum parallel tasks |
+| `FACTORY_CONCURRENCY` | no | `2` | Worker slots reserved for factory tasks |
 | `POLL_INTERVAL_MS` | no | `60000` | Linear polling cadence |
 | `TASK_HEARTBEAT_INTERVAL_MS` | no | `30000` | Worker heartbeat cadence |
 | `TASK_STALE_AFTER_MS` | no | `300000` | Reclaim threshold for a task without a heartbeat |

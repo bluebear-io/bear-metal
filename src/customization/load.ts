@@ -6,7 +6,7 @@ import type { BearMetalConfig, LlmProvider, SecretGetter, TaskCustomization } fr
 
 const ALLOWED_EXTENSIONS = [".js", ".mjs", ".ts", ".mts"] as const;
 const PROVIDERS = new Set<LlmProvider>(["anthropic", "openai", "google", "amazon-bedrock"]);
-// The workspace is deleted when a task ends, so changes survive only through push_for_review.
+// The workspace is deleted when a task ends, so changes survive only through push_for_review or push_scratch.
 const WORKSPACE_CHANGING_TOOLS = ["edit", "write", "commit_changes"];
 const KEY_BASED_PROVIDERS = new Set(["anthropic", "openai", "google"]);
 
@@ -48,6 +48,12 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
       nonEmptyString(trigger.linearTeamId, "config.slack.reactionTrigger.linearTeamId");
       if (trigger.linearProjectId !== undefined) nonEmptyString(trigger.linearProjectId, "config.slack.reactionTrigger.linearProjectId");
     }
+  }
+  if (config.factory !== undefined) {
+    const factory = object(config.factory, "config.factory");
+    callable(factory.getSigningSecret, "config.factory.getSigningSecret");
+    nonEmptyString(factory.artifactBucket, "config.factory.artifactBucket");
+    stringArray(factory.capabilities, "config.factory.capabilities");
   }
   if (config.agentIntegrations !== undefined) {
     const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");
@@ -123,12 +129,12 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
     const unknown = tools.find((tool) => !isAgentToolChoice(tool));
     if (unknown !== undefined) throw new Error(`customizeTask result.tools: unknown tool ${unknown}`);
     const changing = tools.find((tool) => WORKSPACE_CHANGING_TOOLS.includes(tool));
-    if (changing !== undefined && !tools.includes("push_for_review")) {
-      throw new Error(`customizeTask result.tools: ${changing} needs push_for_review, or the workspace is deleted with the changes`);
+    if (changing !== undefined && !tools.includes("push_for_review") && !tools.includes("push_scratch")) {
+      throw new Error(`customizeTask result.tools: ${changing} needs push_for_review or push_scratch, or the workspace is deleted with the changes`);
     }
     const editing = tools.find((tool) => tool === "edit" || tool === "write");
-    if (editing !== undefined && !tools.includes("bash") && !tools.includes("commit_changes")) {
-      throw new Error(`customizeTask result.tools: ${editing} needs bash or commit_changes to commit the changes`);
+    if (editing !== undefined && !tools.includes("bash") && !tools.includes("commit_changes") && !tools.includes("push_scratch")) {
+      throw new Error(`customizeTask result.tools: ${editing} needs bash, commit_changes or push_scratch to commit the changes`);
     }
   }
   return value as TaskCustomization;

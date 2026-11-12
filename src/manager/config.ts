@@ -1,5 +1,7 @@
 export interface Config {
   workerConcurrency: number;
+  /** Worker slots reserved for workflow-factory tasks, separate from ticket and Slack work. */
+  factoryConcurrency: number;
   pollIntervalMs: number;
   backendPort: number;
   logLevel: string;
@@ -45,6 +47,7 @@ export function loadConfig(): Readonly<Config> {
   }
   return Object.freeze({
     workerConcurrency: positiveIntEnv("WORKER_CONCURRENCY", 5),
+    factoryConcurrency: positiveIntEnv("FACTORY_CONCURRENCY", 2),
     pollIntervalMs: positiveIntEnv("POLL_INTERVAL_MS", 60_000),
     backendPort: positiveIntEnv("BACKEND_PORT", 3100),
     logLevel: process.env.LOG_LEVEL || "info",

@@ -51,7 +51,7 @@ export async function runSlackAgent(input: {
   githubToken?: string;
   getGithubToken?: () => Promise<string>;
 }): Promise<void> {
-  if (input.task.type === "coding") throw new Error("Slack agent cannot execute a coding task");
+  if (input.task.type === "coding" || input.task.type === "factory") throw new Error(`Slack agent cannot execute a ${input.task.type} task`);
   const workspaceDir = input.task.type === "research"
     ? workspaceForResearchTask(input.task.id)
     : undefined;

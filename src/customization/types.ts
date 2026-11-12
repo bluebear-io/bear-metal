@@ -57,6 +57,15 @@ export interface BearMetalConfig {
   database?: {
     getUrl: SecretGetter;
   };
+  /** Enables the workflow factory's `/factory` task API. */
+  factory?: {
+    /** HMAC key the factory signs its requests with, in Slack's `v0` scheme. */
+    getSigningSecret: SecretGetter;
+    /** Bucket the task artifacts are written to, under `staging/<taskId>/`. */
+    artifactBucket: string;
+    /** Factory capabilities a role may need, published at `GET /factory/capabilities` for the factory's fit check. */
+    capabilities: readonly string[];
+  };
   traceRetentionDays?: number;
   maxIterations?: number;
   /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
@@ -84,8 +93,9 @@ export type TaskPriority = "none" | "urgent" | "high" | "medium" | "low";
 
 export interface Task {
   readonly id: string;
-  readonly type: "coding" | "coordinator" | "research";
+  readonly type: "coding" | "coordinator" | "research" | "factory";
   readonly request?: string;
+  readonly factory?: FactoryTaskSpec;
   readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
   readonly identifier?: string;
   readonly title?: string;
@@ -107,6 +117,20 @@ export interface Task {
   readonly run?: Readonly<{ kind: "new" | "iteration"; iteration: number }>;
   readonly pullRequests?: readonly TaskPullRequest[];
   readonly trigger?: "slack" | "linear";
+}
+
+/** A workflow-factory agent step. The factory performs every outward effect; Bear Metal only pushes to `scratchBranch`. */
+export interface FactoryTaskSpec {
+  /** The `.agents/profiles/<role>.json` profile the task runs as. */
+  readonly role: string;
+  /** Factory capabilities granted to this step; the role's own ceiling still applies. */
+  readonly grants: readonly string[];
+  readonly runId: string;
+  readonly repository: Repository;
+  readonly baseSha: string;
+  /** Absent for read-only steps such as agent checks. */
+  readonly scratchBranch: string | null;
+  readonly ownerEmail: string;
 }
 
 export interface TaskComment {
@@ -160,7 +184,7 @@ export interface TaskCustomization {
 
 export const AGENT_TOOL_CHOICES = [
   "read", "grep", "find", "ls", "edit", "write", "bash",
-  "commit_changes", "push_for_review", "attach_ticket_evidence",
+  "commit_changes", "push_for_review", "push_scratch", "attach_ticket_evidence",
   "github_read", "linear_read", "slack_read", "web_get", "github_dispatch",
 ] as const;
 export type AgentToolChoice = (typeof AGENT_TOOL_CHOICES)[number];

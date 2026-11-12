@@ -78,6 +78,10 @@ export function workspaceForResearchTask(taskId: string): string {
   return resolve(workspaceBase(), "research", safeTaskId);
 }
 
+export function workspaceForFactoryTask(taskId: string): string {
+  return resolve(workspaceBase(), "factory", taskId.replace(/[^a-zA-Z0-9_-]/g, "-"));
+}
+
 export function workspaceForCoordinatorGeneration(generationId: string): string {
   return resolve(workspaceForCoordinatorRoot(), generationId);
 }
