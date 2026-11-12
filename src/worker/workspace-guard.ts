@@ -158,7 +158,10 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
 }
 
 const AWS_LOG_GROUP_NAMESPACE = "/aws";
-const AWS_LOGS_COMMAND = /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*aws\s+logs\s/;
+const ENV_ASSIGNMENT_VALUE = String.raw`(?:'[^']*'|"[^"\\$\x60]*"|[^\s'"\\;&|<>()\x60$])*`;
+const AWS_LOGS_COMMAND = new RegExp(
+  String.raw`^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=${ENV_ASSIGNMENT_VALUE}\s+)*aws\s+logs\s`,
+);
 
 // Log group names are POSIX strings on every host; resolving keeps `/aws/../etc` a real path.
 function isUnderAwsLogGroupNamespace(pathRef: string): boolean {
