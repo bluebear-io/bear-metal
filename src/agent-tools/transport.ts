@@ -269,7 +269,6 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
 
 function redactMessage(message: string): string {
   return redactCredentialText(message
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/<>]+@/gi, "$1[REDACTED]@")
     .replace(/(authorization\s*[:=]\s*)(?:bearer\s+)?\S+/gi, "$1[REDACTED]")
     .replace(/(token|secret|signature|private.?key)(\s*[:=]\s*)\S+/gi, "$1$2[REDACTED]"));
 }
@@ -278,12 +277,8 @@ function redactString(value: string): string {
   try {
     // Shared patterns stop at & and #, so they keep unrelated query parameters intact.
     const url = new URL(redactCredentialText(value));
-    // Error-prefixed messages parse as opaque URLs; only hierarchical URLs have userinfo/query semantics.
+    // Error-prefixed messages parse as opaque URLs; only hierarchical URLs have query semantics.
     if (!url.host) return redactMessage(value);
-    if (url.username || url.password) {
-      url.username = "[REDACTED]";
-      url.password = "";
-    }
     for (const key of url.searchParams.keys()) {
       if (SENSITIVE_QUERY_KEYS.test(key)) url.searchParams.set(key, "[REDACTED]");
     }
