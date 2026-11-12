@@ -140,7 +140,6 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
   }
 
   const root = normalizeWorkspaceRoot(workspaceRoot);
-  // `:` must not start a path: AWS log group ARNs (`...:log-group:/aws/lambda/x`) are the supported way to name log groups.
   for (const match of command.matchAll(/(^|[\s"'`=({[,;|&<>])\/[^\s"'`$;&|<>)]*/g)) {
     const prefix = match[1] ?? "";
     const pathRef = match[0].slice(prefix.length);
