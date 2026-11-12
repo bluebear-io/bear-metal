@@ -46,6 +46,7 @@ export interface DispatchToolCall {
 export type DispatchResult = {
   status: "pending" | "done";
   prs: PullRequestRef[];
+  stopReason?: "token_limit";
   usage?: DispatchUsage;
   /** Ordered tool-call timeline for the run; empty when no tool calls were captured. */
   toolCalls?: DispatchToolCall[];

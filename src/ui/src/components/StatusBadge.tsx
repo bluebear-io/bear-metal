@@ -15,6 +15,7 @@ const toneColorByStatus: Record<string, string> = {
   dead: "var(--color-status-red)",
   ci_failed: "var(--color-status-red)",
   timed_out: "var(--color-status-red)",
+  interrupted: "var(--color-status-orange)",
   heartbeat_stale: "var(--color-status-orange)",
   in_progress: "var(--color-primary)",
   running: "var(--color-primary)",

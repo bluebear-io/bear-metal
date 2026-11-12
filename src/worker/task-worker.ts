@@ -265,7 +265,9 @@ export class TaskWorker {
     }
 
     // Fire-and-forget: complete() already released the slot; crashes here only lose dashboard supplementary data.
-    void this.db.upsertRunSucceeded(task.id, result.usage ?? null);
+    void (result.stopReason
+      ? this.db.upsertRunInterrupted(task.id, result.stopReason, result.usage ?? null)
+      : this.db.upsertRunSucceeded(task.id, result.usage ?? null));
     if (result.toolCalls && result.toolCalls.length > 0) {
       void this.db.upsertToolCalls(task.id, JSON.stringify(result.toolCalls));
     }

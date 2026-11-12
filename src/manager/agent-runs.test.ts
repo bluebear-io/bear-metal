@@ -5,6 +5,29 @@ import { createApp } from "./app.js";
 import type { LinearSource } from "./scheduler.js";
 
 describe("agent run API", () => {
+  it("reports a token-limit stop as interrupted with its usage and accepts its filters", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    try {
+      const task = await db.enqueue({ state: "new", ticketId: "DEN-1", ticketIssueId: "lin-1", prs: [], trigger: "new" });
+      await db.acquireNext("worker");
+      await db.upsertRunStarted(task.id, "worker", new Date().toISOString());
+      await db.complete(task.id, { status: "pending", prs: [] }, "worker", 0);
+      await db.upsertRunInterrupted(task.id, "token_limit", { promptTokens: 1015, completionTokens: 5, modelName: "test", provider: "anthropic" });
+      const app = createApp(db, 5, { getTicketAssignees: async () => new Map() } as unknown as LinearSource);
+      const detail = await request(app).get(`/api/agent-runs/${task.id}`);
+      expect(detail.status).toBe(200);
+      expect(detail.body.run).toMatchObject({ status: "interrupted", stopReason: "token_limit", promptTokens: 1015,
+        completionTokens: 5, modelName: "test", provider: "anthropic" });
+      expect((await request(app).get("/api/tasks?statuses=interrupted")).status).toBe(200);
+      const byReason = await request(app).get("/api/tasks?stopReason=token_limit");
+      expect(byReason.status).toBe(200);
+      expect(byReason.body.total).toBe(1);
+    } finally {
+      await db.close();
+    }
+  });
+
   it("lists coding tickets, research tasks, and coordinator executions together", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
