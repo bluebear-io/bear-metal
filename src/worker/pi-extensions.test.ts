@@ -123,6 +123,39 @@ describe("runPiWorker extensions", () => {
     expect(reasons).toEqual(["quit"]);
   });
 
+  it("gives extensions the ticket assignee as the BlueBear owner", async () => {
+    const owners: unknown[][] = [];
+    const factory: ExtensionFactory = (pi) => {
+      pi.on("session_start", (_event, ctx) => {
+        owners.push(ctx.sessionManager.getEntries()
+          .filter((entry) => entry.type === "custom" && entry.customType === "bluebear-owner")
+          .map((entry) => (entry.type === "custom" ? entry.data : undefined)));
+      });
+    };
+    harness.extensionFactories = [factory];
+
+    const result = await runWorker(workspaceRoot, root, { assignee: { id: "creator", email: "owner@example.com" } });
+
+    expect(result.status).toBe("pending");
+    expect(owners).toEqual([[{ email: "owner@example.com" }]]);
+  });
+
+  it.each([
+    { assignee: { id: "creator" }, error: "Cannot read the email of ticket ABC-1's assignee creator" },
+    { assignee: null, error: "Ticket ABC-1 has no assignee to own its session" },
+  ])("fails the run without an owner ($error)", async ({ assignee, error }) => {
+    const sessionStarts: unknown[] = [];
+    const factory: ExtensionFactory = (pi) => {
+      pi.on("session_start", () => {
+        sessionStarts.push(true);
+      });
+    };
+    harness.extensionFactories = [factory];
+
+    await expect(runWorker(workspaceRoot, root, { assignee })).rejects.toThrow(error);
+    expect(sessionStarts).toEqual([]);
+  });
+
   it("logs extension errors through the worker logger", async () => {
     const factory: ExtensionFactory = (pi) => {
       pi.on("session_start", () => {
@@ -186,11 +219,13 @@ describe("runPiWorker extensions", () => {
 async function runWorker(
   workspaceRoot: string,
   workspaceDir: string,
-  options: { maxWorkerTimeMs?: number; linear?: unknown } = {},
+  options: { maxWorkerTimeMs?: number; linear?: unknown; assignee?: WorkerInputContext["ticket"]["issue"]["assignee"] } = {},
 ) {
   const { runPiWorker } = await import("./pi.js");
+  const context = makeContext(workspaceRoot, workspaceDir);
+  if (options.assignee !== undefined) context.ticket.issue.assignee = options.assignee;
   return runPiWorker({
-    context: makeContext(workspaceRoot, workspaceDir),
+    context,
     github: {} as never,
     linear: (options.linear ?? { commentAndHandBack: vi.fn(async () => {}), moveTicketToInReview: vi.fn(async () => {}) }) as never,
     gitEnv: {},
@@ -218,7 +253,7 @@ function makeContext(workspaceRoot: string, workspaceDir: string): WorkerInputCo
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
         teamKey: "ABC",
-        assignee: { id: "creator" },
+        assignee: { id: "creator", email: "creator@example.com" },
         delegate: { id: "user-1" },
         priority: 0,
       },

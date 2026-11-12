@@ -159,6 +159,8 @@ Bear Metal itself reads only these deployment and process settings:
 
 `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, and standard AWS credential-chain variables are inputs to the AWS SDK/embedded agent. `AWS_BEDROCK_FORCE_CACHE` controls embedded Bedrock prompt caching. Bear Metal does not reinterpret them. `APP_VERSION` is a UI build input; `BACKEND_URL` is the Vite development proxy target.
 
+When the [Bluebear](https://www.bluebear.io) handler runs beside Bear Metal, it reads its own settings: `BLUEBEAR_DEVELOPER_API_KEY` holds the agent identity secret created in BlueBear, and the optional `BLUEBEAR_OWNER_EMAIL` names the owner for sessions that carry none. Bear Metal reports each session's human owner to BlueBear itself: the Linear ticket assignee for coding tasks and the message sender for Slack tasks (this needs `users:read.email`). Coding tasks require an assignee: Bear Metal comments on a delegated ticket without one and hands it back instead of starting it, and a run whose assignee's email cannot be read fails. A Slack session whose sender is a bot or unknown runs without an owner, and one whose human sender's email cannot be read (for example, without `users:read.email`) fails.
+
 Integration credentials, database URL, max iterations, provider/model selection, prompt additions, limits, and workspace behavior have no Bear Metal environment-variable fallback. Your configuration module may independently choose to read environment variables.
 
 See [`.env.example`](.env.example) for the process-level variables.
@@ -382,7 +384,7 @@ The table lists the complete scope set for the main app with all supported Slack
 | `reactions:read` | Receive `reaction_added` for the optional reaction trigger |
 | `reactions:write` | Add the 👍 acknowledgment after unsubscribe; [required by `reactions.add`](https://docs.slack.dev/reference/methods/reactions.add/) |
 | `users:read` | Read user profiles/lists and resolve a Slack requester's identity for ticket creation |
-| `users:read.email` | Read requester email for Slack-to-Linear ticket assignment and look up a ticket requester's Slack user for DM notifications |
+| `users:read.email` | Read requester email for Slack-to-Linear ticket assignment, look up a ticket requester's Slack user for DM notifications, and resolve the Slack message sender's email so BlueBear reports them as the session owner |
 
 Read scopes do not bypass conversation membership or workspace policy. Invite the bot to the public/private conversations it should read; `chat:write.public` grants posting access only. Interactive features that use uploads, reactions or requester identity require their respective scopes even when simple replies work without them.
 

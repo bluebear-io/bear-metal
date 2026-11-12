@@ -13,6 +13,9 @@ import { untilStopped } from "./until-stopped.js";
 
 export const SESSION_SHUTDOWN_GRACE_MS = 30_000;
 
+/** BlueBear's Pi extension reads this session entry and reports its email as the session's owner. */
+export const BLUEBEAR_OWNER_ENTRY_TYPE = "bluebear-owner";
+
 /**
  * End the returned runtime with `runtime.dispose()`, not `runtime.session.dispose()`: only the runtime
  * emits `session_shutdown` to extensions, which BlueBear's Pi extension reports as the session end.
@@ -23,6 +26,7 @@ export async function createPiSessionRuntime(options: {
   model: NonNullable<CreateAgentSessionFromServicesOptions["model"]>;
   tools: string[];
   customTools: NonNullable<CreateAgentSessionFromServicesOptions["customTools"]>;
+  ownerEmail?: string | null;
 }): Promise<AgentSessionRuntime> {
   const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     const services = await createAgentSessionServices({ cwd, agentDir, modelRuntime: options.modelRuntime });
@@ -39,10 +43,12 @@ export async function createPiSessionRuntime(options: {
       diagnostics: services.diagnostics,
     };
   };
+  const sessionManager = SessionManager.inMemory(options.cwd);
+  if (options.ownerEmail) sessionManager.appendCustomEntry(BLUEBEAR_OWNER_ENTRY_TYPE, { email: options.ownerEmail });
   return createAgentSessionRuntime(createRuntime, {
     cwd: options.cwd,
     agentDir: getAgentDir(),
-    sessionManager: SessionManager.inMemory(options.cwd),
+    sessionManager,
   });
 }
 

@@ -311,6 +311,80 @@ describe("Scheduler.tick", () => {
     expect(handler.handled).toHaveLength(2);
   });
 
+  it("refuses an unassigned delegated ticket once: comments, undelegates and never dispatches it", async () => {
+    const db = await makeDb();
+    const delegated = [makeTicket("unassigned", { assignee: null }), makeTicket("assigned")];
+    const linear = new FakeLinear(delegated);
+    const recordRefusal = linear.commentAndHandBack.bind(linear);
+    linear.commentAndHandBack = async (ticketId, body) => {
+      await recordRefusal(ticketId, body);
+      delegated.splice(delegated.findIndex((ticket) => ticket.id === ticketId), 1);
+    };
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), db, handler, concurrency: 2 });
+
+    await scheduler.tick();
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(linear.commentAndHandBackCalls).toEqual([
+      { ticketId: "unassigned", body: expect.stringContaining("Bear Metal needs an assignee on this ticket") },
+    ]);
+    expect(handler.handled.map((ctx) => ctx.ticket.id)).toEqual(["assigned"]);
+    expect(await db.countTracked()).toBe(1);
+  });
+
+  it("refuses a delegated ticket whose assignee has no readable email", async () => {
+    const db = await makeDb();
+    const delegated = [makeTicket("noemail", { assignee: { id: "u-2" } }), makeTicket("assigned")];
+    const linear = new FakeLinear(delegated);
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), db, handler, concurrency: 2 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(linear.commentAndHandBackCalls).toEqual([
+      { ticketId: "noemail", body: expect.stringContaining("could not read the assignee's email") },
+    ]);
+    expect(handler.handled.map((ctx) => ctx.ticket.id)).toEqual(["assigned"]);
+  });
+
+  it("refuses a tracked ticket that lost its assignee before re-dispatching it; admission retries a failed hand-back", async () => {
+    const db = await makeDb();
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const unassigned = makeTicket("a", { assignee: null });
+    const linear = new FakeLinear([unassigned], { A: unassigned });
+    const recordRefusal = linear.commentAndHandBack.bind(linear);
+    let failNext = true;
+    linear.commentAndHandBack = async (ticketId, body) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("linear down");
+      }
+      await recordRefusal(ticketId, body);
+    };
+    const handler = new RecordingHandler(db);
+    const scheduler = buildScheduler({
+      linear,
+      github: new FakeGitHub({ status: status(openPr(), true, false) }),
+      db,
+      handler,
+      concurrency: 1,
+    });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(failNext).toBe(false);
+    expect(linear.commentAndHandBackCalls).toEqual([
+      { ticketId: "a", body: expect.stringContaining("Bear Metal needs an assignee on this ticket") },
+    ]);
+    expect(handler.handled).toEqual([]);
+    expect(await db.countTracked()).toBe(0);
+    expect((await db.readTicketStatus("a"))?.status).toBe("waiting_for_human");
+  });
+
   it("admits higher-priority tickets first when concurrency is limited", async () => {
     const db = await makeDb();
     // Linear may return tickets in any order; prove the scheduler reorders by priority
