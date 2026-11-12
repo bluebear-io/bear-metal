@@ -140,16 +140,16 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
   }
 
   const root = normalizeWorkspaceRoot(workspaceRoot);
-  let segmentStarts: number[] | undefined;
+  let commandStarts: number[] | undefined;
   let awsNamespaceAbsent: boolean | undefined;
   for (const match of command.matchAll(/(^|[\s"'`=({[,;|&<>])\/[^\s"'`$;&|<>)]*/g)) {
     const prefix = match[1] ?? "";
     const pathRef = match[0].slice(prefix.length);
     const normalized = pathRef.replace(/[),]+$/, "");
     if (isUnderAwsLogGroupNamespace(normalized)) {
-      segmentStarts ??= shellSegmentStarts(command);
+      commandStarts ??= simpleCommandStarts(command);
       awsNamespaceAbsent ??= !existsSync(AWS_LOG_GROUP_NAMESPACE);
-      if (awsNamespaceAbsent && isAwsLogsArgument(command, segmentStarts, match.index + prefix.length)) continue;
+      if (awsNamespaceAbsent && isAwsLogsArgument(command, commandStarts, match.index + prefix.length)) continue;
     }
     if (!pathInWorkspace(root, resolve(normalized))) {
       throw new Error(`Bash command references path outside workspace: ${normalized}`);
@@ -160,27 +160,19 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
 const AWS_LOG_GROUP_NAMESPACE = "/aws";
 const AWS_LOGS_COMMAND = /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*aws\s+logs\s/;
 
-/**
- * Log group names are POSIX-style strings on every host, so they resolve with posix semantics;
- * resolving first keeps `/aws/../etc` a real path.
- */
+// Log group names are POSIX strings on every host; resolving keeps `/aws/../etc` a real path.
 function isUnderAwsLogGroupNamespace(pathRef: string): boolean {
   return posix.resolve(pathRef).startsWith(`${AWS_LOG_GROUP_NAMESPACE}/`);
 }
 
-/**
- * A `/aws/...` token is a log group name only as an argument of an `aws logs` command, never as a
- * redirection target or an argument of another command, so nothing can create or write files under `/aws`.
- * Valid only while `/aws` does not exist on the host.
- */
-function isAwsLogsArgument(command: string, segmentStarts: number[], tokenStart: number): boolean {
-  const segmentStart = segmentStarts.filter((start) => start <= tokenStart).at(-1) ?? 0;
-  const beforeToken = command.slice(segmentStart, tokenStart);
+// Never a redirection target or another command's argument, so nothing can write under `/aws`.
+function isAwsLogsArgument(command: string, commandStarts: number[], tokenStart: number): boolean {
+  const commandStart = commandStarts.filter((start) => start <= tokenStart).at(-1) ?? 0;
+  const beforeToken = command.slice(commandStart, tokenStart);
   return AWS_LOGS_COMMAND.test(beforeToken.trimStart()) && !/[<>]\s*$/.test(beforeToken);
 }
 
-/** Start offsets of simple commands: after each unquoted, unescaped control or grouping character. */
-function shellSegmentStarts(command: string): number[] {
+function simpleCommandStarts(command: string): number[] {
   const starts = [0];
   let quote: "'" | '"' | undefined;
   for (let index = 0; index < command.length; index += 1) {
