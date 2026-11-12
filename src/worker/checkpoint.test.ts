@@ -106,6 +106,14 @@ describe("checkpoint integration", () => {
     await restoreCheckpoint(workspace, failure === "push" ? checkpoint : repaired, env);
   });
 
+  it("refuses to persist an origin URL with a query string", async () => {
+    const { workspace } = await fixture();
+    await git(workspace, "remote", "set-url", "origin", "https://host.test/repo.git?token=secret");
+    const checkpoint = await saveCheckpoint({ workspaceRoot: workspace, branch: "feature/den-4880", ticketId: "DEN-4880", gitEnv: env });
+    expect(checkpoint.repositories[0]).toMatchObject({ remote: null, pushed: false, error: expect.stringContaining("credentials") });
+    expect(JSON.stringify(checkpoint)).not.toContain("secret");
+  });
+
   it("does not commit or push when lease verification fails", async () => {
     const { workspace, remote } = await fixture();
     await writeFile(join(workspace, "new.txt"), "local work");

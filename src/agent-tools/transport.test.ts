@@ -105,6 +105,12 @@ describe("AgentToolTransport", () => {
     expect(message).not.toContain("secret");
   });
 
+  it("applies token patterns to parseable URLs without dropping other query parameters", () => {
+    const redacted = String(redactCredentials("https://host.test/ghp_abc123/x?sig=secret&keep=2#access_token=xyz"));
+    expect(redacted).not.toMatch(/ghp_abc123|secret|xyz/);
+    expect(new URL(redacted).searchParams.get("keep")).toBe("2");
+  });
+
   it("bounds pagination budgets", () => {
     expect(enforcePaginationBudget(undefined, 5)).toBe(1);
     expect(enforcePaginationBudget(10, 5)).toBe(5);

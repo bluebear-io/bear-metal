@@ -64,7 +64,8 @@ export async function saveCheckpoint(input: {
       try {
         const remote = (await run(["remote", "get-url", "origin"])).stdout.trim();
         const url = URL.canParse(remote) ? new URL(remote) : null;
-        if (url?.password || (url?.protocol.match(/^https?:$/) && url.username)) {
+        // Restore compares origins exactly, so a credentialed origin is refused rather than redacted.
+        if (url?.password || url?.search || (url?.protocol.match(/^https?:$/) && url.username)) {
           throw new Error("Origin URL contains credentials; refusing to persist it");
         }
         saved.remote = remote;

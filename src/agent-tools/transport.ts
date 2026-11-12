@@ -276,7 +276,8 @@ function redactMessage(message: string): string {
 
 function redactString(value: string): string {
   try {
-    const url = new URL(value);
+    // Shared patterns stop at & and #, so they keep unrelated query parameters intact.
+    const url = new URL(redactCredentialText(value));
     // Error-prefixed messages parse as opaque URLs; only hierarchical URLs have userinfo/query semantics.
     if (!url.host) return redactMessage(value);
     if (url.username || url.password) {
