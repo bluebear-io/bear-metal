@@ -116,6 +116,27 @@ describe("TaskWorker", () => {
     expect(db.upsertRunCrashedCalls).toHaveLength(0);
   });
 
+  it("records a token-limit stop as an interrupted run with its usage", async () => {
+    const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const db = new FakeDb(taskRecord({ id: "task-1", input }));
+    const usage = { promptTokens: 1015, completionTokens: 5, modelName: "test", provider: "anthropic" };
+    const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => ({
+      status: "pending", prs: [], stopReason: "token_limit", usage,
+    }));
+    const worker = new TaskWorker({
+      logger, db: db as unknown as DbClient, integrations: makeIntegrations(), agentToolGateway,
+      concurrency: 1, pollIntervalMs: 60_000, workerId: "worker-1", runDispatch,
+      heartbeatIntervalMs: 30_000, maxReclaims: 3, agentId: undefined, config,
+    });
+
+    await worker.tick();
+    await worker.stop();
+    await new Promise((r) => setImmediate(r));
+
+    expect(db.upsertRunInterruptedCalls).toEqual([{ taskId: "task-1", stopReason: "token_limit", usage }]);
+    expect(db.upsertRunSucceededCalls).toEqual([]);
+  });
+
   it("marks the row crashed when runDispatch throws so the task isn't left acquired forever", async () => {
     const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ input }));
@@ -220,6 +241,7 @@ class FakeDb {
   heartbeats: Array<{ taskId: string; workerId: string }> = [];
   upsertRunStartedCalls: object[] = [];
   upsertRunSucceededCalls: Array<{ taskId: string; usage: object | null }> = [];
+  upsertRunInterruptedCalls: Array<{ taskId: string; stopReason: string; usage: object | null }> = [];
   upsertRunCrashedCalls: object[] = [];
   markCrashedCalls: Array<{ taskId: string; workerId: string; maxReclaims: number }> = [];
   private task: TaskRecord | null;
@@ -277,6 +299,10 @@ class FakeDb {
 
   async upsertRunSucceeded(taskId: string, usage?: object | null): Promise<void> {
     this.upsertRunSucceededCalls.push({ taskId, usage: usage ?? null });
+  }
+
+  async upsertRunInterrupted(taskId: string, stopReason: string, usage: object | null): Promise<void> {
+    this.upsertRunInterruptedCalls.push({ taskId, stopReason, usage });
   }
 
   async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number }): Promise<boolean> {

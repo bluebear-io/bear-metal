@@ -26,6 +26,7 @@ import { resolveSessionModel } from "./model.js";
 import { EVIDENCE_TYPES, MAX_EVIDENCE_BYTES, readEvidenceFile } from "./evidence.js";
 import { buildWorkerPrompt } from "./prompts.js";
 import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
+import { freshTokens } from "./token-budget.js";
 import { untilStopped } from "./until-stopped.js";
 import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
 import type {
@@ -523,14 +524,35 @@ export async function runPiWorker(input: {
 
   logger.debug({ ticketId: input.context.ticketId }, "pi session started, sending prompt");
 
+  const captureUsage = (): DispatchUsage | null => {
+    try {
+      const stats = session.getSessionStats();
+      const model = session.model;
+      if (!model || (stats.tokens.input === 0 && stats.tokens.output === 0)) return null;
+      const captured = {
+        promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
+        completionTokens: stats.tokens.output,
+        modelName: model.name,
+        provider: model.provider,
+      };
+      logger.debug({ ticketId: input.context.ticketId, usage: captured }, "captured pi session usage");
+      return captured;
+    } catch (statsError) {
+      logger.warn({ statsError }, "failed to capture pi session usage");
+      return null;
+    }
+  };
+
   let limitHitReason: string | null = null;
+  let tokenLimitHit = false;
 
   const unsubscribeLimits = session.subscribe((event) => {
     if (event.type === "turn_end" && !limitHitReason) {
-      const stats = session.getSessionStats();
-      if (stats.tokens.total >= input.maxWorkerTokens) {
-        limitHitReason = `token limit of ${input.maxWorkerTokens.toLocaleString()} reached (${stats.tokens.total.toLocaleString()} used)`;
-        logger.warn({ ticketId: input.context.ticketId, tokens: stats.tokens.total }, "token limit reached; aborting session");
+      const tokens = freshTokens(session.getSessionStats().tokens);
+      if (tokens >= input.maxWorkerTokens) {
+        tokenLimitHit = true;
+        limitHitReason = `fresh token limit of ${input.maxWorkerTokens.toLocaleString()} reached (${tokens.toLocaleString()} used)`;
+        logger.warn({ ticketId: input.context.ticketId, tokens }, "token limit reached; aborting session");
         session.abort().catch((err) => {
           logger.warn({ err, ticketId: input.context.ticketId }, "session.abort() rejected");
         });
@@ -579,27 +601,14 @@ export async function runPiWorker(input: {
     input.signal?.throwIfAborted();
     await session.prompt(prompt);
     input.signal?.throwIfAborted();
-    try {
-      const stats = session.getSessionStats();
-      const model = session.model;
-      if (model && (stats.tokens.input > 0 || stats.tokens.output > 0)) {
-        usage = {
-          promptTokens: stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite,
-          completionTokens: stats.tokens.output,
-          modelName: model.name,
-          provider: model.provider,
-        };
-        logger.debug({ ticketId: input.context.ticketId, usage }, "captured pi session usage");
-      }
-    } catch (statsError) {
-      logger.warn({ statsError }, "failed to capture pi session usage");
-    }
+    usage = captureUsage();
   } catch (error) {
     if (!limitHitReason) {
       logger.error({ error, ticketId: input.context.ticketId }, "pi session threw an error");
       throw error;
     }
     logger.debug({ error, ticketId: input.context.ticketId }, "session.prompt() threw after limit abort (expected)");
+    usage = captureUsage();
   } finally {
     input.signal?.removeEventListener("abort", onLeaseAbort);
     clearTimeout(timeoutHandle);
@@ -626,7 +635,12 @@ export async function runPiWorker(input: {
       input.context.ticketId,
       `Stopped automatically: ${limitHitReason}. Please review progress and re-delegate to continue.`,
     );
-    return { status: "pending", prs: mergePrs(input.context.prs, collectedPrs) };
+    return {
+      status: "pending",
+      prs: mergePrs(input.context.prs, collectedPrs),
+      ...(tokenLimitHit ? { stopReason: "token_limit" as const } : {}),
+      ...(usage ? { usage } : {}),
+    };
   }
 
   if (!decision) {

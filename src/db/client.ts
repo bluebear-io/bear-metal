@@ -23,10 +23,10 @@ function modelFamily(provider: string | null, modelName: string | null): "claude
 
 export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
-export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
+export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed" | "interrupted";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
-export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error";
+export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error" | "token_limit";
 
 export interface TaskRow {
   id: string;
@@ -751,6 +751,7 @@ export interface DbClient {
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
+  upsertRunInterrupted(taskId: string, stopReason: "token_limit", usage: RunUsage | null): Promise<void>;
   upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
@@ -2197,16 +2198,24 @@ export class SqlDbClient implements DbClient {
   }
 
   async upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void> {
+    await this.upsertRunFinished(taskId, "succeeded", "completed", usage);
+  }
+
+  async upsertRunInterrupted(taskId: string, stopReason: "token_limit", usage: RunUsage | null): Promise<void> {
+    await this.upsertRunFinished(taskId, "interrupted", stopReason, usage);
+  }
+
+  private async upsertRunFinished(taskId: string, runStatus: RunStatus, stopReason: StopReason, usage: RunUsage | null): Promise<void> {
     const now = this.clock.nowIso();
     await this.run(
-      `UPDATE tasks SET run_status = 'succeeded', stop_reason = 'completed',
+      `UPDATE tasks SET run_status = ?, stop_reason = ?,
          ended_at = ?, prompt_tokens = COALESCE(?, prompt_tokens),
          completion_tokens = COALESCE(?, completion_tokens),
          model_name = COALESCE(?, model_name),
          provider = COALESCE(?, provider),
          updated_at = ?
        WHERE id = ?`,
-      [now, usage?.promptTokens ?? null, usage?.completionTokens ?? null,
+      [runStatus, stopReason, now, usage?.promptTokens ?? null, usage?.completionTokens ?? null,
        usage?.modelName ?? null, usage?.provider ?? null, now, taskId],
     );
   }
