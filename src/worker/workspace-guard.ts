@@ -144,10 +144,22 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
     const prefix = match[1] ?? "";
     const pathRef = match[0].slice(prefix.length);
     const normalized = pathRef.replace(/[),]+$/, "");
-    if (!pathInWorkspace(root, resolve(normalized))) {
+    const target = resolve(normalized);
+    if (isAwsLogGroupName(target)) continue;
+    if (!pathInWorkspace(root, target)) {
       throw new Error(`Bash command references path outside workspace: ${normalized}`);
     }
   }
+}
+
+const AWS_LOG_GROUP_NAMESPACE = "/aws";
+
+/**
+ * AWS service log groups (`/aws/lambda/...`) look like absolute paths. They are names, not paths,
+ * only while no `/aws` exists on this host; checking the resolved target keeps `/aws/../etc` a path.
+ */
+function isAwsLogGroupName(target: string): boolean {
+  return target.startsWith(`${AWS_LOG_GROUP_NAMESPACE}/`) && !existsSync(AWS_LOG_GROUP_NAMESPACE);
 }
 
 function normalizeWorkspaceRoot(workspaceRoot: string): string {

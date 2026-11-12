@@ -111,6 +111,23 @@ describe("workspace guard", () => {
     expect(() => validateWorkspaceBashCommand("ls ~/projects", "/tmp/workspace/myrepo")).toThrow(/outside workspace/);
   });
 
+  it("allows AWS log group names but still rejects real paths outside the workspace", () => {
+    const root = "/tmp/workspace/myrepo";
+    const allowed = [
+      "aws logs tail /aws/lambda/dev-blueden-bff --since 1h",
+      'aws logs start-query --log-group-names "/aws/lambda/dev-blueden-risks" --query-string "fields @message"',
+      "aws logs describe-log-groups --log-group-name-prefix=/aws/lambda/dev-blueden-",
+      "aws logs filter-log-events --log-group-name '/aws/vendedlogs/states/dev-pipeline' | head",
+    ];
+    for (const command of allowed) {
+      expect(() => validateWorkspaceBashCommand(command, root)).not.toThrow();
+    }
+    expect(() => validateWorkspaceBashCommand("cat /aws/lambda/../../etc/passwd", root)).toThrow(/outside workspace/);
+    expect(() => validateWorkspaceBashCommand("cat /aws", root)).toThrow(/outside workspace/);
+    expect(() => validateWorkspaceBashCommand("cat /awsx/lambda/foo", root)).toThrow(/outside workspace/);
+    expect(() => validateWorkspaceBashCommand("cat /etc/passwd /aws/lambda/x", root)).toThrow(/outside workspace/);
+  });
+
   it("blocks git push in all forms", () => {
     const root = "/tmp/workspace/myrepo";
     expect(() => validateWorkspaceBashCommand("git push", root)).toThrow(/git push is not allowed/);
