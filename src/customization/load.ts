@@ -113,6 +113,10 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
       throw new Error("customizeTask result.llm.modelArn must be an ARN");
     }
   }
+  if (llm.getApiKey !== undefined) {
+    if (llm.provider === "amazon-bedrock") throw new Error("customizeTask result.llm.getApiKey is not supported for amazon-bedrock");
+    callable(llm.getApiKey, "customizeTask result.llm.getApiKey");
+  }
   callable(customization.buildWorkspace, "customizeTask result.buildWorkspace");
   if (customization.additionalSystemPrompt !== undefined && customization.additionalSystemPrompt !== null && typeof customization.additionalSystemPrompt !== "string") {
     throw new Error("customizeTask result.additionalSystemPrompt must be a string or null");

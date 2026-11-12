@@ -54,6 +54,10 @@ export async function customizeAndResolve(config: BearMetalConfig, task: Task): 
   if (provider === "amazon-bedrock") {
     return { customization, llm: { provider, model: customization.llm.model, apiKey: null, modelArn: customization.llm.modelArn ?? null } };
   }
+  if (customization.llm.getApiKey) {
+    const apiKey = await resolveSecret(customization.llm.getApiKey, "customizeTask result.llm.getApiKey result");
+    return { customization, llm: { provider, model: customization.llm.model, apiKey, modelArn: null } };
+  }
   const definition = config.llmProviders[provider];
   if (!definition) {
     const fix = `Add llmProviders.${provider}: { getApiKey: () => ... } to the Bear Metal configuration module.`;

@@ -169,7 +169,8 @@ export interface TaskPullRequest {
 
 export interface TaskCustomization {
   /** `modelArn` (amazon-bedrock only) calls this ARN, which must resolve to the same model as `model`, for example a tagged inference profile. */
-  llm: { provider: LlmProvider; model: string; modelArn?: string };
+  /** `getApiKey` (key-based providers only) replaces `llmProviders.<provider>.getApiKey` for this task, for example to bill a caller separately. */
+  llm: { provider: LlmProvider; model: string; modelArn?: string; getApiKey?: SecretGetter };
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;
   additionalSystemPrompt?: string | null;
   limits?: { maxDurationMs?: number; maxTokens?: number };
