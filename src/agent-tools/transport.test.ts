@@ -109,6 +109,9 @@ describe("AgentToolTransport", () => {
     const redacted = String(redactCredentials("https://host.test/ghp_abc123/x?sig=secret&keep=2#access_token=xyz"));
     expect(redacted).not.toMatch(/ghp_abc123|secret|xyz/);
     expect(new URL(redacted).searchParams.get("keep")).toBe("2");
+    const atInQuery = new URL(String(redactCredentials("https://example.com?email=user@corp.com&keep=2")));
+    expect(atInQuery.host).toBe("example.com");
+    expect(atInQuery.searchParams.get("keep")).toBe("2");
   });
 
   it("bounds pagination budgets", () => {
