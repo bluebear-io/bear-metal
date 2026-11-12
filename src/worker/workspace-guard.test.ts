@@ -111,51 +111,15 @@ describe("workspace guard", () => {
     expect(() => validateWorkspaceBashCommand("ls ~/projects", "/tmp/workspace/myrepo")).toThrow(/outside workspace/);
   });
 
-  it("allows AWS log group names but still rejects real paths outside the workspace", () => {
+  it("allows AWS log group ARNs, which name a log group without a leading slash", () => {
     const root = "/tmp/workspace/myrepo";
-    const allowed = [
-      "aws logs tail /aws/lambda/dev-blueden-bff --since 1h",
-      'aws logs start-query --log-group-names "/aws/lambda/dev-blueden-risks" --query-string "fields @message"',
-      "aws logs describe-log-groups --log-group-name-prefix=/aws/lambda/dev-blueden-",
-      "aws logs filter-log-events --log-group-name '/aws/vendedlogs/states/dev-pipeline' | head",
-      "AWS_ACCESS_KEY_ID=x AWS_SESSION_TOKEN=y aws logs tail /aws/lambda/prod-blueden-bff > out.txt",
-      "aws logs get-log-events --log-group-name /aws/lambda/dev-blueden-bff --log-stream-name s | jq .",
-      'AWS_REGION="us-east-1" AWS_PROFILE=\'prod\' aws logs tail /aws/lambda/prod-blueden-bff',
-    ];
-    for (const command of allowed) {
-      expect(() => validateWorkspaceBashCommand(command, root)).not.toThrow();
-    }
-    expect(() => validateWorkspaceBashCommand("cat /aws/lambda/../../etc/passwd", root)).toThrow(/outside workspace/);
-    expect(() => validateWorkspaceBashCommand("cat /aws", root)).toThrow(/outside workspace/);
-    expect(() => validateWorkspaceBashCommand("cat /awsx/lambda/foo", root)).toThrow(/outside workspace/);
-    expect(() => validateWorkspaceBashCommand("cat /etc/passwd /aws/lambda/x", root)).toThrow(/outside workspace/);
-    const notLogGroupNames = [
-      "cat /aws/lambda/x",
-      "mkdir -p /aws/lambda/x",
-      "echo x > /aws/lambda/x",
-      "aws logs tail /aws/lambda/x > /aws/lambda/y",
-      "aws logs tail /aws/lambda/x 2>/aws/lambda/y",
-      "aws logs tail /aws/lambda/x | tee /aws/lambda/y",
-      "aws logs tail /aws/lambda/x; touch /aws/lambda/y",
-      "aws s3 cp s3://bucket/key /aws/lambda/x",
-      "touch '; aws logs tail' /aws/lambda/x",
-      'touch "; aws logs tail" /aws/lambda/x',
-      "touch \\; aws logs tail /aws/lambda/x",
-      "echo $(touch /aws/lambda/x)",
-      "FOO='; aws logs tail' /aws/lambda/x",
-      'FOO="; aws logs tail" /aws/lambda/x',
-      "FOO=a'; aws logs tail' /aws/lambda/x",
-      "FOO=\\; aws logs tail /aws/lambda/x",
-      'aws() { mkdir -p "$3"; }; aws logs tail /aws/lambda/x',
-      "function aws { mkdir -p $3; }\naws logs tail /aws/lambda/x",
-      "shopt -s expand_aliases\nalias aws='mkdir -p'\naws logs tail /aws/lambda/x",
-      "PATH=.:/usr/bin aws logs tail /aws/lambda/x",
-      "env PATH=. aws logs tail /aws/lambda/x",
-      "export PATH=.; aws logs tail /aws/lambda/x",
-    ];
-    for (const command of notLogGroupNames) {
-      expect(() => validateWorkspaceBashCommand(command, root), command).toThrow(/outside workspace/);
-    }
+    const arn = "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/dev-blueden-bff";
+    expect(() =>
+      validateWorkspaceBashCommand(`aws logs start-query --log-group-identifiers ${arn} --query-string "fields @message"`, root),
+    ).not.toThrow();
+    expect(() => validateWorkspaceBashCommand(`aws logs filter-log-events --log-group-identifier "${arn}"`, root)).not.toThrow();
+    expect(() => validateWorkspaceBashCommand("aws logs describe-log-groups --log-group-name-pattern blueden-bff", root)).not.toThrow();
+    expect(() => validateWorkspaceBashCommand("aws logs tail /aws/lambda/dev-blueden-bff", root)).toThrow(/outside workspace/);
   });
 
   it("blocks git push in all forms", () => {

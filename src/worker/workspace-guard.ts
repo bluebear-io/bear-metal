@@ -1,6 +1,6 @@
 import { constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import { access, lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import {
   createBashToolDefinition,
@@ -140,60 +140,14 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
   }
 
   const root = normalizeWorkspaceRoot(workspaceRoot);
-  let commandStarts: number[] | undefined;
-  let awsNamespaceAbsent: boolean | undefined;
   for (const match of command.matchAll(/(^|[\s"'`=({[,;|&<>])\/[^\s"'`$;&|<>)]*/g)) {
     const prefix = match[1] ?? "";
     const pathRef = match[0].slice(prefix.length);
     const normalized = pathRef.replace(/[),]+$/, "");
-    if (isUnderAwsLogGroupNamespace(normalized)) {
-      commandStarts ??= simpleCommandStarts(command);
-      awsNamespaceAbsent ??= !existsSync(AWS_LOG_GROUP_NAMESPACE);
-      if (awsNamespaceAbsent && isAwsLogsArgument(command, commandStarts, match.index + prefix.length)) continue;
-    }
     if (!pathInWorkspace(root, resolve(normalized))) {
       throw new Error(`Bash command references path outside workspace: ${normalized}`);
     }
   }
-}
-
-const AWS_LOG_GROUP_NAMESPACE = "/aws";
-const ENV_ASSIGNMENT_VALUE = String.raw`(?:'[^']*'|"[^"\\$\x60]*"|[^\s'"\\;&|<>()\x60$])*`;
-const AWS_LOGS_COMMAND = new RegExp(
-  String.raw`^(?:env\s+)?(?:(?!PATH=)[A-Za-z_][A-Za-z0-9_]*=${ENV_ASSIGNMENT_VALUE}\s+)*aws\s+logs\s`,
-);
-
-// Log group names are POSIX strings on every host; resolving keeps `/aws/../etc` a real path.
-function isUnderAwsLogGroupNamespace(pathRef: string): boolean {
-  return posix.resolve(pathRef).startsWith(`${AWS_LOG_GROUP_NAMESPACE}/`);
-}
-
-// Never a redirection target or another command's argument, so nothing can write under `/aws`.
-// Only the first command, so no earlier function, alias or PATH change can redefine `aws`.
-function isAwsLogsArgument(command: string, commandStarts: number[], tokenStart: number): boolean {
-  const commandStart = commandStarts.filter((start) => start <= tokenStart).at(-1) ?? 0;
-  if (commandStart !== 0) return false;
-  const beforeToken = command.slice(commandStart, tokenStart);
-  return AWS_LOGS_COMMAND.test(beforeToken.trimStart()) && !/[<>]\s*$/.test(beforeToken);
-}
-
-function simpleCommandStarts(command: string): number[] {
-  const starts = [0];
-  let quote: "'" | '"' | undefined;
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index] ?? "";
-    if (char === "\\" && quote !== "'") {
-      index += 1;
-    } else if (quote) {
-      if (char === quote) quote = undefined;
-      else if (quote === '"' && (char === "`" || (char === "$" && command[index + 1] === "("))) starts.push(index + 1);
-    } else if (char === "'" || char === '"') {
-      quote = char;
-    } else if (/[;&|\n`(){}]/.test(char)) {
-      starts.push(index + 1);
-    }
-  }
-  return starts;
 }
 
 function normalizeWorkspaceRoot(workspaceRoot: string): string {
