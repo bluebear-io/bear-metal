@@ -53,7 +53,7 @@ describe("dispatch customization boundary", () => {
     await mkdir(retained);
     const env = { ...process.env, GIT_AUTHOR_NAME: "Test", GIT_COMMITTER_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_EMAIL: "test@example.com" };
     const git = (cwd: string, ...args: string[]) => runCommand("git", args, { cwd, env, timeoutMs: 10_000 });
-    await git(root, "init", "--bare", remote);
+    await git(root, "init", "--bare", "-b", "main", remote);
     await git(retained, "init", "-b", "main");
     await writeFile(join(retained, "work.txt"), "base");
     await git(retained, "add", "."); await git(retained, "commit", "-m", "base");

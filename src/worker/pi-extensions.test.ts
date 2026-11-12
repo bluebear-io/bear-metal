@@ -115,12 +115,13 @@ describe("runPiWorker extensions", () => {
     const remote = join(root, "remote.git");
     const gitEnv = { GIT_AUTHOR_NAME: "Test", GIT_COMMITTER_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_EMAIL: "test@example.com" };
     const git = (...args: string[]) => runCommand("git", args, { cwd: workspaceRoot, env: { ...process.env, ...gitEnv }, timeoutMs: 10_000 });
-    await git("init", "--bare", remote);
+    await git("init", "--bare", "-b", "main", remote);
     await git("init", "-b", "main");
     await writeFile(join(workspaceRoot, "base.txt"), "base");
     await git("add", ".");
     await git("commit", "-m", "base");
     await git("remote", "add", "origin", remote);
+    await git("push", "origin", "main");
     await writeFile(join(workspaceRoot, "prepared.txt"), "finished preparation");
     harness.extensionFactories = [(pi: Parameters<ExtensionFactory>[0]) => {
       pi.on("session_shutdown", async () => { await writeFile(join(workspaceRoot, "shutdown.txt"), "quiesced"); });

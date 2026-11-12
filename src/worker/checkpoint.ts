@@ -71,8 +71,10 @@ export async function saveCheckpoint(input: {
         saved.remote = remote;
         const current = (await run(["branch", "--show-current"])).stdout.trim();
         if (!current) throw new Error("Cannot checkpoint a detached HEAD");
-        saved.branch = current === "main" || current === "master" ? input.branch : current;
-        if (!saved.branch || saved.branch === "main" || saved.branch === "master") throw new Error("Checkpoint requires a task branch");
+        const defaultBranch = (await run(["ls-remote", "--symref", "origin", "HEAD"])).stdout.match(/^ref: refs\/heads\/(\S+)\tHEAD$/m)?.[1];
+        if (!defaultBranch) throw new Error("Cannot resolve the origin default branch");
+        saved.branch = current === defaultBranch ? input.branch : current;
+        if (!saved.branch || saved.branch === defaultBranch) throw new Error("Checkpoint requires a task branch");
         await run(["check-ref-format", "--branch", saved.branch]);
         if (current !== saved.branch) await run(["switch", "-c", saved.branch]);
         if ((await run(["status", "--porcelain"])).stdout.trim()) {

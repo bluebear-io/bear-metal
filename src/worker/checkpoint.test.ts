@@ -16,7 +16,7 @@ async function fixture() {
   const remote = join(root, "remote.git");
   const workspace = join(root, "workspace");
   await mkdir(workspace);
-  await git(root, "init", "--bare", remote);
+  await git(root, "init", "--bare", "-b", "main", remote);
   await git(workspace, "init", "-b", "main");
   await writeFile(join(workspace, "tracked.txt"), "base");
   await git(workspace, "add", ".");
@@ -104,6 +104,17 @@ describe("checkpoint integration", () => {
     expect(repaired.repositories[0]?.pushed).toBe(true);
     // Stored push failure is stale after manual repair; restoration verifies the actual remote.
     await restoreCheckpoint(workspace, failure === "push" ? checkpoint : repaired, env);
+  });
+
+  it("treats the origin default branch as protected even when it is not main", async () => {
+    const { workspace, remote } = await fixture();
+    await git(workspace, "switch", "-c", "develop");
+    await git(workspace, "push", "origin", "develop");
+    await git(remote, "symbolic-ref", "HEAD", "refs/heads/develop");
+    await writeFile(join(workspace, "new.txt"), "local work");
+    const checkpoint = await saveCheckpoint({ workspaceRoot: workspace, branch: "feature/den-4880", ticketId: "DEN-4880", gitEnv: env });
+    expect(checkpoint.repositories[0]).toMatchObject({ branch: "feature/den-4880", pushed: true });
+    expect((await git(remote, "log", "-1", "--format=%s", "develop")).stdout).not.toContain("unfinished");
   });
 
   it("refuses to persist an origin URL with a query string", async () => {
