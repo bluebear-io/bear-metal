@@ -1,6 +1,6 @@
 import { constants, existsSync, lstatSync, realpathSync } from "node:fs";
 import { access, lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import {
   createBashToolDefinition,
@@ -140,26 +140,63 @@ export function validateWorkspaceBashCommand(command: string, workspaceRoot: str
   }
 
   const root = normalizeWorkspaceRoot(workspaceRoot);
+  let segmentStarts: number[] | undefined;
+  let awsNamespaceAbsent: boolean | undefined;
   for (const match of command.matchAll(/(^|[\s"'`=({[,;|&<>])\/[^\s"'`$;&|<>)]*/g)) {
     const prefix = match[1] ?? "";
     const pathRef = match[0].slice(prefix.length);
     const normalized = pathRef.replace(/[),]+$/, "");
-    const target = resolve(normalized);
-    if (isAwsLogGroupName(target)) continue;
-    if (!pathInWorkspace(root, target)) {
+    if (isUnderAwsLogGroupNamespace(normalized)) {
+      segmentStarts ??= shellSegmentStarts(command);
+      awsNamespaceAbsent ??= !existsSync(AWS_LOG_GROUP_NAMESPACE);
+      if (awsNamespaceAbsent && isAwsLogsArgument(command, segmentStarts, match.index + prefix.length)) continue;
+    }
+    if (!pathInWorkspace(root, resolve(normalized))) {
       throw new Error(`Bash command references path outside workspace: ${normalized}`);
     }
   }
 }
 
 const AWS_LOG_GROUP_NAMESPACE = "/aws";
+const AWS_LOGS_COMMAND = /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*aws\s+logs\s/;
 
 /**
- * AWS service log groups (`/aws/lambda/...`) look like absolute paths. They are names, not paths,
- * only while no `/aws` exists on this host; checking the resolved target keeps `/aws/../etc` a path.
+ * Log group names are POSIX-style strings on every host, so they resolve with posix semantics;
+ * resolving first keeps `/aws/../etc` a real path.
  */
-function isAwsLogGroupName(target: string): boolean {
-  return target.startsWith(`${AWS_LOG_GROUP_NAMESPACE}/`) && !existsSync(AWS_LOG_GROUP_NAMESPACE);
+function isUnderAwsLogGroupNamespace(pathRef: string): boolean {
+  return posix.resolve(pathRef).startsWith(`${AWS_LOG_GROUP_NAMESPACE}/`);
+}
+
+/**
+ * A `/aws/...` token is a log group name only as an argument of an `aws logs` command, never as a
+ * redirection target or an argument of another command, so nothing can create or write files under `/aws`.
+ * Valid only while `/aws` does not exist on the host.
+ */
+function isAwsLogsArgument(command: string, segmentStarts: number[], tokenStart: number): boolean {
+  const segmentStart = segmentStarts.filter((start) => start <= tokenStart).at(-1) ?? 0;
+  const beforeToken = command.slice(segmentStart, tokenStart);
+  return AWS_LOGS_COMMAND.test(beforeToken.trimStart()) && !/[<>]\s*$/.test(beforeToken);
+}
+
+/** Start offsets of simple commands: after each unquoted, unescaped control or grouping character. */
+function shellSegmentStarts(command: string): number[] {
+  const starts = [0];
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index] ?? "";
+    if (char === "\\" && quote !== "'") {
+      index += 1;
+    } else if (quote) {
+      if (char === quote) quote = undefined;
+      else if (quote === '"' && (char === "`" || (char === "$" && command[index + 1] === "("))) starts.push(index + 1);
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (/[;&|\n`(){}]/.test(char)) {
+      starts.push(index + 1);
+    }
+  }
+  return starts;
 }
 
 function normalizeWorkspaceRoot(workspaceRoot: string): string {

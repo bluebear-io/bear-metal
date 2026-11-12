@@ -118,6 +118,8 @@ describe("workspace guard", () => {
       'aws logs start-query --log-group-names "/aws/lambda/dev-blueden-risks" --query-string "fields @message"',
       "aws logs describe-log-groups --log-group-name-prefix=/aws/lambda/dev-blueden-",
       "aws logs filter-log-events --log-group-name '/aws/vendedlogs/states/dev-pipeline' | head",
+      "AWS_ACCESS_KEY_ID=x AWS_SESSION_TOKEN=y aws logs tail /aws/lambda/prod-blueden-bff > out.txt",
+      "cd repo && aws logs get-log-events --log-group-name /aws/lambda/dev-blueden-bff --log-stream-name s",
     ];
     for (const command of allowed) {
       expect(() => validateWorkspaceBashCommand(command, root)).not.toThrow();
@@ -126,6 +128,23 @@ describe("workspace guard", () => {
     expect(() => validateWorkspaceBashCommand("cat /aws", root)).toThrow(/outside workspace/);
     expect(() => validateWorkspaceBashCommand("cat /awsx/lambda/foo", root)).toThrow(/outside workspace/);
     expect(() => validateWorkspaceBashCommand("cat /etc/passwd /aws/lambda/x", root)).toThrow(/outside workspace/);
+    const notLogGroupNames = [
+      "cat /aws/lambda/x",
+      "mkdir -p /aws/lambda/x",
+      "echo x > /aws/lambda/x",
+      "aws logs tail /aws/lambda/x > /aws/lambda/y",
+      "aws logs tail /aws/lambda/x 2>/aws/lambda/y",
+      "aws logs tail /aws/lambda/x | tee /aws/lambda/y",
+      "aws logs tail /aws/lambda/x; touch /aws/lambda/y",
+      "aws s3 cp s3://bucket/key /aws/lambda/x",
+      "touch '; aws logs tail' /aws/lambda/x",
+      'touch "; aws logs tail" /aws/lambda/x',
+      "touch \\; aws logs tail /aws/lambda/x",
+      "echo $(touch /aws/lambda/x)",
+    ];
+    for (const command of notLogGroupNames) {
+      expect(() => validateWorkspaceBashCommand(command, root), command).toThrow(/outside workspace/);
+    }
   });
 
   it("blocks git push in all forms", () => {
