@@ -16,13 +16,30 @@ export class SlackThreadApi {
   constructor(private readonly readClient: SlackReadClient, private readonly writer: SlackIntegration) {}
 
   async getUserEmail(userId: string): Promise<string> {
+    const user = await this.getUserProfile(userId);
+    if (!user.profile?.email) throw new Error(`Cannot resolve Slack email for ${userId}: missing user email`);
+    return user.profile.email;
+  }
+
+  /**
+   * Resolves null only for a bot without an email. Slack omits a human's email when the app lacks
+   * `users:read.email`, so a human without one throws like every other failed lookup.
+   */
+  async findUserEmail(userId: string): Promise<string | null> {
+    const user = await this.getUserProfile(userId);
+    if (user.profile?.email) return user.profile.email;
+    if (user.is_bot) return null;
+    throw new Error(`Cannot resolve Slack email for ${userId}: missing user email (check the users:read.email scope)`);
+  }
+
+  private async getUserProfile(userId: string): Promise<{ id: string; is_bot?: boolean; profile?: { email?: string } }> {
     const response = await this.readClient.call("users.info", { user: userId }) as {
-      ok?: boolean; error?: string; user?: { id?: string; profile?: { email?: string } };
+      ok?: boolean; error?: string; user?: { id?: string; is_bot?: boolean; profile?: { email?: string } };
     };
-    if (!response.ok || response.user?.id !== userId || !response.user.profile?.email) {
+    if (!response.ok || !response.user || response.user.id !== userId) {
       throw new Error(`Cannot resolve Slack email for ${userId}: ${response.error ?? "missing user email"}`);
     }
-    return response.user.profile.email;
+    return { ...response.user, id: userId };
   }
 
   async getUser(userId: string): Promise<SlackUser> {

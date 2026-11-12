@@ -1,8 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
-import { runCommand } from "../shared/command.js";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkerInputContext } from "./types.js";
@@ -11,8 +9,6 @@ type TestTool = { name: string; execute: (id: string, params: unknown) => Promis
 
 const harness = vi.hoisted(() => ({
   agentDir: "",
-  realPrompt: false,
-  modelCalls: 0,
   extensionFactories: [] as unknown[],
   events: [] as string[],
   logError: vi.fn(),
@@ -60,23 +56,6 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
         dispose();
       };
       if (harness.bindExtensions) result.session.bindExtensions = harness.bindExtensions;
-      if (harness.realPrompt) {
-        result.session.agent.streamFunction = (model) => {
-          harness.modelCalls++;
-          const message: AssistantMessage = {
-            role: "assistant", api: model.api, provider: model.provider, model: model.id,
-            content: [{ type: "text", text: "Preparation is done; implementation still needs review." },
-              { type: "toolCall", id: "must-not-run", name: "write", arguments: { path: "after-limit.txt", content: "must not run" } }],
-            usage: { input: 10, output: 5, cacheRead: 5000, cacheWrite: 5, totalTokens: 5020,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: "toolUse", timestamp: Date.now(),
-          };
-          const stream = createAssistantMessageEventStream();
-          stream.push({ type: "done", reason: "toolUse", message });
-          return stream;
-        };
-        return result;
-      }
       result.session.prompt = async () => {
         harness.events.push("prompt");
         const tools = options.customTools as unknown as TestTool[];
@@ -102,38 +81,10 @@ describe("runPiWorker extensions", () => {
     harness.logError.mockClear();
     harness.dispose.mockReset();
     harness.bindExtensions = null;
-    harness.realPrompt = false;
-    harness.modelCalls = 0;
   });
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
-  });
-
-  it("quiesces the real SDK before checkpointing without another request or tool mutation", async () => {
-    harness.realPrompt = true;
-    const remote = join(root, "remote.git");
-    const gitEnv = { GIT_AUTHOR_NAME: "Test", GIT_COMMITTER_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_EMAIL: "test@example.com" };
-    const git = (...args: string[]) => runCommand("git", args, { cwd: workspaceRoot, env: { ...process.env, ...gitEnv }, timeoutMs: 10_000 });
-    await git("init", "--bare", "-b", "main", remote);
-    await git("init", "-b", "main");
-    await writeFile(join(workspaceRoot, "base.txt"), "base");
-    await git("add", ".");
-    await git("commit", "-m", "base");
-    await git("remote", "add", "origin", remote);
-    await git("push", "origin", "main");
-    await writeFile(join(workspaceRoot, "prepared.txt"), "finished preparation");
-    harness.extensionFactories = [(pi: Parameters<ExtensionFactory>[0]) => {
-      pi.on("session_shutdown", async () => { await writeFile(join(workspaceRoot, "shutdown.txt"), "quiesced"); });
-    }];
-    const result = await runWorker(workspaceRoot, root, { maxWorkerTokens: 20, gitEnv });
-    expect(harness.modelCalls).toBe(1);
-    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit", usage: { cacheReadTokens: 5000 } });
-    expect(result.checkpoint?.repositories).toMatchObject([{ pushed: true, error: null }]);
-    await expect(stat(join(workspaceRoot, "after-limit.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await git("show", "HEAD:shutdown.txt")).stdout).toBe("quiesced");
-    expect(await readFile(join(workspaceRoot, "prepared.txt"), "utf8")).toBe("finished preparation");
-    expect((await git("rev-list", "--count", "HEAD")).stdout.trim()).toBe("2");
   });
 
   it("fires session_start on loaded extensions before the prompt is sent", async () => {
@@ -172,6 +123,39 @@ describe("runPiWorker extensions", () => {
     expect(reasons).toEqual(["quit"]);
   });
 
+  it("gives extensions the ticket assignee as the BlueBear owner", async () => {
+    const owners: unknown[][] = [];
+    const factory: ExtensionFactory = (pi) => {
+      pi.on("session_start", (_event, ctx) => {
+        owners.push(ctx.sessionManager.getEntries()
+          .filter((entry) => entry.type === "custom" && entry.customType === "bluebear-owner")
+          .map((entry) => (entry.type === "custom" ? entry.data : undefined)));
+      });
+    };
+    harness.extensionFactories = [factory];
+
+    const result = await runWorker(workspaceRoot, root, { assignee: { id: "creator", email: "owner@example.com" } });
+
+    expect(result.status).toBe("pending");
+    expect(owners).toEqual([[{ email: "owner@example.com" }]]);
+  });
+
+  it.each([
+    { assignee: { id: "creator" }, error: "Cannot read the email of ticket ABC-1's assignee creator" },
+    { assignee: null, error: "Ticket ABC-1 has no assignee to own its session" },
+  ])("fails the run without an owner ($error)", async ({ assignee, error }) => {
+    const sessionStarts: unknown[] = [];
+    const factory: ExtensionFactory = (pi) => {
+      pi.on("session_start", () => {
+        sessionStarts.push(true);
+      });
+    };
+    harness.extensionFactories = [factory];
+
+    await expect(runWorker(workspaceRoot, root, { assignee })).rejects.toThrow(error);
+    expect(sessionStarts).toEqual([]);
+  });
+
   it("logs extension errors through the worker logger", async () => {
     const factory: ExtensionFactory = (pi) => {
       pi.on("session_start", () => {
@@ -199,7 +183,7 @@ describe("runPiWorker extensions", () => {
     expect(harness.events).toEqual([]);
   });
 
-  it("returns an interruption for durable finalization when an extension session_start never settles", async () => {
+  it("hands back on the time limit when an extension session_start never settles", async () => {
     const factory: ExtensionFactory = (pi) => {
       pi.on("session_start", () => new Promise<void>(() => {}));
     };
@@ -211,8 +195,7 @@ describe("runPiWorker extensions", () => {
     expect(result.status).toBe("pending");
     expect(harness.events).toEqual([]);
     expect(harness.dispose).toHaveBeenCalledOnce();
-    expect(result).toMatchObject({ status: "pending", outcome: "interrupted", stopReason: "timeout" });
-    expect(linear.commentAndHandBack).not.toHaveBeenCalled();
+    expect(linear.commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("time limit"));
   });
 
   it("logs a binding rejection that arrives after the time limit stopped it", async () => {
@@ -236,16 +219,18 @@ describe("runPiWorker extensions", () => {
 async function runWorker(
   workspaceRoot: string,
   workspaceDir: string,
-  options: { maxWorkerTimeMs?: number; maxWorkerTokens?: number; gitEnv?: NodeJS.ProcessEnv; linear?: unknown } = {},
+  options: { maxWorkerTimeMs?: number; linear?: unknown; assignee?: WorkerInputContext["ticket"]["issue"]["assignee"] } = {},
 ) {
   const { runPiWorker } = await import("./pi.js");
+  const context = makeContext(workspaceRoot, workspaceDir);
+  if (options.assignee !== undefined) context.ticket.issue.assignee = options.assignee;
   return runPiWorker({
-    context: makeContext(workspaceRoot, workspaceDir),
-    github: { getInstallationToken: async () => "test-token" } as never,
+    context,
+    github: {} as never,
     linear: (options.linear ?? { commentAndHandBack: vi.fn(async () => {}), moveTicketToInReview: vi.fn(async () => {}) }) as never,
-    gitEnv: options.gitEnv ?? {},
+    gitEnv: {},
     maxWorkerTimeMs: options.maxWorkerTimeMs ?? 60_000,
-    maxWorkerTokens: options.maxWorkerTokens ?? 1_000_000,
+    maxWorkerTokens: 1_000_000,
     llmProvider: "anthropic",
     llmApiKey: "test-key",
     llmModel: "claude-opus-4-7", llmModelArn: null,
@@ -268,7 +253,7 @@ function makeContext(workspaceRoot: string, workspaceDir: string): WorkerInputCo
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
         teamKey: "ABC",
-        assignee: { id: "creator" },
+        assignee: { id: "creator", email: "creator@example.com" },
         delegate: { id: "user-1" },
         priority: 0,
       },

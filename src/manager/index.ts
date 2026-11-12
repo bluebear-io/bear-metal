@@ -156,7 +156,7 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     wakeResearch: () => slackResearch?.wake(),
   });
   slackResearch = new SlackResearchWorker({
-    db, github, config: customizationConfig, gateway: slackGateway, logger,
+    db, github, slackUsers: threadApi, config: customizationConfig, gateway: slackGateway, logger,
     pollIntervalMs: runtimeConfig.pollIntervalMs,
     wakeThread: (key) => slackCoordinator!.wake(key),
   });

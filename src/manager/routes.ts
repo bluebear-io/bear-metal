@@ -4,12 +4,12 @@ import type { LinearSource } from "./scheduler.js";
 
 const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "failed", "completed"] as const;
 type BmStatus = (typeof BM_STATUSES)[number];
-const STOP_REASONS = ["completed", "timeout", "crash", "error", "token_limit"] as const;
+const STOP_REASONS = ["completed", "timeout", "crash", "error"] as const;
 type StopReason = (typeof STOP_REASONS)[number];
 const TASK_TYPES = ["coding", "research", "coordinator"] as const;
 const TASK_STATUSES = ["in_progress", "validating", "waiting_for_human", "failed", "completed", "queued",
   "running", "awaiting_coordination", "approved", "posting", "coordinated", "canceled", "succeeded",
-  "dispatched", "timed_out", "crashed", "interrupted"] as const;
+  "dispatched", "timed_out", "crashed"] as const;
 
 function isBmStatus(v: unknown): v is BmStatus {
   return typeof v === "string" && (BM_STATUSES as readonly string[]).includes(v);

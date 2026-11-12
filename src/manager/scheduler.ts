@@ -70,6 +70,16 @@ const HUMAN_TAKEOVER_LINEAR_COMMENT =
   "Detected a commit on the PR branch made after bear-metal's last push, indicating a human takeover. " +
   "Releasing this ticket to avoid stepping on the human's work. Re-delegate to bear-metal if you'd like me to resume.";
 
+const UNASSIGNED_TICKET_COMMENT =
+  "Bear Metal needs an assignee on this ticket: the assignee is the BlueBear owner of the session that works on it. " +
+  "Assign someone and re-delegate to bear-metal to start it.";
+
+const OWNER_EMAIL_MISSING_COMMENT =
+  "Bear Metal could not read the assignee's email, which names the BlueBear owner of the session that works on it. " +
+  "Assign someone whose Linear account has an email and re-delegate to bear-metal to start it.";
+
+type OwnerCheck = "owned" | "unassigned" | "no_email";
+
 export interface TicketHandler {
   handle(ctx: TicketContext, trigger: RunTrigger): Promise<WorkOutcome>;
 }
@@ -478,11 +488,6 @@ async function refreshTrackedTickets(
         }
         continue;
       }
-      if (slot.latestTask.result?.outcome === "interrupted" && slot.slotStatus === "active"
-        && ticket.delegate?.id === agentId && !isTerminalLinearTicket(ticket)) {
-        // Finalization precedes Linear handback; do not redispatch in that gap or after a failed handback.
-        continue;
-      }
       const knownPrs = knownPrsForSlot(slot);
       const decision = await evaluateTicket(ticket, knownPrs, slot.slotStatus, agentId, github, db, logger, shouldRetryCi);
       if (decision.remove) {
@@ -547,6 +552,19 @@ async function refreshTrackedTickets(
         await db.setSlotStatus(slot.ticketId!, "released");
         ciDeferralStartedAt.delete(ticket.id);
         continue;
+      }
+
+      // The slot is released before the hand-back: if the hand-back fails, the ticket is still
+      // delegated and untracked, so admission refuses it again on the next poll.
+      if (decision.dispatch && slot.latestTask.resultStatus !== null) {
+        const owner = await checkOwner(ticket, linear);
+        if (owner !== "owned") {
+          await db.setSlotStatus(slot.ticketId!, "released");
+          await db.setTicketStatus(ticket.id, "waiting_for_human");
+          ciDeferralStartedAt.delete(ticket.id);
+          await handBackWithoutOwner(ticket, owner, linear, logger);
+          continue;
+        }
       }
 
       if (slot.slotStatus !== decision.phase) {
@@ -690,7 +708,12 @@ async function admitNewTickets(
     ...tracked.map((slot) => slot.ticketId),
     ...waitingIds.filter((id) => !candidateIds.has(id)),
   ]);
-  const admitted = selectAdmissions(candidates, (id) => excludedIds.has(id), free);
+  const owned = await refuseTicketsWithoutOwner(
+    candidates.filter((ticket) => !excludedIds.has(ticket.id)),
+    linear,
+    logger,
+  );
+  const admitted = selectAdmissions(owned, (id) => excludedIds.has(id), free);
   const waitingIdSet = new Set(waitingIds);
   const contexts: DispatchItem[] = [];
   for (const ticket of admitted) {
@@ -718,6 +741,50 @@ async function admitNewTickets(
     contexts.push({ context, trigger: "new" });
   }
   return contexts;
+}
+
+/**
+ * The owned candidates. The rest are commented on and undelegated, which drops them from
+ * findDelegatedTickets; a failed lookup or hand-back is retried on the next poll, since the ticket
+ * stays a candidate.
+ */
+async function refuseTicketsWithoutOwner(tickets: Ticket[], linear: LinearSource, logger: Logger): Promise<Ticket[]> {
+  const checks = await Promise.allSettled(tickets.map((ticket) => checkOwner(ticket, linear)));
+  const owned: Ticket[] = [];
+  const refusals: Array<Promise<void>> = [];
+  checks.forEach((check, index) => {
+    const ticket = tickets[index]!;
+    if (check.status === "rejected") {
+      logger.error({ err: check.reason, ticket: ticket.identifier }, "failed to read the assignee's email; will retry next poll");
+    } else if (check.value === "owned") {
+      owned.push(ticket);
+    } else {
+      refusals.push(handBackWithoutOwner(ticket, check.value, linear, logger));
+    }
+  });
+  for (const refusal of await Promise.allSettled(refusals)) {
+    if (refusal.status === "rejected") {
+      logger.error({ err: refusal.reason }, "failed to refuse a ticket without an owner; will retry next poll");
+    }
+  }
+  return owned;
+}
+
+/** A delegated ticket's assignee owns its BlueBear session, so the run needs the assignee's email. */
+async function checkOwner(ticket: Ticket, linear: LinearSource): Promise<OwnerCheck> {
+  if (!ticket.assignee) return "unassigned";
+  const email = ticket.assignee.email ?? await linear.getUserEmail(ticket.assignee.id);
+  return email ? "owned" : "no_email";
+}
+
+async function handBackWithoutOwner(
+  ticket: Ticket,
+  owner: Exclude<OwnerCheck, "owned">,
+  linear: LinearSource,
+  logger: Logger,
+): Promise<void> {
+  logger.warn({ ticket: ticket.identifier, owner }, "ticket has no owner email; refusing and handing back");
+  await linear.commentAndHandBack(ticket.id, owner === "unassigned" ? UNASSIGNED_TICKET_COMMENT : OWNER_EMAIL_MISSING_COMMENT);
 }
 
 async function dispatchTickets(

@@ -1,7 +1,6 @@
 import type { CSSProperties } from "react";
 
 const toneColorByStatus: Record<string, string> = {
-  interrupted: "var(--color-status-orange)",
   completed: "var(--color-status-green)",
   passed: "var(--color-status-green)",
   merged: "var(--color-status-green)",

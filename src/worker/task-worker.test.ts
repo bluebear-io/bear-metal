@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createLogger } from "../shared/index.js";
-import { SqlDbClient, type DbClient, type DispatchTaskInput, type TaskRecord } from "../db/client.js";
+import type { DbClient, DispatchTaskInput, TaskRecord } from "../db/client.js";
 import { TaskWorker } from "./task-worker.js";
 import type { DispatchInput, DispatchResult } from "./dispatch.js";
 import type { BearMetalConfig } from "../customization/types.js";
@@ -11,34 +11,6 @@ const config = { llmProviders: {}, customizeTask: vi.fn() } as unknown as BearMe
 const agentToolGateway = { availableTools: () => [], execute: vi.fn() };
 
 describe("TaskWorker", () => {
-  it("persists interruption before handback and supplies its checkpoint on re-dispatch", async () => {
-    const db = new SqlDbClient("sqlite::memory:", 5);
-    await db.initSchema();
-    const input = { state: "new" as const, ticketId: "ABC-1", ticketIssueId: "lin_1", prs: [], trigger: "new" as const };
-    const task = await db.enqueue(input);
-    const checkpoint = { workspaceRoot: "/retained", repositories: [], error: "commit rejected" };
-    const usage = { promptTokens: 1020, completionTokens: 5, cacheReadTokens: 1000, cacheWriteTokens: 10, modelName: "test", provider: "test" };
-    const integrations = makeIntegrations();
-    integrations.linear.commentAndHandBack = vi.fn(async () => {
-      const persisted = await db.getAgentRunDetail(task.id);
-      expect(persisted?.run).toMatchObject({ status: "interrupted", stopReason: "token_limit", usage });
-      expect(JSON.parse(persisted!.run.resultJson!).checkpoint).toEqual(checkpoint);
-    });
-    const runDispatch = vi.fn(async (): Promise<DispatchResult> => ({ status: "pending", prs: [], outcome: "interrupted", stopReason: "token_limit", checkpoint, usage }));
-    const worker = new TaskWorker({ logger, db, integrations, concurrency: 1, pollIntervalMs: 60_000,
-      heartbeatIntervalMs: 30_000, maxReclaims: 3, agentId: undefined, config, runDispatch });
-    try {
-      await worker.tick();
-      await worker.stop();
-      expect(integrations.linear.commentAndHandBack).toHaveBeenCalledWith("lin_1", expect.stringContaining("commit rejected"));
-      await db.enqueue({ ...input, trigger: "delegated_back" });
-      runDispatch.mockImplementationOnce(async () => ({ status: "done", prs: [] }));
-      await worker.tick();
-      await worker.stop();
-      expect(runDispatch).toHaveBeenLastCalledWith(expect.objectContaining({ checkpoint }));
-    } finally { await worker.stop(); await db.close(); }
-  });
-
   it("aborts dispatch and discards its result after losing the lease", async () => {
     const db = new FakeDb(taskRecord({}));
     vi.spyOn(db, "heartbeat").mockImplementation(async (taskId, workerId) => {
@@ -63,6 +35,7 @@ describe("TaskWorker", () => {
       await worker.stop();
     }
     expect(db.completed).toEqual([]);
+    expect(db.upsertRunSucceededCalls).toEqual([]);
     expect(db.upsertRunCrashedCalls).toEqual([]);
     expect(db.markCrashedCalls).toEqual([]);
   });
@@ -139,6 +112,7 @@ describe("TaskWorker", () => {
     expect(db.upsertRunStartedCalls).toEqual([
       expect.objectContaining({ taskId: "task-1", workerId: "worker-1" }),
     ]);
+    expect(db.upsertRunSucceededCalls).toEqual([{ taskId: "task-1", usage: null }]);
     expect(db.upsertRunCrashedCalls).toHaveLength(0);
   });
 
@@ -146,7 +120,7 @@ describe("TaskWorker", () => {
     const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
     const db = new FakeDb(taskRecord({ input }));
     const runDispatch = vi.fn(async (_input: DispatchInput): Promise<DispatchResult> => {
-      throw new Error("fetch failed: ssh://user:crash-password@host/repo");
+      throw new Error("boom");
     });
     const worker = new TaskWorker({
       logger,
@@ -173,8 +147,6 @@ describe("TaskWorker", () => {
     expect(db.upsertRunCrashedCalls.length).toBeGreaterThanOrEqual(1);
     expect(db.upsertRunCrashedCalls[0]).toEqual(expect.objectContaining({ taskId: "task-1" }));
     expect(db.upsertRunCrashedCalls[0]).toEqual(expect.objectContaining({ lease: { workerId: "worker-1", reclaimCount: 0 } }));
-    expect(JSON.stringify(db.upsertRunCrashedCalls)).not.toContain("crash-password");
-    expect(JSON.stringify(db.upsertRunCrashedCalls)).toContain("REDACTED");
     expect(db.markCrashedCalls).toEqual([{ taskId: "task-1", workerId: "worker-1", maxReclaims: 5 }]);
   });
 
@@ -243,11 +215,11 @@ function taskRecord(overrides: Partial<TaskRecord>): TaskRecord {
 }
 
 class FakeDb {
-  async getLatestCheckpoint() { return undefined; }
   acquiredBy: string[] = [];
   completed: Array<{ taskId: string; result: DispatchResult }> = [];
   heartbeats: Array<{ taskId: string; workerId: string }> = [];
   upsertRunStartedCalls: object[] = [];
+  upsertRunSucceededCalls: Array<{ taskId: string; usage: object | null }> = [];
   upsertRunCrashedCalls: object[] = [];
   markCrashedCalls: Array<{ taskId: string; workerId: string; maxReclaims: number }> = [];
   private task: TaskRecord | null;
@@ -303,6 +275,9 @@ class FakeDb {
     this.upsertRunStartedCalls.push({ taskId, workerId, workerStartedAt });
   }
 
+  async upsertRunSucceeded(taskId: string, usage?: object | null): Promise<void> {
+    this.upsertRunSucceededCalls.push({ taskId, usage: usage ?? null });
+  }
 
   async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number }): Promise<boolean> {
     this.upsertRunCrashedCalls.push({ taskId, error, lease });

@@ -1,5 +1,3 @@
-import type { DispatchResult } from "../worker/types.js";
-import type { Checkpoint } from "../worker/checkpoint.js";
 import { readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -25,10 +23,10 @@ function modelFamily(provider: string | null, modelName: string | null): "claude
 
 export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 
-export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed" | "interrupted";
+export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
-export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error" | "token_limit";
+export type StopReason = "completed" | "deferred" | "timeout" | "crash" | "error";
 
 export interface TaskRow {
   id: string;
@@ -76,7 +74,6 @@ export interface TaskRow {
   ended_at: string | null;
   stop_reason: string | null;
   error: string | null;
-  usage_json: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   model_name: string | null;
@@ -118,7 +115,6 @@ export function slackReplyKey(reply: SlackCoordinationReply): string {
 }
 
 export interface AgentRunSummary {
-  usage?: RunUsage | null;
   id: string;
   type: string;
   status: string;
@@ -188,7 +184,6 @@ export interface TaskListOptions {
 
 function rowToAgentRun(row: TaskRow): AgentRunSummary {
   return {
-    usage: row.usage_json ? JSON.parse(row.usage_json) as RunUsage : null,
     id: row.id, type: row.task_type, status: row.run_status ?? row.slack_state ?? row.dispatch_state ?? "queued",
     slackState: row.slack_state,
     slackQuote: row.slack_quote, slackReplyTs: row.slack_reply_ts,
@@ -317,7 +312,11 @@ export interface PullRequestRef {
   number: number;
 }
 
-export type { DispatchResult } from "../worker/types.js";
+export interface DispatchResult {
+  status: "pending" | "done";
+  prs: PullRequestRef[];
+  notifyOnComplete?: boolean;
+}
 
 export interface DispatchTaskInput {
   state: DispatchState;
@@ -650,8 +649,6 @@ export interface TicketInput {
 
 
 export interface RunUsage {
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
   promptTokens: number;
   completionTokens: number;
   modelName: string;
@@ -753,7 +750,8 @@ export interface DbClient {
   listDeliveredPrNotifications(taskId: string): Promise<Set<string>>;
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
-  upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }, usage?: RunUsage | null): Promise<boolean>;
+  upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
+  upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
   upsertPullRequest(id: string, ticketId: string, data: PullRequestInputData): Promise<void>;
@@ -765,7 +763,6 @@ export interface DbClient {
   markCompleted(pr: PullRequestRef, commentId: string): Promise<void>;
   getCompleted(pr: PullRequestRef): Promise<Set<string>>;
 
-  getLatestCheckpoint(ticketId: string): Promise<Checkpoint | undefined>;
   enqueue(input: DispatchTaskInput): Promise<TaskRecord>;
   acquireNext(workerId: string): Promise<TaskRecord | null>;
   complete(taskId: string, result: DispatchResult, workerId?: string, reclaimCount?: number): Promise<void>;
@@ -856,7 +853,7 @@ function parseDispatchResult(value: string | null): DispatchResult | null {
     : parsed.pr != null
       ? [parsePullRequestRef(parsed.pr)]
       : [];
-  return { ...parsed, status, prs } as DispatchResult;
+  return { status, prs };
 }
 
 // Stricter than parseDispatchResult: a stored coding outcome must be a complete payload as written by
@@ -868,14 +865,9 @@ function validateStoredDispatchResult(value: string): void {
   } catch (err) {
     throw new Error(`result_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
-  validateDispatchResult(parsed);
-}
-
-function validateDispatchResult(parsed: unknown): void {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("result_json must be an object");
   const result = parsed as Record<string, unknown>;
   if (result.status !== "pending" && result.status !== "done") throw new Error(`Invalid dispatch result status: ${String(result.status)}`);
-  validateDispatchInterruption(result);
   if (result.notifyOnComplete !== undefined && typeof result.notifyOnComplete !== "boolean") throw new Error("notifyOnComplete must be a boolean");
   if (result.prs !== undefined) {
     if (!Array.isArray(result.prs)) throw new Error("prs must be an array");
@@ -884,14 +876,6 @@ function validateDispatchResult(parsed: unknown): void {
     if (result.pr !== null) validateStoredPullRequestRef(result.pr);
   } else {
     throw new Error("result_json is missing prs");
-  }
-}
-
-function validateDispatchInterruption(r: Record<string, unknown>): void {
-  const hasCheckpoint = typeof r.checkpoint === "object" && r.checkpoint !== null && !Array.isArray(r.checkpoint);
-  if (r.outcome === undefined ? r.stopReason !== undefined || r.checkpoint !== undefined
-    : r.outcome !== "interrupted" || r.status !== "pending" || !(r.stopReason === "timeout" || (r.stopReason === "token_limit" && hasCheckpoint))) {
-    throw new Error("Invalid interrupted dispatch: outcome, pending status, stop reason, and token-limit checkpoint must agree");
   }
 }
 
@@ -2212,17 +2196,29 @@ export class SqlDbClient implements DbClient {
     );
   }
 
+  async upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET run_status = 'succeeded', stop_reason = 'completed',
+         ended_at = ?, prompt_tokens = COALESCE(?, prompt_tokens),
+         completion_tokens = COALESCE(?, completion_tokens),
+         model_name = COALESCE(?, model_name),
+         provider = COALESCE(?, provider),
+         updated_at = ?
+       WHERE id = ?`,
+      [now, usage?.promptTokens ?? null, usage?.completionTokens ?? null,
+       usage?.modelName ?? null, usage?.provider ?? null, now, taskId],
+    );
+  }
 
-  async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }, usage?: RunUsage | null): Promise<boolean> {
+  async upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean> {
     const now = this.clock.nowIso();
     const result = await this.run(
       `UPDATE tasks SET run_status = 'crashed', stop_reason = 'crash',
-         error = ?, ended_at = ?, updated_at = ?, usage_json = COALESCE(?, usage_json),
-         prompt_tokens = COALESCE(?, prompt_tokens), completion_tokens = COALESCE(?, completion_tokens),
-         model_name = COALESCE(?, model_name), provider = COALESCE(?, provider)
+         error = ?, ended_at = ?, updated_at = ?
        WHERE id = ? AND reclaim_count = ? AND ${lease.workerId === null ? "worker_id IS NULL" : "worker_id = ?"}
          AND ${lease.abandoned ? "result_status = 'pending' AND slot_status = 'released'" : "result_status IS NULL"}`,
-      [error, now, now, usage ? JSON.stringify(usage) : null, usage?.promptTokens ?? null, usage?.completionTokens ?? null, usage?.modelName ?? null, usage?.provider ?? null, taskId, lease.reclaimCount, ...(lease.workerId === null ? [] : [lease.workerId])],
+      [error, now, now, taskId, lease.reclaimCount, ...(lease.workerId === null ? [] : [lease.workerId])],
     );
     return result.changes === 1;
   }
@@ -2407,31 +2403,12 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  async getLatestCheckpoint(ticketId: string): Promise<Checkpoint | undefined> {
-    // Completed handbacks supersede checkpoints; crashed retries do not.
-    const rows = await this.query<{ result_json: string }>(
-      `SELECT result_json FROM tasks WHERE ticket_id = ? AND task_type = 'coding' AND result_json IS NOT NULL
-         AND (stop_reason = 'token_limit' OR result_status = 'done' OR (stop_reason = 'completed' AND result_status = 'pending'))
-       ORDER BY created_at DESC, id DESC LIMIT 1`, [ticketId]);
-    if (!rows[0]) return undefined;
-    validateStoredDispatchResult(rows[0].result_json);
-    const result = parseDispatchResult(rows[0].result_json);
-    return result?.stopReason === "token_limit" ? result.checkpoint : undefined;
-  }
-
   async complete(taskId: string, result: DispatchResult, workerId?: string, reclaimCount?: number): Promise<void> {
-    validateDispatchResult(result);
     const now = this.clock.nowIso();
     const update = await this.run(
-      `UPDATE tasks SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?,
-         run_status = ?, stop_reason = ?, ended_at = ?, usage_json = COALESCE(?, usage_json),
-         prompt_tokens = COALESCE(?, prompt_tokens), completion_tokens = COALESCE(?, completion_tokens),
-         model_name = COALESCE(?, model_name), provider = COALESCE(?, provider)
+      `UPDATE tasks SET result_status = ?, result_json = ?, updated_at = ?, completed_at = ?
        WHERE id = ? AND worker_id IS NOT NULL AND result_status IS NULL${workerId === undefined ? "" : " AND worker_id = ?"}${reclaimCount === undefined ? "" : " AND reclaim_count = ?"}`,
-      [result.status, JSON.stringify(result), now, now, result.outcome === "interrupted" ? "interrupted" : "succeeded",
-       result.stopReason ?? "completed", now, result.usage ? JSON.stringify(result.usage) : null, result.usage?.promptTokens ?? null, result.usage?.completionTokens ?? null,
-       result.usage?.modelName ?? null, result.usage?.provider ?? null,
-       taskId, ...(workerId === undefined ? [] : [workerId]), ...(reclaimCount === undefined ? [] : [reclaimCount])],
+      [result.status, JSON.stringify(result), now, now, taskId, ...(workerId === undefined ? [] : [workerId]), ...(reclaimCount === undefined ? [] : [reclaimCount])],
     );
     if (update.changes !== 1) {
       throw new Error(`Cannot complete task that is missing, unacquired, or already completed: ${taskId}`);

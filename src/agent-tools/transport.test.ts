@@ -92,28 +92,6 @@ describe("AgentToolTransport", () => {
     expect(normalizeAgentToolError(new Error("provider echoed github_pat_abc123 and xoxb-123-456"), "github").message).toBe("provider echoed [REDACTED] and [REDACTED]");
   });
 
-  it.each(["https", "ftp", "ssh", "git+ssh"])("redacts %s URL credentials while preserving unrelated query parameters", (scheme) => {
-    const source = `${scheme}://user:password@host.test/repo?token=secret&keep=2`;
-    const redacted = String(redactCredentials(source));
-    const url = new URL(redacted);
-    expect(url.password).toBe("");
-    expect(decodeURIComponent(url.username)).toBe("[REDACTED]");
-    expect(url.searchParams.get("token")).toBe("[REDACTED]");
-    expect(url.searchParams.get("keep")).toBe("2");
-    const message = String(redactCredentials(`Error: unable to fetch ${source}`));
-    expect(message).not.toContain("password");
-    expect(message).not.toContain("secret");
-  });
-
-  it("applies token patterns to parseable URLs without dropping other query parameters", () => {
-    const redacted = String(redactCredentials("https://host.test/ghp_abc123/x?sig=secret&keep=2#access_token=xyz"));
-    expect(redacted).not.toMatch(/ghp_abc123|secret|xyz/);
-    expect(new URL(redacted).searchParams.get("keep")).toBe("2");
-    const atInQuery = new URL(String(redactCredentials("https://example.com?email=user@corp.com&keep=2")));
-    expect(atInQuery.host).toBe("example.com");
-    expect(atInQuery.searchParams.get("keep")).toBe("2");
-  });
-
   it("bounds pagination budgets", () => {
     expect(enforcePaginationBudget(undefined, 5)).toBe(1);
     expect(enforcePaginationBudget(10, 5)).toBe(5);

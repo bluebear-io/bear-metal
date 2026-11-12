@@ -275,10 +275,7 @@ function redactMessage(message: string): string {
 
 function redactString(value: string): string {
   try {
-    // Shared patterns stop at & and #, so they keep unrelated query parameters intact.
-    const url = new URL(redactCredentialText(value));
-    // Error-prefixed messages parse as opaque URLs; only hierarchical URLs have query semantics.
-    if (!url.host) return redactMessage(value);
+    const url = new URL(value);
     for (const key of url.searchParams.keys()) {
       if (SENSITIVE_QUERY_KEYS.test(key)) url.searchParams.set(key, "[REDACTED]");
     }

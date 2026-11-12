@@ -1,4 +1,3 @@
-import { redactSensitiveText } from "../agent-tools/transport.js";
 import { mkdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -8,7 +7,6 @@ import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
-import { restoreCheckpoint, type Checkpoint } from "./checkpoint.js";
 import { runPiWorker } from "./pi.js";
 import type {
   DispatchResult,
@@ -29,8 +27,6 @@ const logger = createLogger({
 
 export interface DispatchInput {
   signal?: AbortSignal;
-  assertLease?: () => Promise<void>;
-  checkpoint?: Checkpoint;
   state: DispatchState;
   ticketId: string;
   ticketIssueId?: string;
@@ -122,7 +118,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return r;
   });
 
-  let retainWorkspace = false;
   try {
   input.signal?.throwIfAborted();
   const linearAccessToken = await linear.getAccessToken();
@@ -140,7 +135,6 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     pullRequests,
     cloneScript,
     evidenceAttachments,
-    checkpoint: input.checkpoint,
   };
 
   input.signal?.throwIfAborted();
@@ -169,23 +163,9 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     GIT_COMMITTER_EMAIL: botEmail,
   };
 
-    if (input.checkpoint) {
-      try {
-        await input.assertLease?.();
-        await restoreCheckpoint(cloneScript.agentWorkdir, input.checkpoint, gitEnv, input.signal);
-      } catch (error) {
-        input.signal?.throwIfAborted();
-        await input.assertLease?.();
-        logger.error({ error: redactSensitiveText(String(error)), ticketId }, "checkpoint recovery failed; returning for operator recovery");
-        return { status: "pending", prs, outcome: "interrupted", stopReason: "token_limit",
-          checkpoint: { ...input.checkpoint, error: redactSensitiveText(String(error)) } };
-      }
-    }
     const result = await runPiWorker({
       context, github, linear, commentStore, gitEnv, agentToolGateway: input.agentToolGateway,
       signal: input.signal,
-      assertLease: input.assertLease,
-      onInterrupted: (reason) => { retainWorkspace ||= reason === "token_limit"; },
       runId: input.runId,
       systemPrompt: customization.additionalSystemPrompt,
       pullRequestLabels: customization.pullRequestLabels,
@@ -205,7 +185,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     return result;
   } finally {
     await rm(cloneScript.netrcDir, { recursive: true, force: true });
-    if (!retainWorkspace) try {
+    try {
       await rm(cloneScript.workspaceDir, { recursive: true, force: true });
       logger.info({ ticketId, workspaceDir: cloneScript.workspaceDir }, "removed task workspace");
     } catch (error) {

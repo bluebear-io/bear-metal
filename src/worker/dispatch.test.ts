@@ -1,18 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runCommand } from "../shared/command.js";
-import { saveCheckpoint, type Checkpoint } from "./checkpoint.js";
 import type { BearMetalConfig } from "../customization/types.js";
 import type { WorkerInputContext } from "./types.js";
 
-const state = vi.hoisted(() => ({ calls: [] as string[], piInputs: [] as any[], tasks: [] as any[], downloadedAttachments: [] as any[], throwPi: false, interrupt: false, timeout: false }));
+const state = vi.hoisted(() => ({ calls: [] as string[], piInputs: [] as any[], tasks: [] as any[], downloadedAttachments: [] as any[], throwPi: false }));
 vi.mock("./pi.js", () => ({
   runPiWorker: async (input: any) => {
     state.calls.push("pi"); state.piInputs.push(input);
-    if (state.interrupt) input.onInterrupted("token_limit");
-    if (state.timeout) { input.onInterrupted("timeout"); return { status: "pending", prs: [], outcome: "interrupted", stopReason: "timeout" }; }
     if (state.throwPi) throw new Error("pi failed");
     return { status: "pending", prs: [] };
   },
@@ -29,95 +25,9 @@ describe("dispatch customization boundary", () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "bear-metal-dispatch-test-"));
     process.env.BEAR_METAL_WORKSPACE_DIR = root;
-    state.calls.length = 0; state.piInputs.length = 0; state.tasks.length = 0; state.downloadedAttachments.length = 0; state.throwPi = false; state.interrupt = false; state.timeout = false;
+    state.calls.length = 0; state.piInputs.length = 0; state.tasks.length = 0; state.downloadedAttachments.length = 0; state.throwPi = false;
   });
   afterEach(async () => { delete process.env.BEAR_METAL_WORKSPACE_DIR; await rm(root, { recursive: true, force: true }); });
-
-  it("retains interrupted work even if shutdown or checkpointing throws", async () => {
-    state.interrupt = true;
-    state.throwPi = true;
-    await expect(dispatch(makeConfig())).rejects.toThrow("pi failed");
-    expect((await stat(state.piInputs[0].context.cloneScript.workspaceDir)).isDirectory()).toBe(true);
-    await expect(stat(state.piInputs[0].context.cloneScript.netrcDir)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("cleans up timeout-interrupted workspaces", async () => {
-    state.timeout = true;
-    expect(await dispatch(makeConfig())).toMatchObject({ outcome: "interrupted", stopReason: "timeout" });
-    await expect(stat(state.piInputs[0].context.cloneScript.workspaceDir)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  async function recoveryFixture() {
-    const retained = join(root, "retained");
-    const remote = join(root, "remote.git");
-    await mkdir(retained);
-    const env = { ...process.env, GIT_AUTHOR_NAME: "Test", GIT_COMMITTER_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.com", GIT_COMMITTER_EMAIL: "test@example.com" };
-    const git = (cwd: string, ...args: string[]) => runCommand("git", args, { cwd, env, timeoutMs: 10_000 });
-    await git(root, "init", "--bare", "-b", "main", remote);
-    await git(retained, "init", "-b", "main");
-    await writeFile(join(retained, "work.txt"), "base");
-    await git(retained, "add", "."); await git(retained, "commit", "-m", "base");
-    await git(retained, "remote", "add", "origin", remote); await git(retained, "push", "origin", "main");
-    await writeFile(join(retained, "work.txt"), "unfinished");
-    const built: string[] = [];
-    const config = makeConfig();
-    const customize = config.customizeTask;
-    config.customizeTask = async (task) => ({ ...await customize(task), buildWorkspace: async ({ workspacePath }) => {
-      built.push(workspacePath);
-      await git(root, "clone", "--branch", "main", remote, workspacePath);
-    } });
-    return { retained, remote, env, git, built, config };
-  }
-
-  it("recovers a failed-push checkpoint after the branch is pushed manually", async () => {
-    const f = await recoveryFixture();
-    const hook = join(f.remote, "hooks/pre-receive");
-    await writeFile(hook, "#!/bin/sh\nexit 1\n"); await chmod(hook, 0o755);
-    const checkpoint = await saveCheckpoint({ workspaceRoot: f.retained, branch: "branch", ticketId: "ABC-1", gitEnv: f.env });
-    await rm(hook);
-    await f.git(f.retained, "push", "origin", "branch");
-    await writeFile(join(f.retained, "later.txt"), "must remain uncommitted");
-    const assertLease = vi.fn(async () => {});
-    await dispatch(f.config, { checkpoint, assertLease });
-    expect(state.piInputs).toHaveLength(1);
-    expect(assertLease).toHaveBeenCalled();
-    expect((await f.git(f.retained, "status", "--porcelain")).stdout).toContain("later.txt");
-  });
-
-  it("hands back a failed-commit checkpoint without retrying the commit", async () => {
-    const f = await recoveryFixture();
-    const hook = join(f.retained, ".git/hooks/pre-commit");
-    await writeFile(hook, "#!/bin/sh\nexit 1\n"); await chmod(hook, 0o755);
-    const checkpoint = await saveCheckpoint({ workspaceRoot: f.retained, branch: "branch", ticketId: "ABC-1", gitEnv: f.env });
-    await rm(hook);
-    const result = await dispatch(f.config, { checkpoint, assertLease: async () => {} });
-    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit" });
-    expect(state.piInputs).toHaveLength(0);
-    expect((await f.git(f.retained, "status", "--porcelain")).stdout).toContain("work.txt");
-  });
-
-  it("hands back recovery failure with a redacted error and removes only the fresh workspace", async () => {
-    const f = await recoveryFixture();
-    const checkpoint = await saveCheckpoint({ workspaceRoot: f.retained, branch: "branch", ticketId: "ABC-1", gitEnv: f.env });
-    const secret = "recovery-password";
-    const assertLease = vi.fn(async () => { if (assertLease.mock.calls.length === 1) throw new Error(`fatal: unable to access https://user:${secret}@github.com/acme/repo.git`); });
-    const result = await dispatch(f.config, { checkpoint, assertLease });
-    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit" });
-    expect(result.checkpoint?.error).not.toContain(secret);
-    expect(result.checkpoint?.error).toContain("REDACTED");
-    expect(state.piInputs).toHaveLength(0);
-    expect(await readFile(join(f.retained, "work.txt"), "utf8")).toBe("unfinished");
-    await expect(stat(f.built[0]!)).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("discards recovery after lease loss", async () => {
-    const f = await recoveryFixture();
-    const checkpoint = await saveCheckpoint({ workspaceRoot: f.retained, branch: "branch", ticketId: "ABC-1", gitEnv: f.env });
-    await expect(dispatch(f.config, { checkpoint, assertLease: async () => { throw new Error("Lease lost"); } })).rejects.toThrow("Lease lost");
-    expect(state.piInputs).toHaveLength(0);
-    expect(await readFile(join(f.retained, "work.txt"), "utf8")).toBe("unfinished");
-    await expect(stat(f.built[0]!)).rejects.toMatchObject({ code: "ENOENT" });
-  });
 
   it("customizes before building and passes exact provider, model, prompt, and limits to Pi", async () => {
     const config = makeConfig();
@@ -237,8 +147,6 @@ describe("dispatch customization boundary", () => {
 async function dispatch(
   config: BearMetalConfig,
   options: {
-    checkpoint?: Checkpoint;
-    assertLease?: () => Promise<void>;
     state?: "new" | "iteration";
     prs?: Array<{ owner: string; repo: string; number: number }>;
     integrations?: ReturnType<typeof makeIntegrations>;
@@ -248,8 +156,6 @@ async function dispatch(
 ) {
   const { dispatch } = await import("./dispatch.js");
   return dispatch({
-    checkpoint: options.checkpoint,
-    assertLease: options.assertLease,
     state: options.state ?? "new",
     iteration: 1,
     ticketId: "ABC-1",

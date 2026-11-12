@@ -1,4 +1,3 @@
-import type { Checkpoint } from "./checkpoint.js";
 import type {
   LinearTicketContext,
   PullRequestContext,
@@ -14,8 +13,6 @@ export type DispatchState = "new" | "iteration";
 
 /** LLM usage stats from the pi agent session, surfaced for cost/efficacy analytics. */
 export interface DispatchUsage {
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
   promptTokens: number;
   completionTokens: number;
   modelName: string;
@@ -48,9 +45,6 @@ export interface DispatchToolCall {
 
 export type DispatchResult = {
   status: "pending" | "done";
-  outcome?: "interrupted";
-  stopReason?: "token_limit" | "timeout";
-  checkpoint?: Checkpoint;
   prs: PullRequestRef[];
   usage?: DispatchUsage;
   /** Ordered tool-call timeline for the run; empty when no tool calls were captured. */
@@ -130,6 +124,5 @@ export type WorkerInputContext = {
   ticket: LinearTicketContext;
   pullRequests: PullRequestContext[];
   cloneScript: CloneScriptResult;
-  checkpoint?: Checkpoint;
   evidenceAttachments?: import("./attachments.js").DownloadedTicketAttachment[];
 };

@@ -8,9 +8,6 @@ import type { WorkerInputContext } from "./types.js";
 type TestTool = { name: string; parameters?: unknown; execute: (id: string, params: unknown) => Promise<unknown> };
 
 const piMock = vi.hoisted(() => ({
-  listeners: [] as Array<(event: { type: string }) => void>,
-  agentListeners: [] as Array<(event: { type: string }) => void>,
-  tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   sessionAbort: vi.fn(async () => {}),
   runtimeDispose: vi.fn(async () => {}),
   runTools: vi.fn(async (customTools: TestTool[]) => {
@@ -73,11 +70,7 @@ vi.mock("./pi-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./pi-runtime.js")>()),
   createPiSessionRuntime: async (input: { customTools: TestTool[] }) => ({
     session: {
-      subscribe: (listener: (event: { type: string }) => void) => { piMock.listeners.push(listener); return () => {}; },
-      agent: { streamFunction: vi.fn(), subscribe: (listener: (event: { type: string }) => void) => { piMock.agentListeners.push(listener); return () => {}; } },
-      model: { name: "test", provider: "anthropic" },
-      getSessionStats: () => ({ tokens: piMock.tokens }),
-      setAutoCompactionEnabled: vi.fn(), setAutoRetryEnabled: vi.fn(), clearQueue: vi.fn(),
+      subscribe: vi.fn().mockReturnValue(vi.fn()),
       bindExtensions: async () => {},
       exportToJsonl: vi.fn(),
       prompt: async () => piMock.runTools(input.customTools),
@@ -88,51 +81,6 @@ vi.mock("./pi-runtime.js", async (importOriginal) => ({
 }));
 
 describe("runPiWorker", () => {
-  it("retains usage and an interrupted outcome when the token abort throws", async () => {
-    piMock.sessionAbort.mockClear();
-    const { runPiWorker } = await import("./pi.js");
-    piMock.runTools.mockImplementationOnce(async () => {
-      piMock.tokens = { input: 10, output: 5, cacheWrite: 5, cacheRead: 1000, total: 1020 };
-      for (const listener of piMock.agentListeners) listener({ type: "message_end", message: { role: "assistant" } } as { type: string });
-      for (const listener of piMock.agentListeners) listener({ type: "message_end", message: { role: "assistant" } } as { type: string });
-      throw new Error("session aborted");
-    });
-    const result = await runPiWorker({ context: makeContext(), github: makeGithub(), linear: makeLinear(), gitEnv: {},
-      maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "test", llmModelArn: null });
-    expect(result).toMatchObject({ status: "pending", outcome: "interrupted", stopReason: "token_limit",
-      usage: { promptTokens: 1015, completionTokens: 5, cacheReadTokens: 1000, cacheWriteTokens: 5 } });
-    expect(result.checkpoint?.error).toContain("No Git repositories");
-    expect(piMock.sessionAbort).toHaveBeenCalledOnce();
-  });
-
-  it("checkpoints invalid provider usage instead of throwing from the event listener", async () => {
-    const { runPiWorker } = await import("./pi.js");
-    piMock.sessionAbort.mockClear();
-    piMock.runTools.mockImplementationOnce(async () => {
-      piMock.tokens = { input: NaN, output: 5, cacheWrite: 0, cacheRead: 0, total: NaN };
-      for (const listener of piMock.agentListeners) listener({ type: "message_end", message: { role: "assistant" } } as { type: string });
-    });
-    const result = await runPiWorker({ context: makeContext(), github: makeGithub(), linear: makeLinear(), gitEnv: {},
-      maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "test", llmModelArn: null });
-    expect(result).toMatchObject({ outcome: "interrupted", stopReason: "token_limit" });
-    expect(result.checkpoint).toBeDefined();
-    expect(piMock.sessionAbort).toHaveBeenCalledOnce();
-  });
-
-  it("does not stop for cache reads alone", async () => {
-    const { runPiWorker } = await import("./pi.js");
-    piMock.sessionAbort.mockClear();
-    piMock.runTools.mockImplementationOnce(async (tools: TestTool[]) => {
-      piMock.tokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 30_000_000, total: 30_000_000 };
-      for (const listener of piMock.listeners) listener({ type: "turn_end", message: { role: "user" } } as { type: string });
-      await executeTool(tools, "respond_to_ticket_reporter", { text: "Question" });
-    });
-    const result = await runPiWorker({ context: makeContext(), github: makeGithub(), linear: makeLinear(), gitEnv: {},
-      maxWorkerTimeMs: 7_200_000, maxWorkerTokens: 20, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "test", llmModelArn: null });
-    expect(piMock.sessionAbort).not.toHaveBeenCalled();
-    expect(result.outcome).toBeUndefined();
-    expect(result.usage?.cacheReadTokens).toBe(30_000_000);
-  });
   it("does not push after losing the lease while refreshing credentials", async () => {
     const { runPiWorker } = await import("./pi.js");
     const controller = new AbortController();
@@ -180,8 +128,6 @@ describe("runPiWorker", () => {
   // per test (not a shared /tmp path) so a parallel dispatch.test, whose dispatch cleanup
   // rm's its netrcDir, can't delete ours mid-write.
   beforeEach(async () => {
-    piMock.listeners = [];
-    piMock.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
     netrcDir = await mkdtemp(join(tmpdir(), "bear-metal-pi-test-"));
     workspaceRoot = join(netrcDir, "agent");
     await mkdir(workspaceRoot);
@@ -1164,7 +1110,7 @@ function makeContext(overrides: Partial<WorkerInputContext> = {}): WorkerInputCo
         status: { name: "Todo", type: "unstarted" },
         labels: ["bear-metal"],
         teamKey: "ABC",
-        assignee: { id: "creator" },
+        assignee: { id: "creator", email: "creator@example.com" },
         delegate: { id: "user-1" },
         priority: 0,
       },

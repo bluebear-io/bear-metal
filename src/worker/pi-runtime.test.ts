@@ -32,8 +32,6 @@ describe("disposePiSessionRuntime", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await disposed;
 
-    // Callers receive this failure before proceeding, so they must not checkpoint live writers.
-    expect(onFailure).toHaveBeenCalledOnce();
     expect(sessionDispose).toHaveBeenCalledOnce();
     expect(onFailure).toHaveBeenCalledWith({
       error: expect.objectContaining({ message: expect.stringContaining("did not finish within 1000 ms") }),

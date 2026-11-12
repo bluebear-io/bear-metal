@@ -41,13 +41,13 @@ export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerProm
   const taskInstructions = isNew
     ? [
         "1. Read the codebase to understand context.",
-        context.checkpoint ? "2. Continue on the restored checkpoint branches; preserve saved changes." : "2. Create a branch following the repository's branching strategy.",
+        "2. Create a branch following the repository's branching strategy.",
         "3. Implement the changes following the repository standards.",
         "4. Commit your changes via git, then call `push_for_review` to push and open the PR.",
         "   OR call `respond_to_ticket_reporter` if you are blocked.",
       ]
     : [
-        context.checkpoint ? "1. Continue on the restored checkpoint branches; preserve saved changes." : "1. Check out the existing PR branch.",
+        "1. Check out the existing PR branch.",
         "2. If any PR context has `mergeable: false`, the head branch conflicts with its base. Rebase / merge the base branch into the PR head, resolve the conflicts.",
         "3. For each failed check: read the code and logs, find the root cause, fix it.",
         "4. For each open comment: read the context and respond using the tools above.",

@@ -1,8 +1,8 @@
 export type BmStatus = "in_progress" | "validating" | "waiting_for_human" | "failed" | "completed";
 export type WorkerStatus = "idle" | "busy" | "stopped" | "dead";
-export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed" | "interrupted";
+export type RunStatus = "dispatched" | "running" | "succeeded" | "failed" | "timed_out" | "crashed";
 export type RunTrigger = "new" | "ci_failure" | "delegated_back" | "merge_conflict";
-export type StopReason = "completed" | "timeout" | "crash" | "error" | "token_limit";
+export type StopReason = "completed" | "timeout" | "crash" | "error";
 export type EventSource = "manager" | "worker" | "ci";
 export type EventType =
   | "ticket_discovered" | "dispatched" | "branch_created" | "progress"
