@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
+import {
+  factoryRequestHash, splitIdempotencyKey,
+  type FactoryTaskRecord, type FactoryTaskRequest, type FactoryTaskResult, type FactoryTaskTerminalStatus,
+} from "../factory/task.js";
 
 export type DatabaseDialect = "sqlite" | "postgres";
 export function detectDialect(databaseUrl: string): DatabaseDialect {
@@ -64,6 +68,13 @@ export interface TaskRow {
   coordinated_at: string | null;
   superseded_by: string | null;
   slack_replaces_task_id: string | null;
+  factory_idempotency_key: string | null;
+  factory_attempt_id: string | null;
+  factory_fencing_token: number | null;
+  factory_request_json: string | null;
+  factory_request_hash: string | null;
+  factory_owner_email: string | null;
+  factory_scratch_branch: string | null;
   iteration_number: number;
   worker_heartbeat_at: string | null;
   reclaim_count: number;
@@ -679,9 +690,22 @@ export interface EventInput {
   createdAt: string;
 }
 
+/** A factory request that conflicts with an existing task: a reused key with another body, or a stale fencing token. */
+export class FactoryTaskConflictError extends Error {}
+
 export interface DbClient {
   initSchema(): Promise<void>;
-  startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
+  /** Returns the existing task for a repeated key with the same body; supersedes queued or running tasks of the same attempt with a lower fencing token. */
+  createFactoryTask(request: FactoryTaskRequest): Promise<{ task: FactoryTaskRecord; created: boolean }>;
+  getFactoryTask(id: string): Promise<FactoryTaskRecord | null>;
+  /** Returns null when the task does not exist; a task that already ended keeps its outcome. */
+  cancelFactoryTask(id: string): Promise<FactoryTaskRecord | null>;
+  claimFactoryTask(): Promise<FactoryTaskRecord | null>;
+  /** Fails tasks that were running when the process stopped; the factory retries them as new attempts. */
+  recoverFactoryTasks(): Promise<void>;
+  /** Returns false when the task already ended, for example by cancel or a newer fencing token. */
+  finishFactoryTask(id: string, outcome: { status: Exclude<FactoryTaskTerminalStatus, "canceled" | "superseded">; result: FactoryTaskResult | null; error: string | null }): Promise<boolean>;
+  startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research" | "factory"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
   setAgentRunModel(id: string, provider: string, model: string): Promise<void>;
   setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void>;
   finishAgentRun(id: string, error: string | null, stopReason?: "deferred", outputJson?: string): Promise<void>;
@@ -1225,6 +1249,33 @@ function computeShipped(tasks: PeriodTaskRow[], prs: PeriodPrRow[], from: Date, 
   return { byRepo };
 }
 
+const FACTORY_TERMINAL = new Set<string>(["succeeded", "failed", "timeout", "budget", "canceled", "superseded"]);
+
+function rowToFactoryTask(row: TaskRow): FactoryTaskRecord {
+  if (row.task_type !== "factory" || !row.factory_request_json) throw new Error(`Task ${row.id} is not a factory task`);
+  if (row.result_status !== null && !FACTORY_TERMINAL.has(row.result_status)) {
+    throw new Error(`Factory task ${row.id} has invalid status ${row.result_status}`);
+  }
+  if (row.run_status !== null && row.run_status !== "running" && row.result_status === null) {
+    throw new Error(`Factory task ${row.id} has run status ${row.run_status} without an outcome`);
+  }
+  const status = (row.result_status ?? (row.run_status === "running" ? "running" : "queued")) as FactoryTaskRecord["status"];
+  return {
+    id: row.id,
+    status,
+    request: JSON.parse(row.factory_request_json) as FactoryTaskRequest,
+    result: row.result_json === null ? null : JSON.parse(row.result_json) as FactoryTaskResult,
+    error: row.error,
+    createdAt: row.created_at,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+  };
+}
+
+const FACTORY_STOP_REASONS: Record<Exclude<FactoryTaskTerminalStatus, "canceled" | "superseded">, StopReason> = {
+  succeeded: "completed", failed: "error", timeout: "timeout", budget: "token_limit",
+};
+
 export class SqlDbClient implements DbClient {
   private readonly databaseUrl: string;
   private readonly dialect: DatabaseDialect;
@@ -1356,8 +1407,8 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  async startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void> {
-    if (task.type === "coding") throw new Error("startAgentRun is only for coordinator and research tasks");
+  async startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research" | "factory"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void> {
+    if (task.type === "coding" || task.type === "factory") throw new Error("startAgentRun is only for coordinator and research tasks");
     const now = this.clock.nowIso();
     if (task.type === "coordinator") {
       if (!task.slack) throw new Error("Coordinator run requires Slack source");
@@ -1381,7 +1432,7 @@ export class SqlDbClient implements DbClient {
   async setAgentRunModel(id: string, provider: string, model: string): Promise<void> {
     const result = await this.run(
       `UPDATE tasks SET provider = ?, model_name = ?, updated_at = ?
-       WHERE id = ? AND task_type IN ('coordinator', 'research') AND run_status = 'running'`,
+       WHERE id = ? AND task_type IN ('coordinator', 'research', 'factory') AND run_status = 'running'`,
       [provider, model, this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot set model for agent run ${id}`);
@@ -1390,10 +1441,119 @@ export class SqlDbClient implements DbClient {
   async setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void> {
     const result = await this.run(
       `UPDATE tasks SET prompt_tokens = ?, completion_tokens = ?, updated_at = ?
-       WHERE id = ? AND task_type IN ('coordinator', 'research') AND run_status = 'running'`,
+       WHERE id = ? AND task_type IN ('coordinator', 'research', 'factory') AND run_status = 'running'`,
       [promptTokens, completionTokens, this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot record usage for agent run ${id}`);
+  }
+
+  async createFactoryTask(request: FactoryTaskRequest): Promise<{ task: FactoryTaskRecord; created: boolean }> {
+    const hash = factoryRequestHash(request);
+    const { attemptId, fencingToken } = splitIdempotencyKey(request.idempotencyKey);
+    const existing = await this.factoryTaskByKey(request.idempotencyKey);
+    if (existing) return { task: this.sameFactoryRequest(existing, hash), created: false };
+    const attempts = await this.query<{ id: string; factory_fencing_token: number | string }>(
+      `SELECT id, factory_fencing_token FROM tasks WHERE task_type = 'factory' AND factory_attempt_id = ?`, [attemptId],
+    );
+    if (attempts.some((row) => Number(row.factory_fencing_token) > fencingToken)) {
+      throw new FactoryTaskConflictError(`Attempt ${attemptId} already has a newer fencing token than ${fencingToken}`);
+    }
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET result_status = 'superseded', error = ?, ended_at = COALESCE(ended_at, ?), updated_at = ?, completed_at = ?
+       WHERE task_type = 'factory' AND factory_attempt_id = ? AND factory_fencing_token < ? AND result_status IS NULL`,
+      [`Superseded by fencing token ${fencingToken}`, now, now, now, attemptId, fencingToken],
+    );
+    const id = randomUUID();
+    const result = await this.run(
+      `INSERT INTO tasks (id, task_type, ticket_labels_json, slack_request, factory_idempotency_key, factory_attempt_id, factory_fencing_token,
+         factory_request_json, factory_request_hash, factory_owner_email, factory_scratch_branch, trigger, created_at, updated_at)
+       VALUES (?, 'factory', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+       ON CONFLICT (factory_idempotency_key) DO NOTHING`,
+      [id, JSON.stringify(["Factory"]), request.instruction, request.idempotencyKey, attemptId, fencingToken,
+        JSON.stringify(request), hash, request.owner, request.scratchBranch ?? null, now, now],
+    );
+    const stored = await this.factoryTaskByKey(request.idempotencyKey);
+    if (!stored) throw new Error(`Factory task ${request.idempotencyKey} disappeared after insertion`);
+    return { task: result.changes === 1 ? rowToFactoryTask(stored) : this.sameFactoryRequest(stored, hash), created: result.changes === 1 };
+  }
+
+  private async factoryTaskByKey(key: string): Promise<TaskRow | null> {
+    const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE task_type = 'factory' AND factory_idempotency_key = ?`, [key]);
+    return rows[0] ?? null;
+  }
+
+  private sameFactoryRequest(row: TaskRow, hash: string): FactoryTaskRecord {
+    if (row.factory_request_hash !== hash) {
+      throw new FactoryTaskConflictError(`Idempotency key ${row.factory_idempotency_key} was used with a different request`);
+    }
+    return rowToFactoryTask(row);
+  }
+
+  async getFactoryTask(id: string): Promise<FactoryTaskRecord | null> {
+    const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE id = ? AND task_type = 'factory'`, [id]);
+    return rows[0] ? rowToFactoryTask(rows[0]) : null;
+  }
+
+  async cancelFactoryTask(id: string): Promise<FactoryTaskRecord | null> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET result_status = 'canceled', error = 'Canceled by the factory', ended_at = COALESCE(ended_at, ?),
+         updated_at = ?, completed_at = ?
+       WHERE id = ? AND task_type = 'factory' AND result_status IS NULL`,
+      [now, now, now, id],
+    );
+    return this.getFactoryTask(id);
+  }
+
+  async claimFactoryTask(): Promise<FactoryTaskRecord | null> {
+    while (true) {
+      const rows = await this.query<{ id: string }>(
+        `SELECT id FROM tasks WHERE task_type = 'factory' AND run_status IS NULL AND result_status IS NULL
+         ORDER BY created_at ASC, id ASC LIMIT 1`,
+      );
+      if (!rows[0]) return null;
+      const now = this.clock.nowIso();
+      const claimed = await this.run(
+        `UPDATE tasks SET run_status = 'running', started_at = ?, updated_at = ?
+         WHERE id = ? AND task_type = 'factory' AND run_status IS NULL AND result_status IS NULL`,
+        [now, now, rows[0].id],
+      );
+      if (claimed.changes === 1) {
+        const task = await this.getFactoryTask(rows[0].id);
+        if (!task) throw new Error(`Claimed factory task disappeared: ${rows[0].id}`);
+        return task;
+      }
+    }
+  }
+
+  async recoverFactoryTasks(): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET run_status = 'crashed', stop_reason = 'crash', result_status = 'failed',
+         error = 'Bear Metal restarted while the task was running', ended_at = ?, updated_at = ?, completed_at = ?
+       WHERE task_type = 'factory' AND run_status = 'running' AND result_status IS NULL`,
+      [now, now, now],
+    );
+  }
+
+  async finishFactoryTask(id: string, outcome: { status: Exclude<FactoryTaskTerminalStatus, "canceled" | "superseded">; result: FactoryTaskResult | null; error: string | null }): Promise<boolean> {
+    const now = this.clock.nowIso();
+    const finished = await this.run(
+      `UPDATE tasks SET result_status = ?, result_json = ?, error = ?, run_status = ?, stop_reason = ?,
+         ended_at = ?, updated_at = ?, completed_at = ?
+       WHERE id = ? AND task_type = 'factory' AND run_status = 'running' AND result_status IS NULL`,
+      [outcome.status, outcome.result === null ? null : JSON.stringify(outcome.result), outcome.error,
+        outcome.status === "succeeded" ? "succeeded" : outcome.status === "failed" ? "failed" : outcome.status === "timeout" ? "timed_out" : "interrupted",
+        FACTORY_STOP_REASONS[outcome.status], now, now, now, id],
+    );
+    if (finished.changes === 1) return true;
+    const current = await this.getFactoryTask(id);
+    if (current?.status === "canceled" || current?.status === "superseded") {
+      await this.run(`UPDATE tasks SET run_status = 'interrupted', updated_at = ? WHERE id = ? AND run_status = 'running'`, [now, id]);
+      return false;
+    }
+    throw new Error(`Factory task ${id} is not running`);
   }
 
   async finishAgentRun(id: string, error: string | null, stopReason?: "deferred", outputJson?: string): Promise<void> {

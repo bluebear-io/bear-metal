@@ -25,6 +25,9 @@ import { SlackThreadApi } from "./slack-thread-api.js";
 import { createReactionIntake } from "./slack-reaction-intake.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 import { SlackResearchWorker } from "./slack-research.js";
+import { S3FactoryArtifactStore } from "../factory/artifacts.js";
+import { createFactoryRouter } from "./factory-api.js";
+import { FactoryTaskWorker } from "./factory-worker.js";
 
 const runtimeConfig = loadConfig();
 const logger = createLogger({ level: runtimeConfig.logLevel, name: "manager", pretty: runtimeConfig.logPretty });
@@ -182,11 +185,32 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     } : {}),
   });
 }
+let factoryWorker: FactoryTaskWorker | null = null;
+let factoryApi: ReturnType<typeof createFactoryRouter> | undefined;
+if (!runtimeConfig.apiOnly && customizationConfig.factory) {
+  factoryWorker = new FactoryTaskWorker({
+    db,
+    config: customizationConfig,
+    artifacts: new S3FactoryArtifactStore(customizationConfig.factory.artifactBucket),
+    getGithubToken: () => github.getInstallationToken(),
+    gateway: agentToolGateway,
+    logger,
+    concurrency: runtimeConfig.factoryConcurrency,
+    pollIntervalMs: runtimeConfig.pollIntervalMs,
+  });
+  factoryApi = createFactoryRouter({
+    db,
+    signingSecret: await resolveSecret(customizationConfig.factory.getSigningSecret, "config.factory.getSigningSecret result"),
+    capabilities: customizationConfig.factory.capabilities,
+    logger,
+    wake: () => factoryWorker!.wake(),
+  });
+}
 if (runtimeConfig.runMode === "slack_only" && (!slackCoordinator || !slackResearch || !slackEvents)) {
   throw new Error("slack_only mode requires Slack bot token and signing secret");
 }
 
-const server = createApp(db, maxIterations, linear, slackEvents).listen(runtimeConfig.backendPort, () => {
+const server = createApp(db, maxIterations, linear, slackEvents, factoryApi).listen(runtimeConfig.backendPort, () => {
   logger.info({ port: runtimeConfig.backendPort }, "dashboard server listening");
 });
 
@@ -258,6 +282,7 @@ if (runtimeConfig.apiOnly) {
     logger.info("Slack-only mode: Linear scheduler and coding worker disabled");
   }
   if (slackResearch) await slackResearch.start();
+  if (factoryWorker) await factoryWorker.start();
   slackCoordinator?.start();
 }
 
@@ -270,7 +295,7 @@ function shutdown(signal: string): void {
   clearInterval(tracePurgeTimer);
   logger.info({ signal }, "shutting down");
   logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
-  void Promise.all([scheduler?.stop(), taskWorker?.stop(), slackCoordinator?.stop(), slackResearch?.stop()])
+  void Promise.all([scheduler?.stop(), taskWorker?.stop(), slackCoordinator?.stop(), slackResearch?.stop(), factoryWorker?.stop()])
     .then(() => db.close())
     .then(() => {
       if (!server) {

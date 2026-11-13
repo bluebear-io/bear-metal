@@ -389,3 +389,16 @@ UPDATE slack_unsubscribe_reactions SET state = 'posted' WHERE posted = 1 AND sta
 DROP INDEX IF EXISTS slack_delivery_action;
 CREATE UNIQUE INDEX slack_delivery_action ON slack_reply_deliveries
   (workspace_id, channel_id, thread_ts, source_ts, request_index) WHERE reply_kind NOT IN ('task_cancel', 'failure');
+
+-- Workflow-factory tasks (task_type 'factory'). They never set dispatch_state or worker_id, so the
+-- ticket scheduler and stale-lease recovery leave them alone. run_status IS NULL means queued;
+-- result_status holds the terminal outcome.
+ALTER TABLE tasks ADD COLUMN factory_idempotency_key TEXT;
+ALTER TABLE tasks ADD COLUMN factory_attempt_id TEXT;
+ALTER TABLE tasks ADD COLUMN factory_fencing_token INTEGER;
+ALTER TABLE tasks ADD COLUMN factory_request_json TEXT;
+ALTER TABLE tasks ADD COLUMN factory_request_hash TEXT;
+ALTER TABLE tasks ADD COLUMN factory_owner_email TEXT;
+ALTER TABLE tasks ADD COLUMN factory_scratch_branch TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS factory_task_key ON tasks (factory_idempotency_key);
+CREATE INDEX IF NOT EXISTS factory_task_attempt ON tasks (factory_attempt_id);

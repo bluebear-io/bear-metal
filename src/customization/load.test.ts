@@ -56,6 +56,14 @@ describe("configuration validation", () => {
     expect(validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: () => true } }).slack?.authorizeUser).toBeDefined();
     expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: true } })).toThrow("config.slack.authorizeUser");
   });
+  it("validates the optional factory API settings", () => {
+    const config = valid();
+    const factory = { getSigningSecret: () => "secret", artifactBucket: "bucket", capabilities: ["repo.read"] };
+    expect(validateBearMetalConfig({ ...config, factory }).factory?.artifactBucket).toBe("bucket");
+    expect(() => validateBearMetalConfig({ ...config, factory: { ...factory, getSigningSecret: "secret" } })).toThrow("config.factory.getSigningSecret");
+    expect(() => validateBearMetalConfig({ ...config, factory: { ...factory, artifactBucket: "" } })).toThrow("config.factory.artifactBucket");
+    expect(() => validateBearMetalConfig({ ...config, factory: { ...factory, capabilities: "repo.read" } })).toThrow("config.factory.capabilities");
+  });
   it("validates the optional Slack reaction trigger", () => {
     const config = valid();
     const slack = { notificationChannel: "C1", getBotToken: () => "token" };
@@ -112,10 +120,11 @@ describe("configuration validation", () => {
     expect(() => validateTaskCustomization(customization(["read", "rm_rf"]))).toThrow("customizeTask result.tools: unknown tool rm_rf");
     expect(() => validateTaskCustomization(customization("read"))).toThrow("customizeTask result.tools must be an array");
     for (const tool of ["edit", "write", "commit_changes"]) {
-      expect(() => validateTaskCustomization(customization(["read", tool]))).toThrow(`customizeTask result.tools: ${tool} needs push_for_review, or the workspace is deleted with the changes`);
+      expect(() => validateTaskCustomization(customization(["read", tool]))).toThrow(`customizeTask result.tools: ${tool} needs push_for_review or push_scratch, or the workspace is deleted with the changes`);
     }
+    expect(validateTaskCustomization(customization(["read", "edit", "push_scratch"])).tools).toEqual(["read", "edit", "push_scratch"]);
     for (const tool of ["edit", "write"]) {
-      expect(() => validateTaskCustomization(customization(["read", tool, "push_for_review"]))).toThrow(`customizeTask result.tools: ${tool} needs bash or commit_changes to commit the changes`);
+      expect(() => validateTaskCustomization(customization(["read", tool, "push_for_review"]))).toThrow(`customizeTask result.tools: ${tool} needs bash, commit_changes or push_scratch to commit the changes`);
       expect(validateTaskCustomization(customization(["read", tool, "bash", "push_for_review"])).tools).toContain(tool);
       expect(validateTaskCustomization(customization(["read", tool, "commit_changes", "push_for_review"])).tools).toContain(tool);
     }
