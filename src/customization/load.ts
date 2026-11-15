@@ -49,6 +49,10 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
       if (trigger.linearProjectId !== undefined) nonEmptyString(trigger.linearProjectId, "config.slack.reactionTrigger.linearProjectId");
     }
   }
+  if (config.taskApi !== undefined) {
+    const taskApi = object(config.taskApi, "config.taskApi");
+    callable(taskApi.getSigningSecret, "config.taskApi.getSigningSecret");
+  }
   if (config.agentIntegrations !== undefined) {
     const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");
     if (agentIntegrations.github !== undefined) {

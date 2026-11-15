@@ -22,9 +22,10 @@ const managerApiErrorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   res.status(500).json({ error: "oops, something went wrong" });
 };
 
-export function createApp(db: DbClient, maxIterations: number, linear: LinearSource, slackEvents?: Router): Express {
+export function createApp(db: DbClient, maxIterations: number, linear: LinearSource, slackEvents?: Router, taskApi?: Router): Express {
   const app = express();
   if (slackEvents) app.use("/slack", slackEvents);
+  if (taskApi) app.use("/task-api", taskApi);
   app.use(express.json());
   app.use("/api", createRouter(db, maxIterations, linear));
   app.use(managerApiErrorHandler);

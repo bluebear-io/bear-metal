@@ -389,3 +389,11 @@ UPDATE slack_unsubscribe_reactions SET state = 'posted' WHERE posted = 1 AND sta
 DROP INDEX IF EXISTS slack_delivery_action;
 CREATE UNIQUE INDEX slack_delivery_action ON slack_reply_deliveries
   (workspace_id, channel_id, thread_ts, source_ts, request_index) WHERE reply_kind NOT IN ('task_cancel', 'failure');
+
+-- Task API tasks (task_type 'api'). They never set dispatch_state or worker_id, so the ticket
+-- scheduler and stale-lease recovery leave them alone. run_status IS NULL means queued;
+-- result_status holds the terminal outcome.
+ALTER TABLE tasks ADD COLUMN api_idempotency_key TEXT;
+ALTER TABLE tasks ADD COLUMN api_request_json TEXT;
+ALTER TABLE tasks ADD COLUMN api_request_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS api_task_key ON tasks (api_idempotency_key);

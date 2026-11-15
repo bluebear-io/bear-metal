@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
+import { apiTaskRequestHash, type ApiTaskRecord, type ApiTaskRequest, type ApiTaskResult, type ApiTaskTerminalStatus } from "../task-api/request.js";
 
 export type DatabaseDialect = "sqlite" | "postgres";
 export function detectDialect(databaseUrl: string): DatabaseDialect {
@@ -64,6 +65,9 @@ export interface TaskRow {
   coordinated_at: string | null;
   superseded_by: string | null;
   slack_replaces_task_id: string | null;
+  api_idempotency_key: string | null;
+  api_request_json: string | null;
+  api_request_hash: string | null;
   iteration_number: number;
   worker_heartbeat_at: string | null;
   reclaim_count: number;
@@ -679,9 +683,24 @@ export interface EventInput {
   createdAt: string;
 }
 
+/** The idempotency key of an existing task was reused with a different request. */
+export class ApiTaskConflictError extends Error {}
+
+export type ApiTaskOutcome = { status: Exclude<ApiTaskTerminalStatus, "canceled">; result: ApiTaskResult | null; error: string | null };
+
 export interface DbClient {
   initSchema(): Promise<void>;
-  startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
+  /** Returns the existing task when the key was already used with the same request. */
+  createApiTask(request: ApiTaskRequest): Promise<{ task: ApiTaskRecord; created: boolean }>;
+  getApiTask(id: string): Promise<ApiTaskRecord | null>;
+  /** Returns null when the task does not exist; a task that already ended keeps its outcome. */
+  cancelApiTask(id: string): Promise<ApiTaskRecord | null>;
+  claimApiTask(): Promise<ApiTaskRecord | null>;
+  /** Fails tasks that were running when the process stopped; the caller resubmits them. */
+  recoverApiTasks(): Promise<void>;
+  /** Returns false when the task was canceled while it ran. */
+  finishApiTask(id: string, outcome: ApiTaskOutcome): Promise<boolean>;
+  startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research" | "api"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
   setAgentRunModel(id: string, provider: string, model: string): Promise<void>;
   setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void>;
   finishAgentRun(id: string, error: string | null, stopReason?: "deferred", outputJson?: string): Promise<void>;
@@ -1225,6 +1244,36 @@ function computeShipped(tasks: PeriodTaskRow[], prs: PeriodPrRow[], from: Date, 
   return { byRepo };
 }
 
+const API_TERMINAL = new Set<string>(["succeeded", "failed", "timeout", "budget", "canceled"]);
+
+function rowToApiTask(row: TaskRow): ApiTaskRecord {
+  if (row.task_type !== "api" || !row.api_request_json) throw new Error(`Task ${row.id} is not an API task`);
+  if (row.result_status !== null && !API_TERMINAL.has(row.result_status)) {
+    throw new Error(`API task ${row.id} has invalid status ${row.result_status}`);
+  }
+  if (row.run_status !== null && row.run_status !== "running" && row.result_status === null) {
+    throw new Error(`API task ${row.id} has run status ${row.run_status} without an outcome`);
+  }
+  const status = (row.result_status ?? (row.run_status === "running" ? "running" : "queued")) as ApiTaskRecord["status"];
+  return {
+    id: row.id,
+    status,
+    request: JSON.parse(row.api_request_json) as ApiTaskRequest,
+    result: row.result_json === null ? null : JSON.parse(row.result_json) as ApiTaskResult,
+    error: row.error,
+    createdAt: row.created_at,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+  };
+}
+
+const API_RUN_STATUS: Record<ApiTaskOutcome["status"], string> = {
+  succeeded: "succeeded", failed: "failed", timeout: "timed_out", budget: "interrupted",
+};
+const API_STOP_REASONS: Record<ApiTaskOutcome["status"], StopReason> = {
+  succeeded: "completed", failed: "error", timeout: "timeout", budget: "token_limit",
+};
+
 export class SqlDbClient implements DbClient {
   private readonly databaseUrl: string;
   private readonly dialect: DatabaseDialect;
@@ -1356,8 +1405,8 @@ export class SqlDbClient implements DbClient {
     }
   }
 
-  async startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void> {
-    if (task.type === "coding") throw new Error("startAgentRun is only for coordinator and research tasks");
+  async startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research" | "api"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void> {
+    if (task.type === "coding" || task.type === "api") throw new Error("startAgentRun is only for coordinator and research tasks");
     const now = this.clock.nowIso();
     if (task.type === "coordinator") {
       if (!task.slack) throw new Error("Coordinator run requires Slack source");
@@ -1381,7 +1430,7 @@ export class SqlDbClient implements DbClient {
   async setAgentRunModel(id: string, provider: string, model: string): Promise<void> {
     const result = await this.run(
       `UPDATE tasks SET provider = ?, model_name = ?, updated_at = ?
-       WHERE id = ? AND task_type IN ('coordinator', 'research') AND run_status = 'running'`,
+       WHERE id = ? AND task_type IN ('coordinator', 'research', 'api') AND run_status = 'running'`,
       [provider, model, this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot set model for agent run ${id}`);
@@ -1390,10 +1439,94 @@ export class SqlDbClient implements DbClient {
   async setAgentRunUsage(id: string, promptTokens: number, completionTokens: number): Promise<void> {
     const result = await this.run(
       `UPDATE tasks SET prompt_tokens = ?, completion_tokens = ?, updated_at = ?
-       WHERE id = ? AND task_type IN ('coordinator', 'research') AND run_status = 'running'`,
+       WHERE id = ? AND task_type IN ('coordinator', 'research', 'api') AND run_status = 'running'`,
       [promptTokens, completionTokens, this.clock.nowIso(), id],
     );
     if (result.changes !== 1) throw new Error(`Cannot record usage for agent run ${id}`);
+  }
+
+  async createApiTask(request: ApiTaskRequest): Promise<{ task: ApiTaskRecord; created: boolean }> {
+    const hash = apiTaskRequestHash(request);
+    const now = this.clock.nowIso();
+    const result = await this.run(
+      `INSERT INTO tasks (id, task_type, slack_request, api_idempotency_key, api_request_json, api_request_hash, trigger, created_at, updated_at)
+       VALUES (?, 'api', ?, ?, ?, ?, 'new', ?, ?)
+       ON CONFLICT (api_idempotency_key) DO NOTHING`,
+      [randomUUID(), request.instruction, request.idempotencyKey, JSON.stringify(request), hash, now, now],
+    );
+    const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE task_type = 'api' AND api_idempotency_key = ?`, [request.idempotencyKey]);
+    const stored = rows[0];
+    if (!stored) throw new Error(`API task ${request.idempotencyKey} disappeared after insertion`);
+    if (stored.api_request_hash !== hash) {
+      throw new ApiTaskConflictError(`Idempotency key ${request.idempotencyKey} was used with a different request`);
+    }
+    return { task: rowToApiTask(stored), created: result.changes === 1 };
+  }
+
+  async getApiTask(id: string): Promise<ApiTaskRecord | null> {
+    const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE id = ? AND task_type = 'api'`, [id]);
+    return rows[0] ? rowToApiTask(rows[0]) : null;
+  }
+
+  async cancelApiTask(id: string): Promise<ApiTaskRecord | null> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET result_status = 'canceled', error = 'Canceled through the task API', ended_at = COALESCE(ended_at, ?),
+         updated_at = ?, completed_at = ?
+       WHERE id = ? AND task_type = 'api' AND result_status IS NULL`,
+      [now, now, now, id],
+    );
+    return this.getApiTask(id);
+  }
+
+  async claimApiTask(): Promise<ApiTaskRecord | null> {
+    while (true) {
+      const rows = await this.query<{ id: string }>(
+        `SELECT id FROM tasks WHERE task_type = 'api' AND run_status IS NULL AND result_status IS NULL
+         ORDER BY created_at ASC, id ASC LIMIT 1`,
+      );
+      if (!rows[0]) return null;
+      const now = this.clock.nowIso();
+      const claimed = await this.run(
+        `UPDATE tasks SET run_status = 'running', started_at = ?, updated_at = ?
+         WHERE id = ? AND task_type = 'api' AND run_status IS NULL AND result_status IS NULL`,
+        [now, now, rows[0].id],
+      );
+      if (claimed.changes === 1) {
+        const task = await this.getApiTask(rows[0].id);
+        if (!task) throw new Error(`Claimed API task disappeared: ${rows[0].id}`);
+        return task;
+      }
+    }
+  }
+
+  async recoverApiTasks(): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET run_status = 'crashed', stop_reason = 'crash', result_status = 'failed',
+         error = 'Bear Metal restarted while the task was running', ended_at = ?, updated_at = ?, completed_at = ?
+       WHERE task_type = 'api' AND run_status = 'running' AND result_status IS NULL`,
+      [now, now, now],
+    );
+  }
+
+  async finishApiTask(id: string, outcome: ApiTaskOutcome): Promise<boolean> {
+    const now = this.clock.nowIso();
+    const finished = await this.run(
+      `UPDATE tasks SET result_status = ?, result_json = ?, error = ?, run_status = ?, stop_reason = ?,
+         ended_at = ?, updated_at = ?, completed_at = ?
+       WHERE id = ? AND task_type = 'api' AND run_status = 'running' AND result_status IS NULL`,
+      [outcome.status, outcome.result === null ? null : JSON.stringify(outcome.result), outcome.error,
+        API_RUN_STATUS[outcome.status], API_STOP_REASONS[outcome.status], now, now, now, id],
+    );
+    if (finished.changes === 1) return true;
+    const current = await this.getApiTask(id);
+    if (current?.status === "canceled") {
+      await this.run(`UPDATE tasks SET run_status = 'interrupted', result_json = ?, updated_at = ? WHERE id = ? AND run_status = 'running'`,
+        [outcome.result === null ? null : JSON.stringify(outcome.result), now, id]);
+      return false;
+    }
+    throw new Error(`API task ${id} is not running`);
   }
 
   async finishAgentRun(id: string, error: string | null, stopReason?: "deferred", outputJson?: string): Promise<void> {

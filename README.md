@@ -123,7 +123,7 @@ The same module may be `.mts`; use the canonical source above as the typing refe
 
 ## Task customization
 
-`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, or a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
+`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references, or a task API task with `type: "api"`, `request`, `profile` and `repositories`. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
 
 The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt`, independent duration/token limits, and optional `ticketLabels` / `pullRequestLabels` (label names the harness adds to the linked Linear ticket and to PRs it creates or updates; failures are logged only). Coding tasks may include `trigger: "slack" | "linear"` when known. See the canonical source for the exact nested DTO and return shapes. `maxTokens` counts fresh tokens (uncached input, cache writes and output); cache reads don't count.
 
@@ -137,6 +137,16 @@ Slack research agents receive `bash` alongside `read`, `grep`, `find`, and `ls`,
 
 Agent shell commands use a dedicated cache-only `HOME` under `~/.bear-metal/cache-home`; it survives task workspace cleanup and is separate from the service user's normal home and temporary Git credentials. The workspace command guard is not an operating-system sandbox, so deployments must still isolate the worker process from host secrets.
 
+## Task API
+
+With `taskApi.getSigningSecret` configured, Bear Metal runs tasks without a Linear ticket through `/task-api`. Every request, GETs included, is signed with Slack's `v0` HMAC scheme over the raw body, in the `X-Bear-Metal-Request-Timestamp` and `X-Bear-Metal-Signature` headers; expose the path only to trusted callers.
+
+- `POST /task-api/tasks` returns `202` and the task id. The body (`ApiTaskRequest` in [`src/task-api/request.ts`](src/task-api/request.ts)) names the `profile` the task runs as (`customizeTask` receives it), the `owner` email reported as the session owner, the `repository`, the `instruction`, a `deadline` and a `maxTokens` budget. A repeated `idempotencyKey` with the same body returns the same task; with another body it is `409`.
+- `GET /task-api/tasks/:id` returns the status (`queued`, `running`, `succeeded`, `failed`, `timeout`, `budget`, `canceled`) and the result.
+- `POST /task-api/tasks/:id/cancel` stops the task.
+
+A task runs once. It commits and opens or updates pull requests the same way as a ticket task, through `commit_changes` and `push_for_review`, and ends by calling `submit_result` with a message and, when the request has an `outputSchema`, a structured result that must match it. The result lists the pull requests and token usage. The task stops itself at `deadline` (`timeout`) or at `maxTokens` fresh tokens (`budget`). Task API tasks run in their own `API_TASK_CONCURRENCY` slots. A task running when Bear Metal restarts fails; resubmit it with a new key.
+
 ## Environment variables
 
 Bear Metal itself reads only these deployment and process settings:
@@ -145,6 +155,7 @@ Bear Metal itself reads only these deployment and process settings:
 |---|---:|---|---|
 | `BEAR_METAL_CONFIG_FILE` | yes | — | Trusted configuration module path |
 | `WORKER_CONCURRENCY` | no | `5` | Maximum parallel tasks |
+| `API_TASK_CONCURRENCY` | no | `2` | Worker slots reserved for task API tasks |
 | `POLL_INTERVAL_MS` | no | `60000` | Linear polling cadence |
 | `TASK_HEARTBEAT_INTERVAL_MS` | no | `30000` | Worker heartbeat cadence |
 | `TASK_STALE_AFTER_MS` | no | `300000` | Reclaim threshold for a task without a heartbeat |

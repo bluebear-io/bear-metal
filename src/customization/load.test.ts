@@ -56,6 +56,11 @@ describe("configuration validation", () => {
     expect(validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: () => true } }).slack?.authorizeUser).toBeDefined();
     expect(() => validateBearMetalConfig({ ...config, slack: { ...slack, authorizeUser: true } })).toThrow("config.slack.authorizeUser");
   });
+  it("validates the optional task API settings", () => {
+    const config = valid();
+    expect(validateBearMetalConfig({ ...config, taskApi: { getSigningSecret: () => "secret" } }).taskApi).toBeDefined();
+    expect(() => validateBearMetalConfig({ ...config, taskApi: { getSigningSecret: "secret" } })).toThrow("config.taskApi.getSigningSecret");
+  });
   it("validates the optional Slack reaction trigger", () => {
     const config = valid();
     const slack = { notificationChannel: "C1", getBotToken: () => "token" };

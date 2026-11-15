@@ -57,6 +57,11 @@ export interface BearMetalConfig {
   database?: {
     getUrl: SecretGetter;
   };
+  /** Enables the `/task-api` endpoints, which run tasks without a Linear ticket. */
+  taskApi?: {
+    /** HMAC key callers sign their requests with, in Slack's `v0` scheme. */
+    getSigningSecret: SecretGetter;
+  };
   traceRetentionDays?: number;
   maxIterations?: number;
   /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
@@ -84,8 +89,10 @@ export type TaskPriority = "none" | "urgent" | "high" | "medium" | "low";
 
 export interface Task {
   readonly id: string;
-  readonly type: "coding" | "coordinator" | "research";
+  readonly type: "coding" | "coordinator" | "research" | "api";
   readonly request?: string;
+  /** API tasks: the profile the caller asked the task to run as. */
+  readonly profile?: string;
   readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
   readonly identifier?: string;
   readonly title?: string;
