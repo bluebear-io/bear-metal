@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import pg from "pg";
-import { apiTaskRequestHash, type ApiTaskRecord, type ApiTaskRequest, type ApiTaskResult, type ApiTaskTerminalStatus } from "../task-api/request.js";
+import { type ApiTaskRecord, type ApiTaskRequest, type ApiTaskResult, type ApiTaskTerminalStatus } from "../task-api/request.js";
 
 export type DatabaseDialect = "sqlite" | "postgres";
 export function detectDialect(databaseUrl: string): DatabaseDialect {
@@ -67,7 +67,6 @@ export interface TaskRow {
   slack_replaces_task_id: string | null;
   api_idempotency_key: string | null;
   api_request_json: string | null;
-  api_request_hash: string | null;
   iteration_number: number;
   worker_heartbeat_at: string | null;
   reclaim_count: number;
@@ -1446,18 +1445,18 @@ export class SqlDbClient implements DbClient {
   }
 
   async createApiTask(request: ApiTaskRequest): Promise<{ task: ApiTaskRecord; created: boolean }> {
-    const hash = apiTaskRequestHash(request);
+    const json = JSON.stringify(request);
     const now = this.clock.nowIso();
     const result = await this.run(
-      `INSERT INTO tasks (id, task_type, slack_request, api_idempotency_key, api_request_json, api_request_hash, trigger, created_at, updated_at)
-       VALUES (?, 'api', ?, ?, ?, ?, 'new', ?, ?)
+      `INSERT INTO tasks (id, task_type, slack_request, api_idempotency_key, api_request_json, trigger, created_at, updated_at)
+       VALUES (?, 'api', ?, ?, ?, 'new', ?, ?)
        ON CONFLICT (api_idempotency_key) DO NOTHING`,
-      [randomUUID(), request.instruction, request.idempotencyKey, JSON.stringify(request), hash, now, now],
+      [randomUUID(), request.instruction, request.idempotencyKey, json, now, now],
     );
     const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE task_type = 'api' AND api_idempotency_key = ?`, [request.idempotencyKey]);
     const stored = rows[0];
     if (!stored) throw new Error(`API task ${request.idempotencyKey} disappeared after insertion`);
-    if (stored.api_request_hash !== hash) {
+    if (stored.api_request_json !== json) {
       throw new ApiTaskConflictError(`Idempotency key ${request.idempotencyKey} was used with a different request`);
     }
     return { task: rowToApiTask(stored), created: result.changes === 1 };
@@ -1480,24 +1479,15 @@ export class SqlDbClient implements DbClient {
   }
 
   async claimApiTask(): Promise<ApiTaskRecord | null> {
-    while (true) {
-      const rows = await this.query<{ id: string }>(
-        `SELECT id FROM tasks WHERE task_type = 'api' AND run_status IS NULL AND result_status IS NULL
-         ORDER BY created_at ASC, id ASC LIMIT 1`,
-      );
-      if (!rows[0]) return null;
-      const now = this.clock.nowIso();
-      const claimed = await this.run(
-        `UPDATE tasks SET run_status = 'running', started_at = ?, updated_at = ?
-         WHERE id = ? AND task_type = 'api' AND run_status IS NULL AND result_status IS NULL`,
-        [now, now, rows[0].id],
-      );
-      if (claimed.changes === 1) {
-        const task = await this.getApiTask(rows[0].id);
-        if (!task) throw new Error(`Claimed API task disappeared: ${rows[0].id}`);
-        return task;
-      }
-    }
+    const now = this.clock.nowIso();
+    const rows = await this.query<TaskRow>(
+      `UPDATE tasks SET run_status = 'running', started_at = ?, updated_at = ?
+       WHERE run_status IS NULL AND id = (SELECT id FROM tasks WHERE task_type = 'api' AND run_status IS NULL AND result_status IS NULL
+         ORDER BY created_at ASC, id ASC LIMIT 1)
+       RETURNING *`,
+      [now, now],
+    );
+    return rows[0] ? rowToApiTask(rows[0]) : null;
   }
 
   async recoverApiTasks(): Promise<void> {

@@ -395,5 +395,4 @@ CREATE UNIQUE INDEX slack_delivery_action ON slack_reply_deliveries
 -- result_status holds the terminal outcome.
 ALTER TABLE tasks ADD COLUMN api_idempotency_key TEXT;
 ALTER TABLE tasks ADD COLUMN api_request_json TEXT;
-ALTER TABLE tasks ADD COLUMN api_request_hash TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS api_task_key ON tasks (api_idempotency_key);

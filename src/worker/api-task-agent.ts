@@ -31,7 +31,7 @@ const ALWAYS_KEPT = new Set(["submit_result"]);
 
 type StopReason = "timeout" | "budget" | "canceled";
 
-export function apiCustomizationTask(task: ApiTaskRecord): Task {
+function apiCustomizationTask(task: ApiTaskRecord): Task {
   const [owner, name] = task.request.repository.split("/") as [string, string];
   return Object.freeze({
     id: task.id,

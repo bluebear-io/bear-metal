@@ -88,9 +88,6 @@ export function createTaskApiRouter(input: {
   return router;
 }
 
-function view(task: ApiTaskRecord) {
-  return {
-    id: task.id, status: task.status, result: task.result, error: task.error,
-    createdAt: task.createdAt, startedAt: task.startedAt, endedAt: task.endedAt,
-  };
+function view({ request: _request, ...task }: ApiTaskRecord) {
+  return task;
 }

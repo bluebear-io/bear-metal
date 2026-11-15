@@ -30,50 +30,6 @@ export function workspaceGitEnv(netrcDir: string, bot: BotIdentity): NodeJS.Proc
 }
 
 /**
- * Pushes the repository's current branch and returns its pull request, creating one unless `existing` already has a PR
- * for the same repository: a task opens at most one PR per repository.
- */
-export async function pushAndOpenPullRequest(input: {
-  github: WorkerGitHub;
-  repoRoot: string;
-  netrcDir: string;
-  gitEnv: NodeJS.ProcessEnv;
-  prTitle: string;
-  prBody: string;
-  baseBranch?: string;
-  existing: readonly PullRequestRef[];
-  labels?: readonly string[];
-  signal?: AbortSignal;
-}): Promise<PullRequestRef> {
-  // Installation tokens expire after 1 hour; refresh before pushing.
-  const freshToken = await input.github.getInstallationToken();
-  input.signal?.throwIfAborted();
-  await writeFile(resolve(input.netrcDir, ".netrc"), `machine github.com login x-access-token password ${freshToken}\n`, { mode: 0o600 });
-  input.signal?.throwIfAborted();
-  await push(input.repoRoot, input.gitEnv);
-  const remote = await getRemoteRef(input.repoRoot);
-  input.signal?.throwIfAborted();
-  const pr = input.existing.find((p) => p.owner === remote.owner && p.repo === remote.repo)
-    ?? await input.github.createPullRequest({
-      owner: remote.owner,
-      repo: remote.repo,
-      title: input.prTitle,
-      head: await getCurrentBranch(input.repoRoot),
-      base: input.baseBranch ?? await input.github.getDefaultBranch(remote.owner, remote.repo),
-      body: input.prBody,
-    });
-  input.signal?.throwIfAborted();
-  if (input.labels?.length && input.github.addLabels) {
-    try {
-      await input.github.addLabels(pr, input.labels);
-    } catch (err) {
-      logger.warn({ err, pr }, "failed to apply pull request labels");
-    }
-  }
-  return pr;
-}
-
-/**
  * The `commit_changes` and `push_for_review` tools, shared by every task that opens pull requests.
  * `existing` lists PRs a push should update instead of opening a new one; `onPullRequest` runs after each push.
  */
@@ -117,18 +73,33 @@ export function createCommitAndPushTools(input: {
     execute: async (_toolCallId, params) => {
       input.signal?.throwIfAborted();
       logger.debug({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
-      const pr = await pushAndOpenPullRequest({
-        github: input.github,
-        repoRoot: assertRepoRootInWorkspace(input.workspaceRoot, params.repoRoot),
-        netrcDir: input.netrcDir,
-        gitEnv: input.gitEnv,
-        prTitle: params.prTitle,
-        prBody: params.prBody,
-        baseBranch: params.baseBranch,
-        existing: input.existing(),
-        labels: input.labels,
-        signal: input.signal,
-      });
+      const repoRoot = assertRepoRootInWorkspace(input.workspaceRoot, params.repoRoot);
+      // Installation tokens expire after 1 hour; refresh before pushing.
+      const freshToken = await input.github.getInstallationToken();
+      input.signal?.throwIfAborted();
+      await writeFile(resolve(input.netrcDir, ".netrc"), `machine github.com login x-access-token password ${freshToken}\n`, { mode: 0o600 });
+      input.signal?.throwIfAborted();
+      await push(repoRoot, input.gitEnv);
+      const remote = await getRemoteRef(repoRoot);
+      input.signal?.throwIfAborted();
+      // A task opens at most one PR per repository; a later push updates it.
+      const pr = input.existing().find((p) => p.owner === remote.owner && p.repo === remote.repo)
+        ?? await input.github.createPullRequest({
+          owner: remote.owner,
+          repo: remote.repo,
+          title: params.prTitle,
+          head: await getCurrentBranch(repoRoot),
+          base: params.baseBranch ?? await input.github.getDefaultBranch(remote.owner, remote.repo),
+          body: params.prBody,
+        });
+      input.signal?.throwIfAborted();
+      if (input.labels?.length && input.github.addLabels) {
+        try {
+          await input.github.addLabels(pr, input.labels);
+        } catch (err) {
+          logger.warn({ err, pr }, "failed to apply pull request labels");
+        }
+      }
       await input.onPullRequest(pr);
       return {
         content: [{ type: "text" as const, text: `Pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { Compile } from "typebox/schema";
 
 /** A task submitted through the task API instead of a Linear ticket. */
@@ -58,7 +57,6 @@ const REQUEST_FIELDS = new Set([
 const IDEMPOTENCY_KEY = /^[^\s]{1,200}$/;
 const PROFILE = /^[a-z][a-z0-9-]{0,62}$/;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const MAX_EMAIL_LENGTH = 254;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -69,15 +67,6 @@ function requiredString(body: Record<string, unknown>, field: string, pattern?: 
   if (typeof value !== "string" || !value.trim()) throw new ApiTaskRequestError(`${field} is required`);
   if (pattern && !pattern.test(value)) throw new ApiTaskRequestError(`${field} is invalid`);
   return value;
-}
-
-function isEmail(value: string): boolean {
-  if (value.length > MAX_EMAIL_LENGTH || /\s/.test(value)) return false;
-  const at = value.indexOf("@");
-  if (at <= 0 || at !== value.lastIndexOf("@")) return false;
-  const domain = value.slice(at + 1);
-  const dot = domain.lastIndexOf(".");
-  return dot > 0 && dot < domain.length - 1;
 }
 
 /** Validates a task request; throws ApiTaskRequestError naming the first invalid field. */
@@ -94,7 +83,7 @@ export function parseApiTaskRequest(body: unknown, now = new Date()): ApiTaskReq
     deadline: requiredString(body, "deadline"),
     maxTokens: 0,
   };
-  if (!isEmail(request.owner)) throw new ApiTaskRequestError("owner is invalid");
+  if (request.owner.length > 254 || !/^[^\s@]+@[^\s@]+$/.test(request.owner)) throw new ApiTaskRequestError("owner is invalid");
   if (body.inputs !== undefined) {
     if (!isRecord(body.inputs)) throw new ApiTaskRequestError("inputs must be a JSON object");
     request.inputs = body.inputs;
@@ -114,20 +103,6 @@ export function parseApiTaskRequest(body: unknown, now = new Date()): ApiTaskReq
   if (!Number.isSafeInteger(body.maxTokens) || (body.maxTokens as number) <= 0) throw new ApiTaskRequestError("maxTokens must be a positive integer");
   request.maxTokens = body.maxTokens as number;
   return request;
-}
-
-/** Hash of the request with object keys sorted, so a retry with reordered fields matches. */
-export function apiTaskRequestHash(request: ApiTaskRequest): string {
-  return createHash("sha256").update(canonicalJson(request)).digest("hex");
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (isRecord(value)) {
-    return `{${Object.keys(value).sort().filter((key) => value[key] !== undefined)
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 /** Checks a submitted result against the request's `outputSchema`; returns the first errors, or an empty list. */

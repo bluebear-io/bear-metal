@@ -73,7 +73,7 @@ describe("task API", () => {
     const { profile: _profile, ...withoutProfile } = taskBody();
     expect((await signed("post", "/tasks", withoutProfile)).body).toEqual({ error: "profile is required" });
     expect((await signed("post", "/tasks", taskBody({ branch: "main" }))).body).toEqual({ error: "unknown field branch" });
-    for (const owner of ["owner", "a@b", "a@@b.com", `${"!.".repeat(5_000)}@x.com`]) {
+    for (const owner of ["owner", "a@@b.com", "a b@c.com", `${"!.".repeat(5_000)}@x.com`]) {
       expect((await signed("post", "/tasks", taskBody({ owner }))).body).toEqual({ error: "owner is invalid" });
     }
     expect((await signed("post", "/tasks", taskBody({ deadline: new Date(Date.now() - 1000).toISOString() }))).status).toBe(400);
