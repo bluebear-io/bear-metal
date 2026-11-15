@@ -72,6 +72,10 @@ describe("worker contract", () => {
     };
 
     const prompt = buildWorkerPrompt(context);
+    expect(prompt).not.toMatch(/## Request/);
+    const requested = buildWorkerPrompt({ ...context, request: { instruction: "Keep the API stable", inputs: { area: "billing" } } });
+    expect(requested).toMatch(/## Request\n.*\nKeep the API stable\n\nInputs:\n```json\n\{\n  "area": "billing"\n\}/);
+    expect(requested.slice(requested.indexOf("## Task Context"))).not.toMatch(/Keep the API stable/);
     expect(prompt).toMatch(/Steps for this PR iteration/);
     expect(prompt).toMatch(/agree_with_github_message/);
     expect(prompt).toMatch(/disagree_with_github_message/);

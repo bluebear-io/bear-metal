@@ -5,6 +5,7 @@ import type { DbClient, DispatchTaskInput, TaskRecord } from "../db/client.js";
 import { TaskWorker } from "./task-worker.js";
 import type { DispatchInput, DispatchResult } from "./dispatch.js";
 import type { BearMetalConfig } from "../customization/types.js";
+import type { ApiTaskRecord } from "../task-api/request.js";
 
 const logger = createLogger({ level: "silent", name: "test" });
 const config = { llmProviders: {}, customizeTask: vi.fn() } as unknown as BearMetalConfig;
@@ -38,6 +39,40 @@ describe("TaskWorker", () => {
     expect(db.upsertRunSucceededCalls).toEqual([]);
     expect(db.upsertRunCrashedCalls).toEqual([]);
     expect(db.markCrashedCalls).toEqual([]);
+  });
+
+  it("runs a ticket the task API delegated as its profile, with the request on the first run only", async () => {
+    const input = { state: "new" as const, ticketId: "ABC-1", prs: [], trigger: "new" as const, ticketIssueId: "lin_1" };
+    const profile = { id: "developer", name: "Developer", instructions: "Write code.", toolCeiling: [], shell: true, customerData: false };
+    const deadline = new Date(Date.now() + 60_000).toISOString();
+    const apiTask = {
+      id: "api-1", status: "running", ticketIssueId: "lin_1", startedAt: new Date().toISOString(),
+      request: { profile, instruction: "Fix it", inputs: { area: "billing" }, deadline, maxTokens: 500 },
+    } as unknown as ApiTaskRecord;
+    const seen: DispatchInput["api"][] = [];
+    const runWith = async (db: FakeDb) => {
+      const worker = new TaskWorker({
+        logger, db: db as unknown as DbClient, integrations: makeIntegrations(), concurrency: 1, pollIntervalMs: 60_000,
+        runDispatch: async (dispatchInput) => { seen.push(dispatchInput.api); return { status: "done", prs: [] }; },
+        heartbeatIntervalMs: 30_000, maxReclaims: 3, agentId: undefined, config,
+      });
+      await worker.tick();
+      await worker.stop();
+    };
+    const first = new FakeDb(taskRecord({ input }));
+    first.apiTask = apiTask;
+    first.firstRunId = "task-1";
+    await runWith(first);
+    const later = new FakeDb(taskRecord({ input }));
+    later.apiTask = { ...apiTask, status: "succeeded" };
+    later.firstRunId = "task-0";
+    await runWith(later);
+    await runWith(new FakeDb(taskRecord({ input })));
+    expect(seen).toEqual([
+      { profile, firstRun: { instruction: "Fix it", inputs: { area: "billing" }, deadline, maxTokens: 500 } },
+      { profile },
+      undefined,
+    ]);
   });
 
   it("acquires a task with its worker id and writes the dispatch result", async () => {
@@ -248,6 +283,17 @@ class FakeDb {
 
   constructor(task: TaskRecord | null) {
     this.task = task;
+  }
+
+  apiTask: ApiTaskRecord | null = null;
+  firstRunId: string | null = null;
+
+  async getTicketApiTask(_ticketIssueId: string): Promise<ApiTaskRecord | null> {
+    return this.apiTask;
+  }
+
+  async getFirstTicketRun(_ticketIssueId: string, _since: string): Promise<{ record: { id: string } } | null> {
+    return this.firstRunId ? { record: { id: this.firstRunId } } : null;
   }
 
   async enqueue(_input: DispatchTaskInput): Promise<TaskRecord> {

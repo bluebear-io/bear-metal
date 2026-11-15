@@ -17,6 +17,8 @@ export interface DispatchUsage {
   completionTokens: number;
   modelName: string;
   provider: string;
+  /** The session's token categories; absent on results recorded before they were kept. */
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
 /**
@@ -46,7 +48,7 @@ export interface DispatchToolCall {
 export type DispatchResult = {
   status: "pending" | "done";
   prs: PullRequestRef[];
-  stopReason?: "token_limit";
+  stopReason?: "token_limit" | "time_limit";
   usage?: DispatchUsage;
   /** Ordered tool-call timeline for the run; empty when no tool calls were captured. */
   toolCalls?: DispatchToolCall[];
@@ -126,4 +128,6 @@ export type WorkerInputContext = {
   pullRequests: PullRequestContext[];
   cloneScript: CloneScriptResult;
   evidenceAttachments?: import("./attachments.js").DownloadedTicketAttachment[];
+  /** The task API request that delegated the ticket; only its first run gets it. */
+  request?: { instruction: string; inputs?: Record<string, unknown> };
 };

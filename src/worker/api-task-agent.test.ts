@@ -18,6 +18,10 @@ vi.mock("./pi-runtime.js", async (importOriginal) => ({
   },
 }));
 
+const profile = {
+  id: "researcher", name: "Researcher", instructions: "Research it.", toolCeiling: ["repo.read"], shell: true, customerData: false,
+};
+
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
 type Listener = (event: unknown) => void;
@@ -58,16 +62,7 @@ describe("API task agent", () => {
   let remote: string;
   let db: SqlDbClient;
   let customized: Task[];
-  let created: { title: string; head: string; base: string }[];
-  const github = {
-    getInstallationToken: async () => "gh-token",
-    getBotIdentity: async () => ({ login: "bear-metal[bot]", id: null, numericId: 1, userNumericId: 2 }),
-    getDefaultBranch: async () => "main",
-    createPullRequest: async (pr: { owner: string; repo: string; title: string; head: string; base: string }) => {
-      created.push(pr);
-      return { owner: pr.owner, repo: pr.repo, number: 42 };
-    },
-  } as unknown as WorkerGitHub;
+  const github = { getInstallationToken: async () => "gh-token" } as unknown as WorkerGitHub;
 
   const config = (tools?: AgentToolChoice[]): BearMetalConfig => ({
     linear: { clientId: "id", getClientSecret: () => "secret" },
@@ -89,7 +84,7 @@ describe("API task agent", () => {
 
   const createTask = async (overrides: Partial<ApiTaskRequest> = {}) => {
     const request: ApiTaskRequest = {
-      idempotencyKey: `request-${Math.random()}`, profile: "developer", owner: "owner@example.com", repository: "acme/widgets",
+      idempotencyKey: `request-${Math.random()}`, profile, owner: "owner@example.com", repository: "acme/widgets",
       instruction: "Do it", outputSchema: { type: "object", required: ["summary"], properties: { summary: { type: "string" } } },
       deadline: new Date(Date.now() + 60_000).toISOString(), maxTokens: 1_000, ...overrides,
     };
@@ -116,7 +111,6 @@ describe("API task agent", () => {
     db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
     customized = [];
-    created = [];
   });
   afterEach(async () => {
     sessionFactory.mockReset();
@@ -125,31 +119,29 @@ describe("API task agent", () => {
     await rm(base, { recursive: true, force: true });
   });
 
-  it("runs as the requested profile and owner, opens a PR like a ticket task, and returns the structured result", async () => {
+  it("runs as the requested profile and owner without tools or credentials that change the repository", async () => {
     const task = await createTask();
     let toolNames: string[] = [];
     let ownerEmail: string | undefined;
+    let askpass: unknown;
     sessionFactory.mockImplementation(async (options) => {
       toolNames = options.customTools.map((candidate: Tool) => candidate.name);
       ownerEmail = options.ownerEmail;
       return fakeSession(async ({ tools, cwd }) => {
-        await writeFile(join(cwd, "README.md"), "changed\n");
-        await tool(tools, "commit_changes").execute("1", { repoRoot: cwd, branch: "fix/readme", message: "Change readme" });
-        await tool(tools, "push_for_review").execute("2", { repoRoot: cwd, prTitle: "Change readme", prBody: "Body" });
-        await tool(tools, "submit_result").execute("3", { message: "Done", result: { summary: "ok" } });
+        askpass = await tool(tools, "bash").execute("1", { command: "echo \"askpass=${GIT_ASKPASS:-none}\"" });
+        await tool(tools, "submit_result").execute("2", { message: "Done", result: { summary: "ok" } });
       })(options);
     });
-    const outcome = await run(task, { config: config(["read", "edit", "bash", "commit_changes", "push_for_review"]) });
+    const outcome = await run(task, { config: config(["read", "edit", "write", "bash", "commit_changes", "push_for_review"]) });
     expect(outcome).toMatchObject({ status: "succeeded", error: null });
     expect(outcome.result).toEqual({
-      message: "Done", result: { summary: "ok" }, pullRequests: [{ owner: "acme", repo: "widgets", number: 42 }],
+      message: "Done", result: { summary: "ok" }, pullRequests: [],
       usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, freshTokens: 15 },
     });
-    expect(created).toEqual([expect.objectContaining({ title: "Change readme", head: "fix/readme", base: "main" })]);
-    expect(git(remote, "log", "-1", "--format=%s", "fix/readme")).toBe("Change readme");
     expect(ownerEmail).toBe("owner@example.com");
-    expect(toolNames).toEqual(expect.arrayContaining(["submit_result", "commit_changes", "push_for_review", "read", "edit", "bash"]));
-    expect(customized[0]).toEqual({ id: task.id, type: "api", request: "Do it", profile: "developer", repositories: [{ owner: "acme", name: "widgets" }] });
+    expect(toolNames.sort()).toEqual(["bash", "read", "submit_result"]);
+    expect(JSON.stringify(askpass)).toContain("askpass=none");
+    expect(customized[0]).toEqual({ id: task.id, type: "api", request: "Do it", profile, repositories: [{ owner: "acme", name: "widgets" }] });
   });
 
   it("keeps submit_result when the profile's tools omit it", async () => {

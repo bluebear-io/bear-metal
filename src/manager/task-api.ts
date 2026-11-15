@@ -1,20 +1,36 @@
 import { Router, raw, type Request, type Response, type NextFunction } from "express";
 import { ApiTaskConflictError, type DbClient } from "../db/client.js";
-import { ApiTaskRequestError, parseApiTaskRequest, type ApiTaskRecord } from "../task-api/request.js";
+import { ApiTaskRequestError, parseApiTaskRequest, type ApiTaskRecord, type ApiTaskRequest } from "../task-api/request.js";
 import type { Logger } from "../shared/logger.js";
 import { verifyRequestSignature } from "./request-signature.js";
+import { stopTicketWork, type TicketHandBack } from "./api-task-worker.js";
 
 export const TASK_API_TIMESTAMP_HEADER = "x-bear-metal-request-timestamp";
 export const TASK_API_SIGNATURE_HEADER = "x-bear-metal-signature";
 
+/** The Linear operations a coding task needs to hand its ticket to the scheduler. */
+export interface TicketDelegation extends TicketHandBack {
+  getAgentId(): Promise<string>;
+  getTicket(id: string): Promise<{ id: string; delegate: { id: string } | null }>;
+  findUserIdByEmail(email: string): Promise<string>;
+  assignAndDelegate(ticketIssueId: string, assigneeId: string): Promise<void>;
+}
+
+class TicketRequestError extends Error {
+  constructor(readonly status: 400 | 409 | 502, message: string) {
+    super(message);
+  }
+}
+
 /**
- * Runs tasks without a Linear ticket. Every request, GETs included, is signed over its raw body (empty for GET);
- * mount it before any JSON body parser.
+ * Runs tasks through a signed API. Every request, GETs included, is signed over its raw body (empty for GET);
+ * mount it before any JSON body parser. Without `tickets`, coding requests are refused.
  */
 export function createTaskApiRouter(input: {
   db: DbClient;
   signingSecret: string;
   logger: Logger;
+  tickets?: TicketDelegation;
   /** Starts a worker poll right away instead of waiting for the next interval. */
   wake: () => void;
 }): Router {
@@ -29,6 +45,45 @@ export function createTaskApiRouter(input: {
     next();
   });
 
+  /** Creates a coding task and delegates its ticket; a retry of a created task returns it without touching Linear. */
+  async function createCodingTask(request: ApiTaskRequest & { ticketId: string }): Promise<{ task: ApiTaskRecord; created: boolean }> {
+    const tickets = input.tickets;
+    if (!tickets) throw new TicketRequestError(400, "Coding tasks need the Linear scheduler, which is off");
+    const existing = await input.db.getApiTaskByKey(request.idempotencyKey);
+    if (existing) {
+      if (JSON.stringify(existing.request) !== JSON.stringify(request)) {
+        throw new ApiTaskConflictError(`Idempotency key ${request.idempotencyKey} was used with a different request`);
+      }
+      return { task: existing, created: false };
+    }
+    let ticket: { id: string; delegate: { id: string } | null };
+    try {
+      ticket = await tickets.getTicket(request.ticketId);
+    } catch (err) {
+      throw new TicketRequestError(400, `Cannot read ticket ${request.ticketId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (ticket.delegate?.id === await tickets.getAgentId() || await input.db.getTrackedSlot(ticket.id)) {
+      throw new TicketRequestError(409, `Ticket ${request.ticketId} is already delegated to Bear Metal`);
+    }
+    let assigneeId: string;
+    try {
+      assigneeId = await tickets.findUserIdByEmail(request.owner);
+    } catch (err) {
+      throw new TicketRequestError(400, `Cannot find the owner in Linear: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const created = await input.db.createApiTask(request, ticket.id);
+    if (!created.created) return created;
+    try {
+      await tickets.assignAndDelegate(ticket.id, assigneeId);
+      await input.db.startTicketApiTask(created.task.id);
+    } catch (err) {
+      const error = `Cannot delegate ticket ${request.ticketId}: ${err instanceof Error ? err.message : String(err)}`;
+      await input.db.failQueuedApiTask(created.task.id, error);
+      throw new TicketRequestError(502, error);
+    }
+    return { task: (await input.db.getApiTask(created.task.id))!, created: true };
+  }
+
   router.post("/tasks", async (req, res, next) => {
     try {
       let body: unknown;
@@ -39,10 +94,12 @@ export function createTaskApiRouter(input: {
         return;
       }
       const request = parseApiTaskRequest(body);
-      const { task, created } = await input.db.createApiTask(request);
+      const { task, created } = request.ticketId !== undefined
+        ? await createCodingTask(request as ApiTaskRequest & { ticketId: string })
+        : await input.db.createApiTask(request);
       if (created) {
-        input.logger.info({ taskId: task.id, profile: request.profile, repository: request.repository }, "API task accepted");
-        input.wake();
+        input.logger.info({ taskId: task.id, profile: request.profile.id, ticketId: request.ticketId, repository: request.repository }, "API task accepted");
+        if (!request.ticketId) input.wake();
       }
       res.status(202).json({ id: task.id, status: task.status });
     } catch (err) {
@@ -52,6 +109,10 @@ export function createTaskApiRouter(input: {
       }
       if (err instanceof ApiTaskConflictError) {
         res.status(409).json({ error: err.message });
+        return;
+      }
+      if (err instanceof TicketRequestError) {
+        res.status(err.status).json({ error: err.message });
         return;
       }
       next(err);
@@ -78,6 +139,11 @@ export function createTaskApiRouter(input: {
         res.sendStatus(404);
         return;
       }
+      // Repeated while the task still owns its ticket's slot, so a failed hand-back can be retried.
+      if (task.status === "canceled" && task.ticketIssueId && (await input.db.getTicketApiTask(task.ticketIssueId))?.id === task.id) {
+        if (!input.tickets) throw new Error(`API task ${task.id} has a ticket, but the Linear scheduler is off`);
+        await stopTicketWork(input.db, input.tickets, task.ticketIssueId, "Canceled through the task API");
+      }
       input.logger.info({ taskId: task.id, status: task.status }, "API task cancel requested");
       res.json(view(task));
     } catch (err) {
@@ -88,6 +154,6 @@ export function createTaskApiRouter(input: {
   return router;
 }
 
-function view({ request: _request, ...task }: ApiTaskRecord) {
+function view({ request: _request, ticketIssueId: _ticketIssueId, ...task }: ApiTaskRecord) {
   return task;
 }

@@ -117,6 +117,19 @@ export class TaskWorker {
     }
   }
 
+  /** The profile of the task API task that delegated this ticket, and its request when this is the ticket's first run since. */
+  private async apiTaskSettings(task: TaskRecord): Promise<DispatchInput["api"]> {
+    const ticketIssueId = task.input?.ticketIssueId;
+    if (!ticketIssueId) return undefined;
+    const apiTask = await this.db.getTicketApiTask(ticketIssueId);
+    if (!apiTask) return undefined;
+    const firstRun = apiTask.status === "running" && apiTask.startedAt
+      ? (await this.db.getFirstTicketRun(ticketIssueId, apiTask.startedAt))?.record.id === task.id
+      : false;
+    const { profile, instruction, inputs, deadline, maxTokens } = apiTask.request;
+    return { profile, ...(firstRun ? { firstRun: { instruction, ...(inputs ? { inputs } : {}), deadline, maxTokens } } : {}) };
+  }
+
   private async runTask(task: TaskRecord): Promise<void> {
     this.logger.info(
       { taskId: task.id, ticketId: task.ticketId, workerId: this.workerId },
@@ -156,9 +169,11 @@ export class TaskWorker {
     const traceWriter = new AgentTraceWriter(this.db, task.id);
     let result: DispatchResult;
     try {
+      const api = await this.apiTaskSettings(task);
       result = await this.runDispatch({
         signal: controller.signal,
         ...task.input!,
+        ...(api ? { api } : {}),
         runId: task.id,
         hasSlackLinkedTicket: (issueId) => this.db.hasSlackLinkedTicket(issueId),
         integrations: this.integrations,
@@ -266,7 +281,7 @@ export class TaskWorker {
 
     // Fire-and-forget: complete() already released the slot; crashes here only lose dashboard supplementary data.
     void (result.stopReason
-      ? this.db.upsertRunInterrupted(task.id, result.stopReason, result.usage ?? null)
+      ? this.db.upsertRunInterrupted(task.id, result.stopReason === "time_limit" ? "timeout" : result.stopReason, result.usage ?? null)
       : this.db.upsertRunSucceeded(task.id, result.usage ?? null));
     if (result.toolCalls && result.toolCalls.length > 0) {
       void this.db.upsertToolCalls(task.id, JSON.stringify(result.toolCalls));

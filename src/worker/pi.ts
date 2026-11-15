@@ -477,6 +477,7 @@ export async function runPiWorker(input: {
         completionTokens: stats.tokens.output,
         modelName: model.name,
         provider: model.provider,
+        tokens: { input: stats.tokens.input, output: stats.tokens.output, cacheRead: stats.tokens.cacheRead, cacheWrite: stats.tokens.cacheWrite },
       };
       logger.debug({ ticketId: input.context.ticketId, usage: captured }, "captured pi session usage");
       return captured;
@@ -581,7 +582,7 @@ export async function runPiWorker(input: {
     return {
       status: "pending",
       prs: mergePrs(input.context.prs, collectedPrs),
-      ...(tokenLimitHit ? { stopReason: "token_limit" as const } : {}),
+      stopReason: tokenLimitHit ? "token_limit" as const : "time_limit" as const,
       ...(usage ? { usage } : {}),
     };
   }

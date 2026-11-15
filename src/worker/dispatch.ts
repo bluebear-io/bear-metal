@@ -1,7 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig } from "../customization/types.js";
+import { DEFAULT_MAX_DURATION_MS, DEFAULT_MAX_TOKENS, type BearMetalConfig, type TaskProfile } from "../customization/types.js";
 import { buildTask, customizeAndResolve } from "../customization/task.js";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
 import { createLogger } from "../shared/index.js";
@@ -38,6 +38,11 @@ export interface DispatchInput {
   agentToolGateway?: AgentToolGatewayLike;
   config: BearMetalConfig;
   iteration: number;
+  /** Set when the task API delegated the ticket: the profile every run uses, and the request for its first run. */
+  api?: {
+    profile: TaskProfile;
+    firstRun?: { instruction: string; inputs?: Record<string, unknown>; deadline: string; maxTokens: number };
+  };
   onToolCallProgress?: (calls: DispatchToolCall[]) => void;
   onTraceEvent?: (kind: string, content: Record<string, unknown>) => void;
   onWorkspaceBuilding?: () => void;
@@ -101,8 +106,16 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     prs,
     pullRequests,
     trigger: fromSlack ? "slack" : "linear",
+    profile: input.api?.profile,
   });
   const { customization, llm } = await customizeAndResolve(input.config, task);
+  const firstRun = input.api?.firstRun;
+  let maxWorkerTimeMs = customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
+  let maxWorkerTokens = customization.limits?.maxTokens ?? DEFAULT_MAX_TOKENS;
+  if (firstRun) {
+    maxWorkerTimeMs = Math.max(0, Math.min(maxWorkerTimeMs, Date.parse(firstRun.deadline) - Date.now()));
+    maxWorkerTokens = Math.min(maxWorkerTokens, firstRun.maxTokens);
+  }
   input.signal?.throwIfAborted();
   logger.info({ ticketId, provider: llm.provider, model: llm.model, modelArn: llm.modelArn }, "selected task LLM");
 
@@ -136,6 +149,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
     pullRequests,
     cloneScript,
     evidenceAttachments,
+    ...(firstRun ? { request: { instruction: firstRun.instruction, ...(firstRun.inputs ? { inputs: firstRun.inputs } : {}) } } : {}),
   };
 
   input.signal?.throwIfAborted();
@@ -163,8 +177,8 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
       onAgentStarted: input.onAgentStarted,
       onToolCallProgress: input.onToolCallProgress,
       onTraceEvent: input.onTraceEvent,
-      maxWorkerTimeMs: customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS,
-      maxWorkerTokens: customization.limits?.maxTokens ?? DEFAULT_MAX_TOKENS,
+      maxWorkerTimeMs,
+      maxWorkerTokens,
       llmProvider: llm.provider,
       llmApiKey: llm.apiKey,
       llmModel: llm.model,

@@ -8,12 +8,11 @@ import { DEFAULT_MAX_DURATION_MS, type BearMetalConfig, type Task } from "../cus
 import type { ApiTaskOutcome, DbClient } from "../db/client.js";
 import type { ApiTaskRecord, ApiTaskResult, ApiTaskUsage } from "../task-api/request.js";
 import { outputSchemaErrors } from "../task-api/request.js";
-import { createLogger, type PullRequestRef } from "../shared/index.js";
+import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForApiTask } from "./clone.js";
 import { resolveSessionModel } from "./model.js";
 import { createAgentGatewayTools } from "./pi.js";
 import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
-import { createCommitAndPushTools, workspaceGitEnv } from "./pull-request.js";
 import { freshTokens } from "./token-budget.js";
 import { AgentTraceWriter, redactTraceText, traceJson } from "./trace.js";
 import type { WorkerGitHub } from "./types.js";
@@ -28,10 +27,15 @@ const logger = createLogger({
 
 // submit_result ends the task, so a profile's tool list never removes it.
 const ALWAYS_KEPT = new Set(["submit_result"]);
+// A task without a ticket never changes the repository, whatever its profile allows.
+const CHANGE_TOOLS = new Set(["edit", "write"]);
+// The clone's credentials are removed before the agent starts, so git in bash cannot push.
+const READ_ONLY_GIT_ENV: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0" };
 
 type StopReason = "timeout" | "budget" | "canceled";
 
 function apiCustomizationTask(task: ApiTaskRecord): Task {
+  if (!task.request.repository) throw new Error(`API task ${task.id} has no repository`);
   const [owner, name] = task.request.repository.split("/") as [string, string];
   return Object.freeze({
     id: task.id,
@@ -46,7 +50,7 @@ function taskPrompt(task: ApiTaskRecord, repoRoot: string): string {
   const request = task.request;
   return [
     `Repository: ${request.repository}, checked out at ${repoRoot}.`,
-    "If you change code, commit it and call push_for_review to open or update its pull request before you submit the result.",
+    "You cannot change the repository or open pull requests. Report what you found through submit_result.",
     "End by calling submit_result exactly once.",
     "",
     "## Instruction",
@@ -57,7 +61,7 @@ function taskPrompt(task: ApiTaskRecord, repoRoot: string): string {
 }
 
 /**
- * Runs one task API task to its outcome. Stops itself at the request's deadline or token budget, and when
+ * Runs one task API task without a ticket to its outcome. Stops itself at the request's deadline or token budget, and when
  * `canceled()` turns true. Never throws for agent failures.
  */
 export async function runApiTaskAgent(input: {
@@ -73,7 +77,6 @@ export async function runApiTaskAgent(input: {
   const request = task.request;
   const workspaceDir = workspaceForApiTask(task.id);
   const traceWriter = new AgentTraceWriter(input.db, task.id);
-  const pullRequests: PullRequestRef[] = [];
   let submitted: { message: string; result: Record<string, unknown> | null } | undefined;
   let usage: ApiTaskUsage | null = null;
   let stopReason: StopReason | null = null;
@@ -100,35 +103,19 @@ export async function runApiTaskAgent(input: {
     if (maxDurationMs < deadlineMs) durationTimer = setTimeout(() => stop("timeout"), maxDurationMs);
 
     await mkdir(workspaceDir, { recursive: true });
-    const [githubToken, bot] = await Promise.all([input.github.getInstallationToken(), input.github.getBotIdentity()]);
     const built = await runWorkspaceBuilder({
-      workspaceDir, githubToken, buildWorkspace: customization.buildWorkspace, signal: stopController.signal,
+      workspaceDir, githubToken: await input.github.getInstallationToken(), buildWorkspace: customization.buildWorkspace, signal: stopController.signal,
     });
     netrcDir = built.netrcDir;
+    await rm(built.netrcDir, { recursive: true, force: true });
     const workspaceRoot = built.agentWorkdir;
-    const gitEnv = workspaceGitEnv(built.netrcDir, bot);
 
-    const { commitChanges, pushForReview } = createCommitAndPushTools({
-      workspaceRoot,
-      github: input.github,
-      netrcDir: built.netrcDir,
-      gitEnv,
-      labels: customization.pullRequestLabels,
-      signal: stopController.signal,
-      existing: () => pullRequests,
-      onPullRequest: (pr) => {
-        if (!pullRequests.some((known) => known.owner === pr.owner && known.repo === pr.repo && known.number === pr.number)) pullRequests.push(pr);
-      },
-    });
-    const allowed = customization.tools;
     const allTools: ToolDefinition[] = [
-      ...createWorkspaceGuardedTools(workspaceRoot, gitEnv),
-      ...(allowed?.includes("commit_changes") ? [commitChanges] : []),
-      pushForReview,
+      ...createWorkspaceGuardedTools(workspaceRoot, READ_ONLY_GIT_ENV).filter((tool) => !CHANGE_TOOLS.has(tool.name)),
       submitResultTool(),
       ...(input.gateway ? createAgentGatewayTools(input.gateway, { taskId: task.id, runId: task.id, workspaceRoot }, stopController.signal) : []),
     ];
-    const customTools = narrowTools(allTools, allowed, ALWAYS_KEPT);
+    const customTools = narrowTools(allTools, customization.tools, ALWAYS_KEPT);
 
     const prompt = `${customization.additionalSystemPrompt ?? ""}\n\n${taskPrompt(task, workspaceRoot)}`;
     traceWriter.record("prompt", { text: redactTraceText(prompt) });
@@ -204,7 +191,7 @@ export async function runApiTaskAgent(input: {
   const result: ApiTaskResult = {
     message: submitted?.message ?? null,
     result: submitted?.result ?? null,
-    pullRequests,
+    pullRequests: [],
     usage,
   };
   if (stopReason === "timeout") return { status: "timeout", result, error: `Deadline ${request.deadline} reached` };
@@ -218,7 +205,7 @@ export async function runApiTaskAgent(input: {
     return defineTool({
       name: "submit_result",
       label: "Submit result",
-      description: "Submit the task's result. Call it exactly once, after push_for_review when you changed code.",
+      description: "Submit the task's result. Call it exactly once.",
       parameters: Type.Object({
         message: Type.String({ minLength: 1, description: "A short human-readable summary of what you did and found." }),
         result: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "The structured result; must match the result schema when one is given." })),

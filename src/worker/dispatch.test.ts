@@ -37,6 +37,21 @@ describe("dispatch customization boundary", () => {
     expect(state.piInputs[0]).toMatchObject({ llmProvider: "openai", llmModel: "gpt-test", llmApiKey: "openai-key", systemPrompt: "Extra", maxWorkerTimeMs: 123, maxWorkerTokens: 456 });
   });
 
+  it("runs a task API ticket as its profile, with the request and tighter limits on its first run", async () => {
+    const profile = { id: "developer", name: "Developer", instructions: "Write code.", toolCeiling: [], shell: true, customerData: false };
+    const deadline = new Date(Date.now() + 100).toISOString();
+    await dispatch(makeConfig(), { api: { profile, firstRun: { instruction: "Fix it", inputs: { area: "billing" }, deadline, maxTokens: 50 } } });
+    expect(state.tasks[0]?.profile).toEqual(profile);
+    expect(state.piInputs[0].maxWorkerTokens).toBe(50);
+    expect(state.piInputs[0].maxWorkerTimeMs).toBeLessThanOrEqual(100);
+    expect(state.piInputs[0].context.request).toEqual({ instruction: "Fix it", inputs: { area: "billing" } });
+
+    await dispatch(makeConfig(), { api: { profile } });
+    expect(state.tasks[1]?.profile).toEqual(profile);
+    expect(state.piInputs[1]).toMatchObject({ maxWorkerTimeMs: 123, maxWorkerTokens: 456 });
+    expect(state.piInputs[1].context.request).toBeUndefined();
+  });
+
   it("resolves only the selected provider", async () => {
     const config = makeConfig();
     const anthropic = config.llmProviders.anthropic as { getApiKey: ReturnType<typeof vi.fn> };
@@ -152,6 +167,7 @@ async function dispatch(
     integrations?: ReturnType<typeof makeIntegrations>;
     ticketIssueId?: string;
     hasSlackLinkedTicket?: (id: string) => Promise<boolean>;
+    api?: import("./dispatch.js").DispatchInput["api"];
   } = {},
 ) {
   const { dispatch } = await import("./dispatch.js");
@@ -166,6 +182,7 @@ async function dispatch(
     config,
     ticketIssueId: options.ticketIssueId,
     hasSlackLinkedTicket: options.hasSlackLinkedTicket,
+    ...(options.api ? { api: options.api } : {}),
   });
 }
 

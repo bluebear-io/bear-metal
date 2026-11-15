@@ -91,8 +91,8 @@ export interface Task {
   readonly id: string;
   readonly type: "coding" | "coordinator" | "research" | "api";
   readonly request?: string;
-  /** API tasks: the profile the caller asked the task to run as. */
-  readonly profile?: string;
+  /** The profile a task API request sent; `customizeTask` decides what it means. Set on every run of a ticket the task API delegated. */
+  readonly profile?: TaskProfile;
   readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
   readonly identifier?: string;
   readonly title?: string;
@@ -114,6 +114,17 @@ export interface Task {
   readonly run?: Readonly<{ kind: "new" | "iteration"; iteration: number }>;
   readonly pullRequests?: readonly TaskPullRequest[];
   readonly trigger?: "slack" | "linear";
+}
+
+/** A role's settings, sent with each task API request. Bear Metal only checks their shape. */
+export interface TaskProfile {
+  readonly id: string;
+  readonly name: string;
+  readonly instructions: string;
+  readonly toolCeiling: readonly string[];
+  readonly shell: boolean;
+  readonly customerData: boolean;
+  readonly labels?: Readonly<Record<string, string>>;
 }
 
 export interface TaskComment {

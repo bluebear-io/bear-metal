@@ -107,6 +107,19 @@ describe("runPiWorker", () => {
     expect(linear.commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("fresh token limit of 20 reached (20 used)"));
   });
 
+  it("stops at the time limit and returns time_limit", async () => {
+    const { runPiWorker } = await import("./pi.js");
+    const linear = makeLinear();
+    piMock.runTools.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      throw new Error("session aborted");
+    });
+    const result = await runPiWorker({ context: makeContext(), github: makeGithub(), linear, gitEnv: {},
+      maxWorkerTimeMs: 1, maxWorkerTokens: 20_000_000, llmProvider: "anthropic", llmApiKey: "test-key", llmModel: "test", llmModelArn: null });
+    expect(result).toMatchObject({ status: "pending", stopReason: "time_limit" });
+    expect(linear.commentAndHandBack).toHaveBeenCalledWith("ABC-1", expect.stringContaining("time limit of"));
+  });
+
   it("does not stop for cache reads alone", async () => {
     const { runPiWorker } = await import("./pi.js");
     piMock.sessionAbort.mockClear();

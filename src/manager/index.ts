@@ -187,10 +187,13 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
 let apiTaskWorker: ApiTaskWorker | null = null;
 let taskApi: ReturnType<typeof createTaskApiRouter> | undefined;
 if (!runtimeConfig.apiOnly && customizationConfig.taskApi) {
+  // Coding tasks delegate their ticket to the Linear scheduler, which runs only in normal mode.
+  const tickets = runtimeConfig.runMode === "normal" ? linear : undefined;
   const worker = new ApiTaskWorker({
     db,
     config: customizationConfig,
     github,
+    tickets,
     gateway: agentToolGateway,
     logger,
     concurrency: runtimeConfig.apiTaskConcurrency,
@@ -201,6 +204,7 @@ if (!runtimeConfig.apiOnly && customizationConfig.taskApi) {
     db,
     signingSecret: await resolveSecret(customizationConfig.taskApi.getSigningSecret, "config.taskApi.getSigningSecret result"),
     logger,
+    tickets,
     wake: () => worker.wake(),
   });
 }

@@ -67,6 +67,7 @@ export interface TaskRow {
   slack_replaces_task_id: string | null;
   api_idempotency_key: string | null;
   api_request_json: string | null;
+  api_ticket_issue_id: string | null;
   iteration_number: number;
   worker_heartbeat_at: string | null;
   reclaim_count: number;
@@ -682,21 +683,65 @@ export interface EventInput {
   createdAt: string;
 }
 
-/** The idempotency key of an existing task was reused with a different request. */
+/** The idempotency key of an existing task was reused with a different request, or the ticket already has an unfinished task. */
 export class ApiTaskConflictError extends Error {}
+
+/** The first ticket run after a coding task API task delegated its ticket. */
+export interface TicketRun {
+  record: TaskRecord;
+  runStatus: RunStatus | null;
+  error: string | null;
+  /** Why the worker stopped the run early, from its stored result. */
+  stopReason: "token_limit" | "time_limit" | null;
+  /** The session's token categories, from its stored result. */
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
+}
+
+function ticketRunDetails(resultJson: string | null): Pick<TicketRun, "stopReason" | "tokens"> {
+  if (!resultJson) return { stopReason: null, tokens: null };
+  const parsed = JSON.parse(resultJson) as { stopReason?: unknown; usage?: { tokens?: unknown } };
+  const stopReason = parsed.stopReason ?? null;
+  if (stopReason !== null && stopReason !== "token_limit" && stopReason !== "time_limit") throw new Error(`Invalid run stop reason: ${String(stopReason)}`);
+  const tokens = parsed.usage?.tokens ?? null;
+  if (tokens !== null) {
+    const counts = tokens as Record<string, unknown>;
+    for (const key of ["input", "output", "cacheRead", "cacheWrite"]) {
+      if (!Number.isSafeInteger(counts[key])) throw new Error(`Invalid run token count ${key}: ${String(counts[key])}`);
+    }
+  }
+  return { stopReason, tokens: tokens as TicketRun["tokens"] };
+}
 
 export type ApiTaskOutcome = { status: Exclude<ApiTaskTerminalStatus, "canceled">; result: ApiTaskResult | null; error: string | null };
 
 export interface DbClient {
   initSchema(): Promise<void>;
-  /** Returns the existing task when the key was already used with the same request. */
-  createApiTask(request: ApiTaskRequest): Promise<{ task: ApiTaskRecord; created: boolean }>;
+  /**
+   * Returns the existing task when the key was already used with the same request. `ticketIssueId` makes it a
+   * coding task, which stays queued until `startTicketApiTask`.
+   */
+  createApiTask(request: ApiTaskRequest, ticketIssueId?: string): Promise<{ task: ApiTaskRecord; created: boolean }>;
   getApiTask(id: string): Promise<ApiTaskRecord | null>;
+  getApiTaskByKey(idempotencyKey: string): Promise<ApiTaskRecord | null>;
+  /** Marks a queued coding task running once its ticket is delegated. */
+  startTicketApiTask(id: string): Promise<void>;
+  /** Fails a coding task that could not delegate its ticket. */
+  failQueuedApiTask(id: string, error: string): Promise<void>;
+  listRunningTicketApiTasks(): Promise<ApiTaskRecord[]>;
+  /** The coding task whose profile runs on this ticket: the latest one that delegated it, unless its slot was released since. */
+  getTicketApiTask(ticketIssueId: string): Promise<ApiTaskRecord | null>;
+  /** The ticket's first run created after `since`, or null before it is enqueued. */
+  getFirstTicketRun(ticketIssueId: string, since: string): Promise<TicketRun | null>;
+  /** Releases the ticket's slot and ends its unfinished run; its worker stops at the next heartbeat. */
+  stopTicketWork(ticketIssueId: string, error: string): Promise<void>;
   /** Returns null when the task does not exist; a task that already ended keeps its outcome. */
   cancelApiTask(id: string): Promise<ApiTaskRecord | null>;
   claimApiTask(): Promise<ApiTaskRecord | null>;
-  /** Fails tasks that were running when the process stopped; the caller resubmits them. */
-  recoverApiTasks(): Promise<void>;
+  /**
+   * Fails tasks without a ticket that were running when the process stopped, and coding tasks created before
+   * `startedAt` that never delegated their ticket; the caller resubmits them.
+   */
+  recoverApiTasks(startedAt: string): Promise<void>;
   /** Returns false when the task was canceled while it ran. */
   finishApiTask(id: string, outcome: ApiTaskOutcome): Promise<boolean>;
   startAgentRun(task: { id: string; type: "coding" | "coordinator" | "research" | "api"; request?: string; slack?: SlackThreadKey & { sourceTs: string } }, provider: string | null, model: string | null): Promise<void>;
@@ -769,7 +814,7 @@ export interface DbClient {
 
   upsertRunStarted(taskId: string, workerId: string, workerStartedAt: string): Promise<void>;
   upsertRunSucceeded(taskId: string, usage: RunUsage | null): Promise<void>;
-  upsertRunInterrupted(taskId: string, stopReason: "token_limit", usage: RunUsage | null): Promise<void>;
+  upsertRunInterrupted(taskId: string, stopReason: "token_limit" | "timeout", usage: RunUsage | null): Promise<void>;
   upsertRunCrashed(taskId: string, error: string, lease: { workerId: string | null; reclaimCount: number; abandoned?: boolean }): Promise<boolean>;
   upsertToolCalls(taskId: string, toolCallsJson: string): Promise<void>;
 
@@ -1258,6 +1303,7 @@ function rowToApiTask(row: TaskRow): ApiTaskRecord {
     id: row.id,
     status,
     request: JSON.parse(row.api_request_json) as ApiTaskRequest,
+    ticketIssueId: row.api_ticket_issue_id,
     result: row.result_json === null ? null : JSON.parse(row.result_json) as ApiTaskResult,
     error: row.error,
     createdAt: row.created_at,
@@ -1444,15 +1490,25 @@ export class SqlDbClient implements DbClient {
     if (result.changes !== 1) throw new Error(`Cannot record usage for agent run ${id}`);
   }
 
-  async createApiTask(request: ApiTaskRequest): Promise<{ task: ApiTaskRecord; created: boolean }> {
+  async createApiTask(request: ApiTaskRequest, ticketIssueId?: string): Promise<{ task: ApiTaskRecord; created: boolean }> {
+    if ((ticketIssueId === undefined) !== (request.ticketId === undefined)) throw new Error("A coding API task needs its ticket's Linear id");
     const json = JSON.stringify(request);
     const now = this.clock.nowIso();
-    const result = await this.run(
-      `INSERT INTO tasks (id, task_type, slack_request, api_idempotency_key, api_request_json, trigger, created_at, updated_at)
-       VALUES (?, 'api', ?, ?, ?, 'new', ?, ?)
-       ON CONFLICT (api_idempotency_key) DO NOTHING`,
-      [randomUUID(), request.instruction, request.idempotencyKey, json, now, now],
-    );
+    let result: { changes: number };
+    try {
+      result = await this.run(
+        `INSERT INTO tasks (id, task_type, slack_request, api_idempotency_key, api_request_json, api_ticket_issue_id, trigger, created_at, updated_at)
+         VALUES (?, 'api', ?, ?, ?, ?, 'new', ?, ?)
+         ON CONFLICT (api_idempotency_key) DO NOTHING`,
+        [randomUUID(), request.instruction, request.idempotencyKey, json, ticketIssueId ?? null, now, now],
+      );
+    } catch (err) {
+      const text = `${(err as { constraint?: string }).constraint ?? ""} ${(err as Error).message ?? ""}`;
+      if (text.includes("api_task_open_ticket") || text.includes("tasks.api_ticket_issue_id")) {
+        throw new ApiTaskConflictError(`Ticket ${request.ticketId} already has an unfinished task`);
+      }
+      throw err;
+    }
     const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE task_type = 'api' AND api_idempotency_key = ?`, [request.idempotencyKey]);
     const stored = rows[0];
     if (!stored) throw new Error(`API task ${request.idempotencyKey} disappeared after insertion`);
@@ -1465,6 +1521,79 @@ export class SqlDbClient implements DbClient {
   async getApiTask(id: string): Promise<ApiTaskRecord | null> {
     const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE id = ? AND task_type = 'api'`, [id]);
     return rows[0] ? rowToApiTask(rows[0]) : null;
+  }
+
+  async getApiTaskByKey(idempotencyKey: string): Promise<ApiTaskRecord | null> {
+    const rows = await this.query<TaskRow>(`SELECT * FROM tasks WHERE task_type = 'api' AND api_idempotency_key = ?`, [idempotencyKey]);
+    return rows[0] ? rowToApiTask(rows[0]) : null;
+  }
+
+  async startTicketApiTask(id: string): Promise<void> {
+    const now = this.clock.nowIso();
+    const result = await this.run(
+      `UPDATE tasks SET run_status = 'running', started_at = ?, updated_at = ?
+       WHERE id = ? AND task_type = 'api' AND api_ticket_issue_id IS NOT NULL AND run_status IS NULL AND result_status IS NULL`,
+      [now, now, id],
+    );
+    if (result.changes !== 1) throw new Error(`Cannot start coding API task ${id}`);
+  }
+
+  async failQueuedApiTask(id: string, error: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET result_status = 'failed', error = ?, ended_at = ?, updated_at = ?, completed_at = ?
+       WHERE id = ? AND task_type = 'api' AND run_status IS NULL AND result_status IS NULL`,
+      [error, now, now, now, id],
+    );
+  }
+
+  async listRunningTicketApiTasks(): Promise<ApiTaskRecord[]> {
+    const rows = await this.query<TaskRow>(
+      `SELECT * FROM tasks WHERE task_type = 'api' AND api_ticket_issue_id IS NOT NULL AND run_status = 'running' AND result_status IS NULL
+       ORDER BY created_at ASC, id ASC`,
+    );
+    return rows.map(rowToApiTask);
+  }
+
+  async getTicketApiTask(ticketIssueId: string): Promise<ApiTaskRecord | null> {
+    const rows = await this.query<TaskRow>(
+      `SELECT * FROM tasks api WHERE api.task_type = 'api' AND api.api_ticket_issue_id = ? AND api.started_at IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM tasks slot WHERE slot.ticket_id = api.api_ticket_issue_id AND slot.released_at > api.started_at)
+       ORDER BY api.started_at DESC, api.id DESC LIMIT 1`,
+      [ticketIssueId],
+    );
+    return rows[0] ? rowToApiTask(rows[0]) : null;
+  }
+
+  async getFirstTicketRun(ticketIssueId: string, since: string): Promise<TicketRun | null> {
+    const rows = await this.query<TaskRow>(
+      `SELECT * FROM tasks WHERE ticket_id = ? AND task_type = 'coding' AND dispatch_state IS NOT NULL
+         AND (created_at >= ? OR worker_started_at >= ?)
+       ORDER BY created_at ASC, id ASC LIMIT 1`,
+      [ticketIssueId, since, since],
+    );
+    const row = rows[0];
+    return row ? { record: rowToTaskRecord(row), runStatus: row.run_status as RunStatus | null, error: row.error, ...ticketRunDetails(row.result_json) } : null;
+  }
+
+  async stopTicketWork(ticketIssueId: string, error: string): Promise<void> {
+    const latest = await this.query<{ id: string }>(
+      `SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [ticketIssueId],
+    );
+    if (!latest[0]) return;
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET
+         run_status = CASE WHEN result_status IS NULL AND run_status = 'running' THEN 'interrupted' ELSE run_status END,
+         stop_reason = CASE WHEN result_status IS NULL AND run_status = 'running' THEN 'error' ELSE stop_reason END,
+         error = CASE WHEN result_status IS NULL THEN ? ELSE error END,
+         ended_at = CASE WHEN result_status IS NULL AND run_status = 'running' THEN ? ELSE ended_at END,
+         result_status = COALESCE(result_status, 'pending'),
+         slot_status = 'released', released_at = COALESCE(released_at, ?), updated_at = ?
+       WHERE id = ? AND slot_status != 'released'`,
+      [error, now, now, now, latest[0].id],
+    );
   }
 
   async cancelApiTask(id: string): Promise<ApiTaskRecord | null> {
@@ -1482,21 +1611,27 @@ export class SqlDbClient implements DbClient {
     const now = this.clock.nowIso();
     const rows = await this.query<TaskRow>(
       `UPDATE tasks SET run_status = 'running', started_at = ?, updated_at = ?
-       WHERE run_status IS NULL AND id = (SELECT id FROM tasks WHERE task_type = 'api' AND run_status IS NULL AND result_status IS NULL
-         ORDER BY created_at ASC, id ASC LIMIT 1)
+       WHERE run_status IS NULL AND id = (SELECT id FROM tasks WHERE task_type = 'api' AND api_ticket_issue_id IS NULL
+         AND run_status IS NULL AND result_status IS NULL ORDER BY created_at ASC, id ASC LIMIT 1)
        RETURNING *`,
       [now, now],
     );
     return rows[0] ? rowToApiTask(rows[0]) : null;
   }
 
-  async recoverApiTasks(): Promise<void> {
+  async recoverApiTasks(startedAt: string): Promise<void> {
     const now = this.clock.nowIso();
     await this.run(
       `UPDATE tasks SET run_status = 'crashed', stop_reason = 'crash', result_status = 'failed',
          error = 'Bear Metal restarted while the task was running', ended_at = ?, updated_at = ?, completed_at = ?
-       WHERE task_type = 'api' AND run_status = 'running' AND result_status IS NULL`,
+       WHERE task_type = 'api' AND api_ticket_issue_id IS NULL AND run_status = 'running' AND result_status IS NULL`,
       [now, now, now],
+    );
+    await this.run(
+      `UPDATE tasks SET result_status = 'failed', error = 'Bear Metal restarted before delegating the ticket',
+         ended_at = ?, updated_at = ?, completed_at = ?
+       WHERE task_type = 'api' AND api_ticket_issue_id IS NOT NULL AND run_status IS NULL AND result_status IS NULL AND created_at < ?`,
+      [now, now, now, startedAt],
     );
   }
 
@@ -2324,7 +2459,7 @@ export class SqlDbClient implements DbClient {
     await this.upsertRunFinished(taskId, "succeeded", "completed", usage);
   }
 
-  async upsertRunInterrupted(taskId: string, stopReason: "token_limit", usage: RunUsage | null): Promise<void> {
+  async upsertRunInterrupted(taskId: string, stopReason: "token_limit" | "timeout", usage: RunUsage | null): Promise<void> {
     await this.upsertRunFinished(taskId, "interrupted", stopReason, usage);
   }
 
