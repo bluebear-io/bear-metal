@@ -8,6 +8,7 @@ import { createLogger } from "../shared/index.js";
 import { runWorkspaceBuilder, workspaceForTicket } from "./clone.js";
 import { downloadTicketAttachments } from "./attachments.js";
 import { runPiWorker } from "./pi.js";
+import { workspaceGitEnv } from "./pull-request.js";
 import type {
   DispatchResult,
   DispatchState,
@@ -150,18 +151,7 @@ export async function dispatch(input: DispatchInput): Promise<DispatchResult> {
   input.signal?.throwIfAborted();
   logger.debug({ ticketId }, "linear ticket moved to in progress");
 
-  const botEmail = `${botIdentity.userNumericId}+${botIdentity.login}@users.noreply.github.com`;
-  const gitEnv: NodeJS.ProcessEnv = {
-    GIT_ASKPASS: resolve(cloneScript.netrcDir, "askpass.sh"),
-    GIT_TERMINAL_PROMPT: "0",
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "url.https://github.com/.insteadOf",
-    GIT_CONFIG_VALUE_0: "git@github.com:",
-    GIT_AUTHOR_NAME: botIdentity.login,
-    GIT_AUTHOR_EMAIL: botEmail,
-    GIT_COMMITTER_NAME: botIdentity.login,
-    GIT_COMMITTER_EMAIL: botEmail,
-  };
+  const gitEnv = workspaceGitEnv(cloneScript.netrcDir, botIdentity);
 
     const result = await runPiWorker({
       context, github, linear, commentStore, gitEnv, agentToolGateway: input.agentToolGateway,
