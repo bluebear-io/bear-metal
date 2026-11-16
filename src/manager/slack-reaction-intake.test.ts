@@ -43,6 +43,8 @@ describe("Slack reaction intake", () => {
     expect(created.description).toContain("The export button is broken");
     expect(created.description).toContain("**(flagged)** [1 file(s)]");
     expect(created.description).toContain("Do not post to Slack");
+    expect(created.description).toContain("read the whole thread with `slack_read` (operation `thread_replies`, channel `C1`, ts `100.0`)");
+    expect(created.description).toContain("Ask only questions the thread does not answer.");
     expect(linear.addLabelsByName).toHaveBeenCalledWith(reactionIssueId(reaction), ["signal:slack"]);
     expect(linear.delegateSlackCodingTicket).toHaveBeenCalledWith(reactionIssueId(reaction));
   });

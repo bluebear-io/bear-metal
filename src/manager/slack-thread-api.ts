@@ -70,9 +70,13 @@ export class SlackThreadApi {
     const threadTs = first.thread_ts ?? messageTs;
     const messages = await this.readThread({ workspaceId, channelId, threadTs }, threadTs);
     if (!messages.some((message) => message.ts === messageTs)) throw new Error(`Slack message ${channelId}/${messageTs} not found in its thread`);
+    return { threadTs, messages, permalink: await this.getPermalink(channelId, messageTs) };
+  }
+
+  async getPermalink(channelId: string, messageTs: string): Promise<string> {
     const link = await this.readClient.call("chat.getPermalink", { channel: channelId, message_ts: messageTs }) as { ok?: boolean; error?: string; permalink?: string };
     if (!link.ok || !link.permalink) throw new Error(`Slack chat.getPermalink failed: ${link.error ?? "missing permalink"}`);
-    return { threadTs, messages, permalink: link.permalink };
+    return link.permalink;
   }
 
   async readThread(key: SlackThreadKey, oldest: string, latest?: string): Promise<SlackThreadMessage[]> {
