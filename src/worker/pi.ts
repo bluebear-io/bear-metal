@@ -432,6 +432,7 @@ export async function runPiWorker(input: {
     agentsMd,
     customSystemPrompt: input.systemPrompt ?? undefined,
     hasAgentTools: agentTools.some((tool) => toolNames.includes(tool.name)),
+    hasSlackRead: toolNames.includes("slack_read"),
     allowedTools: input.allowedTools === undefined ? undefined : toolNames,
   });
   input.onTraceEvent?.("prompt", { text: redactTraceText(prompt) });

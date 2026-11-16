@@ -13,6 +13,7 @@ import type { Logger } from "../shared/logger.js";
 import { runSlackAgent } from "../worker/slack-agent.js";
 import { buildCoordinatorPayload } from "./slack-payload.js";
 import type { SlackThreadApi } from "./slack-thread-api.js";
+import { withSlackSource } from "./slack-ticket-source.js";
 
 type TicketInput = Parameters<LinearIntegration["createSlackCodingTicket"]>[0];
 type CoordinationReply = SlackCoordinationReply;
@@ -318,6 +319,12 @@ export class SlackCoordinator {
       return task;
     };
     const assigneeFor = async (slackUserId: string) => this.input.linear.findUserIdByEmail(await this.input.api.getUserEmail(slackUserId));
+    const sourcedTicket = async (ticket: TicketInput): Promise<TicketInput> => ({
+      ...ticket,
+      description: withSlackSource(ticket.description, {
+        channelId: key.channelId, threadTs: key.threadTs, permalink: await this.input.api.getPermalink(key.channelId, key.threadTs),
+      }),
+    });
     const createCoding = async (args: NewSlackTask & TicketInput & { slackTitle: string; delegateToBearMetal: boolean }) => {
       if (typeof args.delegateToBearMetal !== "boolean") throw new Error("Ticket creation requires an explicit delegation choice");
       const sourceUserId = requireSource(args.sourceTs);
@@ -333,7 +340,7 @@ export class SlackCoordinator {
         return { task, created: false };
       }
       try {
-        const ticket = await this.input.linear.createSlackCodingTicket({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId, assigneeId });
+        const ticket = await this.input.linear.createSlackCodingTicket(await sourcedTicket({ teamId: args.teamId, projectId: args.projectId, title: args.title, description: args.description, cycleId: args.cycleId, assigneeId }));
         await this.input.db.attachSlackTicket(task.id, ticket.id, ticket.url);
         await this.applyTicketLabelsAfterCreate(task.id, ticket.id, args.description);
         // Delegating before attachment lets the scheduler create a second row for this ticket.
@@ -459,7 +466,7 @@ export class SlackCoordinator {
           projectId: Type.Optional(Type.String({ minLength: 1, description: "Optional Linear project ID. Include only when the requested work belongs to a specific project associated with teamId; otherwise omit. First call list_ticket_destinations and use a project ID returned there whose teamIds includes teamId." })),
           title: Type.String({ minLength: 1, description: "Concise, human-readable Linear issue title describing the requested outcome." }),
           slackTitle: Type.String({ minLength: 1, description: "Short, natural phrase for the Slack ticket link, such as 'change startup to fast in A'. This is not stored or used as the Linear issue title." }),
-          description: Type.String({ minLength: 1, description: "Complete Linear issue instructions for the coding worker, including the user's requirements and necessary context." }),
+          description: Type.String({ minLength: 1, description: "Complete Linear issue instructions for the coding worker, including the user's requirements and necessary context. The harness appends the source Slack thread link and an instruction to read it." }),
           cycleId: Type.Optional(Type.String({ minLength: 1, description: "Optional Linear cycle ID returned by list_ticket_destinations, which must be called first. Use a cycle whose teamId matches the selected team; omit when no cycle applies." })),
         }),
         execute: async (_id, params) => {
@@ -569,7 +576,7 @@ export class SlackCoordinator {
           projectId: Type.Optional(Type.String({ minLength: 1, description: "Optional when type='coding': project ID returned by list_ticket_destinations, which must be called first, whose teamIds includes teamId. Omit when no specific project applies or for research." })),
           title: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': concise title for the new Linear ticket. Omit for research." })),
           slackTitle: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': short natural phrase for the Slack ticket link. Omit for research." })),
-          description: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': complete instructions for the new Linear ticket, including the revised requirements. Omit for research." })),
+          description: Type.Optional(Type.String({ minLength: 1, description: "Required when type='coding': complete instructions for the new Linear ticket, including the revised requirements. The harness appends the source Slack thread link and an instruction to read it. Omit for research." })),
           cycleId: Type.Optional(Type.String({ minLength: 1, description: "Optional cycle ID for a coding replacement returned by list_ticket_destinations, which must be called first, whose teamId matches the selected team. Omit for research or when no cycle applies." })),
           delegateToBearMetal: Type.Optional(Type.Boolean({ description: "For coding replacements, omit to preserve the previous coding task delegation choice. Set only when the user explicitly changes whether Bear Metal should work; clarify unclear intent. Required when changing a research task into coding. Omit for research." })),
         }),
@@ -612,7 +619,7 @@ export class SlackCoordinator {
               if (next.task.state === "failed") await this.input.db.resumeSlackTicketReplacement(next.task.id);
               let replacement = await getTask(next.task.id);
               if (replacement.state === "queued") {
-                const ticket = await this.input.linear.createSlackCodingTicket(codingInput);
+                const ticket = await this.input.linear.createSlackCodingTicket(await sourcedTicket(codingInput));
                 await this.input.db.attachSlackTicket(replacement.id, ticket.id, ticket.url);
                 await this.applyTicketLabelsAfterCreate(replacement.id, ticket.id, codingInput.description);
                 replacement = await getTask(replacement.id);

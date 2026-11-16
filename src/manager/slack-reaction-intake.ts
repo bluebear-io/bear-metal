@@ -4,6 +4,7 @@ import type { BearMetalConfig } from "../customization/types.js";
 import type { LinearIntegration } from "../shared/integrations/linear/client.js";
 import type { Logger } from "../shared/logger.js";
 import type { SlackThreadApi, SlackThreadMessage } from "./slack-thread-api.js";
+import { slackSourceSection } from "./slack-ticket-source.js";
 
 export interface SlackReaction {
   workspaceId: string;
@@ -46,8 +47,7 @@ function ticketDescription(messages: readonly SlackThreadMessage[], flaggedTs: s
     "A teammate flagged this Slack message for Bear Metal. Work out the request from the flagged message and its thread, then implement it.",
     "Do not post to Slack about this ticket.",
     "",
-    `Source: ${permalink}`,
-    `Read the full thread, files and user names with slack_read (channel \`${channelId}\`, thread \`${threadTs}\`).`,
+    slackSourceSection({ channelId, threadTs, permalink }),
     "",
     "## Thread",
     thread,

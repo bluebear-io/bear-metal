@@ -26,6 +26,7 @@ function makeApi(messages: Array<{ ts: string; user: string; text: string }>) {
     readThread: vi.fn(async () => messages),
     readThreadMessage: vi.fn(async (_key: SlackThreadKey, ts: string) => messages.find((message) => message.ts === ts) ?? null),
     getUserEmail: vi.fn(async () => "user@example.com"),
+    getPermalink: vi.fn(async (channelId: string, ts: string) => `https://slack.example/${channelId}/p${ts}`),
     react: vi.fn(async () => {}),
     reply: vi.fn(async (_key: SlackThreadKey, text: string) => {
       replies.push(text);
@@ -428,7 +429,7 @@ describe("Slack coordinator", () => {
     const db = await makeDb();
     await db.recordSlackMessage(key, "100.1");
     const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> open a ticket" }]);
-    const create = vi.fn(async () => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" }));
+    const create = vi.fn(async (_input: { description: string }) => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" }));
     const delegate = vi.fn();
     const coordinator = makeCoordinator({ db, api, linear: { createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
       await tools.find((tool) => tool.name === "create_ticket")!.execute("create", {
@@ -438,6 +439,14 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ assigneeId: "linear-user-1" }));
+      expect(create.mock.calls[0]![0].description).toBe([
+        "Fix A",
+        "",
+        "## Source Slack thread",
+        "This ticket was created from a Slack thread: https://slack.example/C1/p100.0",
+        "Before asking any question, read the whole thread with `slack_read` (operation `thread_replies`, channel `C1`, ts `100.0`), including its files and any research results posted there.",
+        "Take the context, decisions and answers from the thread. Ask only questions the thread does not answer.",
+      ].join("\n"));
       expect(delegate).toHaveBeenCalledTimes(delegateToBearMetal ? 1 : 0);
       expect(replies).toEqual([delegateToBearMetal ? "Created a ticket for <https://linear.app/new|fix A> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix A>."]);
       expect((await db.listSlackThreadTasks(key))[0]).toMatchObject({ delegateToBearMetal, state: "coordinated" });
@@ -518,7 +527,8 @@ describe("Slack coordinator", () => {
     const { api, replies } = makeApi([{ ts: "100.2", user: "U1", text: "<@UBOT> change the ticket to B" }]);
     const delegate = vi.fn();
     const cancel = vi.fn();
-    const coordinator = makeCoordinator({ db, api, linear: { cancelSlackCodingTicket: cancel, createSlackCodingTicket: vi.fn(async () => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" })), delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
+    const create = vi.fn(async (_input: { description: string }) => ({ id: "ticket-new", url: "https://linear.app/new", identifier: "DEN-1" }));
+    const coordinator = makeCoordinator({ db, api, linear: { cancelSlackCodingTicket: cancel, createSlackCodingTicket: create, delegateSlackCodingTicket: delegate }, runAgent: async ({ tools }) => {
       await tools.find((tool) => tool.name === "update_task")!.execute("update", {
         id: old.id, sourceTs: "100.2", requestIndex: 1, type: "coding", request: "Fix B", teamId: "team", title: "B", slackTitle: "fix B", description: "Fix B",
         ...(choice === undefined ? {} : { delegateToBearMetal: choice }),
@@ -527,6 +537,7 @@ describe("Slack coordinator", () => {
     try {
       await coordinator.wake(key);
       expect(cancel).toHaveBeenCalledWith("old-ticket");
+      expect(create.mock.calls[0]![0].description).toContain("Fix B\n\n## Source Slack thread\nThis ticket was created from a Slack thread: https://slack.example/C1/p100.0\n");
       expect(delegate).toHaveBeenCalledTimes(choice === true ? 1 : 0);
       expect(replies).toEqual([`${choice === true ? "Created a ticket for <https://linear.app/new|fix B> and assigned it to Bear Metal." : "Created a ticket for <https://linear.app/new|fix B>."}\n\nCanceled https://linear.app/old`]);
       expect((await db.listSlackThreadTasks(key)).find((task) => task.ticketId === "ticket-new")?.delegateToBearMetal).toBe(choice === true);
