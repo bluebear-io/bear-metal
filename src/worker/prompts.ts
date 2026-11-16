@@ -91,9 +91,9 @@ export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerProm
     opts?.hasSlackRead
       ? "- Use the Linear and GitHub context below, plus the source Slack thread when the ticket names one, as the sole source of truth."
       : "- Use the Linear and GitHub context below as the sole source of truth.",
-    ...(opts?.hasSlackRead
-      ? ["- When the ticket names a source Slack thread, read it with `slack_read` before planning or asking anything. Take context, decisions and answers, including research results, from it, and ask only questions the thread does not answer."]
-      : []),
+    opts?.hasSlackRead
+      ? "- When the ticket names a source Slack thread, read it with `slack_read` before planning or asking anything. Take context, decisions and answers, including research results, from it, and ask only questions the thread does not answer."
+      : "- You cannot read Slack. If the ticket tells you to read a Slack thread, do not attempt it; when the ticket alone leaves a requirement unclear, ask via `respond_to_ticket_reporter` and say the thread was unreadable.",
     "- Do not invent missing requirements.",
     "- Do not work around failures to operate. If you cannot perform the task, stop and give up instead of looping forever on failing bash calls.",
     "- Do not shell out to discover state (branch existence, PR status, ticket state). All of it is already in the context JSON below — read it there.",

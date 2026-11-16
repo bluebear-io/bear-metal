@@ -129,6 +129,9 @@ describe("worker contract", () => {
     const rule = "When the ticket names a source Slack thread, read it with `slack_read` before planning or asking anything.";
     expect(buildWorkerPrompt(makeContext("new", "ABC-4"), { hasAgentTools: true, hasSlackRead: true })).toContain(rule);
     expect(buildWorkerPrompt(makeContext("new", "ABC-4"), { hasAgentTools: true })).not.toContain(rule);
+    const noSlack = "You cannot read Slack. If the ticket tells you to read a Slack thread, do not attempt it";
+    expect(buildWorkerPrompt(makeContext("new", "ABC-4"), { hasAgentTools: true })).toContain(noSlack);
+    expect(buildWorkerPrompt(makeContext("new", "ABC-4"), { hasAgentTools: true, hasSlackRead: true })).not.toContain(noSlack);
   });
 
   it("includes attachment paths without embedding attachment contents", () => {
