@@ -1344,6 +1344,30 @@ describe("Slack coordinator", () => {
       await db.close();
     }
   });
+  it("instructs splitting independent questions into separate research tasks from one message", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> which hooks does Cursor support? Also, why did ingest fail last night?" }]);
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
+      expect(prompt).toContain("call start_research once per question, never once for the whole message");
+      expect(prompt).toContain("only when they are genuinely interdependent");
+      expect(prompt).toContain("requires two start_research calls");
+      const research = tools.find((tool) => tool.name === "start_research");
+      if (!research) throw new Error("start_research missing");
+      expect(research.description).toContain("call this tool separately for each question");
+      await research.execute("a", { sourceTs: "100.1", requestIndex: 1, request: "Which hooks does Cursor support?", quote: "Cursor hooks" }, undefined, undefined, {} as never);
+      await research.execute("b", { sourceTs: "100.1", requestIndex: 2, request: "Why did ingest fail last night?", quote: "ingest failure" }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect((await db.listSlackThreadTasks(key)).map((task) => [task.type, task.requestIndex, task.quote])).toEqual([
+        ["research", 1, "Cursor hooks"], ["research", 2, "ingest failure"],
+      ]);
+      expect(replies).toEqual(["Looking into Cursor hooks.\n\nLooking into ingest failure."]);
+      expect(await db.listSlackPendingMessages(key)).toEqual([]);
+    } finally { await db.close(); }
+  });
+
   it("creates separate tickets from one message and replies once", async () => {
     const db = await makeDb();
     const { api, replies } = makeApi([{ ts: "100.1", user: "U1", text: "Please do A and B" }]);
