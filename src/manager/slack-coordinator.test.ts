@@ -492,7 +492,8 @@ describe("Slack coordinator", () => {
     } });
     try {
       await coordinator.wake(key);
-      expect(actualPrompt).toContain("already open pull request");
+      expect(actualPrompt).toContain("take over or fix work on an already open pull request");
+      expect(actualPrompt).toContain("questions about a PR, still follow the normal create_ticket and start_research rules");
       expect(actualPrompt).toContain("never call create_ticket to take it over");
       expect(actualPrompt).toContain("recommend assigning Bear Metal to that PR's existing ticket");
     } finally { await db.close(); }
