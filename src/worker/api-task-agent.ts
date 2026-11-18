@@ -34,7 +34,10 @@ const CHANGE_TOOLS = new Set(["edit", "write"]);
 /** Dispatching a workflow can change the repository through CI. */
 const WRITE_GATEWAY_TOOLS = new Set(["github_dispatch"]);
 // The clone's credentials are removed before the agent starts, so git in bash cannot push.
-const READ_ONLY_GIT_ENV: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0" };
+/** No prompts, no SSH (it overrides core.sshCommand) or SSH agent, and no host Git config with its credential helpers. */
+const READ_ONLY_GIT_ENV: NodeJS.ProcessEnv = {
+  GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "false", SSH_AUTH_SOCK: "", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+};
 
 type StopReason = "timeout" | "budget" | "canceled";
 
@@ -171,15 +174,18 @@ export async function runApiTaskAgent(input: {
     } finally {
       unsubscribe();
       stopController.signal.removeEventListener("abort", onStop);
-      const tokens = session.getSessionStats().tokens;
-      usage = {
-        inputTokens: tokens.input, outputTokens: tokens.output, cacheReadTokens: tokens.cacheRead, cacheWriteTokens: tokens.cacheWrite,
-        freshTokens: freshTokens(tokens),
-      };
-      await input.db.setAgentRunUsage(task.id, tokens.input, tokens.output);
-      await disposePiSessionRuntime(runtime, ({ error: disposeError, settledAfterGrace }) => {
-        logger.error({ error: disposeError, settledAfterGrace, taskId: task.id }, "pi runtime dispose failed");
-      });
+      try {
+        const tokens = session.getSessionStats().tokens;
+        usage = {
+          inputTokens: tokens.input, outputTokens: tokens.output, cacheReadTokens: tokens.cacheRead, cacheWriteTokens: tokens.cacheWrite,
+          freshTokens: freshTokens(tokens),
+        };
+        await input.db.setAgentRunUsage(task.id, tokens.input, tokens.output);
+      } finally {
+        await disposePiSessionRuntime(runtime, ({ error: disposeError, settledAfterGrace }) => {
+          logger.error({ error: disposeError, settledAfterGrace, taskId: task.id }, "pi runtime dispose failed");
+        });
+      }
     }
   } catch (err) {
     if (!stopReason && !error) error = err instanceof Error ? err.message : String(err);
@@ -234,7 +240,7 @@ const run = promisify(execFile);
 
 /**
  * A task without a ticket must not be able to push, but `buildWorkspace` is deployment code and may leave a token in a
- * remote URL, an auth header, a credential helper or a URL rewrite in the clone's config. Removes them.
+ * remote URL, an auth header, a credential helper, a URL rewrite or an SSH command in the clone's config. Removes them.
  */
 async function removeGitCredentials(workspaceRoot: string): Promise<void> {
   const git = (...args: string[]) => run("git", ["-C", workspaceRoot, ...args], { env: { ...process.env, ...READ_ONLY_GIT_ENV } });
@@ -247,7 +253,7 @@ async function removeGitCredentials(workspaceRoot: string): Promise<void> {
     }
   }
   const { stdout: keys } = await git("config", "--local", "--name-only", "--list");
-  for (const key of new Set(keys.split("\n").filter((k) => /^credential\.|^http\..*extraheader$|^url\..*@.*\.(push)?insteadof$/i.test(k)))) {
+  for (const key of new Set(keys.split("\n").filter((k) => /^credential\.|^http\..*extraheader$|^url\..*@.*\.(push)?insteadof$|^core\.sshcommand$/i.test(k)))) {
     await git("config", "--local", "--unset-all", key);
   }
 }

@@ -159,17 +159,22 @@ describe("API task agent", () => {
           git(input.workspacePath, "config", "http.https://github.com/.extraheader", "AUTHORIZATION: basic leaked-header");
           git(input.workspacePath, "config", "credential.helper", "store --file=/tmp/leaked");
           git(input.workspacePath, "config", "url.https://leaked-token@github.com/.insteadOf", "https://github.com/");
+          git(input.workspacePath, "config", "core.sshCommand", "ssh -i /tmp/leaked-key");
+          git(input.workspacePath, "remote", "add", "ssh-mirror", "git@github.com:acme/widgets.git");
         },
       };
     };
     let seen = "";
     sessionFactory.mockImplementation(fakeSession(async ({ tools }) => {
-      seen = JSON.stringify(await tool(tools, "bash").execute("1", { command: "git remote get-url origin; git config --list --local" }));
+      seen = JSON.stringify(await tool(tools, "bash").execute("1", {
+        command: "git remote get-url origin; git config --list --local; echo \"ssh=$GIT_SSH_COMMAND agent=${SSH_AUTH_SOCK:-none} global=$GIT_CONFIG_GLOBAL nosystem=$GIT_CONFIG_NOSYSTEM\"",
+      }));
       await tool(tools, "submit_result").execute("2", { message: "Looked" });
     }));
     expect(await run(task, { config: leaky })).toMatchObject({ status: "succeeded" });
     expect(seen).toContain("https://github.com/acme/widgets.git");
-    expect(seen).not.toMatch(/leaked|extraheader|credential\./);
+    expect(seen).not.toMatch(/leaked|extraheader|credential\.|sshcommand/i);
+    expect(seen).toContain("ssh=false agent=none global=/dev/null nosystem=1");
   });
 
   it("keeps submit_result when the profile's tools omit it", async () => {
@@ -238,6 +243,18 @@ describe("API task agent", () => {
       throw new Error("Request was aborted");
     }, unreadable));
     expect(await run(task)).toMatchObject({ status: "failed", error: "Cannot read token usage: Error: stats gone" });
+  });
+
+  it("disposes the session when reading its final token usage fails", async () => {
+    const task = await createTask({ outputSchema: undefined });
+    const unreadable = { get input(): number { throw new Error("stats gone"); }, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const dispose = vi.fn(async () => {});
+    sessionFactory.mockImplementation(async (options) => ({
+      ...(await fakeSession(async ({ tools }) => { await tool(tools, "submit_result").execute("1", { message: "Looked" }); }, unreadable)(options)),
+      dispose,
+    }));
+    expect(await run(task)).toMatchObject({ status: "failed", error: "stats gone" });
+    expect(dispose).toHaveBeenCalledOnce();
   });
 
   it("stops itself at the deadline and reports timeout", async () => {

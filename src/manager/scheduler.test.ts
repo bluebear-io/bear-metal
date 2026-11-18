@@ -334,6 +334,23 @@ describe("Scheduler.tick", () => {
     expect(await db.countTracked()).toBe(1);
   });
 
+  it("fails a task API coding task at once when its ticket is refused before any run", async () => {
+    const db = await makeDb();
+    const { task } = await db.createApiTask({
+      idempotencyKey: "refused", profile: { id: "developer", name: "Developer", instructions: "Do it.", toolCeiling: [], shell: false, customerData: false },
+      owner: "owner@example.com", ticketId: "DEN-1", instruction: "Do it", deadline: new Date(Date.now() + 60_000).toISOString(), maxTokens: 1_000,
+    }, "unassigned");
+    await db.startTicketApiTask(task.id);
+    const linear = new FakeLinear([makeTicket("unassigned", { assignee: null })]);
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub(), db, handler: new RecordingHandler(db), concurrency: 2 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.getApiTask(task.id)).toMatchObject({ status: "failed", error: expect.stringContaining("Bear Metal needs an assignee on this ticket") });
+    expect(await db.getTicketApiTask("unassigned")).toBeNull();
+  });
+
   it("refuses a delegated ticket whose assignee has no readable email", async () => {
     const db = await makeDb();
     const delegated = [makeTicket("noemail", { assignee: { id: "u-2" } }), makeTicket("assigned")];

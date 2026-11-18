@@ -562,7 +562,7 @@ async function refreshTrackedTickets(
           await db.setSlotStatus(slot.ticketId!, "released");
           await db.setTicketStatus(ticket.id, "waiting_for_human");
           ciDeferralStartedAt.delete(ticket.id);
-          await handBackWithoutOwner(ticket, owner, linear, logger);
+          await handBackWithoutOwner(ticket, owner, linear, db, logger);
           continue;
         }
       }
@@ -711,6 +711,7 @@ async function admitNewTickets(
   const owned = await refuseTicketsWithoutOwner(
     candidates.filter((ticket) => !excludedIds.has(ticket.id)),
     linear,
+    db,
     logger,
   );
   const admitted = selectAdmissions(owned, (id) => excludedIds.has(id), free);
@@ -748,7 +749,7 @@ async function admitNewTickets(
  * findDelegatedTickets; a failed lookup or hand-back is retried on the next poll, since the ticket
  * stays a candidate.
  */
-async function refuseTicketsWithoutOwner(tickets: Ticket[], linear: LinearSource, logger: Logger): Promise<Ticket[]> {
+async function refuseTicketsWithoutOwner(tickets: Ticket[], linear: LinearSource, db: DbClient, logger: Logger): Promise<Ticket[]> {
   const checks = await Promise.allSettled(tickets.map((ticket) => checkOwner(ticket, linear)));
   const owned: Ticket[] = [];
   const refusals: Array<Promise<void>> = [];
@@ -759,7 +760,7 @@ async function refuseTicketsWithoutOwner(tickets: Ticket[], linear: LinearSource
     } else if (check.value === "owned") {
       owned.push(ticket);
     } else {
-      refusals.push(handBackWithoutOwner(ticket, check.value, linear, logger));
+      refusals.push(handBackWithoutOwner(ticket, check.value, linear, db, logger));
     }
   });
   for (const refusal of await Promise.allSettled(refusals)) {
@@ -781,10 +782,18 @@ async function handBackWithoutOwner(
   ticket: Ticket,
   owner: Exclude<OwnerCheck, "owned">,
   linear: LinearSource,
+  db: DbClient,
   logger: Logger,
 ): Promise<void> {
   logger.warn({ ticket: ticket.identifier, owner }, "ticket has no owner email; refusing and handing back");
-  await linear.commentAndHandBack(ticket.id, owner === "unassigned" ? UNASSIGNED_TICKET_COMMENT : OWNER_EMAIL_MISSING_COMMENT);
+  const reason = owner === "unassigned" ? UNASSIGNED_TICKET_COMMENT : OWNER_EMAIL_MISSING_COMMENT;
+  await linear.commentAndHandBack(ticket.id, reason);
+  // A task API task waiting on this ticket would otherwise run until its deadline.
+  const apiTask = await db.getTicketApiTask(ticket.id);
+  if (apiTask?.status === "running") {
+    await db.stopTicketWork(ticket.id, reason);
+    await db.finishApiTask(apiTask.id, { status: "failed", result: null, error: `Bear Metal handed the ticket back: ${reason}` });
+  }
 }
 
 async function dispatchTickets(
