@@ -1,4 +1,6 @@
+import { execFile } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
+import { promisify } from "node:util";
 import { defineTool, ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { AgentToolGatewayLike } from "../agent-tools/types.js";
@@ -112,6 +114,7 @@ export async function runApiTaskAgent(input: {
     netrcDir = built.netrcDir;
     await rm(built.netrcDir, { recursive: true, force: true });
     const workspaceRoot = built.agentWorkdir;
+    await removeGitCredentials(workspaceRoot);
 
     const allTools: ToolDefinition[] = [
       ...createWorkspaceGuardedTools(workspaceRoot, READ_ONLY_GIT_ENV).filter((tool) => !CHANGE_TOOLS.has(tool.name)),
@@ -179,7 +182,7 @@ export async function runApiTaskAgent(input: {
       });
     }
   } catch (err) {
-    if (!stopReason) error = err instanceof Error ? err.message : String(err);
+    if (!stopReason && !error) error = err instanceof Error ? err.message : String(err);
   } finally {
     clearTimeout(deadlineTimer);
     clearTimeout(durationTimer);
@@ -224,5 +227,27 @@ export async function runApiTaskAgent(input: {
         return { content: [{ type: "text", text: "Result recorded. Stop now." }], details: {} };
       },
     });
+  }
+}
+
+const run = promisify(execFile);
+
+/**
+ * A task without a ticket must not be able to push, but `buildWorkspace` is deployment code and may leave a token in a
+ * remote URL, an auth header, a credential helper or a URL rewrite in the clone's config. Removes them.
+ */
+async function removeGitCredentials(workspaceRoot: string): Promise<void> {
+  const git = (...args: string[]) => run("git", ["-C", workspaceRoot, ...args], { env: { ...process.env, ...READ_ONLY_GIT_ENV } });
+  const { stdout: remotes } = await git("remote");
+  for (const remote of remotes.split("\n").filter(Boolean)) {
+    const { stdout } = await git("remote", "get-url", "--all", remote);
+    for (const url of stdout.split("\n").filter(Boolean)) {
+      const bare = url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, "$1");
+      if (bare !== url) await git("remote", "set-url", remote, bare, url);
+    }
+  }
+  const { stdout: keys } = await git("config", "--local", "--name-only", "--list");
+  for (const key of new Set(keys.split("\n").filter((k) => /^credential\.|^http\..*extraheader$|^url\..*@.*\.(push)?insteadof$/i.test(k)))) {
+    await git("config", "--local", "--unset-all", key);
   }
 }

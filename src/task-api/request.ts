@@ -152,11 +152,18 @@ export function parseApiTaskRequest(body: unknown, now = new Date()): ApiTaskReq
   if (deadline - now.getTime() > MAX_DEADLINE_MS) throw new ApiTaskRequestError("deadline must be within 7 days");
   if (!Number.isSafeInteger(body.maxTokens) || (body.maxTokens as number) <= 0) throw new ApiTaskRequestError("maxTokens must be a positive integer");
   request.maxTokens = body.maxTokens as number;
-  return request;
+  return sortedKeys(request);
 }
 
 /** Checks a submitted result against the request's `outputSchema`; returns the first errors, or an empty list. */
 export function outputSchemaErrors(schema: Record<string, unknown>, value: unknown): string[] {
   const [, errors] = Compile(schema).Errors(value);
   return errors.slice(0, 5).map((error) => `${error.instancePath || "/"} ${error.message}`);
+}
+
+/** Sorts object keys at every depth, so a retry whose JSON lists nested keys in another order still matches its task. */
+function sortedKeys<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(sortedKeys) as T;
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortedKeys((value as Record<string, unknown>)[key])])) as T;
 }

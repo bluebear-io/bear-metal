@@ -135,6 +135,15 @@ describe("task API", () => {
     expect(repeat.body.id).toBe(first.body.id);
     expect(wake).toHaveBeenCalledTimes(1);
     expect((await signed("post", "/tasks", taskBody({ instruction: "Something else" }))).status).toBe(409);
+
+    const nested = { inputs: { a: "1", b: "2" }, outputSchema: { type: "object", required: ["summary"], properties: { summary: { type: "string" } } } };
+    const original = await signed("post", "/tasks", taskBody({ idempotencyKey: "nested", ...nested }));
+    const deadline = (await db.getApiTask(original.body.id))!.request.deadline;
+    const reorderedNested = taskBody({
+      idempotencyKey: "nested", deadline, inputs: { b: "2", a: "1" },
+      outputSchema: { properties: { summary: { type: "string" } }, required: ["summary"], type: "object" },
+    });
+    expect((await signed("post", "/tasks", reorderedNested)).body.id).toBe(original.body.id);
   });
 
   it("cancels a task, keeps an ended task's outcome, and returns 404 for an unknown task", async () => {

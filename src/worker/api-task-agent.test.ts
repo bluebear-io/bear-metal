@@ -145,6 +145,33 @@ describe("API task agent", () => {
     expect(customized[0]).toEqual({ id: task.id, type: "api", request: "Do it", profile, repositories: [{ owner: "acme", name: "widgets" }] });
   });
 
+  it("removes Git credentials the workspace builder left in the clone before the agent starts", async () => {
+    const task = await createTask({ outputSchema: undefined });
+    const leaky = config();
+    const customizeTask = leaky.customizeTask;
+    leaky.customizeTask = async (t) => {
+      const hooks = await customizeTask(t);
+      return {
+        ...hooks,
+        buildWorkspace: async (input) => {
+          await hooks.buildWorkspace(input);
+          git(input.workspacePath, "remote", "set-url", "origin", "https://x-access-token:leaked-token@github.com/acme/widgets.git");
+          git(input.workspacePath, "config", "http.https://github.com/.extraheader", "AUTHORIZATION: basic leaked-header");
+          git(input.workspacePath, "config", "credential.helper", "store --file=/tmp/leaked");
+          git(input.workspacePath, "config", "url.https://leaked-token@github.com/.insteadOf", "https://github.com/");
+        },
+      };
+    };
+    let seen = "";
+    sessionFactory.mockImplementation(fakeSession(async ({ tools }) => {
+      seen = JSON.stringify(await tool(tools, "bash").execute("1", { command: "git remote get-url origin; git config --list --local" }));
+      await tool(tools, "submit_result").execute("2", { message: "Looked" });
+    }));
+    expect(await run(task, { config: leaky })).toMatchObject({ status: "succeeded" });
+    expect(seen).toContain("https://github.com/acme/widgets.git");
+    expect(seen).not.toMatch(/leaked|extraheader|credential\./);
+  });
+
   it("keeps submit_result when the profile's tools omit it", async () => {
     const task = await createTask({ outputSchema: undefined });
     let toolNames: string[] = [];
@@ -200,6 +227,17 @@ describe("API task agent", () => {
     expect(await run(task, { gateway })).toMatchObject({ status: "succeeded" });
     expect(toolNames).toContain("github_read");
     expect(toolNames).not.toContain("github_dispatch");
+  });
+
+  it("reports a failure to read token usage instead of the abort it causes", async () => {
+    const task = await createTask();
+    const unreadable = { get input(): number { throw new Error("stats gone"); }, output: 0, cacheRead: 0, cacheWrite: 0 };
+    sessionFactory.mockImplementation(fakeSession(async ({ turnEnd, aborted }) => {
+      turnEnd();
+      await aborted;
+      throw new Error("Request was aborted");
+    }, unreadable));
+    expect(await run(task)).toMatchObject({ status: "failed", error: "Cannot read token usage: Error: stats gone" });
   });
 
   it("stops itself at the deadline and reports timeout", async () => {
