@@ -40,7 +40,7 @@ export function ticketRunOutcome(run: TicketRun | null): ApiTaskOutcome | null {
     } : null,
   };
   if (run.stopReason === "token_limit") return { status: "budget", result, error: "The ticket's run reached its token budget" };
-  if (run.stopReason === "time_limit") return { status: "timeout", result, error: "The ticket's run reached its deadline" };
+  if (run.stopReason === "time_limit") return { status: "timeout", result, error: "The ticket's run reached its time limit (the request's deadline or the customization's maxDurationMs, whichever came first)" };
   if (dispatch.status === "pending") return { status: "failed", result, error: "The ticket's run handed the ticket back to its assignee" };
   if (dispatch.prs.length === 0) return { status: "failed", result, error: "The ticket's run ended without a pull request" };
   return { status: "succeeded", result, error: null };

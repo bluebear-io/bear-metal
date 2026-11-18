@@ -64,7 +64,7 @@ describe("API task agent", () => {
   let customized: Task[];
   const github = { getInstallationToken: async () => "gh-token" } as unknown as WorkerGitHub;
 
-  const config = (tools?: AgentToolChoice[], limits?: { maxTokens: number }): BearMetalConfig => ({
+  const config = (tools?: AgentToolChoice[], limits?: { maxTokens?: number; maxDurationMs?: number }): BearMetalConfig => ({
     linear: { clientId: "id", getClientSecret: () => "secret" },
     github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
     llmProviders: { anthropic: { getApiKey: () => "test-key" } },
@@ -261,6 +261,12 @@ describe("API task agent", () => {
     const task = await createTask({ deadline: new Date(Date.now() + 1_500).toISOString() });
     sessionFactory.mockImplementation(fakeSession(async ({ aborted }) => { await aborted; }));
     expect(await run(task)).toMatchObject({ status: "timeout" });
+  });
+
+  it("names the customization's time limit when it, not the request deadline, stops the task", async () => {
+    const task = await createTask();
+    sessionFactory.mockImplementation(fakeSession(async ({ aborted }) => { await aborted; }));
+    expect(await run(task, { config: config(undefined, { maxDurationMs: 300 }) })).toMatchObject({ status: "timeout", error: "Time limit of 300 ms reached" });
   });
 
   it("stops when the task is canceled", async () => {

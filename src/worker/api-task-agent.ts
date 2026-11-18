@@ -99,6 +99,7 @@ export async function runApiTaskAgent(input: {
   const deadlineTimer = setTimeout(() => stop("timeout"), Math.max(deadlineMs, 0));
   let durationTimer: NodeJS.Timeout | undefined;
   let maxTokens = request.maxTokens;
+  let timeLimit: string | undefined;
   const cancelTimer = setInterval(() => {
     void input.canceled().then((canceled) => { if (canceled) stop("canceled"); })
       .catch((err) => logger.error({ err, taskId: task.id }, "API task cancel check failed"));
@@ -108,7 +109,12 @@ export async function runApiTaskAgent(input: {
     await input.db.setAgentRunModel(task.id, llm.provider, llm.model);
     maxTokens = Math.min(request.maxTokens, customization.limits?.maxTokens ?? request.maxTokens);
     const maxDurationMs = customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
-    if (maxDurationMs < deadlineMs) durationTimer = setTimeout(() => stop("timeout"), maxDurationMs);
+    if (maxDurationMs < deadlineMs) {
+      durationTimer = setTimeout(() => {
+        timeLimit = `Time limit of ${maxDurationMs} ms reached`;
+        stop("timeout");
+      }, maxDurationMs);
+    }
 
     await mkdir(workspaceDir, { recursive: true });
     const built = await runWorkspaceBuilder({
@@ -207,7 +213,7 @@ export async function runApiTaskAgent(input: {
     pullRequests: [],
     usage,
   };
-  if (stopReason === "timeout") return { status: "timeout", result, error: `Deadline ${request.deadline} reached` };
+  if (stopReason === "timeout") return { status: "timeout", result, error: timeLimit ?? `Deadline ${request.deadline} reached` };
   if (stopReason === "budget") return { status: "budget", result, error: `Token budget of ${maxTokens} reached` };
   if (stopReason === "canceled") return { status: "failed", result, error: "Canceled through the task API" };
   if (error) return { status: "failed", result, error };
