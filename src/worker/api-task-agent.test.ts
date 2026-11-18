@@ -64,7 +64,7 @@ describe("API task agent", () => {
   let customized: Task[];
   const github = { getInstallationToken: async () => "gh-token" } as unknown as WorkerGitHub;
 
-  const config = (tools?: AgentToolChoice[]): BearMetalConfig => ({
+  const config = (tools?: AgentToolChoice[], limits?: { maxTokens: number }): BearMetalConfig => ({
     linear: { clientId: "id", getClientSecret: () => "secret" },
     github: { appId: 1, installationId: 1, getPrivateKey: () => "key" },
     llmProviders: { anthropic: { getApiKey: () => "test-key" } },
@@ -73,6 +73,7 @@ describe("API task agent", () => {
       return {
         llm: { provider: "anthropic", model: "claude-sonnet-4-5-20250929" },
         ...(tools ? { tools } : {}),
+        ...(limits ? { limits } : {}),
         buildWorkspace: async ({ workspacePath }) => {
           execFileSync("git", ["clone", "--quiet", remote, workspacePath]);
           git(workspacePath, "remote", "set-url", "origin", "https://github.com/acme/widgets.git");
@@ -177,6 +178,28 @@ describe("API task agent", () => {
     const outcome = await run(task);
     expect(outcome.status).toBe("budget");
     expect(outcome.result?.usage?.freshTokens).toBe(110);
+  });
+
+  it("reports the budget that stopped it when the customization's limit is lower than the request's", async () => {
+    const task = await createTask({ maxTokens: 1_000 });
+    sessionFactory.mockImplementation(fakeSession(async ({ turnEnd, aborted }) => {
+      turnEnd();
+      await aborted;
+    }, { input: 80, output: 30, cacheRead: 500, cacheWrite: 0 }));
+    expect(await run(task, { config: config(undefined, { maxTokens: 100 }) })).toMatchObject({ status: "budget", error: "Token budget of 100 reached" });
+  });
+
+  it("keeps the read-only gateway tools but not github_dispatch", async () => {
+    const task = await createTask({ outputSchema: undefined });
+    let toolNames: string[] = [];
+    sessionFactory.mockImplementation(async (options) => {
+      toolNames = options.customTools.map((candidate: Tool) => candidate.name);
+      return fakeSession(async ({ tools }) => { await tool(tools, "submit_result").execute("1", { message: "Looked" }); })(options);
+    });
+    const gateway = { availableTools: () => ["github_read", "github_dispatch"], execute: async () => ({ ok: true, result: null }) } as unknown as NonNullable<Parameters<typeof runApiTaskAgent>[0]["gateway"]>;
+    expect(await run(task, { gateway })).toMatchObject({ status: "succeeded" });
+    expect(toolNames).toContain("github_read");
+    expect(toolNames).not.toContain("github_dispatch");
   });
 
   it("stops itself at the deadline and reports timeout", async () => {

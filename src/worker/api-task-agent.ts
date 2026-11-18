@@ -29,6 +29,8 @@ const logger = createLogger({
 const ALWAYS_KEPT = new Set(["submit_result"]);
 // A task without a ticket never changes the repository, whatever its profile allows.
 const CHANGE_TOOLS = new Set(["edit", "write"]);
+/** Dispatching a workflow can change the repository through CI. */
+const WRITE_GATEWAY_TOOLS = new Set(["github_dispatch"]);
 // The clone's credentials are removed before the agent starts, so git in bash cannot push.
 const READ_ONLY_GIT_ENV: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0" };
 
@@ -91,6 +93,7 @@ export async function runApiTaskAgent(input: {
   const deadlineMs = Date.parse(request.deadline) - Date.now();
   const deadlineTimer = setTimeout(() => stop("timeout"), Math.max(deadlineMs, 0));
   let durationTimer: NodeJS.Timeout | undefined;
+  let maxTokens = request.maxTokens;
   const cancelTimer = setInterval(() => {
     void input.canceled().then((canceled) => { if (canceled) stop("canceled"); })
       .catch((err) => logger.error({ err, taskId: task.id }, "API task cancel check failed"));
@@ -98,7 +101,7 @@ export async function runApiTaskAgent(input: {
   try {
     const { customization, llm } = await customizeAndResolve(input.config, apiCustomizationTask(task));
     await input.db.setAgentRunModel(task.id, llm.provider, llm.model);
-    const maxTokens = Math.min(request.maxTokens, customization.limits?.maxTokens ?? request.maxTokens);
+    maxTokens = Math.min(request.maxTokens, customization.limits?.maxTokens ?? request.maxTokens);
     const maxDurationMs = customization.limits?.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
     if (maxDurationMs < deadlineMs) durationTimer = setTimeout(() => stop("timeout"), maxDurationMs);
 
@@ -113,7 +116,8 @@ export async function runApiTaskAgent(input: {
     const allTools: ToolDefinition[] = [
       ...createWorkspaceGuardedTools(workspaceRoot, READ_ONLY_GIT_ENV).filter((tool) => !CHANGE_TOOLS.has(tool.name)),
       submitResultTool(),
-      ...(input.gateway ? createAgentGatewayTools(input.gateway, { taskId: task.id, runId: task.id, workspaceRoot }, stopController.signal) : []),
+      ...(input.gateway ? createAgentGatewayTools(input.gateway, { taskId: task.id, runId: task.id, workspaceRoot }, stopController.signal)
+        .filter((tool) => !WRITE_GATEWAY_TOOLS.has(tool.name)) : []),
     ];
     const customTools = narrowTools(allTools, customization.tools, ALWAYS_KEPT);
 
@@ -195,7 +199,7 @@ export async function runApiTaskAgent(input: {
     usage,
   };
   if (stopReason === "timeout") return { status: "timeout", result, error: `Deadline ${request.deadline} reached` };
-  if (stopReason === "budget") return { status: "budget", result, error: `Token budget of ${request.maxTokens} reached` };
+  if (stopReason === "budget") return { status: "budget", result, error: `Token budget of ${maxTokens} reached` };
   if (stopReason === "canceled") return { status: "failed", result, error: "Canceled through the task API" };
   if (error) return { status: "failed", result, error };
   if (!submitted) return { status: "failed", result, error: "The agent ended without calling submit_result" };
