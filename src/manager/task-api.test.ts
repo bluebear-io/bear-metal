@@ -2,7 +2,7 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqlDbClient } from "../db/client.js";
-import { createLogger } from "../shared/logger.js";
+import { createLogger, type Logger } from "../shared/logger.js";
 import { signRequest } from "./request-signature.js";
 import { createTaskApiRouter, TASK_API_SIGNATURE_HEADER, TASK_API_TIMESTAMP_HEADER, type TicketDelegation } from "./task-api.js";
 
@@ -193,10 +193,32 @@ describe("task API", () => {
     const stored = await db.getApiTaskByKey("request-1");
     expect(stored).toMatchObject({ status: "failed", error: "Cannot delegate ticket DEN-1: Linear is down" });
     expect(await db.getTicketApiTask("issue-1")).toBeNull();
+    expect(tickets.handBack).toHaveBeenCalledExactlyOnceWith("issue-1");
 
     mount(false);
     expect(await signed("post", "/tasks", codingBody({ idempotencyKey: "no-scheduler" })))
       .toMatchObject({ status: 400, body: { error: "Coding tasks need the Linear scheduler, which is off" } });
+  });
+
+  it("starts a coding task before delegating its ticket, so a crash after delegating can still be canceled", async () => {
+    let startedWhenDelegated: string | null | undefined;
+    tickets.assignAndDelegate.mockImplementationOnce(async () => {
+      startedWhenDelegated = (await db.getApiTaskByKey("request-1"))?.startedAt;
+      delegated = { id: "agent" };
+    });
+    await signed("post", "/tasks", codingBody());
+    expect(startedWhenDelegated).toEqual(expect.any(String));
+  });
+
+  it("logs a rejected signature with its method and path only", async () => {
+    const warn = vi.fn();
+    app = express();
+    app.use("/task-api", createTaskApiRouter({
+      db, signingSecret: secret, logger: { ...createLogger({ name: "test", level: "silent" }), warn } as unknown as Logger, wake, tickets,
+    }));
+    const rejected = await request(app).get("/task-api/tasks/x").set("X-Bear-Metal-Request-Timestamp", "1").set("X-Bear-Metal-Signature", "v0=bad");
+    expect(rejected.status).toBe(401);
+    expect(warn).toHaveBeenCalledExactlyOnceWith({ method: "GET", path: "/task-api/tasks/x", ip: expect.any(String) }, "Task API request signature rejected");
   });
 
   it("cancels a coding task by handing its ticket back and stopping its run", async () => {

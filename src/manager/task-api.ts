@@ -39,6 +39,7 @@ export function createTaskApiRouter(input: {
   router.use(raw({ type: () => true, limit: "1mb" }), (req: Request, res: Response, next: NextFunction) => {
     const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     if (!verifyRequestSignature(body, req.header(TASK_API_TIMESTAMP_HEADER), req.header(TASK_API_SIGNATURE_HEADER), input.signingSecret, `${req.method} ${req.originalUrl}`)) {
+      input.logger.warn({ method: req.method, path: req.originalUrl, ip: req.ip }, "Task API request signature rejected");
       res.sendStatus(401);
       return;
     }
@@ -73,12 +74,14 @@ export function createTaskApiRouter(input: {
     }
     const created = await input.db.createApiTask(request, ticket.id);
     if (!created.created) return created;
+    // Started before delegating, so a crash in between leaves a task that cancel and its deadline can still stop.
+    await input.db.startTicketApiTask(created.task.id);
     try {
       await tickets.assignAndDelegate(ticket.id, assigneeId);
-      await input.db.startTicketApiTask(created.task.id);
     } catch (err) {
       const error = `Cannot delegate ticket ${request.ticketId}: ${err instanceof Error ? err.message : String(err)}`;
-      await input.db.failQueuedApiTask(created.task.id, error);
+      await stopTicketWork(input.db, tickets, ticket.id, error);
+      await input.db.finishApiTask(created.task.id, { status: "failed", result: null, error });
       throw new TicketRequestError(502, error);
     }
     return { task: (await input.db.getApiTask(created.task.id))!, created: true };
