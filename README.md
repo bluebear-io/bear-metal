@@ -123,7 +123,7 @@ The same module may be `.mts`; use the canonical source above as the typing refe
 
 ## Task customization
 
-`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references, or a task API task with `type: "api"`, `request`, `profile` and `repositories`. A Linear coding run also carries `profile` when the task API delegated its ticket. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
+`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts). Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
 
 The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt`, independent duration/token limits, and optional `ticketLabels` / `pullRequestLabels` (label names the harness adds to the linked Linear ticket and to PRs it creates or updates; failures are logged only). Coding tasks may include `trigger: "slack" | "linear"` when known. See the canonical source for the exact nested DTO and return shapes. `maxTokens` counts fresh tokens (uncached input, cache writes and output); cache reads don't count.
 
