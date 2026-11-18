@@ -23,7 +23,7 @@ class TicketRequestError extends Error {
 }
 
 /**
- * Runs tasks through a signed API. Every request, GETs included, is signed over its raw body (empty for GET);
+ * Runs tasks through a signed API. Every request, GETs included, is signed over its method, full path and raw body (empty for GET);
  * mount it before any JSON body parser. Without `tickets`, coding requests are refused.
  */
 export function createTaskApiRouter(input: {
@@ -38,7 +38,7 @@ export function createTaskApiRouter(input: {
   const router = Router();
   router.use(raw({ type: () => true, limit: "1mb" }), (req: Request, res: Response, next: NextFunction) => {
     const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    if (!verifyRequestSignature(body, req.header(TASK_API_TIMESTAMP_HEADER), req.header(TASK_API_SIGNATURE_HEADER), input.signingSecret)) {
+    if (!verifyRequestSignature(body, req.header(TASK_API_TIMESTAMP_HEADER), req.header(TASK_API_SIGNATURE_HEADER), input.signingSecret, `${req.method} ${req.originalUrl}`)) {
       res.sendStatus(401);
       return;
     }

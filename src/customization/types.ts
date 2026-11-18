@@ -59,7 +59,7 @@ export interface BearMetalConfig {
   };
   /** Enables the `/task-api` endpoints, which run tasks without a Linear ticket. */
   taskApi?: {
-    /** HMAC key callers sign their requests with, in Slack's `v0` scheme. */
+    /** HMAC-SHA256 key callers sign each request's method, path and body with (see README "Task API"). */
     getSigningSecret: SecretGetter;
   };
   traceRetentionDays?: number;

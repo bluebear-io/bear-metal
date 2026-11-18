@@ -36,7 +36,7 @@ describe("task API", () => {
     const timestamp = String(Math.floor(Date.now() / 1000));
     const call = request(app)[method](`/task-api${path}`)
       .set(TASK_API_TIMESTAMP_HEADER, timestamp)
-      .set(TASK_API_SIGNATURE_HEADER, signRequest(text, timestamp, key));
+      .set(TASK_API_SIGNATURE_HEADER, signRequest(text, timestamp, key, `${method.toUpperCase()} /task-api${path}`));
     return body === undefined ? call : call.set("Content-Type", "application/json").send(text);
   };
 
@@ -90,8 +90,18 @@ describe("task API", () => {
     const text = JSON.stringify(taskBody());
     const old = String(Math.floor(Date.now() / 1000) - 600);
     expect((await request(app).post("/task-api/tasks").set("Content-Type", "application/json")
-      .set(TASK_API_TIMESTAMP_HEADER, old).set(TASK_API_SIGNATURE_HEADER, signRequest(text, old, secret)).send(text)).status).toBe(401);
+      .set(TASK_API_TIMESTAMP_HEADER, old).set(TASK_API_SIGNATURE_HEADER, signRequest(text, old, secret, "POST /task-api/tasks")).send(text)).status).toBe(401);
     expect((await request(app).get("/task-api/tasks/unknown")).status).toBe(401);
+  });
+
+  it("rejects a signature replayed on another route", async () => {
+    const created = await signed("post", "/tasks", taskBody());
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const getSignature = signRequest("", timestamp, secret, `GET /task-api/tasks/${created.body.id}`);
+    expect((await request(app).post(`/task-api/tasks/${created.body.id}/cancel`)
+      .set(TASK_API_TIMESTAMP_HEADER, timestamp).set(TASK_API_SIGNATURE_HEADER, getSignature)).status).toBe(401);
+    expect((await request(app).get(`/task-api/tasks/${created.body.id}`)
+      .set(TASK_API_TIMESTAMP_HEADER, timestamp).set(TASK_API_SIGNATURE_HEADER, getSignature)).status).toBe(200);
   });
 
   it("refuses a task without an owner or profile, with an unknown field, a bad owner or a past deadline", async () => {
