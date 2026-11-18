@@ -7,7 +7,7 @@ import type { runApiTaskAgent } from "../worker/api-task-agent.js";
 import type { WorkerGitHub } from "../worker/types.js";
 import { vi } from "vitest";
 import type { DispatchResult } from "../worker/types.js";
-import { ApiTaskWorker, ticketRunOutcome } from "./api-task-worker.js";
+import { ApiTaskWorker, stopTicketWork, ticketRunOutcome } from "./api-task-worker.js";
 
 const request = (key: string): ApiTaskRequest => ({
   idempotencyKey: key, profile: { id: "developer", name: "Developer", instructions: "Do it.", toolCeiling: [], shell: false, customerData: false }, owner: "owner@example.com", repository: "acme/widgets", instruction: "Do it",
@@ -111,6 +111,32 @@ describe("API task worker", () => {
       });
       expect((await db.getTicketApiTask("issue-1"))?.id).toBe(task.id);
       expect(handBack).not.toHaveBeenCalled();
+    });
+
+    it("hands the ticket back and ends the profile binding when the first run fails, an abandoned run included", async () => {
+      const task = await delegate("abandoned");
+      const apiWorker = codingWorker();
+      await apiWorker.tick();
+      await finishRun({ status: "pending", prs: [] });
+      await apiWorker.tick();
+      expect((await db.getApiTask(task.id))?.status).toBe("failed");
+      expect(handBack).toHaveBeenCalledExactlyOnceWith("issue-1");
+      expect(await db.getTicketApiTask("issue-1")).toBeNull();
+    });
+
+    it("ends the profile binding of a task stopped before its first run, and stops a queued run row cleanly", async () => {
+      const task = await delegate("early");
+      await db.cancelApiTask(task.id);
+      await stopTicketWork(db, { handBack }, "issue-1", "Canceled through the task API");
+      expect(await db.getTicketApiTask("issue-1")).toBeNull();
+
+      const queued = await delegate("queued");
+      await db.cancelApiTask(queued.id);
+      await db.enqueue({ state: "new", ticketId: "DEN-1", prs: [], trigger: "new", ticketIssueId: "issue-1" });
+      await stopTicketWork(db, { handBack }, "issue-1", "Canceled through the task API");
+      const run = await db.getFirstTicketRun("issue-1", task.createdAt);
+      expect(run).toMatchObject({ runStatus: "interrupted", error: "Canceled through the task API" });
+      expect(await db.getTicketApiTask("issue-1")).toBeNull();
     });
 
     it("maps the first run's limits and hand-backs to the task's outcome", () => {

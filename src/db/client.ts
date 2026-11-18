@@ -1558,6 +1558,7 @@ export class SqlDbClient implements DbClient {
   async getTicketApiTask(ticketIssueId: string): Promise<ApiTaskRecord | null> {
     const rows = await this.query<TaskRow>(
       `SELECT * FROM tasks api WHERE api.task_type = 'api' AND api.api_ticket_issue_id = ? AND api.started_at IS NOT NULL
+         AND api.released_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM tasks slot WHERE slot.ticket_id = api.api_ticket_issue_id AND slot.released_at > api.started_at)
        ORDER BY api.started_at DESC, api.id DESC LIMIT 1`,
       [ticketIssueId],
@@ -1577,18 +1578,23 @@ export class SqlDbClient implements DbClient {
   }
 
   async stopTicketWork(ticketIssueId: string, error: string): Promise<void> {
+    const now = this.clock.nowIso();
+    // Ends the API task's hold on the ticket even when no run row exists yet, so a later delegation runs without its profile.
+    await this.run(
+      `UPDATE tasks SET released_at = ?, updated_at = ? WHERE task_type = 'api' AND api_ticket_issue_id = ? AND started_at IS NOT NULL AND released_at IS NULL`,
+      [now, now, ticketIssueId],
+    );
     const latest = await this.query<{ id: string }>(
       `SELECT id FROM tasks WHERE ticket_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
       [ticketIssueId],
     );
     if (!latest[0]) return;
-    const now = this.clock.nowIso();
     await this.run(
       `UPDATE tasks SET
-         run_status = CASE WHEN result_status IS NULL AND run_status = 'running' THEN 'interrupted' ELSE run_status END,
-         stop_reason = CASE WHEN result_status IS NULL AND run_status = 'running' THEN 'error' ELSE stop_reason END,
+         run_status = CASE WHEN result_status IS NULL THEN 'interrupted' ELSE run_status END,
+         stop_reason = CASE WHEN result_status IS NULL THEN 'error' ELSE stop_reason END,
          error = CASE WHEN result_status IS NULL THEN ? ELSE error END,
-         ended_at = CASE WHEN result_status IS NULL AND run_status = 'running' THEN ? ELSE ended_at END,
+         ended_at = CASE WHEN result_status IS NULL THEN ? ELSE ended_at END,
          result_status = COALESCE(result_status, 'pending'),
          slot_status = 'released', released_at = COALESCE(released_at, ?), updated_at = ?
        WHERE id = ? AND slot_status != 'released'`,

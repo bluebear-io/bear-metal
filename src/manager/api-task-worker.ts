@@ -112,6 +112,8 @@ export class ApiTaskWorker {
           outcome = { status: "timeout", result: null, error: `Deadline ${task.request.deadline} reached` };
         }
         if (!outcome) continue;
+        // A first run abandoned after crashes leaves the ticket delegated, and Bear Metal would start it again.
+        if (outcome.status === "failed") await stopTicketWork(db, tickets, ticketIssueId, outcome.error ?? "The ticket's first run failed");
         await db.finishApiTask(task.id, outcome);
         logger.info({ taskId: task.id, ticketIssueId, status: outcome.status, error: outcome.error }, "API coding task finished");
       } catch (err) {
