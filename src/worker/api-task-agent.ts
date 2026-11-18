@@ -39,7 +39,7 @@ const READ_ONLY_GIT_ENV: NodeJS.ProcessEnv = {
   GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "false", SSH_AUTH_SOCK: "", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
 };
 
-type StopReason = "timeout" | "budget" | "canceled";
+type StopReason = "submitted" | "timeout" | "budget" | "canceled";
 
 function apiCustomizationTask(task: ApiTaskRecord): Task {
   if (!task.request.repository) throw new Error(`API task ${task.id} has no repository`);
@@ -195,6 +195,7 @@ export async function runApiTaskAgent(input: {
     }
   } catch (err) {
     if (!stopReason && !error) error = err instanceof Error ? err.message : String(err);
+    else logger.error({ err, taskId: task.id, stopReason, error }, "API task failed after it had already stopped");
   } finally {
     clearTimeout(deadlineTimer);
     clearTimeout(durationTimer);
@@ -236,7 +237,9 @@ export async function runApiTaskAgent(input: {
           if (errors.length > 0) throw new Error(`result does not match the result schema: ${errors.join("; ")}`);
         }
         submitted = { message: params.message, result: params.result ?? null };
-        return { content: [{ type: "text", text: "Result recorded. Stop now." }], details: {} };
+        // The result is final: end the session, so a limit that fires later cannot relabel the task.
+        stop("submitted");
+        return { content: [{ type: "text", text: "Result recorded." }], details: {} };
       },
     });
   }

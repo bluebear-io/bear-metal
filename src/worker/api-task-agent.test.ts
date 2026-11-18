@@ -10,6 +10,17 @@ import { runApiTaskAgent } from "./api-task-agent.js";
 import type { WorkerGitHub } from "./types.js";
 
 const sessionFactory = vi.hoisted(() => vi.fn());
+const logged = vi.hoisted(() => ({ error: vi.fn() }));
+vi.mock("../shared/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../shared/index.js")>();
+  return {
+    ...actual,
+    createLogger: (...args: Parameters<typeof actual.createLogger>) => {
+      const real = actual.createLogger(...args);
+      return Object.assign(Object.create(real), { error: (...a: unknown[]) => { logged.error(...a); } });
+    },
+  };
+});
 vi.mock("./pi-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./pi-runtime.js")>()),
   createPiSessionRuntime: async (options: unknown) => {
@@ -245,7 +256,7 @@ describe("API task agent", () => {
     expect(await run(task)).toMatchObject({ status: "failed", error: "Cannot read token usage: Error: stats gone" });
   });
 
-  it("disposes the session when reading its final token usage fails", async () => {
+  it("disposes the session and logs the error when reading its final token usage fails", async () => {
     const task = await createTask({ outputSchema: undefined });
     const unreadable = { get input(): number { throw new Error("stats gone"); }, output: 0, cacheRead: 0, cacheWrite: 0 };
     const dispose = vi.fn(async () => {});
@@ -253,8 +264,10 @@ describe("API task agent", () => {
       ...(await fakeSession(async ({ tools }) => { await tool(tools, "submit_result").execute("1", { message: "Looked" }); }, unreadable)(options)),
       dispose,
     }));
-    expect(await run(task)).toMatchObject({ status: "failed", error: "stats gone" });
+    logged.error.mockClear();
+    expect(await run(task)).toMatchObject({ status: "succeeded", result: { message: "Looked" } });
     expect(dispose).toHaveBeenCalledOnce();
+    expect(logged.error).toHaveBeenCalledWith(expect.objectContaining({ err: expect.objectContaining({ message: "stats gone" }) }), expect.any(String));
   });
 
   it("stops itself at the deadline and reports timeout", async () => {
@@ -267,6 +280,24 @@ describe("API task agent", () => {
     const task = await createTask();
     sessionFactory.mockImplementation(fakeSession(async ({ aborted }) => { await aborted; }));
     expect(await run(task, { config: config(undefined, { maxDurationMs: 300 }) })).toMatchObject({ status: "timeout", error: "Time limit of 300 ms reached" });
+  });
+
+  it("ends the session once a valid result is submitted, so a later limit cannot relabel it", async () => {
+    const task = await createTask({ outputSchema: undefined, deadline: new Date(Date.now() + 1_500).toISOString() });
+    sessionFactory.mockImplementation(fakeSession(async ({ tools, aborted }) => {
+      await tool(tools, "submit_result").execute("1", { message: "Done" });
+      await aborted;
+    }));
+    expect(await run(task)).toMatchObject({ status: "succeeded", error: null, result: { message: "Done" } });
+  });
+
+  it("logs a failure that happens after the task already stopped", async () => {
+    const task = await createTask({ deadline: new Date(Date.now() + 1_000).toISOString() });
+    vi.spyOn(db, "setAgentRunUsage").mockRejectedValueOnce(new Error("database down"));
+    sessionFactory.mockImplementation(fakeSession(async ({ aborted }) => { await aborted; }));
+    logged.error.mockClear();
+    expect(await run(task)).toMatchObject({ status: "timeout" });
+    expect(logged.error).toHaveBeenCalledWith(expect.objectContaining({ err: expect.objectContaining({ message: "database down" }), taskId: task.id }), expect.any(String));
   });
 
   it("stops when the task is canceled", async () => {
