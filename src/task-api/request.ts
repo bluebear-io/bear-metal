@@ -1,6 +1,8 @@
 import { Compile } from "typebox/schema";
 import type { TaskProfile } from "../customization/types.js";
 
+const MAX_DEADLINE_MS = 7 * 24 * 60 * 60_000;
+
 /**
  * A task submitted through the task API. With `ticketId` it is a coding task: Bear Metal assigns the ticket to
  * `owner`, delegates it to itself and runs it as a ticket task. Without one it runs once in `repository`, cannot
@@ -146,6 +148,8 @@ export function parseApiTaskRequest(body: unknown, now = new Date()): ApiTaskReq
   const deadline = Date.parse(request.deadline);
   if (!/^\d{4}-\d{2}-\d{2}T/.test(request.deadline) || Number.isNaN(deadline)) throw new ApiTaskRequestError("deadline must be an ISO timestamp");
   if (deadline <= now.getTime()) throw new ApiTaskRequestError("deadline has passed");
+  // Node timers overflow past about 24.8 days and fire at once.
+  if (deadline - now.getTime() > MAX_DEADLINE_MS) throw new ApiTaskRequestError("deadline must be within 7 days");
   if (!Number.isSafeInteger(body.maxTokens) || (body.maxTokens as number) <= 0) throw new ApiTaskRequestError("maxTokens must be a positive integer");
   request.maxTokens = body.maxTokens as number;
   return request;

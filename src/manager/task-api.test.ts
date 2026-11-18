@@ -104,7 +104,7 @@ describe("task API", () => {
       .set(TASK_API_TIMESTAMP_HEADER, timestamp).set(TASK_API_SIGNATURE_HEADER, getSignature)).status).toBe(200);
   });
 
-  it("refuses a task without an owner or profile, with an unknown field, a bad owner or a past deadline", async () => {
+  it("refuses a task without an owner or profile, with an unknown field, a bad owner or a deadline out of range", async () => {
     const { owner: _owner, ...withoutOwner } = taskBody();
     expect((await signed("post", "/tasks", withoutOwner)).body).toEqual({ error: "owner is required" });
     const { profile: _profile, ...withoutProfile } = taskBody();
@@ -123,6 +123,8 @@ describe("task API", () => {
       expect((await signed("post", "/tasks", taskBody({ owner }))).body).toEqual({ error: "owner is invalid" });
     }
     expect((await signed("post", "/tasks", taskBody({ deadline: new Date(Date.now() - 1000).toISOString() }))).status).toBe(400);
+    expect((await signed("post", "/tasks", taskBody({ deadline: new Date(Date.now() + 30 * 24 * 60 * 60_000).toISOString() }))).body)
+      .toEqual({ error: "deadline must be within 7 days" });
   });
 
   it("returns the same task for a repeated key and body and rejects the key with another body", async () => {
