@@ -18,6 +18,8 @@ const research: TaskListItem = { ...coding, id: "research-1", type: "research", 
 const coordinator: TaskListItem = { ...research, id: "coord-1", type: "coordinator",
   title: "Slack thread coordination", status: "succeeded" };
 
+const apiTask: TaskListItem = { ...research, id: "api-1", type: "api", title: "Audit the merged PRs", status: "succeeded" };
+
 let tasks: TaskListItem[] = [coding, research, coordinator];
 let lastQuery: TaskListQuery = {};
 
@@ -48,6 +50,33 @@ describe("TasksListPage", () => {
     expect(within(list).getByText("What is 2 + 2?")).toBeVisible();
     expect(within(list).getByText("Slack thread coordination")).toBeVisible();
     expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute("href", coding.pullRequests[0]?.url);
+  });
+
+  it("lists task API tasks with a link to their detail and a type filter", () => {
+    tasks = [coding, apiTask];
+    renderWithProviders(<TasksListPage />, "/");
+    const list = screen.getByRole("region", { name: "Tasks list" });
+    expect(within(list).getByRole("link", { name: "Task API" })).toHaveAttribute("href", "/tasks/api/api-1");
+    expect(within(list).getByText("Audit the merged PRs")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Filter by type"), { target: { value: "api" } });
+    expect(lastQuery.type).toBe("api");
+  });
+
+  it("shows a timed-out or over-budget task API task under Failed", () => {
+    tasks = [coding, { ...apiTask, status: "timeout" }, { ...apiTask, id: "api-2", title: "Sweep dead code", status: "budget" }];
+    renderWithProviders(<TasksListPage />, "/");
+    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
+    expect(lastQuery.statuses).toEqual(expect.arrayContaining(["timeout", "budget"]));
+    expect(screen.getByText("Audit the merged PRs")).toBeVisible();
+    expect(screen.getByText("Sweep dead code")).toBeVisible();
+  });
+
+  it("shows a canceled task API task under Completed", () => {
+    tasks = [coding, { ...apiTask, status: "canceled" }];
+    renderWithProviders(<TasksListPage />, "/");
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    expect(lastQuery.statuses).toContain("canceled");
+    expect(screen.getByText("Audit the merged PRs")).toBeVisible();
   });
 
   it("filters all task types by state and type", () => {

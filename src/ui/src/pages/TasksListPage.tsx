@@ -15,7 +15,7 @@ const TaskLabel = ({ task }: { task: TaskListItem }) => task.ticketUrl ? (
   <a href={task.ticketUrl} className="font-medium text-primary transition hover:underline" target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
     {task.identifier}
   </a>
-) : <Link to={`/tasks/${task.type === "coding" ? "run" : task.type}/${task.id}`} className="font-medium text-primary capitalize hover:underline" onClick={(event) => event.stopPropagation()}>{task.type}</Link>;
+) : <Link to={`/tasks/${task.type === "coding" ? "run" : task.type}/${task.id}`} className="font-medium text-primary capitalize hover:underline" onClick={(event) => event.stopPropagation()}>{task.type === "api" ? "Task API" : task.type}</Link>;
 
 const PrLink = ({ task }: { task: TaskListItem }) => {
   if (task.pullRequests.length === 0) {
@@ -46,8 +46,8 @@ const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<string>> 
   in_progress: ["in_progress", "queued", "running", "awaiting_coordination", "approved", "posting", "dispatched"],
   validating: ["validating"],
   waiting_for_human: ["waiting_for_human"],
-  failed: ["failed", "timed_out", "crashed"],
-  completed: ["completed", "coordinated", "succeeded"],
+  failed: ["failed", "timed_out", "crashed", "timeout", "budget"],
+  completed: ["completed", "coordinated", "succeeded", "canceled"],
 };
 
 const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [
@@ -181,6 +181,7 @@ export default function TasksListPage() {
               <option value="coding">Coding</option>
               <option value="research">Research</option>
               <option value="coordinator">Coordination</option>
+              <option value="api">Task API</option>
             </select>
           </label>
           <label className="flex items-center gap-1 text-xs text-text-secondary">

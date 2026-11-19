@@ -28,6 +28,29 @@ describe("agent run API", () => {
     }
   });
 
+  it("lists task API tasks without a ticket, with their outcome, and leaves coding API tasks to their ticket", async () => {
+    const db = new SqlDbClient("sqlite::memory:", 5);
+    await db.initSchema();
+    try {
+      const profile = { id: "reviewer", name: "Reviewer", instructions: "Review.", toolCeiling: [], shell: false, customerData: false };
+      const base = { profile, owner: "owner@example.com", deadline: new Date(Date.now() + 60_000).toISOString(), maxTokens: 1_000 };
+      const { task: audit } = await db.createApiTask({ ...base, idempotencyKey: "audit", repository: "acme/widgets", instruction: "Audit the merged PRs" });
+      await db.claimApiTask();
+      await db.finishApiTask(audit.id, { status: "timeout", result: null, error: "Deadline reached" });
+      const { task: coding } = await db.createApiTask({ ...base, idempotencyKey: "coding", ticketId: "DEN-9", instruction: "Fix it" }, "lin-9");
+      await db.startTicketApiTask(coding.id);
+      const app = createApp(db, 5, { getTicketAssignees: async () => new Map() } as unknown as LinearSource);
+
+      const listed = await request(app).get("/api/tasks?type=api");
+      expect(listed.status).toBe(200);
+      expect(listed.body.tasks).toMatchObject([{ id: audit.id, type: "api", title: "Audit the merged PRs", status: "timeout", ticketId: null }]);
+      expect((await request(app).get("/api/tasks?statuses=timeout")).body.tasks).toMatchObject([{ id: audit.id }]);
+      expect((await request(app).get(`/api/agent-runs/${audit.id}`)).body.run).toMatchObject({ type: "api", request: "Audit the merged PRs" });
+    } finally {
+      await db.close();
+    }
+  });
+
   it("lists coding tickets, research tasks, and coordinator executions together", async () => {
     const db = new SqlDbClient("sqlite::memory:", 5);
     await db.initSchema();
