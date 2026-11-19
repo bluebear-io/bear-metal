@@ -712,8 +712,12 @@ function ticketRunDetails(resultJson: string | null): Pick<TicketRun, "stopReaso
       if (!Number.isSafeInteger(counts[key])) throw new Error(`Invalid run token count ${key}: ${String(counts[key])}`);
     }
   }
-  const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-  return { stopReason, tokens: tokens as TicketRun["tokens"], provider: text(parsed.usage?.provider), model: text(parsed.usage?.modelName) };
+  const text = (key: string, value: unknown) => {
+    if (value === undefined || value === null || value === "") return null;
+    if (typeof value !== "string") throw new Error(`Invalid run ${key}: ${String(value)}`);
+    return value;
+  };
+  return { stopReason, tokens: tokens as TicketRun["tokens"], provider: text("provider", parsed.usage?.provider), model: text("model", parsed.usage?.modelName) };
 }
 
 export type ApiTaskOutcome = { status: Exclude<ApiTaskTerminalStatus, "canceled">; result: ApiTaskResult | null; error: string | null };
@@ -1294,6 +1298,13 @@ function computeShipped(tasks: PeriodTaskRow[], prs: PeriodPrRow[], from: Date, 
 
 const API_TERMINAL = new Set<string>(["succeeded", "failed", "timeout", "budget", "canceled"]);
 
+/** Results stored before usage carried the model lack provider/model; the contract reports them as null. */
+function apiTaskResult(json: string): ApiTaskResult {
+  const result = JSON.parse(json) as ApiTaskResult;
+  if (result.usage) result.usage = { ...result.usage, provider: result.usage.provider ?? null, model: result.usage.model ?? null };
+  return result;
+}
+
 function rowToApiTask(row: TaskRow): ApiTaskRecord {
   if (row.task_type !== "api" || !row.api_request_json) throw new Error(`Task ${row.id} is not an API task`);
   if (row.result_status !== null && !API_TERMINAL.has(row.result_status)) {
@@ -1308,7 +1319,7 @@ function rowToApiTask(row: TaskRow): ApiTaskRecord {
     status,
     request: JSON.parse(row.api_request_json) as ApiTaskRequest,
     ticketIssueId: row.api_ticket_issue_id,
-    result: row.result_json === null ? null : JSON.parse(row.result_json) as ApiTaskResult,
+    result: row.result_json === null ? null : apiTaskResult(row.result_json),
     error: row.error,
     createdAt: row.created_at,
     startedAt: row.started_at,

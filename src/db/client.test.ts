@@ -282,3 +282,20 @@ describe("SqlDbClient PR notification claims", () => {
     await db.close();
   });
 });
+
+describe("SqlDbClient API task results", () => {
+  it("reports a missing model as null on results stored before usage carried it", async () => {
+    const db = await makeDb();
+    try {
+      const { task } = await db.createApiTask({
+        idempotencyKey: "legacy", profile: { model: "m" } as never, owner: "owner@example.com",
+        instruction: "Do it", deadline: new Date(Date.now() + 60_000).toISOString(), maxTokens: 1000,
+      });
+      const legacy = { message: "done", result: null, pullRequests: [], usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, freshTokens: 3 } };
+      await (db as unknown as { query(sql: string, params: unknown[]): Promise<unknown> })
+        .query("UPDATE tasks SET result_json = ?, result_status = 'succeeded' WHERE id = ?", [JSON.stringify(legacy), task.id]);
+      const usage = (await db.getApiTask(task.id))?.result?.usage;
+      expect(usage).toMatchObject({ provider: null, model: null });
+    } finally { await db.close(); }
+  });
+});
