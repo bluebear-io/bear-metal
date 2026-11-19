@@ -209,6 +209,15 @@ describe("task API", () => {
       .toMatchObject({ status: 400, body: { error: "Coding tasks need the Linear scheduler, which is off" } });
   });
 
+  it("fails a coding task whose start cannot be recorded, so its ticket takes new requests", async () => {
+    vi.spyOn(db, "startTicketApiTask").mockRejectedValueOnce(new Error("database down"));
+    const failed = await signed("post", "/tasks", codingBody());
+    expect(failed.status).toBe(500);
+    expect(await db.getApiTaskByKey("request-1")).toMatchObject({ status: "failed", error: "Cannot start the coding task: database down" });
+    expect(tickets.assignAndDelegate).not.toHaveBeenCalled();
+    expect((await signed("post", "/tasks", codingBody({ idempotencyKey: "request-2" }))).status).toBe(202);
+  });
+
   it("starts a coding task before delegating its ticket, so a crash after delegating can still be canceled", async () => {
     let startedWhenDelegated: string | null | undefined;
     tickets.assignAndDelegate.mockImplementationOnce(async () => {

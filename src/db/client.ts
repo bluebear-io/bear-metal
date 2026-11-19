@@ -725,6 +725,8 @@ export interface DbClient {
   getApiTaskByKey(idempotencyKey: string): Promise<ApiTaskRecord | null>;
   /** Marks a queued coding task running once its ticket is delegated. */
   startTicketApiTask(id: string): Promise<void>;
+  /** Fails a coding task that never started, so its ticket takes new requests. */
+  failQueuedApiTask(id: string, error: string): Promise<void>;
   listRunningTicketApiTasks(): Promise<ApiTaskRecord[]>;
   /** The coding task whose profile runs on this ticket: the latest one that delegated it, unless its slot was released since. */
   getTicketApiTask(ticketIssueId: string): Promise<ApiTaskRecord | null>;
@@ -1534,6 +1536,15 @@ export class SqlDbClient implements DbClient {
       [now, now, id],
     );
     if (result.changes !== 1) throw new Error(`Cannot start coding API task ${id}`);
+  }
+
+  async failQueuedApiTask(id: string, error: string): Promise<void> {
+    const now = this.clock.nowIso();
+    await this.run(
+      `UPDATE tasks SET result_status = 'failed', error = ?, ended_at = ?, updated_at = ?, completed_at = ?
+       WHERE id = ? AND task_type = 'api' AND run_status IS NULL AND result_status IS NULL`,
+      [error, now, now, now, id],
+    );
   }
 
   async listRunningTicketApiTasks(): Promise<ApiTaskRecord[]> {

@@ -15,6 +15,7 @@ import type {
 import type { SlackIntegration } from "../shared/index.js";
 
 import type { DbClient, TaskSlot } from "../db/client.js";
+import type { ApiTaskRecord } from "../task-api/request.js";
 
 type TicketPhase = "active" | "parked";
 
@@ -559,10 +560,12 @@ async function refreshTrackedTickets(
       if (decision.dispatch && slot.latestTask.resultStatus !== null) {
         const owner = await checkOwner(ticket, linear);
         if (owner !== "owned") {
+          // Read before the release below, which ends the task's binding to this ticket.
+          const apiTask = await db.getTicketApiTask(ticket.id);
           await db.setSlotStatus(slot.ticketId!, "released");
           await db.setTicketStatus(ticket.id, "waiting_for_human");
           ciDeferralStartedAt.delete(ticket.id);
-          await handBackWithoutOwner(ticket, owner, linear, db, logger);
+          await handBackWithoutOwner(ticket, owner, linear, db, logger, apiTask);
           continue;
         }
       }
@@ -784,12 +787,13 @@ async function handBackWithoutOwner(
   linear: LinearSource,
   db: DbClient,
   logger: Logger,
+  boundApiTask?: ApiTaskRecord | null,
 ): Promise<void> {
   logger.warn({ ticket: ticket.identifier, owner }, "ticket has no owner email; refusing and handing back");
   const reason = owner === "unassigned" ? UNASSIGNED_TICKET_COMMENT : OWNER_EMAIL_MISSING_COMMENT;
   await linear.commentAndHandBack(ticket.id, reason);
   // A task API task waiting on this ticket would otherwise run until its deadline.
-  const apiTask = await db.getTicketApiTask(ticket.id);
+  const apiTask = boundApiTask === undefined ? await db.getTicketApiTask(ticket.id) : boundApiTask;
   if (apiTask?.status === "running") {
     await db.stopTicketWork(ticket.id, reason);
     await db.finishApiTask(apiTask.id, { status: "failed", result: null, error: `Bear Metal handed the ticket back: ${reason}` });

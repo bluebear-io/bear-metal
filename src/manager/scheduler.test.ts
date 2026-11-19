@@ -367,6 +367,24 @@ describe("Scheduler.tick", () => {
     expect(handler.handled.map((ctx) => ctx.ticket.id)).toEqual(["assigned"]);
   });
 
+  it("fails a task API coding task at once when its tracked ticket loses its owner", async () => {
+    const db = await makeDb();
+    const { task } = await db.createApiTask({
+      idempotencyKey: "tracked", profile: { id: "developer", name: "Developer", instructions: "Do it.", toolCeiling: [], shell: false, customerData: false },
+      owner: "owner@example.com", ticketId: "A", instruction: "Do it", deadline: new Date(Date.now() + 60_000).toISOString(), maxTokens: 1_000,
+    }, "a");
+    await db.startTicketApiTask(task.id);
+    await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });
+    const unassigned = makeTicket("a", { assignee: null });
+    const linear = new FakeLinear([unassigned], { A: unassigned });
+    const scheduler = buildScheduler({ linear, github: new FakeGitHub({ status: status(openPr(), true, false) }), db, handler: new RecordingHandler(db), concurrency: 1 });
+
+    await scheduler.tick();
+    await scheduler.stop();
+
+    expect(await db.getApiTask(task.id)).toMatchObject({ status: "failed", error: expect.stringContaining("Bear Metal needs an assignee on this ticket") });
+  });
+
   it("refuses a tracked ticket that lost its assignee before re-dispatching it; admission retries a failed hand-back", async () => {
     const db = await makeDb();
     await seedCompletedTask(db, { state: "new", ticketId: "A", prs: [] }, { status: "done", prs: [prRef(7)] });

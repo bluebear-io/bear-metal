@@ -75,7 +75,12 @@ export function createTaskApiRouter(input: {
     const created = await input.db.createApiTask(request, ticket.id);
     if (!created.created) return created;
     // Started before delegating, so a crash in between leaves a task that cancel and its deadline can still stop.
-    await input.db.startTicketApiTask(created.task.id);
+    try {
+      await input.db.startTicketApiTask(created.task.id);
+    } catch (err) {
+      await input.db.failQueuedApiTask(created.task.id, `Cannot start the coding task: ${err instanceof Error ? err.message : String(err)}`);
+      throw err;
+    }
     try {
       await tickets.assignAndDelegate(ticket.id, assigneeId);
     } catch (err) {
