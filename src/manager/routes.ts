@@ -6,10 +6,10 @@ const BM_STATUSES = ["in_progress", "validating", "waiting_for_human", "failed",
 type BmStatus = (typeof BM_STATUSES)[number];
 const STOP_REASONS = ["completed", "timeout", "crash", "error", "token_limit"] as const;
 type StopReason = (typeof STOP_REASONS)[number];
-const TASK_TYPES = ["coding", "research", "coordinator"] as const;
+const TASK_TYPES = ["coding", "research", "coordinator", "api"] as const;
 const TASK_STATUSES = ["in_progress", "validating", "waiting_for_human", "failed", "completed", "queued",
   "running", "awaiting_coordination", "approved", "posting", "coordinated", "canceled", "succeeded",
-  "dispatched", "timed_out", "crashed", "interrupted"] as const;
+  "dispatched", "timed_out", "crashed", "interrupted", "timeout", "budget"] as const;
 
 function isBmStatus(v: unknown): v is BmStatus {
   return typeof v === "string" && (BM_STATUSES as readonly string[]).includes(v);

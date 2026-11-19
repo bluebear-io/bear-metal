@@ -18,6 +18,8 @@ const research: TaskListItem = { ...coding, id: "research-1", type: "research", 
 const coordinator: TaskListItem = { ...research, id: "coord-1", type: "coordinator",
   title: "Slack thread coordination", status: "succeeded" };
 
+const apiTask: TaskListItem = { ...research, id: "api-1", type: "api", title: "Audit the merged PRs", status: "succeeded" };
+
 let tasks: TaskListItem[] = [coding, research, coordinator];
 let lastQuery: TaskListQuery = {};
 
@@ -48,6 +50,16 @@ describe("TasksListPage", () => {
     expect(within(list).getByText("What is 2 + 2?")).toBeVisible();
     expect(within(list).getByText("Slack thread coordination")).toBeVisible();
     expect(within(list).getByRole("link", { name: "#42" })).toHaveAttribute("href", coding.pullRequests[0]?.url);
+  });
+
+  it("lists task API tasks with a link to their detail and a type filter", () => {
+    tasks = [coding, apiTask];
+    renderWithProviders(<TasksListPage />, "/");
+    const list = screen.getByRole("region", { name: "Tasks list" });
+    expect(within(list).getByRole("link", { name: "Task API" })).toHaveAttribute("href", "/tasks/api/api-1");
+    expect(within(list).getByText("Audit the merged PRs")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Filter by type"), { target: { value: "api" } });
+    expect(lastQuery.type).toBe("api");
   });
 
   it("filters all task types by state and type", () => {

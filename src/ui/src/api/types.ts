@@ -4,7 +4,7 @@ export interface Config {
 
 export interface AgentRunSummary {
   id: string;
-  type: "coding" | "coordinator" | "research";
+  type: "coding" | "coordinator" | "research" | "api";
   status: string;
   slackState: string | null;
   slackQuote: string | null;
@@ -49,7 +49,7 @@ export interface AgentRunDetail {
 
 export interface TaskListItem {
   id: string;
-  type: "coding" | "research" | "coordinator";
+  type: "coding" | "research" | "coordinator" | "api";
   ticketId: string | null;
   identifier: string | null;
   title: string;

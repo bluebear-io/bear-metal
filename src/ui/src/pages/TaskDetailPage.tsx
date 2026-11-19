@@ -99,7 +99,7 @@ const TaskSummary = ({ run }: { run: AgentRunSummary }) => {
     ? `https://app.slack.com/archives/${run.slackChannelId}/p${run.slackThreadTs.replace(".", "")}` : null;
   return <Section title="Summary">
     <dl className="grid gap-4 rounded-md border border-border-default bg-bg-card p-4 sm:grid-cols-2 lg:grid-cols-4">
-      <Field label="Type" value={run.type === "coordinator" ? "Coordination" : run.type === "coding" ? "Coding" : "Research"} />
+      <Field label="Type" value={run.type === "coordinator" ? "Coordination" : run.type === "coding" ? "Coding" : run.type === "api" ? "Task API" : "Research"} />
       <Field label="Title" value={run.ticketTitle ?? run.request ?? "Slack thread coordination"} />
       <div><dt className="text-xs font-medium uppercase text-text-muted">Status</dt>
         <dd className="mt-1"><StatusBadge status={run.slackState ?? run.status} /></dd></div>
@@ -133,9 +133,10 @@ const TaskInputOutput = ({ run, trace }: { run: AgentRunSummary; trace: AgentTra
   let output: string | null = null;
   if (run.resultJson) {
     try {
-      const result = JSON.parse(run.resultJson) as { answer?: string; replies?: string[]; decision?: string };
+      const result = JSON.parse(run.resultJson) as { answer?: string; replies?: string[]; decision?: string; message?: string | null };
       output = run.type === "research" ? result.answer ?? null
-        : result.replies?.join("\n\n") || result.decision || showJson(run.resultJson);
+        : run.type === "api" ? result.message ?? showJson(run.resultJson)
+          : result.replies?.join("\n\n") || result.decision || showJson(run.resultJson);
     } catch (error) {
       errors.push(`Unable to read task output: ${String(error)}`);
       output = run.resultJson;
@@ -183,7 +184,7 @@ const ExecutionDetail = () => {
 export default function TaskDetailPage() {
   const { type } = useParams();
   const content = type === undefined || type === "coding" ? <CodingTaskDetail />
-    : type === "coordinator" || type === "research" || type === "run" ? <ExecutionDetail />
+    : type === "coordinator" || type === "research" || type === "api" || type === "run" ? <ExecutionDetail />
       : <div role="alert">Unknown task type.</div>;
   return <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-6 py-8 sm:px-8">
     <Link to="/" className="text-sm font-medium text-primary hover:underline">Back to tasks</Link>

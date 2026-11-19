@@ -160,7 +160,7 @@ export interface AgentTraceEvent {
 
 export interface TaskListItem {
   id: string;
-  type: "coding" | "research" | "coordinator";
+  type: "coding" | "research" | "coordinator" | "api";
   ticketId: string | null;
   identifier: string | null;
   title: string;
@@ -1733,10 +1733,12 @@ export class SqlDbClient implements DbClient {
         WHEN task_type = 'coding' AND ranked.ticket_id IS NULL THEN COALESCE(slack_state, run_status, 'queued')
         WHEN task_type = 'coding' THEN COALESCE(ts.status, 'in_progress')
         WHEN task_type = 'research' THEN COALESCE(slack_state, run_status, 'queued')
+        WHEN task_type = 'api' THEN COALESCE(result_status, run_status, 'queued')
         ELSE COALESCE(run_status, 'queued') END AS task_status
       FROM ranked LEFT JOIN ticket_statuses ts ON ts.ticket_id = ranked.ticket_id
       WHERE (ranked.task_type = 'coding' AND (ranked.ticket_id IS NULL OR ticket_rank = 1))
          OR (ranked.task_type IN ('research', 'coordinator') AND ranked.ticket_id IS NULL)
+         OR (ranked.task_type = 'api' AND ranked.api_ticket_issue_id IS NULL)
     )`;
     const count = await this.query<{ total: number | string }>(this.sql(`${feed} SELECT COUNT(*) AS total FROM task_feed ${where}`), params);
     const rows = await this.query<TaskRow & { task_status: string }>(
@@ -1757,7 +1759,7 @@ export class SqlDbClient implements DbClient {
       prsByTicket.set(pr.ticket_id, entries);
     }
     const items: TaskListItem[] = rows.map((row) => {
-      if (row.task_type !== "coding" && row.task_type !== "research" && row.task_type !== "coordinator") {
+      if (row.task_type !== "coding" && row.task_type !== "research" && row.task_type !== "coordinator" && row.task_type !== "api") {
         throw new Error(`Unexpected task type ${row.task_type}`);
       }
       return {

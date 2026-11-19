@@ -74,6 +74,23 @@ describe("App", () => {
     expect(screen.getByText("answer_research")).toBeInTheDocument();
   });
 
+  it("shows a task API task with its message as the output", async () => {
+    vi.mocked(fetchAgentRunDetail).mockResolvedValueOnce({
+      run: { id: "api-1", type: "api", status: "succeeded", slackState: null, slackQuote: null, slackReplyTs: null,
+        attemptNumber: 1, workerId: null, stopReason: "completed", promptTokens: 10, completionTokens: 5, contextJson: null,
+        inputJson: null, ticketId: null, ticketIdentifier: null, ticketTitle: null, ticketUrl: null, slackWorkspaceId: null,
+        slackChannelId: null, slackThreadTs: null, slackSourceTs: null, request: "Audit the merged PRs",
+        resultJson: '{"message":"No violations found in 4 PRs","result":{"hasFindings":false},"pullRequests":[],"usage":null}',
+        error: null, provider: "anthropic", modelName: "claude", startedAt: "2026-10-01T10:00:00.000Z",
+        endedAt: "2026-10-01T10:01:00.000Z", createdAt: "2026-10-01T10:00:00.000Z" },
+      trace: [],
+    });
+    renderWithProviders(<App />, "/tasks/api/api-1");
+    expect(await screen.findByRole("heading", { name: "Summary" })).toBeInTheDocument();
+    expect(screen.getByText("Task API")).toBeInTheDocument();
+    expect(screen.getAllByText("No violations found in 4 PRs").length).toBeGreaterThan(0);
+  });
+
   it("shows processed coordinator messages and its persisted output below the summary", async () => {
     const detail = await fetchAgentRunDetail("coord-1");
     vi.mocked(fetchAgentRunDetail).mockResolvedValueOnce({ ...detail, run: {
