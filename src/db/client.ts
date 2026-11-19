@@ -695,11 +695,14 @@ export interface TicketRun {
   stopReason: "token_limit" | "time_limit" | null;
   /** The session's token categories, from its stored result. */
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
+  /** The model the run used, from its stored result. */
+  provider: string | null;
+  model: string | null;
 }
 
-function ticketRunDetails(resultJson: string | null): Pick<TicketRun, "stopReason" | "tokens"> {
-  if (!resultJson) return { stopReason: null, tokens: null };
-  const parsed = JSON.parse(resultJson) as { stopReason?: unknown; usage?: { tokens?: unknown } };
+function ticketRunDetails(resultJson: string | null): Pick<TicketRun, "stopReason" | "tokens" | "provider" | "model"> {
+  if (!resultJson) return { stopReason: null, tokens: null, provider: null, model: null };
+  const parsed = JSON.parse(resultJson) as { stopReason?: unknown; usage?: { tokens?: unknown; provider?: unknown; modelName?: unknown } };
   const stopReason = parsed.stopReason ?? null;
   if (stopReason !== null && stopReason !== "token_limit" && stopReason !== "time_limit") throw new Error(`Invalid run stop reason: ${String(stopReason)}`);
   const tokens = parsed.usage?.tokens ?? null;
@@ -709,7 +712,8 @@ function ticketRunDetails(resultJson: string | null): Pick<TicketRun, "stopReaso
       if (!Number.isSafeInteger(counts[key])) throw new Error(`Invalid run token count ${key}: ${String(counts[key])}`);
     }
   }
-  return { stopReason, tokens: tokens as TicketRun["tokens"] };
+  const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+  return { stopReason, tokens: tokens as TicketRun["tokens"], provider: text(parsed.usage?.provider), model: text(parsed.usage?.modelName) };
 }
 
 export type ApiTaskOutcome = { status: Exclude<ApiTaskTerminalStatus, "canceled">; result: ApiTaskResult | null; error: string | null };

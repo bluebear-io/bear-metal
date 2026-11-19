@@ -148,7 +148,7 @@ describe("API task agent", () => {
     expect(outcome).toMatchObject({ status: "succeeded", error: null });
     expect(outcome.result).toEqual({
       message: "Done", result: { summary: "ok" }, pullRequests: [],
-      usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, freshTokens: 15 },
+      usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, freshTokens: 15, provider: "anthropic", model: "claude-sonnet-4-5-20250929" },
     });
     expect(ownerEmail).toBe("owner@example.com");
     expect(toolNames.sort()).toEqual(["bash", "read", "submit_result"]);

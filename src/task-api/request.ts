@@ -39,6 +39,9 @@ export interface ApiTaskUsage {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   freshTokens: number;
+  /** The model the task ran on, for pricing; null when the run did not record it. */
+  provider: string | null;
+  model: string | null;
 }
 
 export interface ApiTaskResult {
