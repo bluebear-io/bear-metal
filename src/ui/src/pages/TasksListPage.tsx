@@ -46,7 +46,7 @@ const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<string>> 
   in_progress: ["in_progress", "queued", "running", "awaiting_coordination", "approved", "posting", "dispatched"],
   validating: ["validating"],
   waiting_for_human: ["waiting_for_human"],
-  failed: ["failed", "timed_out", "crashed"],
+  failed: ["failed", "timed_out", "crashed", "timeout", "budget"],
   completed: ["completed", "coordinated", "succeeded"],
 };
 

@@ -62,6 +62,15 @@ describe("TasksListPage", () => {
     expect(lastQuery.type).toBe("api");
   });
 
+  it("shows a timed-out or over-budget task API task under Failed", () => {
+    tasks = [coding, { ...apiTask, status: "timeout" }, { ...apiTask, id: "api-2", title: "Sweep dead code", status: "budget" }];
+    renderWithProviders(<TasksListPage />, "/");
+    fireEvent.click(screen.getByRole("button", { name: "Failed" }));
+    expect(lastQuery.statuses).toEqual(expect.arrayContaining(["timeout", "budget"]));
+    expect(screen.getByText("Audit the merged PRs")).toBeVisible();
+    expect(screen.getByText("Sweep dead code")).toBeVisible();
+  });
+
   it("filters all task types by state and type", () => {
     renderWithProviders(<TasksListPage />, "/");
     fireEvent.click(screen.getByRole("button", { name: "Completed" }));
