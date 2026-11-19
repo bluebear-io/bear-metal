@@ -1,5 +1,7 @@
 export interface Config {
   workerConcurrency: number;
+  /** Worker slots reserved for task API tasks, separate from ticket and Slack work. */
+  apiTaskConcurrency: number;
   pollIntervalMs: number;
   backendPort: number;
   logLevel: string;
@@ -45,6 +47,7 @@ export function loadConfig(): Readonly<Config> {
   }
   return Object.freeze({
     workerConcurrency: positiveIntEnv("WORKER_CONCURRENCY", 5),
+    apiTaskConcurrency: positiveIntEnv("API_TASK_CONCURRENCY", 2),
     pollIntervalMs: positiveIntEnv("POLL_INTERVAL_MS", 60_000),
     backendPort: positiveIntEnv("BACKEND_PORT", 3100),
     logLevel: process.env.LOG_LEVEL || "info",

@@ -38,6 +38,14 @@ describe("task customization", () => {
     const result = await customizeAndResolve(config, {} as never);
     expect(result.llm).toEqual({ provider: "openai", model: "gpt", apiKey: "openai-secret", modelArn: null }); expect(anthropic).not.toHaveBeenCalled();
   });
+  it("uses a task's own API key instead of the provider's", async () => {
+    const anthropic = vi.fn(() => "shared-secret");
+    const config = { llmProviders: { anthropic: { getApiKey: anthropic } }, customizeTask: () => ({ llm: { provider: "anthropic", model: "claude", getApiKey: () => "task-secret" }, async buildWorkspace() {} }) } as unknown as BearMetalConfig;
+    expect((await customizeAndResolve(config, {} as never)).llm).toEqual({ provider: "anthropic", model: "claude", apiKey: "task-secret", modelArn: null });
+    expect(anthropic).not.toHaveBeenCalled();
+    const bedrock = { llmProviders: {}, customizeTask: () => ({ llm: { provider: "amazon-bedrock", model: "model", getApiKey: () => "key" }, async buildWorkspace() {} }) } as unknown as BearMetalConfig;
+    await expect(customizeAndResolve(bedrock, {} as never)).rejects.toThrow("customizeTask result.llm.getApiKey is not supported for amazon-bedrock");
+  });
   it("uses ambient credentials for Bedrock without a registry entry", async () => {
     const config = { llmProviders: {}, customizeTask: () => ({ llm: { provider: "amazon-bedrock", model: "model" }, async buildWorkspace() {} }) } as unknown as BearMetalConfig;
     await expect(customizeAndResolve(config, {} as never)).resolves.toMatchObject({ llm: { provider: "amazon-bedrock", model: "model", apiKey: null, modelArn: null } });

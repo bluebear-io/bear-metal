@@ -1,7 +1,7 @@
 import type { PullRequestContext, PullRequestRef } from "../shared/integrations/github/types.js";
 import type { LinearTicketContext, TicketAttachment } from "../shared/integrations/linear/types.js";
 import { resolveSecret, validateTaskCustomization } from "./load.js";
-import type { BearMetalConfig, ResolvedLlm, Task, TaskPriority, TaskPullRequest, TaskStatusCategory } from "./types.js";
+import type { BearMetalConfig, ResolvedLlm, Task, TaskPriority, TaskProfile, TaskPullRequest, TaskStatusCategory } from "./types.js";
 
 export function buildTask(input: {
   state: "new" | "iteration";
@@ -11,6 +11,7 @@ export function buildTask(input: {
   prs: PullRequestRef[];
   pullRequests: PullRequestContext[];
   trigger?: "slack" | "linear";
+  profile?: TaskProfile;
 }) {
   const issue = input.ticket.issue;
   const pullRequests = input.pullRequests.map((context, index) => normalizePullRequest(input.prs[index]!, context));
@@ -45,6 +46,7 @@ export function buildTask(input: {
     run: { kind: input.state, iteration: input.iteration },
     pullRequests,
     ...(input.trigger ? { trigger: input.trigger } : {}),
+    ...(input.profile ? { profile: input.profile } : {}),
   } satisfies Task);
 }
 
@@ -53,6 +55,10 @@ export async function customizeAndResolve(config: BearMetalConfig, task: Task): 
   const provider = customization.llm.provider;
   if (provider === "amazon-bedrock") {
     return { customization, llm: { provider, model: customization.llm.model, apiKey: null, modelArn: customization.llm.modelArn ?? null } };
+  }
+  if (customization.llm.getApiKey) {
+    const apiKey = await resolveSecret(customization.llm.getApiKey, "customizeTask result.llm.getApiKey result");
+    return { customization, llm: { provider, model: customization.llm.model, apiKey, modelArn: null } };
   }
   const definition = config.llmProviders[provider];
   if (!definition) {

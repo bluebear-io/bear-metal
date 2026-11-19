@@ -123,11 +123,11 @@ The same module may be `.mts`; use the canonical source above as the typing refe
 
 ## Task customization
 
-`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts) for Linear coding runs, or a Slack task with `type: "coordinator" | "research"`, `request`, and Slack source references. Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
+`customizeTask` receives the tracker-neutral [`Task` contract](src/customization/types.ts). Branch on `"type" in task` before accessing Linear ticket fields. It contains no Linear/Octokit objects, raw provider payloads, credentials, or service clients.
 
 The hook must return an LLM provider/model and an async `buildWorkspace({ workspacePath, signal })`. It may also return `additionalSystemPrompt`, independent duration/token limits, and optional `ticketLabels` / `pullRequestLabels` (label names the harness adds to the linked Linear ticket and to PRs it creates or updates; failures are logged only). Coding tasks may include `trigger: "slack" | "linear"` when known. See the canonical source for the exact nested DTO and return shapes. `maxTokens` counts fresh tokens (uncached input, cache writes and output); cache reads don't count.
 
-`llmProviders` is required and may be empty. It contains only key-based providers: Anthropic, OpenAI, and Google entries require lazy `getApiKey` functions. Only the key-based provider selected by `customizeTask` is resolved; selecting one without an entry fails that task with the exact configuration entry to add. Bedrock is not registered here because it uses the ambient AWS SDK credential chain.
+`llmProviders` is required and may be empty. It contains only key-based providers: Anthropic, OpenAI, and Google entries require lazy `getApiKey` functions. Only the key-based provider selected by `customizeTask` is resolved, unless `customizeTask` returns its own `llm.getApiKey` for the task; selecting one without an entry fails that task with the exact configuration entry to add. Bedrock is not registered here because it uses the ambient AWS SDK credential chain.
 
 For coding and research runs, Bear Metal creates `workspacePath`, calls `buildWorkspace` with a ten-minute abort signal, requires a non-empty result, and removes its owned task workspace after success or failure. Coding workspaces use `BEAR_METAL_WORKSPACE_DIR/<ticket ID>/<attempt UUID>/agent`; research workspaces use `BEAR_METAL_WORKSPACE_DIR/research/<task ID>/agent`. A coding worker that loses its task lease aborts its workspace builder and Pi session, discards its result, and cannot complete a task owned by its replacement. Each coding attempt owns a separate checkout, so late cleanup cannot delete another attempt's files. Builder code must honor the abort signal and stop its subprocesses. Coordinator runs share a checkout under `BEAR_METAL_WORKSPACE_DIR/coordinator`, built through their configured `buildWorkspace` hook and refreshed every 24 hours. An active run keeps its generation until it ends. Coordinator Pi receives the checkout's root `AGENTS.md` and read-only file tools; the checkout must contain a non-empty `AGENTS.md`. Builder code is responsible for cloning and authentication. The core Bear Metal system prompt is immutable; a truthy `additionalSystemPrompt` is appended. Limit fields independently default to 7,200,000 ms and 20,000,000 tokens.
 
@@ -137,6 +137,18 @@ Slack research agents receive `bash` alongside `read`, `grep`, `find`, and `ls`,
 
 Agent shell commands use a dedicated cache-only `HOME` under `~/.bear-metal/cache-home`; it survives task workspace cleanup and is separate from the service user's normal home and temporary Git credentials. The workspace command guard is not an operating-system sandbox, so deployments must still isolate the worker process from host secrets.
 
+## Task API
+
+With `taskApi.getSigningSecret` configured, Bear Metal runs tasks through `/task-api`. Every request, GETs included, is signed in the `X-Bear-Metal-Request-Timestamp` and `X-Bear-Metal-Signature` headers. The signature is `v0=` followed by the hex HMAC-SHA256 of `v0:<timestamp>:<METHOD> <path>:<raw body>`, where `<path>` is the full request path with its query string (for example `GET /task-api/tasks/<id>`) and the body is empty for GET. A signature is valid for one route only and for five minutes around its timestamp. Bear Metal does not rate-limit `/task-api`; the deployment must expose it only to its callers' network (for example, a listener reachable only from the callers' security group), and each caller bounds its own load.
+
+- `POST /task-api/tasks` creates a task from an [`ApiTaskRequest`](src/task-api/request.ts) and returns `202` with its id and status. Bear Metal checks only the shape of the request's `profile`; `customizeTask` decides what it means. A repeated `idempotencyKey` with the same body returns the same task; with another body it is `409`. Keys are unique across the deployment, not per caller, so each caller should prefix its keys with its own name.
+- `GET /task-api/tasks/:id` returns the task's status and result ([`ApiTaskRecord`](src/task-api/request.ts)).
+- `POST /task-api/tasks/:id/cancel` stops the task. A task that already ended keeps its outcome.
+
+**Coding tasks** send a `ticketId` (a Linear identifier or id). Bear Metal assigns the ticket to the Linear user whose email is `owner`, delegates it to itself and returns the task as `running`; the Linear scheduler then runs it like any delegated ticket, in the workspace `customizeTask` builds, through `commit_changes`, `push_for_review` and its CI and review iterations. Every run of that ticket uses the request's `profile` until its slot is released. Only the first run gets `instruction` and `inputs` in its prompt and stops at `deadline` or `maxTokens`. The task ends with that first run: `succeeded` when it leaves a pull request for review, `budget` or `timeout` at its limits, and `failed` when it hands the ticket back or opens no pull request. A ticket already delegated to Bear Metal, or still tracked by it, is `409`; `repository` and `outputSchema` are refused. Cancel hands the ticket back to its assignee and stops its run; so does a first run that fails, including one abandoned after repeated crashes. Either way, later runs of the ticket no longer use the task's profile. Coding tasks need the scheduler, so `RUN_MODE=slack_only` refuses them.
+
+**Tasks without a ticket** send a `repository`. They run once in their own `API_TASK_CONCURRENCY` slots, with the profile's tools except `edit`, `write`, `commit_changes` and `push_for_review`, and without Git credentials once the repository is cloned. They end by calling `submit_result` with a message and, when the request has an `outputSchema`, a structured result that must match it. They stop themselves at `deadline` (`timeout`) or at `maxTokens` fresh tokens (`budget`). One running when Bear Metal restarts fails; resubmit it with a new key.
+
 ## Environment variables
 
 Bear Metal itself reads only these deployment and process settings:
@@ -145,6 +157,7 @@ Bear Metal itself reads only these deployment and process settings:
 |---|---:|---|---|
 | `BEAR_METAL_CONFIG_FILE` | yes | — | Trusted configuration module path |
 | `WORKER_CONCURRENCY` | no | `5` | Maximum parallel tasks |
+| `API_TASK_CONCURRENCY` | no | `2` | Worker slots reserved for task API tasks |
 | `POLL_INTERVAL_MS` | no | `60000` | Linear polling cadence |
 | `TASK_HEARTBEAT_INTERVAL_MS` | no | `30000` | Worker heartbeat cadence |
 | `TASK_STALE_AFTER_MS` | no | `300000` | Reclaim threshold for a task without a heartbeat |

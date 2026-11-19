@@ -478,6 +478,14 @@ export class LinearIntegration implements Integration, CommentCapable<string> {
     });
   }
 
+  /** Assigns the ticket to `assigneeId` and delegates it to the agent in one update. */
+  async assignAndDelegate(ticketId: string, assigneeId: string): Promise<void> {
+    await this.withClient(async (client) => {
+      const result = await client.updateIssue(ticketId, { assigneeId, delegateId: await this.getAgentId() });
+      if (!result.success) throw new Error(`Linear did not assign and delegate ticket ${ticketId}`);
+    });
+  }
+
   async delegateSlackCodingTicket(ticketId: string): Promise<void> {
     await this.withClient(async (client) => {
       const result = await client.updateIssue(ticketId, { delegateId: await this.getAgentId() });

@@ -1,8 +1,8 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { Router, raw } from "express";
 import type { DbClient, SlackThreadKey } from "../db/client.js";
 import type { Logger } from "../shared/logger.js";
 import type { SlackReaction } from "./slack-reaction-intake.js";
+import { verifyRequestSignature } from "./request-signature.js";
 
 interface SlackEventEnvelope {
   type: string;
@@ -24,14 +24,6 @@ interface SlackEventEnvelope {
   };
 }
 
-export function verifySlackSignature(body: Buffer, timestamp: string | undefined, signature: string | undefined, signingSecret: string): boolean {
-  if (!timestamp || !signature || !/^v0=[0-9a-f]{64}$/.test(signature)) return false;
-  const seconds = Number(timestamp);
-  if (!Number.isInteger(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
-  const expected = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:`).update(body).digest("hex")}`;
-  return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
-}
-
 export function createSlackEventsRouter(input: {
   db: DbClient;
   signingSecret: string;
@@ -51,7 +43,7 @@ export function createSlackEventsRouter(input: {
   const router = Router();
   router.post("/events", raw({ type: "application/json", limit: "1mb" }), async (req, res, next) => {
     try {
-      if (!Buffer.isBuffer(req.body) || !verifySlackSignature(
+      if (!Buffer.isBuffer(req.body) || !verifyRequestSignature(
         req.body,
         req.header("x-slack-request-timestamp"),
         req.header("x-slack-signature"),

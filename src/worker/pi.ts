@@ -1,16 +1,10 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { narrowTools } from "../customization/tools.js";
 import type { AgentToolChoice } from "../customization/types.js";
-import {
-  push,
-  commitAll,
-  createLogger,
-  getCurrentBranch,
-  getRemoteRef,
-} from "../shared/index.js";
+import { createLogger } from "../shared/index.js";
 import type {
   DispatchResult,
   DispatchState,
@@ -25,10 +19,11 @@ import type {
 import { resolveSessionModel } from "./model.js";
 import { EVIDENCE_TYPES, MAX_EVIDENCE_BYTES, readEvidenceFile } from "./evidence.js";
 import { buildWorkerPrompt } from "./prompts.js";
+import { createCommitAndPushTools } from "./pull-request.js";
 import { createPiSessionRuntime, disposePiSessionRuntime } from "./pi-runtime.js";
 import { freshTokens } from "./token-budget.js";
 import { untilStopped } from "./until-stopped.js";
-import { assertRepoRootInWorkspace, createWorkspaceGuardedTools } from "./workspace-guard.js";
+import { createWorkspaceGuardedTools } from "./workspace-guard.js";
 import type {
   AgentToolAuditRecord,
   AgentToolGatewayLike,
@@ -291,74 +286,22 @@ export async function runPiWorker(input: {
     },
   });
 
-  const commitChanges = defineTool({
-    name: "commit_changes",
-    label: "Commit changes",
-    description: "Switch to the task branch (creating it when missing), stage every change in the repository, and commit it.",
-    parameters: Type.Object({
-      repoRoot: Type.String({ description: "Absolute path to the git repository root containing the changes." }),
-      branch: Type.String({ description: "Task branch to commit on, following the repository's branching strategy. Never main or master." }),
-      message: Type.String({ description: "Commit message following the repository's commit convention." }),
-    }),
-    execute: async (_toolCallId, params) => {
-      input.signal?.throwIfAborted();
-      const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
-      const sha = await commitAll(repoRoot, params.branch, params.message, input.gitEnv);
-      return { content: [{ type: "text", text: `Committed ${sha} on ${params.branch}.` }], details: { sha } };
-    },
-  });
-
-  const pushForReview = defineTool({
-    name: "push_for_review",
-    label: "Push for review",
-    description: "Push and create or update the pull request for a repository with completed code changes.",
-    parameters: Type.Object({
-      repoRoot: Type.String({ description: "Absolute path to the git repository root containing the changes." }),
-      prTitle: Type.String({ description: "Pull request title to use when creating a new PR." }),
-      prBody: Type.String({ description: "Pull request body to use when creating a new PR." }),
-      baseBranch: Type.Optional(Type.String({ description: "Base branch for a new PR. Defaults to repository default branch." })),
-    }),
-    execute: async (_toolCallId, params) => {
-      input.signal?.throwIfAborted();
-      logger.debug({ repoRoot: params.repoRoot }, "pi tool: push_for_review");
-      const repoRoot = assertRepoRootInWorkspace(workspaceRoot, params.repoRoot);
-      // Installation tokens expire after 1 hour; refresh before pushing.
-      const freshToken = await input.github.getInstallationToken();
-      input.signal?.throwIfAborted();
-      await writeFile(
-        resolve(input.context.cloneScript.netrcDir, ".netrc"),
-        `machine github.com login x-access-token password ${freshToken}\n`,
-        { mode: 0o600 },
-      );
-      input.signal?.throwIfAborted();
-      await push(repoRoot, input.gitEnv);
-      const remote = await getRemoteRef(repoRoot);
-      // At most one PR per (owner, repo) per dispatch: a second push_for_review against the same repo
-      // updates the existing PR. Check collectedPrs before input.context.prs to prefer the current dispatch.
-      const existingPr =
-        collectedPrs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
-        input.context.prs.find((p) => p.owner === remote.owner && p.repo === remote.repo) ??
-        null;
-      input.signal?.throwIfAborted();
-      const pr = existingPr ?? (await createPullRequestForRepo(input.github, { ...params, repoRoot, remote, signal: input.signal }));
-      input.signal?.throwIfAborted();
-      if (input.pullRequestLabels?.length && input.github.addLabels) {
-        try {
-          await input.github.addLabels(pr, input.pullRequestLabels);
-        } catch (err) {
-          logger.warn({ err, pr }, "failed to apply pull request labels");
-        }
-      }
+  const { commitChanges, pushForReview } = createCommitAndPushTools({
+    workspaceRoot,
+    github: input.github,
+    netrcDir: input.context.cloneScript.netrcDir,
+    gitEnv: input.gitEnv,
+    labels: input.pullRequestLabels,
+    signal: input.signal,
+    // The current dispatch's PRs come first, so a second push to the same repository updates its PR.
+    existing: () => [...collectedPrs, ...input.context.prs],
+    onPullRequest: async (pr) => {
       setDecision({ status: "done", prs: [pr], notifyOnComplete: true });
       try {
         await input.linear.moveTicketToInReview(input.context.ticketId);
       } catch (err) {
         logger.warn({ err, ticketId: input.context.ticketId }, "failed to move ticket to In Review");
       }
-      return {
-        content: [{ type: "text", text: `Pushed code for PR ${pr.owner}/${pr.repo}#${pr.number}.` }],
-        details: { pr },
-      };
     },
   });
 
@@ -535,6 +478,7 @@ export async function runPiWorker(input: {
         completionTokens: stats.tokens.output,
         modelName: model.name,
         provider: model.provider,
+        tokens: { input: stats.tokens.input, output: stats.tokens.output, cacheRead: stats.tokens.cacheRead, cacheWrite: stats.tokens.cacheWrite },
       };
       logger.debug({ ticketId: input.context.ticketId, usage: captured }, "captured pi session usage");
       return captured;
@@ -639,7 +583,7 @@ export async function runPiWorker(input: {
     return {
       status: "pending",
       prs: mergePrs(input.context.prs, collectedPrs),
-      ...(tokenLimitHit ? { stopReason: "token_limit" as const } : {}),
+      stopReason: tokenLimitHit ? "token_limit" as const : "time_limit" as const,
       ...(usage ? { usage } : {}),
     };
   }
@@ -709,31 +653,6 @@ function unresolvedThreadsFor(context: WorkerInputContext, pr: PullRequestRef) {
     (p) => p.owner === pr.owner && p.repo === pr.repo && p.number === pr.number,
   );
   return context.pullRequests[idx]?.unresolvedReviewThreads ?? [];
-}
-
-async function createPullRequestForRepo(
-  github: WorkerGitHub,
-  params: {
-    repoRoot: string;
-    prTitle: string;
-    prBody: string;
-    baseBranch?: string;
-    remote: { owner: string; repo: string };
-    signal?: AbortSignal;
-  },
-): Promise<PullRequestRef> {
-  const { remote } = params;
-  const branch = await getCurrentBranch(params.repoRoot);
-  const base = params.baseBranch ?? (await github.getDefaultBranch(remote.owner, remote.repo));
-  params.signal?.throwIfAborted();
-  return github.createPullRequest({
-    owner: remote.owner,
-    repo: remote.repo,
-    title: params.prTitle,
-    head: branch,
-    base,
-    body: params.prBody,
-  });
 }
 
 async function readAgentsMd(repoRoot: string): Promise<string | undefined> {

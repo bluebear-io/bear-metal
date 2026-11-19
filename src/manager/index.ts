@@ -25,6 +25,8 @@ import { SlackThreadApi } from "./slack-thread-api.js";
 import { createReactionIntake } from "./slack-reaction-intake.js";
 import { SlackCoordinator } from "./slack-coordinator.js";
 import { SlackResearchWorker } from "./slack-research.js";
+import { createTaskApiRouter } from "./task-api.js";
+import { ApiTaskWorker } from "./api-task-worker.js";
 
 const runtimeConfig = loadConfig();
 const logger = createLogger({ level: runtimeConfig.logLevel, name: "manager", pretty: runtimeConfig.logPretty });
@@ -182,11 +184,35 @@ if (!runtimeConfig.apiOnly && slack && slackToken && customizationConfig.slack?.
     } : {}),
   });
 }
+let apiTaskWorker: ApiTaskWorker | null = null;
+let taskApi: ReturnType<typeof createTaskApiRouter> | undefined;
+if (!runtimeConfig.apiOnly && customizationConfig.taskApi) {
+  // Coding tasks delegate their ticket to the Linear scheduler, which runs only in normal mode.
+  const tickets = runtimeConfig.runMode === "normal" ? linear : undefined;
+  const worker = new ApiTaskWorker({
+    db,
+    config: customizationConfig,
+    github,
+    tickets,
+    gateway: agentToolGateway,
+    logger,
+    concurrency: runtimeConfig.apiTaskConcurrency,
+    pollIntervalMs: runtimeConfig.pollIntervalMs,
+  });
+  apiTaskWorker = worker;
+  taskApi = createTaskApiRouter({
+    db,
+    signingSecret: await resolveSecret(customizationConfig.taskApi.getSigningSecret, "config.taskApi.getSigningSecret result"),
+    logger,
+    tickets,
+    wake: () => worker.wake(),
+  });
+}
 if (runtimeConfig.runMode === "slack_only" && (!slackCoordinator || !slackResearch || !slackEvents)) {
   throw new Error("slack_only mode requires Slack bot token and signing secret");
 }
 
-const server = createApp(db, maxIterations, linear, slackEvents).listen(runtimeConfig.backendPort, () => {
+const server = createApp(db, maxIterations, linear, slackEvents, taskApi).listen(runtimeConfig.backendPort, () => {
   logger.info({ port: runtimeConfig.backendPort }, "dashboard server listening");
 });
 
@@ -258,6 +284,7 @@ if (runtimeConfig.apiOnly) {
     logger.info("Slack-only mode: Linear scheduler and coding worker disabled");
   }
   if (slackResearch) await slackResearch.start();
+  if (apiTaskWorker) await apiTaskWorker.start();
   slackCoordinator?.start();
 }
 
@@ -270,7 +297,7 @@ function shutdown(signal: string): void {
   clearInterval(tracePurgeTimer);
   logger.info({ signal }, "shutting down");
   logger.info({ signal, pid: process.pid }, "🐻 Bear Metal is heading back to hibernation — see you on the next sprint!");
-  void Promise.all([scheduler?.stop(), taskWorker?.stop(), slackCoordinator?.stop(), slackResearch?.stop()])
+  void Promise.all([scheduler?.stop(), taskWorker?.stop(), slackCoordinator?.stop(), slackResearch?.stop(), apiTaskWorker?.stop()])
     .then(() => db.close())
     .then(() => {
       if (!server) {

@@ -49,6 +49,10 @@ export function validateBearMetalConfig(value: unknown): Readonly<BearMetalConfi
       if (trigger.linearProjectId !== undefined) nonEmptyString(trigger.linearProjectId, "config.slack.reactionTrigger.linearProjectId");
     }
   }
+  if (config.taskApi !== undefined) {
+    const taskApi = object(config.taskApi, "config.taskApi");
+    callable(taskApi.getSigningSecret, "config.taskApi.getSigningSecret");
+  }
   if (config.agentIntegrations !== undefined) {
     const agentIntegrations = object(config.agentIntegrations, "config.agentIntegrations");
     if (agentIntegrations.github !== undefined) {
@@ -106,6 +110,10 @@ export function validateTaskCustomization(value: unknown): TaskCustomization {
     if (!nonEmptyString(llm.modelArn, "customizeTask result.llm.modelArn").startsWith("arn:")) {
       throw new Error("customizeTask result.llm.modelArn must be an ARN");
     }
+  }
+  if (llm.getApiKey !== undefined) {
+    if (llm.provider === "amazon-bedrock") throw new Error("customizeTask result.llm.getApiKey is not supported for amazon-bedrock");
+    callable(llm.getApiKey, "customizeTask result.llm.getApiKey");
   }
   callable(customization.buildWorkspace, "customizeTask result.buildWorkspace");
   if (customization.additionalSystemPrompt !== undefined && customization.additionalSystemPrompt !== null && typeof customization.additionalSystemPrompt !== "string") {

@@ -75,6 +75,16 @@ export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerProm
       ]
     : [];
 
+  const requestSection = context.request
+    ? [
+        "## Request",
+        "The ticket was delegated with this request. Follow it together with the ticket.",
+        context.request.instruction,
+        ...(context.request.inputs ? ["", "Inputs:", "```json", JSON.stringify(context.request.inputs, null, 2), "```"] : []),
+        "",
+      ]
+    : [];
+
   const agentsSection = opts?.agentsMd
     ? ["## Repository Guidelines", opts.agentsMd, ""]
     : [];
@@ -103,13 +113,14 @@ export function buildWorkerPrompt(context: WorkerInputContext, opts?: WorkerProm
     "",
     ...customSystemPromptSection,
     ...toolsSection,
+    ...requestSection,
     ...agentsSection,
     "## Task Context",
     JSON.stringify(toPiContext(context), null, 2),
   ].join("\n");
 }
 
-function toPiContext(context: WorkerInputContext) {
+function toPiContext({ request: _request, ...context }: WorkerInputContext) {
   return {
     ...context,
     pullRequests: context.pullRequests.map(toPiPullRequestContext),

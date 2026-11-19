@@ -57,6 +57,11 @@ export interface BearMetalConfig {
   database?: {
     getUrl: SecretGetter;
   };
+  /** Enables the `/task-api` endpoints, which run tasks without a Linear ticket. */
+  taskApi?: {
+    /** HMAC-SHA256 key callers sign each request's method, path and body with (see README "Task API"). */
+    getSigningSecret: SecretGetter;
+  };
   traceRetentionDays?: number;
   maxIterations?: number;
   /** Maximum time to wait for PR checks before sending a delayed-validation notification. */
@@ -84,8 +89,10 @@ export type TaskPriority = "none" | "urgent" | "high" | "medium" | "low";
 
 export interface Task {
   readonly id: string;
-  readonly type: "coding" | "coordinator" | "research";
+  readonly type: "coding" | "coordinator" | "research" | "api";
   readonly request?: string;
+  /** The profile a task API request sent; `customizeTask` decides what it means. Set on every run of a ticket the task API delegated. */
+  readonly profile?: TaskProfile;
   readonly slack?: Readonly<{ workspaceId: string; channelId: string; threadTs: string; sourceTs: string }>;
   readonly identifier?: string;
   readonly title?: string;
@@ -107,6 +114,17 @@ export interface Task {
   readonly run?: Readonly<{ kind: "new" | "iteration"; iteration: number }>;
   readonly pullRequests?: readonly TaskPullRequest[];
   readonly trigger?: "slack" | "linear";
+}
+
+/** A role's settings, sent with each task API request. Bear Metal only checks their shape. */
+export interface TaskProfile {
+  readonly id: string;
+  readonly name: string;
+  readonly instructions: string;
+  readonly toolCeiling: readonly string[];
+  readonly shell: boolean;
+  readonly customerData: boolean;
+  readonly labels?: Readonly<Record<string, string>>;
 }
 
 export interface TaskComment {
@@ -145,7 +163,8 @@ export interface TaskPullRequest {
 
 export interface TaskCustomization {
   /** `modelArn` (amazon-bedrock only) calls this ARN, which must resolve to the same model as `model`, for example a tagged inference profile. */
-  llm: { provider: LlmProvider; model: string; modelArn?: string };
+  /** `getApiKey` (key-based providers only) replaces `llmProviders.<provider>.getApiKey` for this task, for example to bill a caller separately. */
+  llm: { provider: LlmProvider; model: string; modelArn?: string; getApiKey?: SecretGetter };
   buildWorkspace: (input: Readonly<{ workspacePath: string; signal: AbortSignal }>) => Promise<void>;
   additionalSystemPrompt?: string | null;
   limits?: { maxDurationMs?: number; maxTokens?: number };
