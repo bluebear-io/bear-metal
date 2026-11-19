@@ -47,7 +47,7 @@ const FILTER_STATUSES: Record<Exclude<FilterKey, "all">, ReadonlyArray<string>> 
   validating: ["validating"],
   waiting_for_human: ["waiting_for_human"],
   failed: ["failed", "timed_out", "crashed", "timeout", "budget"],
-  completed: ["completed", "coordinated", "succeeded"],
+  completed: ["completed", "coordinated", "succeeded", "canceled"],
 };
 
 const FILTERS: ReadonlyArray<{ key: FilterKey; label: string }> = [

@@ -71,6 +71,14 @@ describe("TasksListPage", () => {
     expect(screen.getByText("Sweep dead code")).toBeVisible();
   });
 
+  it("shows a canceled task API task under Completed", () => {
+    tasks = [coding, { ...apiTask, status: "canceled" }];
+    renderWithProviders(<TasksListPage />, "/");
+    fireEvent.click(screen.getByRole("button", { name: "Completed" }));
+    expect(lastQuery.statuses).toContain("canceled");
+    expect(screen.getByText("Audit the merged PRs")).toBeVisible();
+  });
+
   it("filters all task types by state and type", () => {
     renderWithProviders(<TasksListPage />, "/");
     fireEvent.click(screen.getByRole("button", { name: "Completed" }));
