@@ -184,7 +184,7 @@ export async function runApiTaskAgent(input: {
         const tokens = session.getSessionStats().tokens;
         usage = {
           inputTokens: tokens.input, outputTokens: tokens.output, cacheReadTokens: tokens.cacheRead, cacheWriteTokens: tokens.cacheWrite,
-          freshTokens: freshTokens(tokens),
+          freshTokens: freshTokens(tokens), provider: llm.provider, model: llm.model,
         };
         await input.db.setAgentRunUsage(task.id, tokens.input, tokens.output);
       } finally {

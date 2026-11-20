@@ -106,7 +106,7 @@ describe("API task worker", () => {
         status: "succeeded", error: null,
         result: {
           message: null, result: null, pullRequests: [{ owner: "acme", repo: "widgets", number: 7 }],
-          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 7, cacheWriteTokens: 13, freshTokens: 28 },
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 7, cacheWriteTokens: 13, freshTokens: 28, provider: "p", model: "m" },
         },
       });
       expect((await db.getTicketApiTask("issue-1"))?.id).toBe(task.id);
@@ -142,7 +142,7 @@ describe("API task worker", () => {
     it("maps the first run's limits and hand-backs to the task's outcome", () => {
       const run = (result: DispatchResult | null, runStatus: "succeeded" | "crashed" = "succeeded") => ({
         record: { resultStatus: result?.status ?? "pending", result } as never, runStatus, error: "boom",
-        stopReason: result?.stopReason ?? null, tokens: null,
+        stopReason: result?.stopReason ?? null, tokens: null, provider: null, model: null,
       });
       expect(ticketRunOutcome(null)).toBeNull();
       expect(ticketRunOutcome(run({ status: "pending", prs: [], stopReason: "token_limit" }))?.status).toBe("budget");

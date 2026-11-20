@@ -36,7 +36,7 @@ export function ticketRunOutcome(run: TicketRun | null): ApiTaskOutcome | null {
     pullRequests: dispatch.prs.map(({ owner, repo, number }) => ({ owner, repo, number })),
     usage: tokens ? {
       inputTokens: tokens.input, outputTokens: tokens.output, cacheReadTokens: tokens.cacheRead, cacheWriteTokens: tokens.cacheWrite,
-      freshTokens: freshTokens(tokens),
+      freshTokens: freshTokens(tokens), provider: run.provider, model: run.model,
     } : null,
   };
   if (run.stopReason === "token_limit") return { status: "budget", result, error: "The ticket's run reached its token budget" };
