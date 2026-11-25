@@ -226,6 +226,19 @@ describe("API task agent", () => {
     expect(outcome.result?.result).toEqual(result);
   });
 
+  it("rejects an in-flight file submission after the task exhausts its budget", async () => {
+    const task = await createTask({ maxTokens: 10 });
+    sessionFactory.mockImplementation(fakeSession(async ({ tools, cwd, turnEnd }) => {
+      await writeFile(join(cwd, "result.json"), JSON.stringify({ summary: "late" }));
+      const pending = tool(tools, "submit_result").execute("1", { message: "Late", resultFile: "result.json" });
+      turnEnd();
+      await expect(pending).rejects.toThrow("Task already stopped: budget");
+    }));
+    const outcome = await run(task);
+    expect(outcome.status).toBe("budget");
+    expect(outcome.result?.result).toBeNull();
+  });
+
   it.each(["invalid-json", "invalid-schema", "array", "outside", "symlink", "oversized", "both"])("rejects %s file submissions without completing the task", async (kind) => {
     const task = await createTask();
     let rejected = false;
