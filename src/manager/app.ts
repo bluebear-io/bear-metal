@@ -31,7 +31,7 @@ export function createApp(db: DbClient, maxIterations: number, linear: LinearSou
   app.use(managerApiErrorHandler);
   app.use(express.static(UI_DIST));
   // SPA fallback — all non-API routes serve index.html so React Router handles them
-  app.get("*", (_req, res) => {
+  app.get("/{*splat}", (_req, res) => {
     if (!indexHtml) { res.status(404).send("UI not built"); return; }
     res.type("html").send(indexHtml);
   });
