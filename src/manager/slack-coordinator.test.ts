@@ -481,6 +481,24 @@ describe("Slack coordinator", () => {
     } finally { await db.close(); }
   });
 
+  it("recommends assigning Bear Metal to the existing ticket for work on an open PR", async () => {
+    const db = await makeDb();
+    await db.recordSlackMessage(key, "100.1");
+    const { api } = makeApi([{ ts: "100.1", user: "U1", text: "<@UBOT> fix the review comments on https://github.com/org/repo/pull/7" }]);
+    let actualPrompt = "";
+    const coordinator = makeCoordinator({ db, api, runAgent: async ({ tools, prompt }) => {
+      actualPrompt = prompt;
+      await tools.find((tool) => tool.name === "direct_answer")!.execute("answer", { sourceTs: "100.1", requestIndex: 1, answer: "Assign Bear Metal to the PR's ticket." }, undefined, undefined, {} as never);
+    } });
+    try {
+      await coordinator.wake(key);
+      expect(actualPrompt).toContain("take over or fix work on an already open pull request");
+      expect(actualPrompt).toContain("questions about a PR, still follow the normal create_ticket and start_research rules");
+      expect(actualPrompt).toContain("never call create_ticket to take it over");
+      expect(actualPrompt).toContain("recommend assigning Bear Metal to that PR's existing ticket");
+    } finally { await db.close(); }
+  });
+
   it("preserves creation-only intent after a rejected reply and restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bear-metal-ticket-choice-"));
     const url = `sqlite:${join(dir, "db.sqlite")}`;
