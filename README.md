@@ -149,6 +149,8 @@ With `taskApi.getSigningSecret` configured, Bear Metal runs tasks through `/task
 
 **Tasks without a ticket** send a `repository`. They run once in their own `API_TASK_CONCURRENCY` slots, with the profile's tools except `edit`, `write`, `commit_changes` and `push_for_review`, and without Git credentials once the repository is cloned. They end by calling `submit_result` with a message and, when the request has an `outputSchema`, a structured result that must match it. They stop themselves at `deadline` (`timeout`) or at `maxTokens` fresh tokens (`budget`). One running when Bear Metal restarts fails; resubmit it with a new key.
 
+Large structured results can be submitted with `submit_result({ message, resultFile: ".audit/result.json" })`. The JSON file must contain an object, stay inside the task's workspace after resolving symlinks, and be no larger than 20 MiB. It uses the same output-schema validation as inline `result`; supplying both is rejected. The file is read before workspace cleanup and returned intact through the task result, so the model need not reproduce every collected record.
+
 ## Environment variables
 
 Bear Metal itself reads only these deployment and process settings:
