@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -210,6 +210,42 @@ describe("API task agent", () => {
     const outcome = await run(task);
     expect(String(rejection)).toContain("does not match the result schema");
     expect(outcome).toMatchObject({ status: "failed", error: "The agent ended without calling submit_result" });
+  });
+
+  it("preserves a large structured result submitted from a workspace file", async () => {
+    const findings = Array.from({ length: 5_000 }, (_, i) => ({ key: `finding:${i}`, title: `Finding ${i}`, evidence: "evidence ".repeat(20) }));
+    const result = { summary: "Full collection", findings };
+    const task = await createTask();
+    sessionFactory.mockImplementation(fakeSession(async ({ tools, cwd }) => {
+      await writeFile(join(cwd, "result.json"), JSON.stringify(result));
+      await tool(tools, "submit_result").execute("1", { message: "Collected", resultFile: "result.json" });
+    }));
+    const outcome = await run(task);
+    expect(outcome.error).toBeNull();
+    expect(outcome.status).toBe("succeeded");
+    expect(outcome.result?.result).toEqual(result);
+  });
+
+  it.each(["invalid-json", "invalid-schema", "array", "outside", "symlink", "oversized", "both"])("rejects %s file submissions without completing the task", async (kind) => {
+    const task = await createTask();
+    let rejected = false;
+    sessionFactory.mockImplementation(fakeSession(async ({ tools, cwd }) => {
+      const path = join(cwd, "result.json");
+      const outside = join(base, "outside.json");
+      await writeFile(outside, JSON.stringify({ summary: "outside" }));
+      if (kind === "symlink") await symlink(outside, path);
+      else await writeFile(path, kind === "invalid-json" ? "{" : kind === "invalid-schema" ? '{"summary":42}' : kind === "array" ? "[]" : kind === "oversized" ? JSON.stringify({ summary: "x".repeat(21 * 1024 * 1024) }) : '{"summary":"ok"}');
+      try {
+        await tool(tools, "submit_result").execute("1", {
+          message: "Collected", resultFile: kind === "outside" ? outside : "result.json",
+          ...(kind === "both" ? { result: { summary: "ambiguous" } } : {}),
+        });
+      } catch { rejected = true; }
+    }));
+    const outcome = await run(task);
+    expect(rejected).toBe(true);
+    expect(outcome.status).toBe("failed");
+    expect(outcome.result?.result).toBeNull();
   });
 
   it("stops itself at the token budget and reports budget", async () => {

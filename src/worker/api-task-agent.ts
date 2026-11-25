@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdir, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, realpath, rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { defineTool, ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -19,7 +21,7 @@ import { freshTokens } from "./token-budget.js";
 import { AgentTraceWriter, redactTraceText, traceJson } from "./trace.js";
 import type { WorkerGitHub } from "./types.js";
 import { untilStopped } from "./until-stopped.js";
-import { createWorkspaceGuardedTools } from "./workspace-guard.js";
+import { createWorkspaceGuardedTools, resolveExistingPathInWorkspace } from "./workspace-guard.js";
 
 const logger = createLogger({
   level: process.env.LOG_LEVEL ?? "info",
@@ -127,7 +129,7 @@ export async function runApiTaskAgent(input: {
 
     const allTools: ToolDefinition[] = [
       ...createWorkspaceGuardedTools(workspaceRoot, READ_ONLY_GIT_ENV).filter((tool) => !CHANGE_TOOLS.has(tool.name)),
-      submitResultTool(),
+      submitResultTool(workspaceRoot),
       ...(input.gateway ? createAgentGatewayTools(input.gateway, { taskId: task.id, runId: task.id, workspaceRoot }, stopController.signal)
         .filter((tool) => !WRITE_GATEWAY_TOOLS.has(tool.name)) : []),
     ];
@@ -221,28 +223,60 @@ export async function runApiTaskAgent(input: {
   if (!submitted) return { status: "failed", result, error: "The agent ended without calling submit_result" };
   return { status: "succeeded", result, error: null };
 
-  function submitResultTool(): ToolDefinition {
+  function submitResultTool(workspaceRoot: string): ToolDefinition {
     return defineTool({
       name: "submit_result",
       label: "Submit result",
-      description: "Submit the task's result. Call it exactly once.",
+      description: "Submit the task's result exactly once. For large collections, write JSON in the workspace and pass resultFile instead of reproducing the JSON as model output. Both forms use the same schema validation.",
       parameters: Type.Object({
         message: Type.String({ minLength: 1, description: "A short human-readable summary of what you did and found." }),
         result: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "The structured result; must match the result schema when one is given." })),
+        resultFile: Type.Optional(Type.String({ minLength: 1, description: "Path to a JSON object inside this task's workspace (maximum 20 MiB). Mutually exclusive with result." })),
       }),
       execute: async (_id, params) => {
         if (submitted) throw new Error("submit_result was already called");
+        if (params.result !== undefined && params.resultFile !== undefined) throw new Error("Provide either result or resultFile, not both");
+        const result = params.resultFile === undefined ? params.result : await readTaskResultFile(workspaceRoot, params.resultFile);
         if (request.outputSchema) {
-          const errors = outputSchemaErrors(request.outputSchema, params.result);
+          const errors = outputSchemaErrors(request.outputSchema, result);
           if (errors.length > 0) throw new Error(`result does not match the result schema: ${errors.join("; ")}`);
         }
-        submitted = { message: params.message, result: params.result ?? null };
+        if (stopReason !== null) throw new Error(`Task already stopped: ${stopReason}`);
+        submitted = { message: params.message, result: result ?? null };
         // The result is final: end the session, so a limit that fires later cannot relabel the task.
         stop("submitted");
         return { content: [{ type: "text", text: "Result recorded." }], details: {} };
       },
     });
   }
+}
+
+async function readTaskResultFile(workspaceRoot: string, path: string): Promise<Record<string, unknown>> {
+  const root = await realpath(workspaceRoot);
+  const target = await resolveExistingPathInWorkspace(root, resolve(root, path));
+  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const maxBytes = 20 * 1024 * 1024;
+    const metadata = await file.stat();
+    if (!metadata.isFile()) throw new Error("resultFile must be a regular file");
+    if (metadata.size > maxBytes) throw new Error("resultFile exceeds 20 MiB");
+    // Bound the read too: a file can grow after stat.
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
+      const { bytesRead } = await file.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) throw new Error("resultFile exceeds 20 MiB");
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    let result: unknown;
+    try { result = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+    catch { throw new Error("resultFile must contain valid JSON"); }
+    if (typeof result !== "object" || result === null || Array.isArray(result)) throw new Error("resultFile must contain a JSON object");
+    return result as Record<string, unknown>;
+  } finally { await file.close(); }
 }
 
 const run = promisify(execFile);
